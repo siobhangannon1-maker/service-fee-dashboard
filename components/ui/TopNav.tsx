@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { fetchStoredLogoDataUrl } from "@/lib/logo";
+import { createClient } from "@/lib/supabase/client";
 
 const navItems = [
   { href: "/", label: "Dashboard" },
@@ -15,6 +16,9 @@ const navItems = [
 
 export default function TopNav() {
   const pathname = usePathname();
+  const router = useRouter();
+  const supabase = createClient();
+
   const [logo, setLogo] = useState<string | null>(null);
 
   useEffect(() => {
@@ -26,33 +30,38 @@ export default function TopNav() {
     return pathname.startsWith(href);
   }
 
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  }
+
   return (
-    <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur">
+    <header className="sticky top-0 z-50 border-b bg-white/90 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
+
+        {/* LEFT */}
         <Link href="/" className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border bg-white">
             {logo ? (
-              <img
-                src={logo}
-                alt="Practice logo"
-                className="h-8 w-8 object-contain"
-              />
+              <img src={logo} className="h-8 w-8 object-contain" />
             ) : (
-              <div className="h-8 w-8 rounded-xl bg-slate-100" />
+              <div className="h-8 w-8 bg-slate-100" />
             )}
           </div>
 
-          <div className="leading-tight">
-            <div className="text-sm font-medium text-slate-500">
+          <div>
+            <div className="text-sm text-slate-500">
               Focus Dental Specialists
             </div>
-            <div className="text-lg font-semibold tracking-tight text-slate-900">
+            <div className="text-lg font-semibold">
               Service Fee Dashboard
             </div>
           </div>
         </Link>
 
-        <nav className="hidden items-center gap-2 md:flex">
+        {/* RIGHT */}
+        <div className="flex items-center gap-2">
           {navItems.map((item) => {
             const active = isActive(item.href);
 
@@ -60,17 +69,25 @@ export default function TopNav() {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`rounded-xl px-3 py-2 text-sm font-medium transition ${
+                className={`rounded-xl px-3 py-2 text-sm ${
                   active
-                    ? "bg-slate-900 text-white shadow-sm"
-                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-600 hover:bg-slate-100"
                 }`}
               >
                 {item.label}
               </Link>
             );
           })}
-        </nav>
+
+          <button
+            onClick={handleLogout}
+            className="ml-2 rounded-xl border px-3 py-2 text-sm"
+          >
+            Log out
+          </button>
+        </div>
+
       </div>
     </header>
   );
