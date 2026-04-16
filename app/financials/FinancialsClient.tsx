@@ -537,7 +537,7 @@ export default function FinancialsClient() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="label" />
                   <YAxis />
-                  <Tooltip formatter={(value: number) => `$${formatMoney(Number(value || 0))}`} />
+                  <Tooltip formatter={(value) => `$${formatMoney(Number(value ?? 0))}`} />
                   <Legend />
                   {(selectedProviderId === "all" ? providers : providers.filter((p) => p.id === selectedProviderId)).map(
                     (provider) => (
@@ -567,7 +567,7 @@ export default function FinancialsClient() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="label" />
                   <YAxis />
-                  <Tooltip formatter={(value: number) => `$${formatMoney(Number(value || 0))}`} />
+                 <Tooltip formatter={(value) => `$${formatMoney(Number(value ?? 0))}`} />
                   <Legend />
                   <Bar dataKey="grossProduction" name="Gross production" />
                   <Bar dataKey="serviceFees" name="Service fees" />
