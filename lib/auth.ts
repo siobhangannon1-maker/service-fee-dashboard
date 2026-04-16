@@ -29,11 +29,6 @@ export async function requireRole(allowedRoles: AppRole[]) {
     .eq("user_id", user.id)
     .single();
 
-  console.log("AUTH DEBUG user id:", user.id);
-  console.log("AUTH DEBUG role row:", data);
-  console.log("AUTH DEBUG role error:", error);
-  console.log("AUTH DEBUG allowed roles:", allowedRoles);
-
   if (error || !data || !allowedRoles.includes(data.role as AppRole)) {
     redirect("/unauthorized");
   }
