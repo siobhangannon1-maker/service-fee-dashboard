@@ -81,9 +81,8 @@ export default function LoginClient() {
                 </h1>
 
                 <p className="mt-6 max-w-lg text-lg leading-8 text-slate-300">
-                  Securely manage monthly billing, patient adjustments, provider
-                  statements, and financial reporting with a branded internal
-                  dashboard built for your practice.
+                  Securely manage monthly service fee generation, patient costs entries, provider
+                  statements, and financial reporting.
                 </p>
               </div>
             </div>
