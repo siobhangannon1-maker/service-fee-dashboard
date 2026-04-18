@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  ensureCurrentBillingPeriod,
+  createNextBillingPeriodFromList,
+} from "@/lib/billingPeriods";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Toast from "@/components/ui/Toast";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -34,6 +38,7 @@ export default function MaterialCostsClient() {
   const [items, setItems] = useState<MaterialCostItem[]>([]);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
   const [message, setMessage] = useState("");
   const [tone, setTone] = useState<"default" | "success" | "error">("default");
   const [saving, setSaving] = useState(false);
@@ -60,6 +65,21 @@ export default function MaterialCostsClient() {
     loadItems();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const filteredItems = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+
+    if (!query) return items;
+
+    return items.filter((item) => {
+      return (
+        item.name.toLowerCase().includes(query) ||
+        String(item.default_cost).includes(query) ||
+        String(item.sort_order).includes(query) ||
+        (item.is_active ? "active" : "archived").includes(query)
+      );
+    });
+  }, [items, searchTerm]);
 
   function resetForm() {
     setEditingId(null);
@@ -301,14 +321,38 @@ export default function MaterialCostsClient() {
         </form>
 
         <div className="mt-6 rounded-3xl border bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Saved items</h2>
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Saved items</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Search by item name, cost, sort order, or status.
+              </p>
+            </div>
+
+            <div className="w-full md:max-w-sm">
+              <label className="mb-1 block text-sm text-slate-600">Search items</label>
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search materials or implants..."
+                className="w-full rounded-2xl border border-slate-200 px-4 py-2.5 text-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
+              />
+            </div>
+          </div>
 
           <div className="mt-4 space-y-3">
             {items.length === 0 && (
               <div className="text-sm text-slate-500">No materials added yet.</div>
             )}
 
-            {items.map((item) => (
+            {items.length > 0 && filteredItems.length === 0 && (
+              <div className="text-sm text-slate-500">
+                No items match your search.
+              </div>
+            )}
+
+            {filteredItems.map((item) => (
               <div
                 key={item.id}
                 className="flex flex-col gap-3 rounded-2xl border p-4 md:flex-row md:items-center md:justify-between"

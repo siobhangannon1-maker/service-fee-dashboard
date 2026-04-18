@@ -1,5 +1,9 @@
 "use client";
 
+import {
+  ensureCurrentBillingPeriod,
+  createNextBillingPeriodFromList,
+} from "@/lib/billingPeriods";
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { writeAuditLog } from "@/lib/audit";
@@ -69,6 +73,9 @@ const emptyForm: EntryForm = {
 
 export default function PatientEntriesPage() {
   const supabase = createClient();
+const [search, setSearch] = useState("");
+const [categoryFilter, setCategoryFilter] = useState("");
+const [providerFilter, setProviderFilter] = useState("");
 
   const [providers, setProviders] = useState<Provider[]>([]);
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
@@ -375,6 +382,22 @@ export default function PatientEntriesPage() {
     }
   }
 
+  const filteredEntries = entries.filter((entry) => {
+  const matchesSearch =
+    entry.patient_name.toLowerCase().includes(search.toLowerCase()) ||
+    (entry.notes || "").toLowerCase().includes(search.toLowerCase());
+
+  const matchesCategory = categoryFilter
+    ? entry.category === categoryFilter
+    : true;
+
+  const matchesProvider = providerFilter
+    ? entry.provider_id === providerFilter
+    : true;
+
+  return matchesSearch && matchesCategory && matchesProvider;
+});
+
   return (
     <main className="min-h-screen bg-slate-50 p-6">
       <div className="mx-auto max-w-6xl">
@@ -549,12 +572,8 @@ export default function PatientEntriesPage() {
                 <option value="fees_paid_to_focus">
                   Patient Fees Paid to Focus
                 </option>
-                <option value="fees_paid_in_error">
-                  Patient Fees Paid in Error
-                </option>
-                <option value="fees_owed">Patient Fees Owed</option>
                 <option value="paid_to_wrong_provider">
-                  Paid to Provider X, Owed to Provider Y
+                  Payment to Incorrect Provider
                 </option>
               </select>
             </div>
@@ -669,15 +688,55 @@ export default function PatientEntriesPage() {
           </div>
         </form>
 
+        <div className="mt-6 rounded-3xl border bg-white p-4 shadow-sm">
+  <div className="grid gap-3 md:grid-cols-3">
+    <input
+      type="text"
+      placeholder="Search patient or notes..."
+      className="rounded-2xl border px-3 py-2"
+      value={search}
+      onChange={(e) => setSearch(e.target.value)}
+    />
+
+    <select
+      className="rounded-2xl border px-3 py-2"
+      value={categoryFilter}
+      onChange={(e) => setCategoryFilter(e.target.value)}
+    >
+      <option value="">All categories</option>
+      <option value="lab_implant_materials">Lab / Implants / Materials</option>
+      <option value="fees_paid_to_focus">Patient Fees Paid to Focus</option>
+      <option value="fees_paid_in_error">Patient Fees Paid in Error</option>
+      <option value="fees_owed">Patient Fees Owed</option>
+      <option value="paid_to_wrong_provider">Paid to Wrong Provider</option>
+    </select>
+
+    <select
+      className="rounded-2xl border px-3 py-2"
+      value={providerFilter}
+      onChange={(e) => setProviderFilter(e.target.value)}
+    >
+      <option value="">All providers</option>
+      {providers.map((provider) => (
+        <option key={provider.id} value={provider.id}>
+          {provider.name}
+        </option>
+      ))}
+    </select>
+  </div>
+</div>
+
         <div className="mt-6 rounded-3xl border bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Saved entries</h2>
 
           <div className="mt-4 space-y-3">
-            {entries.length === 0 && (
-              <div className="text-sm text-slate-500">No entries yet for this period.</div>
-            )}
+            {filteredEntries.length === 0 && (
+  <div className="py-10 text-center text-sm text-slate-500">
+    No matching entries found for this billing period.
+  </div>
+)}
 
-            {entries.map((entry) => (
+{filteredEntries.map((entry) => (
               <div key={entry.id} className="rounded-2xl border p-4 text-sm">
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div>

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -187,6 +188,14 @@ export default function LoginClient() {
                 >
                   {loading ? "Signing in..." : "Sign in"}
                 </button>
+                <div className="mt-4">
+  <Link
+    href="/reset-password"
+    className="text-sm font-medium text-blue-700 hover:text-blue-800"
+  >
+    Forgot password?
+  </Link>
+</div>
               </form>
 
               <div className="mt-6 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">

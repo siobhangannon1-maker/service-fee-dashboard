@@ -1,5 +1,11 @@
 "use client";
 
+import Link from "next/link";
+import {
+  ensureCurrentBillingPeriod,
+  createNextBillingPeriodFromList,
+} from "@/lib/billingPeriods";
+import StatusBadge from "@/components/ui/StatusBadge";
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { calculateServiceFee } from "@/lib/calculations";
@@ -31,6 +37,11 @@ type BillingPeriod = {
   status: string;
   locked_at?: string | null;
   locked_by?: string | null;
+};
+
+type BillingPeriodImportLink = {
+  billing_period_id: string;
+  import_id: string;
 };
 
 type EntryCategory =
@@ -74,13 +85,20 @@ type ProviderMonthlyRecord = {
   id: string;
   provider_id: string;
   billing_period_id: string;
-  gross_production: number;
-  adjustments: number;
-  incorrect_payments: number;
-  iv_facility_fees: number;
-  afterpay_fees: number;
-  humm_fees: number;
+  gross_production: number | null;
+  adjustments: number | null;
+  incorrect_payments: number | null;
+  iv_facility_fees: number | null;
+  afterpay_fees: number | null;
+  humm_fees: number | null;
   other_deductions?: number | null;
+};
+
+type ProviderImportMetrics = {
+  grossProduction: number;
+  collections: number;
+  serviceFeeBase: number;
+  ivFacilityFees: number;
 };
 
 type ManualBillingInputs = {
@@ -138,6 +156,8 @@ export default function BillingClient() {
     "default"
   );
   const [savingProviderId, setSavingProviderId] = useState<string | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
+  const [loadingMetrics, setLoadingMetrics] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -169,125 +189,247 @@ export default function BillingClient() {
     setConfirmOpen(true);
   }
 
-  async function loadData(periodId?: string) {
-    setMessage("");
-
-    const { data: providerData, error: providerError } = await supabase
-      .from("providers")
-      .select("*")
-      .order("name");
-
-    if (providerError) {
-      showToast(`Error loading providers: ${providerError.message}`, "error");
-      return;
-    }
-
-    const { data: periodData, error: periodError } = await supabase
-      .from("billing_periods")
-      .select("*")
-      .order("year", { ascending: false })
-      .order("month", { ascending: false });
-
-    if (periodError) {
-      showToast(`Error loading billing periods: ${periodError.message}`, "error");
-      return;
-    }
-
-    const providerList = (providerData || []) as Provider[];
-    const periodList = (periodData || []) as BillingPeriod[];
-
-    setProviders(providerList);
-    setBillingPeriods(periodList);
-
-    const activePeriodId = periodId || selectedPeriodId || periodList[0]?.id || "";
-
-    if (activePeriodId && activePeriodId !== selectedPeriodId) {
-      setSelectedPeriodId(activePeriodId);
-    }
-
-    const activePeriod = periodList.find((p) => p.id === activePeriodId);
-    setActivePeriodStatus((activePeriod?.status as "open" | "locked") || "open");
-
-    let entryQuery = supabase
-      .from("patient_financial_entries")
-      .select("*")
-      .is("deleted_at", null);
-
-    if (activePeriodId) {
-      entryQuery = entryQuery.eq("billing_period_id", activePeriodId);
-    }
-
-    const { data: entryData, error: entryError } = await entryQuery;
-
-    if (entryError) {
-      showToast(`Error loading patient entries: ${entryError.message}`, "error");
-      return;
-    }
-
-    setEntries((entryData || []) as PatientFinancialEntry[]);
-
-    let detailQuery = supabase
-      .from("billing_detail_entries")
-      .select("*")
-      .is("deleted_at", null);
-
-    if (activePeriodId) {
-      detailQuery = detailQuery.eq("billing_period_id", activePeriodId);
-    }
-
-    const { data: detailData, error: detailError } = await detailQuery;
-
-    if (detailError) {
-      showToast(
-        `Error loading billing detail entries: ${detailError.message}`,
-        "error"
-      );
-      return;
-    }
-
-    setBillingDetailEntries((detailData || []) as BillingDetailEntry[]);
-
-    let recordQuery = supabase.from("provider_monthly_records").select("*");
-    if (activePeriodId) {
-      recordQuery = recordQuery.eq("billing_period_id", activePeriodId);
-    }
-
-    const { data: recordData, error: recordError } = await recordQuery;
-
-    if (recordError) {
-      showToast(`Error loading monthly records: ${recordError.message}`, "error");
-      return;
-    }
-
-    const records = (recordData || []) as ProviderMonthlyRecord[];
-
-    const nextManualData: Record<string, ManualBillingInputs> = {};
-    const nextSavedRecords: Record<string, string> = {};
-
-    providerList.forEach((provider) => {
-      const record = records.find((r) => r.provider_id === provider.id);
-
-      nextManualData[provider.id] = record
-        ? {
-            grossProduction: Number(record.gross_production || 0),
-            adjustments: Number(record.adjustments || 0),
-            incorrectPayments: Number(record.incorrect_payments || 0),
-            ivFacilityFees: Number(record.iv_facility_fees || 0),
-            otherDeductions: Number(record.other_deductions || 0),
-          }
-        : { ...emptyManualInputs };
-
-      if (record?.id) {
-        nextSavedRecords[provider.id] = record.id;
-      }
+  async function fetchProviderImportMetrics(
+    providerId: string,
+    importId: string
+  ): Promise<ProviderImportMetrics> {
+    const res = await fetch(`/api/providers/${providerId}/metrics/${importId}`, {
+      method: "GET",
+      cache: "no-store",
     });
 
-    setManualBillingData(nextManualData);
-    setSavedRecords(nextSavedRecords);
+    if (!res.ok) {
+      throw new Error(`Failed to load metrics for provider ${providerId}`);
+    }
 
-    const storedLogo = await fetchStoredLogoDataUrl();
-    if (storedLogo) {
-      setLogoDataUrl(storedLogo);
+    const data = await res.json();
+
+    return {
+      grossProduction: Number(data.grossProduction || 0),
+      collections: Number(data.collections || 0),
+      serviceFeeBase: Number(data.serviceFeeBase || 0),
+      ivFacilityFees: Number(data.ivFacilityFees || 0),
+    };
+  }
+
+  async function getImportIdForBillingPeriod(
+    billingPeriodId: string
+  ): Promise<string | null> {
+    const { data, error } = await supabase
+      .from("billing_period_imports")
+      .select("billing_period_id, import_id")
+      .eq("billing_period_id", billingPeriodId)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const link = data as BillingPeriodImportLink | null;
+    return link?.import_id ?? null;
+  }
+
+  async function loadData(periodId?: string) {
+    setMessage("");
+    setLoadingMetrics(true);
+
+    try {
+      const ensuredCurrentPeriod = await ensureCurrentBillingPeriod();
+
+      const { data: providerData, error: providerError } = await supabase
+        .from("providers")
+        .select("*")
+        .order("name");
+
+      if (providerError) {
+        showToast(`Error loading providers: ${providerError.message}`, "error");
+        setLoadingMetrics(false);
+        return;
+      }
+
+      const { data: periodData, error: periodError } = await supabase
+        .from("billing_periods")
+        .select("*")
+        .order("year", { ascending: true })
+        .order("month", { ascending: true });
+
+      if (periodError) {
+        showToast(`Error loading billing periods: ${periodError.message}`, "error");
+        setLoadingMetrics(false);
+        return;
+      }
+
+      const providerList = (providerData || []) as Provider[];
+      const periodList = (periodData || []) as BillingPeriod[];
+
+      setProviders(providerList);
+      setBillingPeriods(periodList);
+
+      const activePeriodId =
+        periodId ||
+        selectedPeriodId ||
+        ensuredCurrentPeriod.id ||
+        periodList[periodList.length - 1]?.id ||
+        "";
+
+      if (activePeriodId && activePeriodId !== selectedPeriodId) {
+        setSelectedPeriodId(activePeriodId);
+      }
+
+      const activePeriod = periodList.find((p) => p.id === activePeriodId);
+      setActivePeriodStatus((activePeriod?.status as "open" | "locked") || "open");
+
+      let activeImportId: string | null = null;
+
+      if (activePeriodId) {
+        try {
+          activeImportId = await getImportIdForBillingPeriod(activePeriodId);
+        } catch (error: any) {
+          showToast(
+            `Error loading billing/import link: ${error?.message || "Unknown error"}`,
+            "error"
+          );
+          setLoadingMetrics(false);
+          return;
+        }
+      }
+
+      let entryQuery = supabase
+        .from("patient_financial_entries")
+        .select("*")
+        .is("deleted_at", null);
+
+      if (activePeriodId) {
+        entryQuery = entryQuery.eq("billing_period_id", activePeriodId);
+      }
+
+      const { data: entryData, error: entryError } = await entryQuery;
+
+      if (entryError) {
+        showToast(`Error loading patient entries: ${entryError.message}`, "error");
+        setLoadingMetrics(false);
+        return;
+      }
+
+      setEntries((entryData || []) as PatientFinancialEntry[]);
+
+      let detailQuery = supabase
+        .from("billing_detail_entries")
+        .select("*")
+        .is("deleted_at", null);
+
+      if (activePeriodId) {
+        detailQuery = detailQuery.eq("billing_period_id", activePeriodId);
+      }
+
+      const { data: detailData, error: detailError } = await detailQuery;
+
+      if (detailError) {
+        showToast(
+          `Error loading billing detail entries: ${detailError.message}`,
+          "error"
+        );
+        setLoadingMetrics(false);
+        return;
+      }
+
+      setBillingDetailEntries((detailData || []) as BillingDetailEntry[]);
+
+      let recordQuery = supabase.from("provider_monthly_records").select("*");
+      if (activePeriodId) {
+        recordQuery = recordQuery.eq("billing_period_id", activePeriodId);
+      }
+
+      const { data: recordData, error: recordError } = await recordQuery;
+
+      if (recordError) {
+        showToast(`Error loading monthly records: ${recordError.message}`, "error");
+        setLoadingMetrics(false);
+        return;
+      }
+
+      const records = (recordData || []) as ProviderMonthlyRecord[];
+
+      const importMetricsByProvider: Record<string, ProviderImportMetrics> = {};
+      const failedProviders: string[] = [];
+
+      if (activeImportId) {
+        await Promise.all(
+          providerList.map(async (provider) => {
+            try {
+              const metrics = await fetchProviderImportMetrics(
+                provider.id,
+                activeImportId as string
+              );
+
+              importMetricsByProvider[provider.id] = metrics;
+            } catch (error) {
+              console.error(`Failed to fetch metrics for ${provider.name}`, error);
+              failedProviders.push(provider.name);
+              importMetricsByProvider[provider.id] = {
+                grossProduction: 0,
+                collections: 0,
+                serviceFeeBase: 0,
+                ivFacilityFees: 0,
+              };
+            }
+          })
+        );
+      }
+
+      const nextManualData: Record<string, ManualBillingInputs> = {};
+      const nextSavedRecords: Record<string, string> = {};
+
+      providerList.forEach((provider) => {
+        const record = records.find((r) => r.provider_id === provider.id);
+        const importedMetrics = importMetricsByProvider[provider.id];
+
+        nextManualData[provider.id] = record
+          ? {
+              grossProduction: Number(
+                record.gross_production ?? importedMetrics?.grossProduction ?? 0
+              ),
+              adjustments: Number(record.adjustments || 0),
+              incorrectPayments: Number(record.incorrect_payments || 0),
+              ivFacilityFees: Number(
+                record.iv_facility_fees ?? importedMetrics?.ivFacilityFees ?? 0
+              ),
+              otherDeductions: Number(record.other_deductions || 0),
+            }
+          : {
+              grossProduction: Number(importedMetrics?.grossProduction || 0),
+              adjustments: 0,
+              incorrectPayments: 0,
+              ivFacilityFees: Number(importedMetrics?.ivFacilityFees || 0),
+              otherDeductions: 0,
+            };
+
+        if (record?.id) {
+          nextSavedRecords[provider.id] = record.id;
+        }
+      });
+
+      setManualBillingData(nextManualData);
+      setSavedRecords(nextSavedRecords);
+
+      const storedLogo = await fetchStoredLogoDataUrl();
+      if (storedLogo) {
+        setLogoDataUrl(storedLogo);
+      }
+
+      if (failedProviders.length > 0) {
+        showToast(
+          `Some provider import values could not be loaded: ${failedProviders.join(", ")}`,
+          "error"
+        );
+      }
+    } catch (error: any) {
+      showToast(
+        `Error preparing billing period: ${error?.message || "Unknown error"}`,
+        "error"
+      );
+    } finally {
+      setLoadingMetrics(false);
     }
   }
 
@@ -308,6 +450,22 @@ export default function BillingClient() {
         [field]: value,
       },
     }));
+  }
+
+  async function createNextBillingPeriod() {
+    try {
+      setMessage("");
+
+      const createdPeriod = await createNextBillingPeriodFromList(billingPeriods);
+
+      showToast(`Billing period created: ${createdPeriod.label}`, "success");
+      await loadData(createdPeriod.id);
+    } catch (error: any) {
+      showToast(
+        `Failed to create billing period: ${error?.message || "Unknown error"}`,
+        "error"
+      );
+    }
   }
 
   async function toggleBillingPeriodLock() {
@@ -362,19 +520,35 @@ export default function BillingClient() {
     await loadData(selectedPeriodId);
   }
 
-  async function saveProviderRecord(providerId: string) {
+  async function saveProviderRecord(
+    providerId: string,
+    options?: { suppressToast?: boolean }
+  ) {
     if (!selectedPeriodId) {
-      showToast("Please select a billing period first.", "error");
-      return;
+      if (!options?.suppressToast) {
+        showToast("Please select a billing period first.", "error");
+      }
+      return { success: false };
     }
 
     if (activePeriodStatus === "locked") {
-      showToast("This billing period is locked.", "error");
-      return;
+      if (!options?.suppressToast) {
+        showToast("This billing period is locked.", "error");
+      }
+      return { success: false };
+    }
+
+    if (loadingMetrics) {
+      if (!options?.suppressToast) {
+        showToast("Imported values are still loading. Please wait.", "error");
+      }
+      return { success: false };
     }
 
     const inputs = manualBillingData[providerId] || emptyManualInputs;
-    setSavingProviderId(providerId);
+    if (!savingAll) {
+      setSavingProviderId(providerId);
+    }
     setMessage("");
 
     const payload = {
@@ -401,12 +575,19 @@ export default function BillingClient() {
           .single();
 
     if (result.error) {
-      showToast(`Save failed: ${result.error.message}`, "error");
-      setSavingProviderId(null);
-      return;
+      if (!options?.suppressToast) {
+        showToast(`Save failed: ${result.error.message}`, "error");
+      }
+      if (!savingAll) {
+        setSavingProviderId(null);
+      }
+      return { success: false, error: result.error.message };
     }
 
+    let savedId = existingId;
+
     if (!existingId && "data" in result && result.data?.id) {
+      savedId = result.data.id;
       setSavedRecords((prev) => ({ ...prev, [providerId]: result.data.id }));
     }
 
@@ -415,14 +596,68 @@ export default function BillingClient() {
         ? "provider_monthly_record_updated"
         : "provider_monthly_record_created",
       entityType: "provider_monthly_record",
-      entityId: savedRecords[providerId] || null,
+      entityId: savedId || null,
       billingPeriodId: selectedPeriodId,
       providerId,
       metadata: payload,
     });
 
-    showToast("Billing values saved.", "success");
-    setSavingProviderId(null);
+    if (!options?.suppressToast) {
+      showToast("Billing values saved.", "success");
+    }
+
+    if (!savingAll) {
+      setSavingProviderId(null);
+    }
+
+    return { success: true };
+  }
+
+  async function saveAllProviderRecords() {
+    if (!selectedPeriodId) {
+      showToast("Please select a billing period first.", "error");
+      return;
+    }
+
+    if (activePeriodStatus === "locked") {
+      showToast("This billing period is locked.", "error");
+      return;
+    }
+
+    if (loadingMetrics) {
+      showToast("Imported values are still loading. Please wait.", "error");
+      return;
+    }
+
+    setSavingAll(true);
+    setMessage("");
+
+    let successCount = 0;
+    const failedProviders: string[] = [];
+
+    try {
+      for (const provider of providers) {
+        const result = await saveProviderRecord(provider.id, { suppressToast: true });
+
+        if (result.success) {
+          successCount += 1;
+        } else {
+          failedProviders.push(provider.name);
+        }
+      }
+
+      if (failedProviders.length === 0) {
+        showToast(`Saved ${successCount} provider records.`, "success");
+      } else {
+        showToast(
+          `Saved ${successCount} provider records. Failed: ${failedProviders.join(", ")}`,
+          "error"
+        );
+      }
+    } finally {
+      setSavingAll(false);
+      setSavingProviderId(null);
+    }
   }
 
   const autoTotalsByProvider = useMemo(() => {
@@ -738,19 +973,21 @@ export default function BillingClient() {
     return `
       <div style="font-family:Arial,sans-serif;max-width:860px;margin:0 auto;color:#0f172a;">
         <div style="margin-bottom:24px;">
-  <h1 style="margin:0;font-size:28px;">Draft Statement</h1>
-  <h2 style="margin:8px 0 0 0;font-size:22px;">${provider.name}</h2>
-  <p style="margin:8px 0 0 0;color:#475569;">${PRACTICE.name}</p>
-  <p style="margin:4px 0 0 0;color:#475569;">${PRACTICE.address}</p>
+          <h1 style="margin:0;font-size:28px;">Draft Statement</h1>
+          <h2 style="margin:8px 0 0 0;font-size:22px;">${provider.name}</h2>
+          <p style="margin:8px 0 0 0;color:#475569;">${PRACTICE.name}</p>
+          <p style="margin:4px 0 0 0;color:#475569;">${PRACTICE.address}</p>
 
-  <div style="margin-top:16px;padding:14px 16px;border-radius:12px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;font-size:14px;line-height:1.5;">
-    Attached is a draft statement for ${billingPeriods.find((p) => p.id === selectedPeriodId)?.label || "this billing period"}.
-    If you have any questions or changes, please email
-    <a href="mailto:accounts@focusoms.com.au" style="color:#1d4ed8;text-decoration:underline;">
-      accounts@focusoms.com.au
-    </a>.
-  </div>
-</div>
+          <div style="margin-top:16px;padding:14px 16px;border-radius:12px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;font-size:14px;line-height:1.5;">
+            Attached is a draft statement for ${
+              billingPeriods.find((p) => p.id === selectedPeriodId)?.label || "this billing period"
+            }.
+            If you have any questions or changes, please email
+            <a href="mailto:accounts@focusoms.com.au" style="color:#1d4ed8;text-decoration:underline;">
+              accounts@focusoms.com.au
+            </a>.
+          </div>
+        </div>
 
         <div style="border:1px solid #e2e8f0;border-radius:16px;padding:18px;background:#f8fafc;">
           <h3 style="margin:0 0 12px 0;font-size:16px;">Summary</h3>
@@ -762,51 +999,35 @@ export default function BillingClient() {
               </tr>
               <tr>
                 <td style="padding:6px 0;">Lab / Materials expenses</td>
-                <td style="padding:6px 0;text-align:right;">${money(
-                  autoTotals.labImplantMaterials
-                )}</td>
+                <td style="padding:6px 0;text-align:right;">${money(autoTotals.labImplantMaterials)}</td>
               </tr>
               <tr>
                 <td style="padding:6px 0;">Humm merchant fees</td>
-                <td style="padding:6px 0;text-align:right;">${money(
-                  autoTotals.hummFees
-                )}</td>
+                <td style="padding:6px 0;text-align:right;">${money(autoTotals.hummFees)}</td>
               </tr>
               <tr>
                 <td style="padding:6px 0;">Afterpay merchant fees</td>
-                <td style="padding:6px 0;text-align:right;">${money(
-                  autoTotals.afterpayFees
-                )}</td>
+                <td style="padding:6px 0;text-align:right;">${money(autoTotals.afterpayFees)}</td>
               </tr>
               <tr>
                 <td style="padding:6px 0;">Fees and costs total</td>
-                <td style="padding:6px 0;text-align:right;">${money(
-                  feesAndCostsTotal
-                )}</td>
+                <td style="padding:6px 0;text-align:right;">${money(feesAndCostsTotal)}</td>
               </tr>
               <tr>
                 <td style="padding:6px 0;">Patient fees paid to Focus</td>
-                <td style="padding:6px 0;text-align:right;">${money(
-                  autoTotals.feesPaidToFocus
-                )}</td>
+                <td style="padding:6px 0;text-align:right;">${money(autoTotals.feesPaidToFocus)}</td>
               </tr>
               <tr>
                 <td style="padding:6px 0;">Patient fees received in error</td>
-                <td style="padding:6px 0;text-align:right;">${money(
-                  autoTotals.feesOwed
-                )}</td>
+                <td style="padding:6px 0;text-align:right;">${money(autoTotals.feesPaidInError)}</td>
               </tr>
               <tr>
                 <td style="padding:6px 0;">Patient fees paid to another provider in error</td>
-                <td style="padding:6px 0;text-align:right;">${money(
-                  autoTotals.feesPaidInError
-                )}</td>
+                <td style="padding:6px 0;text-align:right;">${money(autoTotals.feesOwed)}</td>
               </tr>
               <tr>
                 <td style="padding:6px 0;">IV Facility Fees</td>
-                <td style="padding:6px 0;text-align:right;">${money(
-                  manualInputs.ivFacilityFees
-                )}</td>
+                <td style="padding:6px 0;text-align:right;">${money(manualInputs.ivFacilityFees)}</td>
               </tr>
               <tr>
                 <td style="padding:10px 0 0 0;font-weight:700;border-top:2px solid #0f172a;">
@@ -922,6 +1143,11 @@ export default function BillingClient() {
       return;
     }
 
+    if (loadingMetrics) {
+      showToast("Imported values are still loading. Please wait.", "error");
+      return;
+    }
+
     setExporting(true);
     setMessage("");
 
@@ -978,15 +1204,8 @@ export default function BillingClient() {
         worksheet.getCell("D5").alignment = { horizontal: "right" };
 
         let row = 9;
-
-// Row 9 → blank
-row = 10;
-
-// Row 10 → blank (no styling applied)
-
-// Move to header row
-row = 11
-
+        row = 10;
+        row = 11;
 
         for (const col of ["A", "B", "C", "D"]) {
           worksheet.getCell(`${col}${row}`).border = {
@@ -1106,7 +1325,7 @@ row = 11
           worksheet,
           row,
           `Plus Patient fees received by ${provider.name} in error`,
-          autoTotals.feesOwed
+          autoTotals.feesPaidInError
         );
         row += 1;
 
@@ -1114,7 +1333,7 @@ row = 11
           worksheet,
           row,
           "Less Patient fees paid to another provider in error",
-          autoTotals.feesPaidInError
+          autoTotals.feesOwed
         );
         row += 1;
 
@@ -1146,7 +1365,7 @@ row = 11
         addLabeledValueRow(
           worksheet,
           row,
-          "Gross production",
+          "Gross Production",
           manualInputs.grossProduction
         );
         row += 1;
@@ -1154,7 +1373,7 @@ row = 11
         addLabeledValueRow(
           worksheet,
           row,
-          "Patient Billings adjustment",
+          "Patient Billings Adjustments",
           manualInputs.adjustments
         );
         row += 1;
@@ -1162,7 +1381,7 @@ row = 11
         addLabeledValueRow(
           worksheet,
           row,
-          "Less Implants & Lab exp",
+          "Less Implants, Materials and Lab Expenses",
           autoTotals.labImplantMaterials
         );
         row += 1;
@@ -1170,15 +1389,15 @@ row = 11
         addLabeledValueRow(
           worksheet,
           row,
-          "Less Afterpay fees",
-          autoTotals.afterpayFees
+          "Less Afterpay and Humm Merchant Fees",
+          autoTotals.afterpayFees + autoTotals.hummFees
         );
         row += 1;
 
         addLabeledValueRow(
           worksheet,
           row,
-          "Less Facility Fees",
+          "Less IV Facility Fees",
           manualInputs.ivFacilityFees
         );
         row += 1;
@@ -1195,7 +1414,7 @@ row = 11
         addLabeledValueRow(
           worksheet,
           row,
-          "Patient fees paid to Focus",
+          "Patient Fees Paid to Focus",
           autoTotals.feesPaidToFocus
         );
         row += 1;
@@ -1203,8 +1422,8 @@ row = 11
         addLabeledValueRow(
           worksheet,
           row,
-          "Patient fees received in error",
-          autoTotals.feesOwed
+          "Patient Fees Received in Error",
+          autoTotals.feesPaidInError
         );
         row += 1;
 
@@ -1212,9 +1431,8 @@ row = 11
           worksheet,
           row,
           "Patient fees paid to another provider in error",
-          autoTotals.feesPaidInError
+          autoTotals.feesOwed
         );
-
         row += 3;
 
         const providerPatientEntries = entries.filter(
@@ -1282,37 +1500,51 @@ row = 11
           addSubtotal(0);
         } else {
           implantEntries.forEach((e) => {
-            const label = `${e.patient_name || "Unknown"}${
-              e.notes ? " " + e.notes : ""
-            }`;
+            const label = `${e.patient_name || "Unknown"}${e.notes ? " " + e.notes : ""}`;
             addLine(label, e.amount);
             implantTotal += e.amount;
           });
           addSubtotal(implantTotal);
         }
 
-        addSectionHeader("Afterpay and Zipmoney NET excluding GST");
+        addSectionHeader("Afterpay Merchant Fees NET excluding GST");
 
-        const merchantEntries = providerDetailEntries.filter(
-          (e) => e.category === "humm_fee" || e.category === "afterpay_fee"
+        const afterpayEntries = providerDetailEntries.filter(
+          (e) => e.category === "afterpay_fee"
         );
 
-        let merchantTotal = 0;
+        let afterpayTotal = 0;
 
-        if (merchantEntries.length === 0) {
+        if (afterpayEntries.length === 0) {
           addNilRow();
           addSubtotal(0);
         } else {
-          merchantEntries.forEach((e) => {
-            const label = `${e.patient_name || ""}${
-              e.patient_name ? " " : ""
-            }${e.category === "humm_fee" ? "Humm" : "Afterpay"}${
-              e.notes ? " " + e.notes : ""
-            }`;
+          afterpayEntries.forEach((e) => {
+            const label = `${e.patient_name || ""}${e.notes ? " " + e.notes : ""}`;
             addLine(label.trim(), e.amount);
-            merchantTotal += e.amount;
+            afterpayTotal += e.amount;
           });
-          addSubtotal(merchantTotal);
+          addSubtotal(afterpayTotal);
+        }
+
+        addSectionHeader("Humm Merchant Fees NET excluding GST");
+
+        const hummEntries = providerDetailEntries.filter(
+          (e) => e.category === "humm_fee"
+        );
+
+        let hummTotal = 0;
+
+        if (hummEntries.length === 0) {
+          addNilRow();
+          addSubtotal(0);
+        } else {
+          hummEntries.forEach((e) => {
+            const label = `${e.patient_name || ""}${e.notes ? " " + e.notes : ""}`;
+            addLine(label.trim(), e.amount);
+            hummTotal += e.amount;
+          });
+          addSubtotal(hummTotal);
         }
 
         addSectionHeader("IV Facility Fees Payable to Focus NET");
@@ -1347,24 +1579,59 @@ row = 11
 
         addSectionHeader(`Patient fees paid to ${provider.name} in error`);
 
-        const paidInErrorEntries = providerPatientEntries.filter(
-          (e) =>
-            e.category === "fees_paid_in_error" ||
-            e.category === "paid_to_wrong_provider"
+        const paidToThisProviderInErrorEntries = providerPatientEntries.filter(
+          (e) => e.category === "paid_to_wrong_provider"
         );
 
-        let errorTotal = 0;
+        let paidToThisProviderInErrorTotal = 0;
 
-        if (paidInErrorEntries.length === 0) {
+        if (paidToThisProviderInErrorEntries.length === 0) {
           addNilRow();
           addSubtotal(0);
         } else {
-          paidInErrorEntries.forEach((e) => {
-            const label = `${e.patient_name || ""}${e.notes ? " " + e.notes : ""}`;
+          paidToThisProviderInErrorEntries.forEach((e) => {
+            const owedProviderName =
+              providers.find((p) => p.id === e.related_provider_id)?.name ||
+              "Unknown provider";
+
+            const label = `${e.patient_name || ""}${
+              e.notes ? " " + e.notes : ""
+            }${owedProviderName ? ` (Owed to: ${owedProviderName})` : ""}`;
+
             addLine(label, e.amount);
-            errorTotal += e.amount;
+            paidToThisProviderInErrorTotal += e.amount;
           });
-          addSubtotal(errorTotal);
+          addSubtotal(paidToThisProviderInErrorTotal);
+        }
+
+        addSectionHeader("Patient fees paid to another provider in error");
+
+        const paidToAnotherProviderEntries = entries.filter(
+          (e) =>
+            e.category === "paid_to_wrong_provider" &&
+            e.related_provider_id === provider.id &&
+            e.billing_period_id === selectedPeriodId
+        );
+
+        let paidToAnotherProviderTotal = 0;
+
+        if (paidToAnotherProviderEntries.length === 0) {
+          addNilRow();
+          addSubtotal(0);
+        } else {
+          paidToAnotherProviderEntries.forEach((e) => {
+            const paidProviderName =
+              providers.find((p) => p.id === e.provider_id)?.name ||
+              "Unknown provider";
+
+            const label = `${e.patient_name || ""}${
+              e.notes ? " " + e.notes : ""
+            }${paidProviderName ? ` (Paid to: ${paidProviderName})` : ""}`;
+
+            addLine(label, e.amount);
+            paidToAnotherProviderTotal += e.amount;
+          });
+          addSubtotal(paidToAnotherProviderTotal);
         }
 
         for (let r = 1; r <= row; r++) {
@@ -1427,6 +1694,12 @@ row = 11
     }
   }
 
+  const actionsDisabled =
+    !selectedPeriodId ||
+    activePeriodStatus === "locked" ||
+    loadingMetrics ||
+    savingAll;
+
   return (
     <main className="min-h-screen bg-slate-50 p-6">
       <div className="mx-auto max-w-6xl">
@@ -1454,7 +1727,21 @@ row = 11
             </p>
           </div>
 
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
+            <Link
+              href="/imports/upload"
+              className="rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+            >
+              Import Production Report
+            </Link>
+
+            <button
+              onClick={createNextBillingPeriod}
+              className="rounded-2xl border bg-white px-4 py-2 hover:bg-slate-100"
+            >
+              Add New Month
+            </button>
+
             <button
               onClick={() =>
                 openConfirm({
@@ -1472,17 +1759,32 @@ row = 11
                 })
               }
               disabled={!selectedPeriodId}
-              className={`rounded-2xl px-4 py-2 text-white disabled:opacity-50 ${
-                activePeriodStatus === "locked" ? "bg-amber-600" : "bg-slate-700"
-              }`}
+              className="rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
             >
               {activePeriodStatus === "locked" ? "Unlock Month" : "Lock Month"}
             </button>
 
             <button
+              onClick={() =>
+                openConfirm({
+                  title: "Save all provider records?",
+                  description:
+                    "This will save the current billing values for every provider in the selected month.",
+                  action: () => {
+                    saveAllProviderRecords();
+                  },
+                })
+              }
+              disabled={actionsDisabled}
+              className="rounded-2xl bg-slate-900 px-4 py-2 text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              {savingAll ? "Saving All..." : "Save All"}
+            </button>
+
+            <button
               onClick={exportProviderStatements}
-              disabled={!selectedPeriodId || exporting}
-              className="rounded-2xl border bg-white px-4 py-2 disabled:opacity-50"
+              disabled={!selectedPeriodId || exporting || loadingMetrics}
+              className="rounded-2xl border bg-white px-4 py-2 hover:bg-slate-100 disabled:opacity-50"
             >
               {exporting ? "Exporting..." : "Export Provider Statements"}
             </button>
@@ -1509,16 +1811,7 @@ row = 11
           </select>
 
           <div className="mt-2 text-sm text-slate-600">
-            Status:{" "}
-            <span
-              className={
-                activePeriodStatus === "locked"
-                  ? "font-semibold text-amber-700"
-                  : "font-semibold text-emerald-700"
-              }
-            >
-              {activePeriodStatus}
-            </span>
+            Status: <StatusBadge status={activePeriodStatus} />
           </div>
         </div>
 
@@ -1528,6 +1821,13 @@ row = 11
             Automatically loaded from Supabase Storage: branding/logo.png
           </div>
         </div>
+
+        {loadingMetrics && (
+          <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+            Loading imported production values for this billing period. Gross production
+            and IV Facility Fees may appear blank until loading is complete.
+          </div>
+        )}
 
         {activePeriodStatus === "locked" && (
           <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
@@ -1566,6 +1866,8 @@ row = 11
               autoTotals.feesPaidInError +
               manualInputs.ivFacilityFees;
 
+            const importedFieldsLoading = loadingMetrics && !savedRecords[provider.id];
+
             return (
               <div
                 key={provider.id}
@@ -1593,8 +1895,8 @@ row = 11
                           },
                         })
                       }
-                      disabled={!selectedPeriodId}
-                      className="rounded-2xl border px-4 py-2 disabled:opacity-50"
+                      disabled={!selectedPeriodId || loadingMetrics}
+                      className="rounded-2xl border px-4 py-2 hover:bg-slate-100 disabled:opacity-50"
                     >
                       Email Preview
                     </button>
@@ -1604,9 +1906,11 @@ row = 11
                       disabled={
                         !selectedPeriodId ||
                         savingProviderId === provider.id ||
-                        activePeriodStatus === "locked"
+                        activePeriodStatus === "locked" ||
+                        loadingMetrics ||
+                        savingAll
                       }
-                      className="rounded-2xl bg-slate-900 px-4 py-2 text-white disabled:opacity-50"
+                      className="rounded-2xl bg-slate-900 px-4 py-2 text-white hover:bg-slate-800 disabled:opacity-50"
                     >
                       {savingProviderId === provider.id ? "Saving..." : "Save"}
                     </button>
@@ -1618,17 +1922,30 @@ row = 11
                     <label className="mb-1 block text-sm">Gross production</label>
                     <input
                       type="number"
-                      disabled={activePeriodStatus === "locked"}
+                      disabled={activePeriodStatus === "locked" || loadingMetrics}
                       className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
-                      value={manualInputs.grossProduction}
-                      onChange={(e) =>
+                      value={
+                        importedFieldsLoading
+                          ? ""
+                          : manualInputs.grossProduction === 0
+                          ? ""
+                          : manualInputs.grossProduction
+                      }
+                      placeholder={
+                        importedFieldsLoading ? "Loading..." : "0"
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
                         updateManualBilling(
                           provider.id,
                           "grossProduction",
-                          Number(e.target.value) || 0
-                        )
-                      }
+                          val === "" ? 0 : Number(val)
+                        );
+                      }}
                     />
+                    <p className="mt-1 text-xs text-slate-500">
+                      Auto-filled from imported production report for this billing period
+                    </p>
                   </div>
 
                   <div>
@@ -1637,14 +1954,16 @@ row = 11
                       type="number"
                       disabled={activePeriodStatus === "locked"}
                       className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
-                      value={manualInputs.adjustments}
-                      onChange={(e) =>
+                      value={manualInputs.adjustments === 0 ? "" : manualInputs.adjustments}
+                      placeholder="0"
+                      onChange={(e) => {
+                        const val = e.target.value;
                         updateManualBilling(
                           provider.id,
                           "adjustments",
-                          Number(e.target.value) || 0
-                        )
-                      }
+                          val === "" ? 0 : Number(val)
+                        );
+                      }}
                     />
                   </div>
 
@@ -1654,14 +1973,20 @@ row = 11
                       type="number"
                       disabled={activePeriodStatus === "locked"}
                       className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
-                      value={manualInputs.incorrectPayments}
-                      onChange={(e) =>
+                      value={
+                        manualInputs.incorrectPayments === 0
+                          ? ""
+                          : manualInputs.incorrectPayments
+                      }
+                      placeholder="0"
+                      onChange={(e) => {
+                        const val = e.target.value;
                         updateManualBilling(
                           provider.id,
                           "incorrectPayments",
-                          Number(e.target.value) || 0
-                        )
-                      }
+                          val === "" ? 0 : Number(val)
+                        );
+                      }}
                     />
                     <p className="mt-1 text-xs text-slate-500">
                       Tracking only, not deducted from fee base
@@ -1698,17 +2023,30 @@ row = 11
                     <label className="mb-1 block text-sm">IV Facility Fees</label>
                     <input
                       type="number"
-                      disabled={activePeriodStatus === "locked"}
+                      disabled={activePeriodStatus === "locked" || loadingMetrics}
                       className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
-                      value={manualInputs.ivFacilityFees}
-                      onChange={(e) =>
+                      value={
+                        importedFieldsLoading
+                          ? ""
+                          : manualInputs.ivFacilityFees === 0
+                          ? ""
+                          : manualInputs.ivFacilityFees
+                      }
+                      placeholder={
+                        importedFieldsLoading ? "Loading..." : "0"
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
                         updateManualBilling(
                           provider.id,
                           "ivFacilityFees",
-                          Number(e.target.value) || 0
-                        )
-                      }
+                          val === "" ? 0 : Number(val)
+                        );
+                      }}
                     />
+                    <p className="mt-1 text-xs text-slate-500">
+                      Auto-filled from imported production report item code 949
+                    </p>
                   </div>
 
                   <div>
@@ -1732,14 +2070,20 @@ row = 11
                       type="number"
                       disabled={activePeriodStatus === "locked"}
                       className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
-                      value={manualInputs.otherDeductions}
-                      onChange={(e) =>
+                      value={
+                        manualInputs.otherDeductions === 0
+                          ? ""
+                          : manualInputs.otherDeductions
+                      }
+                      placeholder="0"
+                      onChange={(e) => {
+                        const val = e.target.value;
                         updateManualBilling(
                           provider.id,
                           "otherDeductions",
-                          Number(e.target.value) || 0
-                        )
-                      }
+                          val === "" ? 0 : Number(val)
+                        );
+                      }}
                     />
                   </div>
                 </div>
@@ -1787,7 +2131,7 @@ row = 11
                     <div>
                       <div className="text-xs text-slate-500">Received in Error</div>
                       <div className="text-lg font-semibold">
-                        ${currency(autoTotals.feesOwed)}
+                        ${currency(autoTotals.feesPaidInError)}
                       </div>
                     </div>
                     <div>
@@ -1795,7 +2139,7 @@ row = 11
                         Paid to Another Provider in Error
                       </div>
                       <div className="text-lg font-semibold">
-                        ${currency(autoTotals.feesPaidInError)}
+                        ${currency(autoTotals.feesOwed)}
                       </div>
                     </div>
                   </div>

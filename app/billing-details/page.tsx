@@ -1,5 +1,9 @@
 "use client";
 
+import {
+  ensureCurrentBillingPeriod,
+  createNextBillingPeriodFromList,
+} from "@/lib/billingPeriods";
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { writeAuditLog } from "@/lib/audit";
@@ -54,6 +58,9 @@ const emptyForm: DetailForm = {
 export default function BillingDetailsPage() {
   const supabase = createClient();
 
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<DetailCategory | "">("");
+  const [providerFilter, setProviderFilter] = useState("");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
   const [entries, setEntries] = useState<BillingDetailEntry[]>([]);
@@ -304,6 +311,27 @@ export default function BillingDetailsPage() {
     return providers.find((p) => p.id === id)?.name || "Unknown provider";
   }
 
+  const normalizedSearch = search.toLowerCase();
+
+  const filteredEntries = entries.filter((entry) => {
+    const patientName = (entry.patient_name ?? "").toLowerCase();
+    const notes = (entry.notes ?? "").toLowerCase();
+
+    const matchesSearch =
+      patientName.includes(normalizedSearch) ||
+      notes.includes(normalizedSearch);
+
+    const matchesCategory = categoryFilter
+      ? entry.category === categoryFilter
+      : true;
+
+    const matchesProvider = providerFilter
+      ? entry.provider_id === providerFilter
+      : true;
+
+    return matchesSearch && matchesCategory && matchesProvider;
+  });
+
   return (
     <main className="min-h-screen bg-slate-50 p-6">
       <div className="mx-auto max-w-6xl">
@@ -364,7 +392,8 @@ export default function BillingDetailsPage() {
 
         {activePeriodStatus === "locked" && (
           <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
-            This billing period is locked. Entries cannot be changed until it is reopened.
+            This billing period is locked. Entries cannot be changed until it is
+            reopened.
           </div>
         )}
 
@@ -462,7 +491,6 @@ export default function BillingDetailsPage() {
               >
                 <option value="humm_fee">Humm Merchant Fee</option>
                 <option value="afterpay_fee">Afterpay Merchant Fee</option>
-                <option value="incorrect_payment">Incorrect Payment</option>
               </select>
             </div>
 
@@ -517,59 +545,98 @@ export default function BillingDetailsPage() {
           </div>
         </form>
 
+        <div className="mt-6 rounded-3xl border bg-white p-4 shadow-sm">
+          <div className="grid gap-3 md:grid-cols-3">
+            <input
+              type="text"
+              placeholder="Search patient or notes..."
+              className="rounded-2xl border px-3 py-2"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+
+            <select
+              className="rounded-2xl border px-3 py-2"
+              value={categoryFilter}
+              onChange={(e) =>
+                setCategoryFilter(e.target.value as DetailCategory | "")
+              }
+            >
+              <option value="">All categories</option>
+              <option value="afterpay_fee">Afterpay Fee</option>
+              <option value="humm_fee">Humm Fee</option>
+            </select>
+
+            <select
+              className="rounded-2xl border px-3 py-2"
+              value={providerFilter}
+              onChange={(e) => setProviderFilter(e.target.value)}
+            >
+              <option value="">All providers</option>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
         <div className="mt-6 rounded-3xl border bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Saved detail entries</h2>
 
-          <div className="mt-4 space-y-3">
-            {entries.length === 0 && (
-              <div className="text-sm text-slate-500">No detail entries yet for this period.</div>
-            )}
+          {filteredEntries.length === 0 && (
+            <div className="py-10 text-center text-sm text-slate-500">
+              No matching entries found for this billing period.
+            </div>
+          )}
 
-            {entries.map((entry) => (
-              <div key={entry.id} className="rounded-2xl border p-4 text-sm">
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <div className="font-medium">
-                      {entry.patient_name || "No patient name"}
-                    </div>
-                    <div className="text-slate-600">{providerName(entry.provider_id)}</div>
-                    <div className="text-slate-500">
-                      {entry.entry_date} · {categoryLabel(entry.category)} · $
-                      {Number(entry.amount).toLocaleString("en-AU", {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}
-                    </div>
-                    {entry.notes && (
-                      <div className="mt-1 text-slate-600">{entry.notes}</div>
-                    )}
+          {filteredEntries.map((entry) => (
+            <div key={entry.id} className="rounded-2xl border p-4 text-sm">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <div className="font-medium">
+                    {entry.patient_name || "No patient name"}
                   </div>
+                  <div className="text-slate-600">
+                    {providerName(entry.provider_id)}
+                  </div>
+                  <div className="text-slate-500">
+                    {entry.entry_date} · {categoryLabel(entry.category)} · $
+                    {Number(entry.amount).toLocaleString("en-AU", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </div>
+                  {entry.notes && (
+                    <div className="mt-1 text-slate-600">{entry.notes}</div>
+                  )}
+                </div>
 
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => beginEdit(entry)}
-                      disabled={activePeriodStatus === "locked"}
-                      className="rounded-xl border px-3 py-1 disabled:opacity-50"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setConfirmAction(() => () => softDeleteEntry(entry.id));
-                        setConfirmOpen(true);
-                      }}
-                      disabled={activePeriodStatus === "locked"}
-                      className="rounded-xl border px-3 py-1 text-red-600 disabled:opacity-50"
-                    >
-                      Delete
-                    </button>
-                  </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => beginEdit(entry)}
+                    disabled={activePeriodStatus === "locked"}
+                    className="rounded-xl border px-3 py-1 disabled:opacity-50"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmAction(() => () => softDeleteEntry(entry.id));
+                      setConfirmOpen(true);
+                    }}
+                    disabled={activePeriodStatus === "locked"}
+                    className="rounded-xl border px-3 py-1 text-red-600 disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
                 </div>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
       </div>
     </main>
