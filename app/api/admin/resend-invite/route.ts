@@ -3,12 +3,6 @@ import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
-type Role =
-  | "admin"
-  | "practice_manager"
-  | "billing_staff"
-  | "provider_readonly";
-
 function getBaseUrl() {
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL}`;
@@ -55,7 +49,7 @@ export async function POST(request: Request) {
 
     if (roleError || !roleRow || roleRow.role !== "admin") {
       return NextResponse.json(
-        { error: "Only admins can invite users." },
+        { error: "Only admins can resend invites." },
         { status: 403 }
       );
     }
@@ -63,18 +57,11 @@ export async function POST(request: Request) {
     const body = await request.json();
     const email = body.email?.trim().toLowerCase();
     const fullName = body.full_name?.trim() || "";
-    const role = body.role as Role;
+    const role = body.role;
 
     if (!email) {
       return NextResponse.json(
         { error: "Missing email." },
-        { status: 400 }
-      );
-    }
-
-    if (!role) {
-      return NextResponse.json(
-        { error: "Missing role." },
         { status: 400 }
       );
     }
@@ -104,72 +91,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const invitedUser = data.user;
-
-    if (invitedUser) {
-      const { error: profileError } = await supabaseAdmin
-        .from("profiles")
-        .upsert(
-          {
-            id: invitedUser.id,
-            full_name: fullName,
-          },
-          {
-            onConflict: "id",
-          }
-        );
-
-      if (profileError) {
-        return NextResponse.json(
-          { error: profileError.message },
-          { status: 500 }
-        );
-      }
-
-      const { error: roleUpsertError } = await supabaseAdmin
-        .from("user_roles")
-        .upsert(
-          {
-            user_id: invitedUser.id,
-            role,
-          },
-          {
-            onConflict: "user_id",
-          }
-        );
-
-      if (roleUpsertError) {
-        return NextResponse.json(
-          { error: roleUpsertError.message },
-          { status: 500 }
-        );
-      }
-
-      const { error: statusUpsertError } = await supabaseAdmin
-        .from("user_status")
-        .upsert(
-          {
-            user_id: invitedUser.id,
-            is_active: true,
-            updated_at: new Date().toISOString(),
-          },
-          {
-            onConflict: "user_id",
-          }
-        );
-
-      if (statusUpsertError) {
-        return NextResponse.json(
-          { error: statusUpsertError.message },
-          { status: 500 }
-        );
-      }
-    }
-
     return NextResponse.json({
       success: true,
       redirectTo,
-      user: invitedUser ?? null,
+      user: data.user ?? null,
     });
   } catch (error) {
     return NextResponse.json(
@@ -177,7 +102,7 @@ export async function POST(request: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Failed to invite user.",
+            : "Failed to resend invite.",
       },
       { status: 500 }
     );

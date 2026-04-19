@@ -134,12 +134,20 @@ const PRACTICE = {
   abn: "44 642 634 982",
 };
 
+const monthFormatter = new Intl.DateTimeFormat("en-AU", { month: "long" });
+
+function getMonthName(month: number) {
+  return monthFormatter.format(new Date(2000, month - 1, 1));
+}
+
 export default function BillingClient() {
   const supabase = createClient();
 
   const [providers, setProviders] = useState<Provider[]>([]);
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
   const [selectedPeriodId, setSelectedPeriodId] = useState("");
+  const [selectedYear, setSelectedYear] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState("");
   const [activePeriodStatus, setActivePeriodStatus] = useState<"open" | "locked">(
     "open"
   );
@@ -187,6 +195,47 @@ export default function BillingClient() {
     setConfirmDanger(!!options.danger);
     setConfirmAction(() => options.action);
     setConfirmOpen(true);
+  }
+
+  function getDefaultBillingPeriod(periodList: BillingPeriod[]) {
+    if (periodList.length === 0) {
+      return null;
+    }
+
+    const latestYear = Math.max(...periodList.map((period) => period.year));
+    const currentMonth = new Date().getMonth() + 1;
+
+    const latestYearPeriods = periodList
+      .filter((period) => period.year === latestYear)
+      .sort((a, b) => a.month - b.month);
+
+    return (
+      latestYearPeriods.find((period) => period.month === currentMonth) ||
+      latestYearPeriods[0] ||
+      null
+    );
+  }
+
+  function syncPeriodSelectors(periodList: BillingPeriod[], periodId: string) {
+    const activePeriod = periodList.find((period) => period.id === periodId);
+
+    if (activePeriod) {
+      setSelectedYear(String(activePeriod.year));
+      setSelectedMonth(String(activePeriod.month));
+      return activePeriod;
+    }
+
+    const fallbackPeriod = getDefaultBillingPeriod(periodList);
+
+    if (fallbackPeriod) {
+      setSelectedYear(String(fallbackPeriod.year));
+      setSelectedMonth(String(fallbackPeriod.month));
+      return fallbackPeriod;
+    }
+
+    setSelectedYear("");
+    setSelectedMonth("");
+    return null;
   }
 
   async function fetchProviderImportMetrics(
@@ -265,18 +314,23 @@ export default function BillingClient() {
       setProviders(providerList);
       setBillingPeriods(periodList);
 
+      const defaultPeriod = getDefaultBillingPeriod(periodList);
+
       const activePeriodId =
         periodId ||
         selectedPeriodId ||
         ensuredCurrentPeriod.id ||
-        periodList[periodList.length - 1]?.id ||
+        defaultPeriod?.id ||
         "";
 
       if (activePeriodId && activePeriodId !== selectedPeriodId) {
         setSelectedPeriodId(activePeriodId);
       }
 
-      const activePeriod = periodList.find((p) => p.id === activePeriodId);
+      const activePeriod =
+        syncPeriodSelectors(periodList, activePeriodId) ||
+        periodList.find((p) => p.id === activePeriodId);
+
       setActivePeriodStatus((activePeriod?.status as "open" | "locked") || "open");
 
       let activeImportId: string | null = null;
@@ -437,6 +491,80 @@ export default function BillingClient() {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const availableYears = useMemo(() => {
+    return Array.from(new Set(billingPeriods.map((period) => period.year)))
+      .sort((a, b) => b - a)
+      .map(String);
+  }, [billingPeriods]);
+
+  const availableMonths = useMemo(() => {
+    if (!selectedYear) {
+      return [];
+    }
+
+    const yearNumber = Number(selectedYear);
+
+    return billingPeriods
+      .filter((period) => period.year === yearNumber)
+      .sort((a, b) => a.month - b.month);
+  }, [billingPeriods, selectedYear]);
+
+  function handleYearChange(yearValue: string) {
+    setSelectedYear(yearValue);
+
+    if (!yearValue) {
+      setSelectedMonth("");
+      setSelectedPeriodId("");
+      setActivePeriodStatus("open");
+      return;
+    }
+
+    const yearNumber = Number(yearValue);
+    const currentMonth = new Date().getMonth() + 1;
+
+    const yearPeriods = billingPeriods
+      .filter((period) => period.year === yearNumber)
+      .sort((a, b) => a.month - b.month);
+
+    const nextPeriod =
+      yearPeriods.find((period) => period.month === currentMonth) || yearPeriods[0];
+
+    if (!nextPeriod) {
+      setSelectedMonth("");
+      setSelectedPeriodId("");
+      setActivePeriodStatus("open");
+      return;
+    }
+
+    setSelectedMonth(String(nextPeriod.month));
+    setSelectedPeriodId(nextPeriod.id);
+    loadData(nextPeriod.id);
+  }
+
+  function handleMonthChange(monthValue: string) {
+    setSelectedMonth(monthValue);
+
+    if (!selectedYear || !monthValue) {
+      setSelectedPeriodId("");
+      setActivePeriodStatus("open");
+      return;
+    }
+
+    const nextPeriod = billingPeriods.find(
+      (period) =>
+        period.year === Number(selectedYear) && period.month === Number(monthValue)
+    );
+
+    if (!nextPeriod) {
+      setSelectedPeriodId("");
+      setActivePeriodStatus("open");
+      return;
+    }
+
+    setSelectedPeriodId(nextPeriod.id);
+    loadData(nextPeriod.id);
+  }
 
   function updateManualBilling(
     providerId: string,
@@ -1791,34 +1919,46 @@ export default function BillingClient() {
           </div>
         </div>
 
-        <div className="mt-4 max-w-sm">
+        <div className="mt-4 max-w-xl">
           <label className="mb-1 block text-sm">Billing period</label>
-          <select
-            className="w-full rounded-2xl border bg-white px-3 py-2"
-            value={selectedPeriodId}
-            onChange={(e) => {
-              const value = e.target.value;
-              setSelectedPeriodId(value);
-              loadData(value);
-            }}
-          >
-            <option value="">Select billing period</option>
-            {billingPeriods.map((period) => (
-              <option key={period.id} value={period.id}>
-                {period.label}
-              </option>
-            ))}
-          </select>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">Year</label>
+              <select
+                className="w-full rounded-2xl border bg-white px-3 py-2"
+                value={selectedYear}
+                onChange={(e) => handleYearChange(e.target.value)}
+              >
+                <option value="">Select year</option>
+                {availableYears.map((year) => (
+                  <option key={year} value={year}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">Month</label>
+              <select
+                className="w-full rounded-2xl border bg-white px-3 py-2"
+                value={selectedMonth}
+                onChange={(e) => handleMonthChange(e.target.value)}
+                disabled={!selectedYear}
+              >
+                <option value="">Select month</option>
+                {availableMonths.map((period) => (
+                  <option key={period.id} value={String(period.month)}>
+                    {getMonthName(period.month)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
 
           <div className="mt-2 text-sm text-slate-600">
             Status: <StatusBadge status={activePeriodStatus} />
-          </div>
-        </div>
-
-        <div className="mt-4 max-w-sm">
-          <label className="mb-1 block text-sm">Logo source</label>
-          <div className="rounded-2xl border bg-white px-3 py-2 text-sm text-slate-600">
-            Automatically loaded from Supabase Storage: branding/logo.png
           </div>
         </div>
 
@@ -1931,9 +2071,7 @@ export default function BillingClient() {
                           ? ""
                           : manualInputs.grossProduction
                       }
-                      placeholder={
-                        importedFieldsLoading ? "Loading..." : "0"
-                      }
+                      placeholder={importedFieldsLoading ? "Loading..." : "0"}
                       onChange={(e) => {
                         const val = e.target.value;
                         updateManualBilling(
@@ -2032,9 +2170,7 @@ export default function BillingClient() {
                           ? ""
                           : manualInputs.ivFacilityFees
                       }
-                      placeholder={
-                        importedFieldsLoading ? "Loading..." : "0"
-                      }
+                      placeholder={importedFieldsLoading ? "Loading..." : "0"}
                       onChange={(e) => {
                         const val = e.target.value;
                         updateManualBilling(

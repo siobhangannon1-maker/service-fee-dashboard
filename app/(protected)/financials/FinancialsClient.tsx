@@ -96,7 +96,7 @@ type SummaryRow = {
   finalTotalDue: number;
 };
 
-type PeriodMode = "month" | "quarter";
+type PeriodMode = "month" | "quarter" | "year";
 
 type QuarterOption = {
   id: string;
@@ -105,6 +105,28 @@ type QuarterOption = {
   quarter: 1 | 2 | 3 | 4;
   periodIds: string[];
 };
+
+type YearOption = {
+  id: string;
+  label: string;
+  year: number;
+  periodIds: string[];
+};
+
+const MONTH_OPTIONS = [
+  { value: 1, label: "January" },
+  { value: 2, label: "February" },
+  { value: 3, label: "March" },
+  { value: 4, label: "April" },
+  { value: 5, label: "May" },
+  { value: 6, label: "June" },
+  { value: 7, label: "July" },
+  { value: 8, label: "August" },
+  { value: 9, label: "September" },
+  { value: 10, label: "October" },
+  { value: 11, label: "November" },
+  { value: 12, label: "December" },
+] as const;
 
 function formatMoney(value: number) {
   return value.toLocaleString("en-AU", {
@@ -176,9 +198,18 @@ function getATOQuarter(month: number): 1 | 2 | 3 | 4 {
   return 4;
 }
 
+function getATOBaseYear(period: { month: number; year: number }) {
+  return period.month >= 7 ? period.year : period.year - 1;
+}
+
+function getATOYearLabel(year: number) {
+  const startYearShort = String(year % 100).padStart(2, "0");
+  const endYearShort = String((year + 1) % 100).padStart(2, "0");
+  return `FY${startYearShort}/${endYearShort}`;
+}
+
 function getATOQuarterLabel(year: number, quarter: 1 | 2 | 3 | 4) {
-  const fyYearShort = String((year + 1) % 100).padStart(2, "0");
-  return `FY${fyYearShort} Q${quarter}`;
+  return `${getATOYearLabel(year)} Q${quarter}`;
 }
 
 function emptyAutoTotals(): AutoTotals {
@@ -217,10 +248,14 @@ export default function FinancialsClient() {
   const [patientEntries, setPatientEntries] = useState<PatientFinancialEntry[]>([]);
   const [detailEntries, setDetailEntries] = useState<BillingDetailEntry[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState("all");
-  const [selectedComparePeriodId, setSelectedComparePeriodId] = useState("");
   const [periodMode, setPeriodMode] = useState<PeriodMode>("month");
-  const [selectedMonthPeriodId, setSelectedMonthPeriodId] = useState("");
+
+  const [selectedMonthYear, setSelectedMonthYear] = useState<number | null>(null);
+  const [selectedMonthNumber, setSelectedMonthNumber] = useState<number | null>(null);
   const [selectedQuarterId, setSelectedQuarterId] = useState("");
+  const [selectedYearPeriodId, setSelectedYearPeriodId] = useState("");
+  const [selectedComparePeriodId, setSelectedComparePeriodId] = useState("");
+
   const [message, setMessage] = useState("");
   const [tone, setTone] = useState<"default" | "success" | "error">("default");
   const [loading, setLoading] = useState(true);
@@ -280,14 +315,6 @@ export default function FinancialsClient() {
     setPatientEntries((patientRes.data || []) as PatientFinancialEntry[]);
     setDetailEntries((detailRes.data || []) as BillingDetailEntry[]);
 
-    if (!selectedComparePeriodId && loadedPeriods.length > 0) {
-      setSelectedComparePeriodId(loadedPeriods[0].id);
-    }
-
-    if (!selectedMonthPeriodId && loadedPeriods.length > 0) {
-      setSelectedMonthPeriodId(loadedPeriods[0].id);
-    }
-
     if (showSuccessMessage) {
       setTone("success");
       setMessage("Dashboard refreshed successfully.");
@@ -307,6 +334,83 @@ export default function FinancialsClient() {
       return a.month - b.month;
     });
   }, [billingPeriods]);
+
+  const monthYearOptions = useMemo(() => {
+    return Array.from(new Set(billingPeriods.map((period) => period.year))).sort((a, b) => b - a);
+  }, [billingPeriods]);
+
+  const monthsForSelectedYear = useMemo(() => {
+    if (selectedMonthYear == null) return [];
+
+    const availableMonthNumbers = Array.from(
+      new Set(
+        billingPeriods
+          .filter((period) => period.year === selectedMonthYear)
+          .map((period) => period.month)
+      )
+    ).sort((a, b) => a - b);
+
+    return MONTH_OPTIONS.filter((month) => availableMonthNumbers.includes(month.value));
+  }, [billingPeriods, selectedMonthYear]);
+
+  useEffect(() => {
+    if (monthYearOptions.length === 0) return;
+
+    const latestYear = monthYearOptions[0];
+    const currentMonth = new Date().getMonth() + 1;
+    const latestYearMonths = Array.from(
+      new Set(
+        billingPeriods.filter((period) => period.year === latestYear).map((period) => period.month)
+      )
+    ).sort((a, b) => a - b);
+
+    if (selectedMonthYear == null) {
+      setSelectedMonthYear(latestYear);
+    }
+
+    if (selectedMonthNumber == null) {
+      const defaultMonth = latestYearMonths.includes(currentMonth)
+        ? currentMonth
+        : latestYearMonths[0] ?? null;
+
+      if (defaultMonth != null) {
+        setSelectedMonthNumber(defaultMonth);
+      }
+    }
+  }, [billingPeriods, monthYearOptions, selectedMonthYear, selectedMonthNumber]);
+
+  useEffect(() => {
+    if (selectedMonthYear == null) return;
+
+    const currentMonth = new Date().getMonth() + 1;
+    const availableMonths = Array.from(
+      new Set(
+        billingPeriods
+          .filter((period) => period.year === selectedMonthYear)
+          .map((period) => period.month)
+      )
+    ).sort((a, b) => a - b);
+
+    if (availableMonths.length === 0) return;
+
+    if (selectedMonthNumber == null || !availableMonths.includes(selectedMonthNumber)) {
+      const fallbackMonth = availableMonths.includes(currentMonth)
+        ? currentMonth
+        : availableMonths[0];
+      setSelectedMonthNumber(fallbackMonth);
+    }
+  }, [billingPeriods, selectedMonthYear, selectedMonthNumber]);
+
+  const selectedMonthPeriodId = useMemo(() => {
+    if (selectedMonthYear == null || selectedMonthNumber == null) return "";
+
+    return (
+      billingPeriods.find(
+        (period) =>
+          period.year === selectedMonthYear && period.month === selectedMonthNumber
+      )?.id || ""
+    );
+  }, [billingPeriods, selectedMonthYear, selectedMonthNumber]);
 
   const activeProviders = useMemo(() => {
     return selectedProviderId === "all"
@@ -433,7 +537,7 @@ export default function FinancialsClient() {
 
     ascendingBillingPeriods.forEach((period) => {
       const quarter = getATOQuarter(period.month);
-      const baseYear = period.month >= 7 ? period.year : period.year - 1;
+      const baseYear = getATOBaseYear(period);
       const id = `${baseYear}-Q${quarter}`;
 
       if (!grouped.has(id)) {
@@ -455,11 +559,39 @@ export default function FinancialsClient() {
     });
   }, [ascendingBillingPeriods]);
 
+  const yearOptions = useMemo<YearOption[]>(() => {
+    const grouped = new Map<string, YearOption>();
+
+    ascendingBillingPeriods.forEach((period) => {
+      const baseYear = getATOBaseYear(period);
+      const id = `FY-${baseYear}`;
+
+      if (!grouped.has(id)) {
+        grouped.set(id, {
+          id,
+          label: getATOYearLabel(baseYear),
+          year: baseYear,
+          periodIds: [],
+        });
+      }
+
+      grouped.get(id)!.periodIds.push(period.id);
+    });
+
+    return Array.from(grouped.values()).sort((a, b) => a.year - b.year);
+  }, [ascendingBillingPeriods]);
+
   useEffect(() => {
     if (!selectedQuarterId && quarterOptions.length > 0) {
       setSelectedQuarterId(quarterOptions[quarterOptions.length - 1].id);
     }
   }, [quarterOptions, selectedQuarterId]);
+
+  useEffect(() => {
+    if (!selectedYearPeriodId && yearOptions.length > 0) {
+      setSelectedYearPeriodId(yearOptions[yearOptions.length - 1].id);
+    }
+  }, [yearOptions, selectedYearPeriodId]);
 
   const quarterlySummary = useMemo<SummaryRow[]>(() => {
     return quarterOptions.map((quarter) => {
@@ -484,13 +616,48 @@ export default function FinancialsClient() {
     });
   }, [monthlySummary, quarterOptions]);
 
+  const yearlySummary = useMemo<SummaryRow[]>(() => {
+    return yearOptions.map((yearOption) => {
+      const rows = monthlySummary.filter((row) => yearOption.periodIds.includes(row.periodId));
+
+      return rows.reduce(
+        (acc, row) => ({
+          periodId: yearOption.id,
+          label: yearOption.label,
+          status: rows.some((r) => r.status === "current") ? "current" : "locked",
+          grossProduction: acc.grossProduction + row.grossProduction,
+          serviceFees: acc.serviceFees + row.serviceFees,
+          labMaterials: acc.labMaterials + row.labMaterials,
+          merchantFees: acc.merchantFees + row.merchantFees,
+          feesPaidToFocus: acc.feesPaidToFocus + row.feesPaidToFocus,
+          feesPaidInError: acc.feesPaidInError + row.feesPaidInError,
+          feesOwed: acc.feesOwed + row.feesOwed,
+          finalTotalDue: acc.finalTotalDue + row.finalTotalDue,
+        }),
+        emptySummaryRow(yearOption.label)
+      );
+    });
+  }, [monthlySummary, yearOptions]);
+
   const selectedScopeSummary = useMemo(() => {
     if (periodMode === "month") {
       return monthlySummary.find((row) => row.periodId === selectedMonthPeriodId) || null;
     }
 
-    return quarterlySummary.find((row) => row.periodId === selectedQuarterId) || null;
-  }, [periodMode, selectedMonthPeriodId, selectedQuarterId, monthlySummary, quarterlySummary]);
+    if (periodMode === "quarter") {
+      return quarterlySummary.find((row) => row.periodId === selectedQuarterId) || null;
+    }
+
+    return yearlySummary.find((row) => row.periodId === selectedYearPeriodId) || null;
+  }, [
+    periodMode,
+    selectedMonthPeriodId,
+    selectedQuarterId,
+    selectedYearPeriodId,
+    monthlySummary,
+    quarterlySummary,
+    yearlySummary,
+  ]);
 
   const providerTrendData = useMemo(() => {
     if (periodMode === "month") {
@@ -520,15 +687,45 @@ export default function FinancialsClient() {
       });
     }
 
-    return quarterOptions.map((quarter) => {
+    if (periodMode === "quarter") {
+      return quarterOptions.map((quarter) => {
+        const row: Record<string, string | number> = {
+          label: quarter.label,
+        };
+
+        activeProviders.forEach((provider) => {
+          let total = 0;
+
+          quarter.periodIds.forEach((periodId) => {
+            const record = records.find(
+              (r) => r.provider_id === provider.id && r.billing_period_id === periodId
+            );
+
+            if (!record) return;
+
+            const autoTotals =
+              autoTotalsByProviderAndPeriod[`${provider.id}__${periodId}`] || emptyAutoTotals();
+
+            const feeBase = calculateFeeBase(provider, record, autoTotals);
+            total += calculateServiceFee(provider, feeBase);
+          });
+
+          row[provider.name] = total;
+        });
+
+        return row;
+      });
+    }
+
+    return yearOptions.map((yearOption) => {
       const row: Record<string, string | number> = {
-        label: quarter.label,
+        label: yearOption.label,
       };
 
       activeProviders.forEach((provider) => {
         let total = 0;
 
-        quarter.periodIds.forEach((periodId) => {
+        yearOption.periodIds.forEach((periodId) => {
           const record = records.find(
             (r) => r.provider_id === provider.id && r.billing_period_id === periodId
           );
@@ -551,43 +748,58 @@ export default function FinancialsClient() {
     periodMode,
     ascendingBillingPeriods,
     quarterOptions,
+    yearOptions,
     activeProviders,
     records,
     autoTotalsByProviderAndPeriod,
   ]);
 
   const totalsChartData = useMemo(() => {
-    return periodMode === "month" ? monthlySummary : quarterlySummary;
-  }, [periodMode, monthlySummary, quarterlySummary]);
+    if (periodMode === "month") return monthlySummary;
+    if (periodMode === "quarter") return quarterlySummary;
+    return yearlySummary;
+  }, [periodMode, monthlySummary, quarterlySummary, yearlySummary]);
+
+  const comparisonOptions = useMemo(() => {
+    if (periodMode === "month") return monthlySummary;
+    if (periodMode === "quarter") return quarterlySummary;
+    return yearlySummary;
+  }, [periodMode, monthlySummary, quarterlySummary, yearlySummary]);
+
+  useEffect(() => {
+    if (comparisonOptions.length === 0) {
+      if (selectedComparePeriodId !== "") {
+        setSelectedComparePeriodId("");
+      }
+      return;
+    }
+
+    const latestOption = comparisonOptions[comparisonOptions.length - 1];
+
+    if (
+      !selectedComparePeriodId ||
+      !comparisonOptions.some((option) => option.periodId === selectedComparePeriodId)
+    ) {
+      setSelectedComparePeriodId(latestOption.periodId);
+    }
+  }, [comparisonOptions, selectedComparePeriodId]);
 
   const comparePeriod = useMemo(() => {
-    return monthlySummary.find((p) => p.periodId === selectedComparePeriodId) || null;
-  }, [monthlySummary, selectedComparePeriodId]);
+    return comparisonOptions.find((p) => p.periodId === selectedComparePeriodId) || null;
+  }, [comparisonOptions, selectedComparePeriodId]);
 
   const previousComparePeriod = useMemo(() => {
     if (!comparePeriod) return null;
-    const index = monthlySummary.findIndex((p) => p.periodId === comparePeriod.periodId);
+    const index = comparisonOptions.findIndex((p) => p.periodId === comparePeriod.periodId);
     if (index <= 0) return null;
-    return monthlySummary[index - 1];
-  }, [monthlySummary, comparePeriod]);
-
-  const quarterComparePeriod = useMemo(() => {
-    return quarterlySummary.find((p) => p.periodId === selectedQuarterId) || null;
-  }, [quarterlySummary, selectedQuarterId]);
-
-  const previousQuarterComparePeriod = useMemo(() => {
-    if (!quarterComparePeriod) return null;
-    const index = quarterlySummary.findIndex((p) => p.periodId === quarterComparePeriod.periodId);
-    if (index <= 0) return null;
-    return quarterlySummary[index - 1];
-  }, [quarterlySummary, quarterComparePeriod]);
+    return comparisonOptions[index - 1];
+  }, [comparisonOptions, comparePeriod]);
 
   const comparisonDeltas = useMemo(() => {
     if (!comparePeriod || !previousComparePeriod) return null;
 
     return {
-      grossProduction:
-        comparePeriod.grossProduction - previousComparePeriod.grossProduction,
+      grossProduction: comparePeriod.grossProduction - previousComparePeriod.grossProduction,
       serviceFees: comparePeriod.serviceFees - previousComparePeriod.serviceFees,
       labMaterials: comparePeriod.labMaterials - previousComparePeriod.labMaterials,
       merchantFees: comparePeriod.merchantFees - previousComparePeriod.merchantFees,
@@ -595,26 +807,24 @@ export default function FinancialsClient() {
     };
   }, [comparePeriod, previousComparePeriod]);
 
-  const quarterComparisonDeltas = useMemo(() => {
-    if (!quarterComparePeriod || !previousQuarterComparePeriod) return null;
-
-    return {
-      grossProduction:
-        quarterComparePeriod.grossProduction - previousQuarterComparePeriod.grossProduction,
-      serviceFees: quarterComparePeriod.serviceFees - previousQuarterComparePeriod.serviceFees,
-      labMaterials: quarterComparePeriod.labMaterials - previousQuarterComparePeriod.labMaterials,
-      merchantFees: quarterComparePeriod.merchantFees - previousQuarterComparePeriod.merchantFees,
-      finalTotalDue: quarterComparePeriod.finalTotalDue - previousQuarterComparePeriod.finalTotalDue,
-    };
-  }, [quarterComparePeriod, previousQuarterComparePeriod]);
-
   const allowedRankingPeriodIds = useMemo(() => {
     if (periodMode === "month") {
       return selectedMonthPeriodId ? [selectedMonthPeriodId] : [];
     }
 
-    return quarterOptions.find((q) => q.id === selectedQuarterId)?.periodIds || [];
-  }, [periodMode, selectedMonthPeriodId, selectedQuarterId, quarterOptions]);
+    if (periodMode === "quarter") {
+      return quarterOptions.find((q) => q.id === selectedQuarterId)?.periodIds || [];
+    }
+
+    return yearOptions.find((y) => y.id === selectedYearPeriodId)?.periodIds || [];
+  }, [
+    periodMode,
+    selectedMonthPeriodId,
+    selectedQuarterId,
+    selectedYearPeriodId,
+    quarterOptions,
+    yearOptions,
+  ]);
 
   const providerRanking = useMemo(() => {
     return providers
@@ -656,6 +866,9 @@ export default function FinancialsClient() {
   const latestPeriod = monthlySummary[monthlySummary.length - 1] || null;
   const maxRankingValue = providerRanking[0]?.totalServiceFees || 1;
 
+  const periodTypeLabel =
+    periodMode === "month" ? "month" : periodMode === "quarter" ? "quarter" : "year";
+
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-100 p-6">
       <div className="mx-auto max-w-7xl">
@@ -681,9 +894,7 @@ export default function FinancialsClient() {
                     <div className="text-xs uppercase tracking-wide text-slate-300">
                       Latest month
                     </div>
-                    <div className="mt-1 font-semibold text-white">
-                      {latestPeriod.label}
-                    </div>
+                    <div className="mt-1 font-semibold text-white">{latestPeriod.label}</div>
                   </div>
                 ) : null}
 
@@ -692,7 +903,11 @@ export default function FinancialsClient() {
                     Current scope
                   </div>
                   <div className="mt-1 font-semibold text-white">
-                    {periodMode === "month" ? "Month view" : "ATO quarter view"}
+                    {periodMode === "month"
+                      ? "Month view"
+                      : periodMode === "quarter"
+                      ? "ATO quarter view"
+                      : "ATO year view"}
                   </div>
                 </div>
 
@@ -738,57 +953,111 @@ export default function FinancialsClient() {
                 >
                   <option value="month">Month</option>
                   <option value="quarter">Quarter (ATO)</option>
+                  <option value="year">Year (ATO)</option>
                 </select>
               </div>
 
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                  {periodMode === "month" ? "Selected month" : "Selected quarter"}
-                </label>
-                {periodMode === "month" ? (
+              {periodMode === "month" ? (
+                <>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                      Selected year
+                    </label>
+                    <select
+                      className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
+                      value={selectedMonthYear ?? ""}
+                      onChange={(e) => setSelectedMonthYear(Number(e.target.value))}
+                    >
+                      {monthYearOptions.map((year) => (
+                        <option key={year} value={year}>
+                          {year}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                      Selected month
+                    </label>
+                    <select
+                      className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
+                      value={selectedMonthNumber ?? ""}
+                      onChange={(e) => setSelectedMonthNumber(Number(e.target.value))}
+                    >
+                      {monthsForSelectedYear.map((month) => (
+                        <option key={month.value} value={month.value}>
+                          {month.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                      {periodMode === "quarter" ? "Selected quarter" : "Selected year"}
+                    </label>
+                    <select
+                      className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
+                      value={periodMode === "quarter" ? selectedQuarterId : selectedYearPeriodId}
+                      onChange={(e) =>
+                        periodMode === "quarter"
+                          ? setSelectedQuarterId(e.target.value)
+                          : setSelectedYearPeriodId(e.target.value)
+                      }
+                    >
+                      {(periodMode === "quarter" ? [...quarterOptions].reverse() : [...yearOptions].reverse()).map(
+                        (option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                      Comparison {periodTypeLabel}
+                    </label>
+                    <select
+                      className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
+                      value={selectedComparePeriodId}
+                      onChange={(e) => setSelectedComparePeriodId(e.target.value)}
+                    >
+                      {[...comparisonOptions].reverse().map((period) => (
+                        <option key={period.periodId} value={period.periodId}>
+                          {period.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {periodMode === "month" ? (
+              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="xl:col-start-4">
+                  <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                    Comparison month
+                  </label>
                   <select
                     className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
-                    value={selectedMonthPeriodId}
-                    onChange={(e) => setSelectedMonthPeriodId(e.target.value)}
+                    value={selectedComparePeriodId}
+                    onChange={(e) => setSelectedComparePeriodId(e.target.value)}
                   >
-                    {[...ascendingBillingPeriods].reverse().map((period) => (
-                      <option key={period.id} value={period.id}>
+                    {[...comparisonOptions].reverse().map((period) => (
+                      <option key={period.periodId} value={period.periodId}>
                         {period.label}
                       </option>
                     ))}
                   </select>
-                ) : (
-                  <select
-                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
-                    value={selectedQuarterId}
-                    onChange={(e) => setSelectedQuarterId(e.target.value)}
-                  >
-                    {[...quarterOptions].reverse().map((quarter) => (
-                      <option key={quarter.id} value={quarter.id}>
-                        {quarter.label}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                </div>
               </div>
-
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                  Comparison month
-                </label>
-                <select
-                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
-                  value={selectedComparePeriodId}
-                  onChange={(e) => setSelectedComparePeriodId(e.target.value)}
-                >
-                  {[...ascendingBillingPeriods].reverse().map((period) => (
-                    <option key={period.id} value={period.id}>
-                      {period.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+            ) : null}
           </div>
         </section>
 
@@ -893,7 +1162,11 @@ export default function FinancialsClient() {
 
               <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
                 <h2 className="text-xl font-semibold tracking-tight text-slate-900">
-                  {periodMode === "month" ? "Monthly totals" : "Quarterly totals"}
+                  {periodMode === "month"
+                    ? "Monthly totals"
+                    : periodMode === "quarter"
+                    ? "Quarterly totals"
+                    : "Yearly totals"}
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
                   Compare gross production, service fees, and final totals due in chronological order.
@@ -948,10 +1221,14 @@ export default function FinancialsClient() {
             <div className="mt-6 grid gap-6 xl:grid-cols-2">
               <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
                 <h2 className="text-xl font-semibold tracking-tight text-slate-900">
-                  Month-to-month comparison
+                  {periodMode === "month"
+                    ? "Month-to-month comparison"
+                    : periodMode === "quarter"
+                    ? "Quarter-to-quarter comparison"
+                    : "Year-to-year comparison"}
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Review the selected comparison month against the previous billing period.
+                  Review the selected {periodTypeLabel} against the previous {periodTypeLabel}.
                 </p>
 
                 {comparePeriod ? (
@@ -959,7 +1236,9 @@ export default function FinancialsClient() {
                     <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="text-sm text-slate-500">Selected month</div>
+                          <div className="text-sm text-slate-500">
+                            Selected {periodTypeLabel}
+                          </div>
                           <div className="text-lg font-semibold text-slate-900">
                             {comparePeriod.label}
                           </div>
@@ -1066,156 +1345,23 @@ export default function FinancialsClient() {
                       </div>
                     ) : (
                       <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-                        No previous month available for comparison.
+                        No previous {periodTypeLabel} available for comparison.
                       </div>
                     )}
                   </div>
                 ) : (
                   <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-                    No comparison month selected.
+                    No comparison {periodTypeLabel} selected.
                   </div>
                 )}
               </div>
 
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h2 className="text-xl font-semibold tracking-tight text-slate-900">
-                  Quarter-to-quarter comparison
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Review the selected ATO quarter against the previous ATO quarter.
-                </p>
-
-                {quarterComparePeriod ? (
-                  <div className="mt-5 space-y-4">
-                    <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <div className="text-sm text-slate-500">Selected quarter</div>
-                          <div className="text-lg font-semibold text-slate-900">
-                            {quarterComparePeriod.label}
-                          </div>
-                        </div>
-                        <span
-                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getStatusClasses(
-                            quarterComparePeriod.status
-                          )}`}
-                        >
-                          {quarterComparePeriod.status}
-                        </span>
-                      </div>
-
-                      <div className="mt-5 grid gap-3 md:grid-cols-2">
-                        <div className="rounded-2xl bg-white p-4">
-                          <div className="text-xs uppercase tracking-wide text-slate-500">
-                            Gross production
-                          </div>
-                          <div className="mt-1 text-lg font-semibold text-slate-900">
-                            ${formatMoney(quarterComparePeriod.grossProduction)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-white p-4">
-                          <div className="text-xs uppercase tracking-wide text-slate-500">
-                            Service fees
-                          </div>
-                          <div className="mt-1 text-lg font-semibold text-slate-900">
-                            ${formatMoney(quarterComparePeriod.serviceFees)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-white p-4">
-                          <div className="text-xs uppercase tracking-wide text-slate-500">
-                            Lab / materials
-                          </div>
-                          <div className="mt-1 text-lg font-semibold text-slate-900">
-                            ${formatMoney(quarterComparePeriod.labMaterials)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-white p-4">
-                          <div className="text-xs uppercase tracking-wide text-slate-500">
-                            Merchant fees
-                          </div>
-                          <div className="mt-1 text-lg font-semibold text-slate-900">
-                            ${formatMoney(quarterComparePeriod.merchantFees)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-white p-4">
-                          <div className="text-xs uppercase tracking-wide text-slate-500">
-                            Fees paid to Focus
-                          </div>
-                          <div className="mt-1 text-lg font-semibold text-slate-900">
-                            ${formatMoney(quarterComparePeriod.feesPaidToFocus)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-white p-4">
-                          <div className="text-xs uppercase tracking-wide text-slate-500">
-                            Final total due
-                          </div>
-                          <div className="mt-1 text-lg font-semibold text-slate-900">
-                            ${formatMoney(quarterComparePeriod.finalTotalDue)}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {previousQuarterComparePeriod && quarterComparisonDeltas ? (
-                      <div className="rounded-3xl border border-slate-200 p-5">
-                        <div className="text-sm text-slate-500">Compared with</div>
-                        <div className="mt-1 text-lg font-semibold text-slate-900">
-                          {previousQuarterComparePeriod.label}
-                        </div>
-
-                        <div className="mt-5 grid gap-3 md:grid-cols-2">
-                          {[
-                            ["Gross production", quarterComparisonDeltas.grossProduction],
-                            ["Service fees", quarterComparisonDeltas.serviceFees],
-                            ["Lab / materials", quarterComparisonDeltas.labMaterials],
-                            ["Merchant fees", quarterComparisonDeltas.merchantFees],
-                            ["Final total due", quarterComparisonDeltas.finalTotalDue],
-                          ].map(([label, value]) => (
-                            <div
-                              key={label}
-                              className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3"
-                            >
-                              <span className="text-sm font-medium text-slate-700">
-                                {label}
-                              </span>
-                              <span
-                                className={`rounded-full px-3 py-1 text-sm font-semibold ${getDeltaTone(
-                                  Number(value)
-                                )}`}
-                              >
-                                {Number(value) > 0 ? "+" : ""}
-                                ${formatMoney(Number(value))}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-                        No previous quarter available for comparison.
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-                    No quarter selected.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-6 grid gap-6 xl:grid-cols-2">
               <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
                 <h2 className="text-xl font-semibold tracking-tight text-slate-900">
                   Top providers by service fees
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Ranked by total service fees for the selected month or quarter.
+                  Ranked by total service fees for the selected month, quarter, or year.
                 </p>
 
                 <div className="mt-5 space-y-3">
@@ -1264,62 +1410,62 @@ export default function FinancialsClient() {
                   )}
                 </div>
               </div>
+            </div>
 
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h2 className="text-xl font-semibold tracking-tight text-slate-900">
-                  Billing period health
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Status and financial snapshot by billing period.
-                </p>
+            <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-xl font-semibold tracking-tight text-slate-900">
+                Billing period health
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Status and financial snapshot by billing period.
+              </p>
 
-                <div className="mt-5 max-h-[560px] space-y-4 overflow-y-auto pr-1">
-                  {[...ascendingBillingPeriods].reverse().map((period) => {
-                    const periodSummary = monthlySummary.find((m) => m.periodId === period.id);
+              <div className="mt-5 max-h-[560px] space-y-4 overflow-y-auto pr-1">
+                {[...ascendingBillingPeriods].reverse().map((period) => {
+                  const periodSummary = monthlySummary.find((m) => m.periodId === period.id);
 
-                    return (
-                      <div
-                        key={period.id}
-                        className="rounded-3xl border border-slate-200 p-5 transition hover:shadow-md"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="font-semibold text-slate-900">{period.label}</div>
-                            <div className="mt-1 text-sm text-slate-500">Billing period</div>
-                          </div>
-
-                          <span
-                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getStatusClasses(
-                              period.status
-                            )}`}
-                          >
-                            {period.status}
-                          </span>
+                  return (
+                    <div
+                      key={period.id}
+                      className="rounded-3xl border border-slate-200 p-5 transition hover:shadow-md"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-semibold text-slate-900">{period.label}</div>
+                          <div className="mt-1 text-sm text-slate-500">Billing period</div>
                         </div>
 
-                        <div className="mt-5 grid gap-3 md:grid-cols-2">
-                          <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                            <div className="text-xs uppercase tracking-wide text-slate-500">
-                              Service fees
-                            </div>
-                            <div className="mt-1 font-semibold text-slate-900">
-                              ${formatMoney(periodSummary?.serviceFees || 0)}
-                            </div>
-                          </div>
+                        <span
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getStatusClasses(
+                            period.status
+                          )}`}
+                        >
+                          {period.status}
+                        </span>
+                      </div>
 
-                          <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                            <div className="text-xs uppercase tracking-wide text-slate-500">
-                              Final total due
-                            </div>
-                            <div className="mt-1 font-semibold text-slate-900">
-                              ${formatMoney(periodSummary?.finalTotalDue || 0)}
-                            </div>
+                      <div className="mt-5 grid gap-3 md:grid-cols-2">
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                          <div className="text-xs uppercase tracking-wide text-slate-500">
+                            Service fees
+                          </div>
+                          <div className="mt-1 font-semibold text-slate-900">
+                            ${formatMoney(periodSummary?.serviceFees || 0)}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                          <div className="text-xs uppercase tracking-wide text-slate-500">
+                            Final total due
+                          </div>
+                          <div className="mt-1 font-semibold text-slate-900">
+                            ${formatMoney(periodSummary?.finalTotalDue || 0)}
                           </div>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </>

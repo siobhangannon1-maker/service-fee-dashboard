@@ -134,6 +134,12 @@ function getMonthLabelFromParts(year: number, month: number) {
   }).format(date);
 }
 
+function getMonthName(month: number) {
+  return new Intl.DateTimeFormat('en-AU', {
+    month: 'long',
+  }).format(new Date(2000, month - 1, 1));
+}
+
 function getFinancialQuarter(month: number) {
   if (month >= 7 && month <= 9) return 1;
   if (month >= 10 && month <= 12) return 2;
@@ -574,7 +580,7 @@ function DualLineChart({
       const y = height - padding - (toNumber(row[amountKey]) / maxAmount) * (height - padding * 2);
       return `${x},${y}`;
     })
-    .join(" ");
+    .join(' ');
 
   const percentPoints = data
     .map((row, index) => {
@@ -582,7 +588,7 @@ function DualLineChart({
       const y = height - padding - (toNumber(row[percentKey]) / maxPercent) * (height - padding * 2);
       return `${x},${y}`;
     })
-    .join(" ");
+    .join(' ');
 
   const targetPoints =
     targetKey &&
@@ -592,7 +598,7 @@ function DualLineChart({
         const y = height - padding - (toNumber(row[targetKey]) / maxPercent) * (height - padding * 2);
         return `${x},${y}`;
       })
-      .join(" ");
+      .join(' ');
 
   const hoveredRow = hoveredIndex !== null ? data[hoveredIndex] : null;
 
@@ -665,23 +671,23 @@ function DualLineChart({
             }}
           >
             <div className="font-semibold text-slate-900">
-              {String(hoveredRow.label ?? "")}
+              {String(hoveredRow.label ?? '')}
             </div>
 
             <div className="mt-2 space-y-1 text-slate-600">
               <div>
-                <span className="font-medium text-slate-900">{amountLabel}:</span>{" "}
+                <span className="font-medium text-slate-900">{amountLabel}:</span>{' '}
                 {formatCurrency(toNumber(hoveredRow[amountKey]))}
               </div>
 
               <div>
-                <span className="font-medium text-slate-900">{percentLabel}:</span>{" "}
+                <span className="font-medium text-slate-900">{percentLabel}:</span>{' '}
                 {formatPercent(toNumber(hoveredRow[percentKey]))}
               </div>
 
               {targetKey && targetLabel ? (
                 <div>
-                  <span className="font-medium text-slate-900">{targetLabel}:</span>{" "}
+                  <span className="font-medium text-slate-900">{targetLabel}:</span>{' '}
                   {formatPercent(toNumber(hoveredRow[targetKey]))}
                 </div>
               ) : null}
@@ -794,7 +800,7 @@ function DualLineChart({
                   fontSize="11"
                   fill="#64748B"
                 >
-                  {String(row.label ?? "")}
+                  {String(row.label ?? '')}
                 </text>
               </g>
             );
@@ -932,6 +938,8 @@ export default function ExpenseReportsClient() {
   const [viewMode, setViewMode] = useState<ViewMode>('single-month');
 
   const [selectedMonthKey, setSelectedMonthKey] = useState('');
+  const [selectedBillingYear, setSelectedBillingYear] = useState('');
+  const [selectedBillingMonth, setSelectedBillingMonth] = useState('');
   const [compareMode, setCompareMode] = useState<CompareMode>('quarter');
   const [selectedCompareA, setSelectedCompareA] = useState('');
   const [selectedCompareB, setSelectedCompareB] = useState('');
@@ -1033,6 +1041,24 @@ export default function ExpenseReportsClient() {
     [reports]
   );
 
+  const billingYearOptions = useMemo(
+    () => Array.from(new Set(reports.map((report) => report.report_year))).sort((a, b) => b - a),
+    [reports]
+  );
+
+  const billingMonthOptions = useMemo(() => {
+    if (!selectedBillingYear) return [];
+
+    return reports
+      .filter((report) => report.report_year === Number(selectedBillingYear))
+      .map((report) => ({
+        value: String(report.report_month),
+        label: getMonthName(report.report_month),
+        monthNumber: report.report_month,
+      }))
+      .sort((a, b) => a.monthNumber - b.monthNumber);
+  }, [reports, selectedBillingYear]);
+
   const compareOptions = useMemo(() => {
     if (compareMode === 'month') return buildMonthOptions(reports);
     if (compareMode === 'year') return buildYearOptions(reports);
@@ -1054,6 +1080,41 @@ export default function ExpenseReportsClient() {
   }, [monthOptions, selectedMonthKey]);
 
   useEffect(() => {
+    if (!selectedBillingYear && billingYearOptions.length > 0) {
+      setSelectedBillingYear(String(billingYearOptions[0]));
+    }
+  }, [billingYearOptions, selectedBillingYear]);
+
+  useEffect(() => {
+    if (!selectedBillingYear) return;
+
+    const currentMonth = new Date().getMonth() + 1;
+    const availableMonths = billingMonthOptions.map((option) => option.monthNumber);
+
+    if (availableMonths.length === 0) {
+      if (selectedBillingMonth !== '') setSelectedBillingMonth('');
+      return;
+    }
+
+    const nextMonth =
+      availableMonths.includes(currentMonth) ? String(currentMonth) : String(availableMonths[0]);
+
+    if (!selectedBillingMonth || !availableMonths.includes(Number(selectedBillingMonth))) {
+      setSelectedBillingMonth(nextMonth);
+    }
+  }, [billingMonthOptions, selectedBillingMonth, selectedBillingYear]);
+
+  useEffect(() => {
+    if (!selectedBillingYear || !selectedBillingMonth) return;
+
+    const nextMonthKey = getMonthKey(Number(selectedBillingYear), Number(selectedBillingMonth));
+
+    if (nextMonthKey !== selectedMonthKey) {
+      setSelectedMonthKey(nextMonthKey);
+    }
+  }, [selectedBillingYear, selectedBillingMonth, selectedMonthKey]);
+
+  useEffect(() => {
     if (!selectedCategory && categories.length > 0) setSelectedCategory(categories[0]);
     if (!selectedCompareCategory && categories.length > 0) setSelectedCompareCategory(categories[0]);
     if (!selectedMonthCategoryA && categories.length > 0) setSelectedMonthCategoryA(categories[0]);
@@ -1066,6 +1127,22 @@ export default function ExpenseReportsClient() {
     selectedMonthCategoryA,
     selectedMonthCategoryB,
   ]);
+
+  useEffect(() => {
+    const selectedReport = reports.find((report) => report.monthKey === selectedMonthKey);
+    if (!selectedReport) return;
+
+    const nextYear = String(selectedReport.report_year);
+    const nextMonth = String(selectedReport.report_month);
+
+    if (nextYear !== selectedBillingYear) {
+      setSelectedBillingYear(nextYear);
+    }
+
+    if (nextMonth !== selectedBillingMonth) {
+      setSelectedBillingMonth(nextMonth);
+    }
+  }, [reports, selectedMonthKey, selectedBillingYear, selectedBillingMonth]);
 
   useEffect(() => {
     if (compareOptions.length === 0) {
@@ -1475,8 +1552,6 @@ export default function ExpenseReportsClient() {
               </p>
             </div>
 
-            
-
             <Link
               href="/imports/upload/xero-upload"
               className="inline-flex items-center rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
@@ -1533,11 +1608,11 @@ export default function ExpenseReportsClient() {
             </button>
 
             <Link
-  href="/benchmarks/edit"
-  className="inline-flex items-center rounded-2xl border border-slate-300 bg-blue-600 hover:bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
->
-  Edit Benchmarks
-</Link>
+              href="/benchmarks/edit"
+              className="inline-flex items-center rounded-2xl border border-slate-300 bg-blue-600 hover:bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            >
+              Edit Benchmarks
+            </Link>
 
             <Link
               href="/imports/upload/xero-upload"
@@ -1590,17 +1665,41 @@ export default function ExpenseReportsClient() {
               title="Single Month"
               description="Focus on one month only."
               action={
-                <select
-                  value={selectedMonthKey}
-                  onChange={(e) => setSelectedMonthKey(e.target.value)}
-                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
-                >
-                  {monthOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Year
+                    </label>
+                    <select
+                      value={selectedBillingYear}
+                      onChange={(e) => setSelectedBillingYear(e.target.value)}
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                    >
+                      {billingYearOptions.map((year) => (
+                        <option key={year} value={String(year)}>
+                          {year}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Month
+                    </label>
+                    <select
+                      value={selectedBillingMonth}
+                      onChange={(e) => setSelectedBillingMonth(e.target.value)}
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                    >
+                      {billingMonthOptions.map((option) => (
+                        <option key={option.monthNumber} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
               }
             >
               <div className="grid gap-4 md:grid-cols-4">
@@ -1902,7 +2001,8 @@ export default function ExpenseReportsClient() {
                           <th className="pb-3 pr-4 font-medium">{selectedCompareOptionB.label} %</th>
                           <th className="pb-3 pr-4 font-medium">{selectedCompareOptionB.label} Target</th>
                           <th className="pb-3 pr-4 font-medium">Change</th>
-                          <th className="pb-3 pr-4 font-medium">B vs Target</th>
+                          <th className="pb-3 pr-4 font-medium">Amount A</th>
+                          <th className="pb-3 pr-4 font-medium">Amount B</th>
                           <th className="pb-3 font-medium">Direction</th>
                         </tr>
                       </thead>
@@ -1911,24 +2011,24 @@ export default function ExpenseReportsClient() {
                           <tr key={row.category_name} className="border-b border-slate-100">
                             <td className="py-3 pr-4 font-medium text-slate-900">{row.category_name}</td>
                             <td className="py-3 pr-4 text-slate-700">{formatPercent(row.percentA)}</td>
-                            <td className="py-3 pr-4 text-slate-700">{formatPercent(row.benchmarkA)}</td>
+                            <td className="py-3 pr-4">
+                              <span className={cn('inline-flex rounded-full px-2.5 py-1 text-xs font-medium', targetChipClass(row.benchmarkA))}>
+                                {formatPercent(row.benchmarkA)}
+                              </span>
+                            </td>
                             <td className="py-3 pr-4 text-slate-700">{formatPercent(row.percentB)}</td>
-                            <td className="py-3 pr-4 text-slate-700">{formatPercent(row.benchmarkB)}</td>
+                            <td className="py-3 pr-4">
+                              <span className={cn('inline-flex rounded-full px-2.5 py-1 text-xs font-medium', targetChipClass(row.benchmarkB))}>
+                                {formatPercent(row.benchmarkB)}
+                              </span>
+                            </td>
                             <td className="py-3 pr-4">
                               <span className={cn('inline-flex rounded-full px-2.5 py-1 text-xs font-medium', varianceChipClass(row.direction))}>
                                 {formatPercentVariance(row.variance)}
                               </span>
                             </td>
-                            <td className="py-3 pr-4">
-                              <span
-                                className={cn(
-                                  'inline-flex rounded-full px-2.5 py-1 text-xs font-medium',
-                                  varianceChipClass(compareDirectionFromVariance(row.varianceToTargetB))
-                                )}
-                              >
-                                {formatPercentVariance(row.varianceToTargetB)}
-                              </span>
-                            </td>
+                            <td className="py-3 pr-4 text-slate-700">{formatCurrency(row.amountA)}</td>
+                            <td className="py-3 pr-4 text-slate-700">{formatCurrency(row.amountB)}</td>
                             <td className="py-3">
                               <span className={cn('inline-flex rounded-full px-2.5 py-1 text-xs font-medium', varianceChipClass(row.direction))}>
                                 {getDirectionLabel(row.direction)}
@@ -1950,74 +2050,75 @@ export default function ExpenseReportsClient() {
             <PdfHeaderBlock />
 
             <SectionCard
-              title="Overall Trends"
-              description="Track total expenses and total expense % month to month."
+              title="Trends"
+              description="Track expenses over time across all months or focus on a shorter range."
               action={<TrendRangeToggle value={trendRange} onChange={setTrendRange} />}
             >
+              <div className="grid gap-4 md:grid-cols-4">
+                <Card
+                  title="Months in View"
+                  value={String(filteredTrendReports.length)}
+                  subtitle="Number of monthly reports shown in the current range"
+                />
+                <Card
+                  title="Latest Month"
+                  value={filteredTrendReports[filteredTrendReports.length - 1]?.month_label || '-'}
+                />
+                <Card
+                  title="Latest Expense %"
+                  value={formatPercent(filteredTrendReports[filteredTrendReports.length - 1]?.total_expense_percent || 0)}
+                />
+                <Card
+                  title="Latest Total Expenses"
+                  value={formatCurrency(filteredTrendReports[filteredTrendReports.length - 1]?.total_expenses || 0)}
+                />
+              </div>
+            </SectionCard>
+
+            <SectionCard title="Overall Expense Trend" description="Total expenses and total expense % by month.">
               <DualLineChart
                 data={overallTrendData}
                 amountKey="amount"
                 percentKey="percent"
                 amountLabel="Total Expenses"
-                percentLabel="Total Expense %"
+                percentLabel="Expense %"
               />
             </SectionCard>
 
             <SectionCard
-              title="Category Trend Analysis"
-              description="Choose one category and compare it month to month, including target."
+              title="Category Trend"
+              description="Choose one category and compare actual % against target over time."
               action={
-                <div className="flex flex-wrap gap-3">
-                  <TrendRangeToggle value={trendRange} onChange={setTrendRange} />
-                  <select
-                    value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
-                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
-                  >
-                    {categories.map((category) => (
-                      <option key={category} value={category}>
-                        {category}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                >
+                  {categories.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
               }
             >
-              <div className="mb-6 grid gap-4 md:grid-cols-4">
+              <div className="mb-5 grid gap-4 md:grid-cols-4">
                 <Card
                   title="Selected Category"
-                  value={selectedCategory || '—'}
-                  subtitle={
-                    trendRange === 'all'
-                      ? 'All months'
-                      : trendRange === 'last-6-months'
-                      ? 'Last 6 months'
-                      : 'Current financial year'
-                  }
+                  value={selectedCategory || '-'}
+                  subtitle="Current category in the chart and table below"
                 />
                 <Card
-                  title="Average Monthly Amount"
-                  value={formatCurrency(
-                    categoryTrendData.length > 0
-                      ? categoryTrendData.reduce((sum, row) => sum + row.amount, 0) / categoryTrendData.length
-                      : 0
-                  )}
+                  title="Latest Amount"
+                  value={formatCurrency(categoryTrendData[categoryTrendData.length - 1]?.amount || 0)}
                 />
                 <Card
-                  title="Average Actual %"
-                  value={formatPercent(
-                    categoryTrendData.length > 0
-                      ? categoryTrendData.reduce((sum, row) => sum + row.percent, 0) / categoryTrendData.length
-                      : 0
-                  )}
+                  title="Latest Actual %"
+                  value={formatPercent(categoryTrendData[categoryTrendData.length - 1]?.percent || 0)}
                 />
                 <Card
-                  title="Average Target %"
-                  value={formatPercent(
-                    categoryTrendData.length > 0
-                      ? categoryTrendData.reduce((sum, row) => sum + row.benchmark, 0) / categoryTrendData.length
-                      : 0
-                  )}
+                  title="Latest Target %"
+                  value={formatPercent(categoryTrendData[categoryTrendData.length - 1]?.benchmark || 0)}
                 />
               </div>
 
@@ -2026,12 +2127,14 @@ export default function ExpenseReportsClient() {
                 amountKey="amount"
                 percentKey="percent"
                 targetKey="benchmark"
-                amountLabel={`${selectedCategory} Amount`}
-                percentLabel={`${selectedCategory} Actual %`}
-                targetLabel={`${selectedCategory} Target %`}
+                amountLabel="Amount"
+                percentLabel="Actual %"
+                targetLabel="Target %"
               />
+            </SectionCard>
 
-              <div className="mt-6 overflow-x-auto">
+            <SectionCard title="Category Trend Detail" description="Month-by-month detail for the selected category.">
+              <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
                   <thead className="border-b border-slate-200 text-left text-slate-500">
                     <tr>
@@ -2055,22 +2158,12 @@ export default function ExpenseReportsClient() {
                           </span>
                         </td>
                         <td className="py-3 pr-4">
-                          <span
-                            className={cn(
-                              'inline-flex rounded-full px-2.5 py-1 text-xs font-medium',
-                              varianceChipClass(compareDirectionFromVariance(row.variance))
-                            )}
-                          >
+                          <span className={cn('inline-flex rounded-full px-2.5 py-1 text-xs font-medium', varianceChipClass(compareDirectionFromVariance(row.variance)))}>
                             {formatPercentVariance(row.variance)}
                           </span>
                         </td>
                         <td className="py-3">
-                          <span
-                            className={cn(
-                              'inline-flex rounded-full border px-2.5 py-1 text-xs font-medium capitalize',
-                              statusClasses(row.status)
-                            )}
-                          >
+                          <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-medium capitalize', statusClasses(row.status as 'green' | 'orange' | 'red'))}>
                             {row.status}
                           </span>
                         </td>

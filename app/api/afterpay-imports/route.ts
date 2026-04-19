@@ -4,17 +4,23 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 export async function GET() {
   try {
     const { data, error } = await supabaseAdmin
-      .from("xero_imports")
+      .from("afterpay_imports")
       .select(`
         id,
         source_file_name,
         storage_path,
-        status,
+        provider_id,
         billing_period_id,
-        month,
-        year,
+        status,
+        row_count,
+        total_fee_excl_tax,
+        imported_entry_id,
         created_at,
         processed_at,
+        providers (
+          id,
+          name
+        ),
         billing_periods (
           id,
           label
@@ -31,29 +37,27 @@ export async function GET() {
         let download_url: string | null = null;
 
         if (row.storage_path) {
-          const { data: signedUrlData, error: signedUrlError } =
-            await supabaseAdmin.storage
-              .from("xero-imports")
-              .createSignedUrl(row.storage_path, 60 * 60);
+          const { data: signedUrlData } = await supabaseAdmin.storage
+            .from("afterpay-imports")
+            .createSignedUrl(row.storage_path, 60 * 10);
 
-          if (!signedUrlError) {
-            download_url = signedUrlData?.signedUrl ?? null;
-          }
+          download_url = signedUrlData?.signedUrl || null;
         }
 
         return {
           id: row.id,
           file_name: row.source_file_name,
           storage_path: row.storage_path,
-          status: row.status || "uploaded",
+          provider_id: row.provider_id,
+          provider_name: row.providers?.name ?? null,
+          billing_period_id: row.billing_period_id,
+          billing_period_label: row.billing_periods?.label ?? null,
+          status: row.status,
+          row_count: row.row_count,
+          total_fee_excl_tax: Number(row.total_fee_excl_tax || 0),
+          imported_entry_id: row.imported_entry_id,
           created_at: row.created_at,
           processed_at: row.processed_at,
-          billing_period_id: row.billing_period_id ?? null,
-          billing_period_label: row.billing_periods?.label ?? null,
-          month: row.month ?? null,
-          year: row.year ?? null,
-          linked: !!row.billing_period_id,
-          is_processed: row.status === "processed",
           download_url,
         };
       })
@@ -62,7 +66,7 @@ export async function GET() {
     return NextResponse.json({ imports });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error?.message || "Failed to load Xero imports" },
+      { error: error?.message || "Failed to load Afterpay imports" },
       { status: 500 }
     );
   }

@@ -39,8 +39,45 @@ export default function LoginClient() {
       return;
     }
 
-    router.push(next);
-    router.refresh();
+    try {
+      const response = await fetch("/api/auth/check-active", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const rawText = await response.text();
+
+      let result: { is_active?: boolean; error?: string } = {};
+      try {
+        result = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        throw new Error("Server returned non-JSON response.");
+      }
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to check account status.");
+      }
+
+      if (!result.is_active) {
+        await supabase.auth.signOut();
+        setMessage(
+          "Your account has been deactivated. Please contact accounts@focusoms.com.au."
+        );
+        setLoading(false);
+        router.replace("/account-inactive");
+        router.refresh();
+        return;
+      }
+
+      router.push(next);
+      router.refresh();
+    } catch (err) {
+      await supabase.auth.signOut();
+      setMessage(
+        err instanceof Error ? err.message : "Failed to complete sign in."
+      );
+      setLoading(false);
+    }
   }
 
   return (
@@ -82,8 +119,8 @@ export default function LoginClient() {
                 </h1>
 
                 <p className="mt-6 max-w-lg text-lg leading-8 text-slate-300">
-                  Securely manage monthly service fee generation, patient costs entries, provider
-                  statements, and financial reporting.
+                  Securely manage monthly service fee generation, patient costs
+                  entries, provider statements, and financial reporting.
                 </p>
               </div>
             </div>
@@ -188,14 +225,15 @@ export default function LoginClient() {
                 >
                   {loading ? "Signing in..." : "Sign in"}
                 </button>
+
                 <div className="mt-4">
-  <Link
-    href="/reset-password"
-    className="text-sm font-medium text-blue-700 hover:text-blue-800"
-  >
-    Forgot password?
-  </Link>
-</div>
+                  <Link
+                    href="/reset-password"
+                    className="text-sm font-medium text-blue-700 hover:text-blue-800"
+                  >
+                    Forgot password?
+                  </Link>
+                </div>
               </form>
 
               <div className="mt-6 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">

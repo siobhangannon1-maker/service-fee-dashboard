@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   ensureCurrentBillingPeriod,
   createNextBillingPeriodFromList,
@@ -19,6 +20,8 @@ type BillingPeriod = {
   id: string;
   label: string;
   status: string;
+  month: number;
+  year: number;
 };
 
 type MaterialCostItem = {
@@ -60,6 +63,12 @@ type EntryForm = {
   notes: string;
 };
 
+type EntryCreatorInfo = {
+  userId: string;
+  displayName: string;
+  initials: string;
+};
+
 const emptyForm: EntryForm = {
   provider_id: "",
   related_provider_id: "",
@@ -71,16 +80,112 @@ const emptyForm: EntryForm = {
   notes: "",
 };
 
+const MONTH_OPTIONS = [
+  { value: 1, label: "January" },
+  { value: 2, label: "February" },
+  { value: 3, label: "March" },
+  { value: 4, label: "April" },
+  { value: 5, label: "May" },
+  { value: 6, label: "June" },
+  { value: 7, label: "July" },
+  { value: 8, label: "August" },
+  { value: 9, label: "September" },
+  { value: 10, label: "October" },
+  { value: 11, label: "November" },
+  { value: 12, label: "December" },
+];
+
+const BADGE_COLOR_CLASSES = [
+  "bg-rose-100 text-rose-700 ring-rose-200",
+  "bg-blue-100 text-blue-700 ring-blue-200",
+  "bg-emerald-100 text-emerald-700 ring-emerald-200",
+  "bg-amber-100 text-amber-700 ring-amber-200",
+  "bg-violet-100 text-violet-700 ring-violet-200",
+  "bg-cyan-100 text-cyan-700 ring-cyan-200",
+  "bg-fuchsia-100 text-fuchsia-700 ring-fuchsia-200",
+  "bg-lime-100 text-lime-700 ring-lime-200",
+];
+
+function getDefaultBillingPeriodId(periods: BillingPeriod[]) {
+  if (!periods.length) return "";
+
+  const today = new Date();
+  const currentMonth = today.getMonth() + 1;
+
+  const years = Array.from(new Set(periods.map((p) => p.year))).sort((a, b) => b - a);
+  const latestYear = years[0];
+
+  const currentMonthInLatestYear = periods.find(
+    (p) => p.year === latestYear && p.month === currentMonth
+  );
+  if (currentMonthInLatestYear) {
+    return currentMonthInLatestYear.id;
+  }
+
+  const firstMonthInLatestYear = periods
+    .filter((p) => p.year === latestYear)
+    .sort((a, b) => a.month - b.month)[0];
+
+  return firstMonthInLatestYear?.id || periods[0]?.id || "";
+}
+
+function getYearsDescending(periods: BillingPeriod[]) {
+  return Array.from(new Set(periods.map((p) => p.year))).sort((a, b) => b - a);
+}
+
+function getMonthsAscendingForYear(periods: BillingPeriod[], year: number) {
+  return Array.from(
+    new Set(periods.filter((p) => p.year === year).map((p) => p.month))
+  ).sort((a, b) => a - b);
+}
+
+function getPeriodIdFromYearMonth(
+  periods: BillingPeriod[],
+  year: number,
+  month: number
+) {
+  return periods.find((p) => p.year === year && p.month === month)?.id || "";
+}
+
+function getFallbackPeriodIdForYear(periods: BillingPeriod[], year: number) {
+  const today = new Date();
+  const currentMonth = today.getMonth() + 1;
+
+  const currentMonthPeriod = periods.find(
+    (p) => p.year === year && p.month === currentMonth
+  );
+  if (currentMonthPeriod) {
+    return currentMonthPeriod.id;
+  }
+
+  const firstMonthPeriod = periods
+    .filter((p) => p.year === year)
+    .sort((a, b) => a.month - b.month)[0];
+
+  return firstMonthPeriod?.id || "";
+}
+
+function getBadgeColorClass(seed: string) {
+  let hash = 0;
+
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+
+  return BADGE_COLOR_CLASSES[hash % BADGE_COLOR_CLASSES.length];
+}
+
 export default function PatientEntriesPage() {
   const supabase = createClient();
-const [search, setSearch] = useState("");
-const [categoryFilter, setCategoryFilter] = useState("");
-const [providerFilter, setProviderFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [providerFilter, setProviderFilter] = useState("");
 
   const [providers, setProviders] = useState<Provider[]>([]);
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
   const [materialItems, setMaterialItems] = useState<MaterialCostItem[]>([]);
   const [entries, setEntries] = useState<PatientFinancialEntry[]>([]);
+  const [entryCreators, setEntryCreators] = useState<Record<string, EntryCreatorInfo>>({});
   const [selectedPeriodId, setSelectedPeriodId] = useState("");
   const [activePeriodStatus, setActivePeriodStatus] = useState<"open" | "locked">(
     "open"
@@ -94,8 +199,44 @@ const [providerFilter, setProviderFilter] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<null | (() => void)>(null);
 
+  async function loadEntryCreators(entryList: PatientFinancialEntry[]) {
+    if (!entryList.length) {
+      setEntryCreators({});
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/patient-entry-creators", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          entryIds: entryList.map((entry) => entry.id),
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to load entry creators.");
+      }
+
+      setEntryCreators(result.creators || {});
+    } catch (error) {
+      console.error("Failed to load entry creators:", error);
+      setEntryCreators({});
+    }
+  }
+
   async function loadData(periodId?: string) {
     setMessage("");
+
+    try {
+      await ensureCurrentBillingPeriod();
+    } catch {
+      // keep going; page can still work even if the helper fails
+    }
 
     const { data: providerData, error: providerError } = await supabase
       .from("providers")
@@ -110,7 +251,7 @@ const [providerFilter, setProviderFilter] = useState("");
 
     const { data: periodData, error: periodError } = await supabase
       .from("billing_periods")
-      .select("id, label, status")
+      .select("id, label, status, month, year")
       .order("year", { ascending: false })
       .order("month", { ascending: false });
 
@@ -140,7 +281,10 @@ const [providerFilter, setProviderFilter] = useState("");
     setBillingPeriods(periodList);
     setMaterialItems((materialData || []) as MaterialCostItem[]);
 
-    const activePeriodId = periodId || selectedPeriodId || periodList[0]?.id || "";
+    const defaultPeriodId = getDefaultBillingPeriodId(periodList);
+
+    const activePeriodId =
+      periodId || selectedPeriodId || defaultPeriodId || periodList[0]?.id || "";
 
     if (activePeriodId && activePeriodId !== selectedPeriodId) {
       setSelectedPeriodId(activePeriodId);
@@ -167,12 +311,15 @@ const [providerFilter, setProviderFilter] = useState("");
       return;
     }
 
-    setEntries((entryData || []) as PatientFinancialEntry[]);
+    const entryList = (entryData || []) as PatientFinancialEntry[];
+
+    setEntries(entryList);
+    await loadEntryCreators(entryList);
 
     setForm((prev) => ({
       ...prev,
       provider_id: prev.provider_id || providerList[0]?.id || "",
-      billing_period_id: activePeriodId || "",
+      billing_period_id: prev.billing_period_id || activePeriodId || "",
     }));
   }
 
@@ -185,14 +332,89 @@ const [providerFilter, setProviderFilter] = useState("");
     return providers.filter((p) => p.id !== form.provider_id);
   }, [providers, form.provider_id]);
 
+  const yearOptions = useMemo(() => getYearsDescending(billingPeriods), [billingPeriods]);
+
+  const selectedPeriod = useMemo(
+    () => billingPeriods.find((p) => p.id === selectedPeriodId),
+    [billingPeriods, selectedPeriodId]
+  );
+
+  const selectedYear =
+    selectedPeriod?.year ?? yearOptions[0] ?? new Date().getFullYear();
+
+  const monthOptionsForSelectedYear = useMemo(
+    () => getMonthsAscendingForYear(billingPeriods, selectedYear),
+    [billingPeriods, selectedYear]
+  );
+
+  const formSelectedPeriod = useMemo(
+    () => billingPeriods.find((p) => p.id === form.billing_period_id),
+    [billingPeriods, form.billing_period_id]
+  );
+
+  const formSelectedYear =
+    formSelectedPeriod?.year ?? yearOptions[0] ?? new Date().getFullYear();
+
+  const monthOptionsForFormYear = useMemo(
+    () => getMonthsAscendingForYear(billingPeriods, formSelectedYear),
+    [billingPeriods, formSelectedYear]
+  );
+
   function resetForm(nextPeriodId?: string) {
     setEditingEntryId(null);
     setSelectedMaterialId("");
     setForm({
       ...emptyForm,
       provider_id: providers[0]?.id || "",
-      billing_period_id: nextPeriodId || selectedPeriodId || "",
+      billing_period_id:
+        nextPeriodId || selectedPeriodId || getDefaultBillingPeriodId(billingPeriods) || "",
     });
+  }
+
+  function updatePageBillingPeriod(periodId: string) {
+    const period = billingPeriods.find((p) => p.id === periodId);
+
+    setSelectedPeriodId(periodId);
+    setEditingEntryId(null);
+    setSelectedMaterialId("");
+    setForm((prev) => ({
+      ...prev,
+      billing_period_id: periodId,
+    }));
+    setActivePeriodStatus((period?.status as "open" | "locked") || "open");
+
+    loadData(periodId);
+  }
+
+  function handlePageYearChange(year: number) {
+    const nextPeriodId = getFallbackPeriodIdForYear(billingPeriods, year);
+    if (!nextPeriodId) return;
+    updatePageBillingPeriod(nextPeriodId);
+  }
+
+  function handlePageMonthChange(month: number) {
+    const nextPeriodId = getPeriodIdFromYearMonth(billingPeriods, selectedYear, month);
+    if (!nextPeriodId) return;
+    updatePageBillingPeriod(nextPeriodId);
+  }
+
+  function updateFormBillingPeriod(periodId: string) {
+    const period = billingPeriods.find((p) => p.id === periodId);
+
+    setForm((prev) => ({ ...prev, billing_period_id: periodId }));
+    setActivePeriodStatus((period?.status as "open" | "locked") || "open");
+  }
+
+  function handleFormYearChange(year: number) {
+    const nextPeriodId = getFallbackPeriodIdForYear(billingPeriods, year);
+    if (!nextPeriodId) return;
+    updateFormBillingPeriod(nextPeriodId);
+  }
+
+  function handleFormMonthChange(month: number) {
+    const nextPeriodId = getPeriodIdFromYearMonth(billingPeriods, formSelectedYear, month);
+    if (!nextPeriodId) return;
+    updateFormBillingPeriod(nextPeriodId);
   }
 
   async function saveEntry(e: React.FormEvent) {
@@ -267,24 +489,41 @@ const [providerFilter, setProviderFilter] = useState("");
       notes: form.notes.trim() || null,
     };
 
-    const result = editingEntryId
-      ? await supabase
-          .from("patient_financial_entries")
-          .update(payload)
-          .eq("id", editingEntryId)
-      : await supabase.from("patient_financial_entries").insert(payload);
+    let savedEntryId = editingEntryId;
 
-    if (result.error) {
-      setTone("error");
-      setMessage(`Save failed: ${result.error.message}`);
-      setSaving(false);
-      return;
+    if (editingEntryId) {
+      const { error } = await supabase
+        .from("patient_financial_entries")
+        .update(payload)
+        .eq("id", editingEntryId);
+
+      if (error) {
+        setTone("error");
+        setMessage(`Save failed: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+    } else {
+      const { data, error } = await supabase
+        .from("patient_financial_entries")
+        .insert(payload)
+        .select("id")
+        .single();
+
+      if (error) {
+        setTone("error");
+        setMessage(`Save failed: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+
+      savedEntryId = data.id;
     }
 
     await writeAuditLog({
       action: editingEntryId ? "patient_entry_updated" : "patient_entry_created",
       entityType: "patient_financial_entry",
-      entityId: editingEntryId,
+      entityId: savedEntryId,
       billingPeriodId: form.billing_period_id,
       providerId: form.provider_id,
       metadata: {
@@ -383,20 +622,20 @@ const [providerFilter, setProviderFilter] = useState("");
   }
 
   const filteredEntries = entries.filter((entry) => {
-  const matchesSearch =
-    entry.patient_name.toLowerCase().includes(search.toLowerCase()) ||
-    (entry.notes || "").toLowerCase().includes(search.toLowerCase());
+    const matchesSearch =
+      entry.patient_name.toLowerCase().includes(search.toLowerCase()) ||
+      (entry.notes || "").toLowerCase().includes(search.toLowerCase());
 
-  const matchesCategory = categoryFilter
-    ? entry.category === categoryFilter
-    : true;
+    const matchesCategory = categoryFilter
+      ? entry.category === categoryFilter
+      : true;
 
-  const matchesProvider = providerFilter
-    ? entry.provider_id === providerFilter
-    : true;
+    const matchesProvider = providerFilter
+      ? entry.provider_id === providerFilter
+      : true;
 
-  return matchesSearch && matchesCategory && matchesProvider;
-});
+    return matchesSearch && matchesCategory && matchesProvider;
+  });
 
   return (
     <main className="min-h-screen bg-slate-50 p-6">
@@ -417,31 +656,51 @@ const [providerFilter, setProviderFilter] = useState("");
           }}
         />
 
-        <h1 className="text-3xl font-semibold">Patient Financial Entries</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Add, edit, and delete patient-level financial adjustments.
-        </p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold">Patient Financial Entries</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Add, edit, and delete patient-level financial adjustments.
+            </p>
+          </div>
 
-        <div className="mt-4 max-w-sm">
-          <label className="mb-1 block text-sm">Billing period</label>
-          <select
-            className="w-full rounded-2xl border bg-white px-3 py-2"
-            value={selectedPeriodId}
-            onChange={(e) => {
-              const value = e.target.value;
-              setSelectedPeriodId(value);
-              setEditingEntryId(null);
-              setSelectedMaterialId("");
-              loadData(value);
-            }}
+          <Link
+            href="/admin/patient-entry-log"
+            className="inline-flex rounded-2xl border bg-white px-4 py-2 text-sm shadow-sm"
           >
-            <option value="">Select billing period</option>
-            {billingPeriods.map((period) => (
-              <option key={period.id} value={period.id}>
-                {period.label}
-              </option>
-            ))}
-          </select>
+            Audit Entries
+          </Link>
+        </div>
+
+        <div className="mt-4 max-w-xl">
+          <label className="mb-1 block text-sm">Billing period</label>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <select
+              className="w-full rounded-2xl border bg-white px-3 py-2"
+              value={selectedYear}
+              onChange={(e) => handlePageYearChange(Number(e.target.value))}
+            >
+              {yearOptions.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="w-full rounded-2xl border bg-white px-3 py-2"
+              value={selectedPeriod?.month || ""}
+              onChange={(e) => handlePageMonthChange(Number(e.target.value))}
+            >
+              <option value="">Select month</option>
+              {monthOptionsForSelectedYear.map((month) => (
+                <option key={month} value={month}>
+                  {MONTH_OPTIONS.find((item) => item.value === month)?.label || month}
+                </option>
+              ))}
+            </select>
+          </div>
 
           <div className="mt-2 text-sm text-slate-600">
             Status:{" "}
@@ -500,28 +759,36 @@ const [providerFilter, setProviderFilter] = useState("");
               </select>
             </div>
 
-            <div>
+            <div className="md:col-span-2 lg:col-span-2">
               <label className="mb-1 block text-sm">Billing period</label>
-              <select
-                className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
-                value={form.billing_period_id}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  const period = billingPeriods.find((p) => p.id === value);
-                  setForm((prev) => ({ ...prev, billing_period_id: value }));
-                  setActivePeriodStatus(
-                    (period?.status as "open" | "locked") || "open"
-                  );
-                }}
-                disabled={activePeriodStatus === "locked"}
-              >
-                <option value="">Select billing period</option>
-                {billingPeriods.map((period) => (
-                  <option key={period.id} value={period.id}>
-                    {period.label}
-                  </option>
-                ))}
-              </select>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <select
+                  className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                  value={formSelectedYear}
+                  onChange={(e) => handleFormYearChange(Number(e.target.value))}
+                  disabled={activePeriodStatus === "locked"}
+                >
+                  {yearOptions.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                  value={formSelectedPeriod?.month || ""}
+                  onChange={(e) => handleFormMonthChange(Number(e.target.value))}
+                  disabled={activePeriodStatus === "locked"}
+                >
+                  <option value="">Select month</option>
+                  {monthOptionsForFormYear.map((month) => (
+                    <option key={month} value={month}>
+                      {MONTH_OPTIONS.find((item) => item.value === month)?.label || month}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div>
@@ -689,100 +956,126 @@ const [providerFilter, setProviderFilter] = useState("");
         </form>
 
         <div className="mt-6 rounded-3xl border bg-white p-4 shadow-sm">
-  <div className="grid gap-3 md:grid-cols-3">
-    <input
-      type="text"
-      placeholder="Search patient or notes..."
-      className="rounded-2xl border px-3 py-2"
-      value={search}
-      onChange={(e) => setSearch(e.target.value)}
-    />
+          <div className="grid gap-3 md:grid-cols-3">
+            <input
+              type="text"
+              placeholder="Search patient or notes..."
+              className="rounded-2xl border px-3 py-2"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
 
-    <select
-      className="rounded-2xl border px-3 py-2"
-      value={categoryFilter}
-      onChange={(e) => setCategoryFilter(e.target.value)}
-    >
-      <option value="">All categories</option>
-      <option value="lab_implant_materials">Lab / Implants / Materials</option>
-      <option value="fees_paid_to_focus">Patient Fees Paid to Focus</option>
-      <option value="fees_paid_in_error">Patient Fees Paid in Error</option>
-      <option value="fees_owed">Patient Fees Owed</option>
-      <option value="paid_to_wrong_provider">Paid to Wrong Provider</option>
-    </select>
+            <select
+              className="rounded-2xl border px-3 py-2"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+            >
+              <option value="">All categories</option>
+              <option value="lab_implant_materials">Lab / Implants / Materials</option>
+              <option value="fees_paid_to_focus">Patient Fees Paid to Focus</option>
+              <option value="fees_paid_in_error">Patient Fees Paid in Error</option>
+              <option value="fees_owed">Patient Fees Owed</option>
+              <option value="paid_to_wrong_provider">Paid to Wrong Provider</option>
+            </select>
 
-    <select
-      className="rounded-2xl border px-3 py-2"
-      value={providerFilter}
-      onChange={(e) => setProviderFilter(e.target.value)}
-    >
-      <option value="">All providers</option>
-      {providers.map((provider) => (
-        <option key={provider.id} value={provider.id}>
-          {provider.name}
-        </option>
-      ))}
-    </select>
-  </div>
-</div>
+            <select
+              className="rounded-2xl border px-3 py-2"
+              value={providerFilter}
+              onChange={(e) => setProviderFilter(e.target.value)}
+            >
+              <option value="">All providers</option>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
 
         <div className="mt-6 rounded-3xl border bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Saved entries</h2>
 
           <div className="mt-4 space-y-3">
             {filteredEntries.length === 0 && (
-  <div className="py-10 text-center text-sm text-slate-500">
-    No matching entries found for this billing period.
-  </div>
-)}
+              <div className="py-10 text-center text-sm text-slate-500">
+                No matching entries found for this billing period.
+              </div>
+            )}
 
-{filteredEntries.map((entry) => (
-              <div key={entry.id} className="rounded-2xl border p-4 text-sm">
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <div className="font-medium">{entry.patient_name}</div>
-                    <div className="text-slate-600">{providerName(entry.provider_id)}</div>
-                    <div className="text-slate-500">
-                      {entry.entry_date} · {categoryLabel(entry.category)} · $
-                      {Number(entry.amount).toLocaleString("en-AU", {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}
-                    </div>
-                    {entry.related_provider_id && (
-                      <div className="mt-1 text-slate-600">
-                        Owed to: {providerName(entry.related_provider_id)}
+            {filteredEntries.map((entry) => {
+              const creator = entryCreators[entry.id];
+              const badgeColorClass = getBadgeColorClass(
+                creator?.userId || creator?.displayName || entry.id
+              );
+
+              return (
+                <div key={entry.id} className="rounded-2xl border p-4 text-sm">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="font-medium">{entry.patient_name}</div>
+                      <div className="text-slate-600">{providerName(entry.provider_id)}</div>
+                      <div className="text-slate-500">
+                        {entry.entry_date} · {categoryLabel(entry.category)} · $
+                        {Number(entry.amount).toLocaleString("en-AU", {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
                       </div>
-                    )}
-                    {entry.notes && (
-                      <div className="mt-1 text-slate-600">{entry.notes}</div>
-                    )}
-                  </div>
+                      {entry.related_provider_id && (
+                        <div className="mt-1 text-slate-600">
+                          Owed to: {providerName(entry.related_provider_id)}
+                        </div>
+                      )}
+                      {entry.notes && (
+                        <div className="mt-1 text-slate-600">{entry.notes}</div>
+                      )}
+                    </div>
 
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => beginEdit(entry)}
-                      disabled={activePeriodStatus === "locked"}
-                      className="rounded-xl border px-3 py-1 disabled:opacity-50"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setConfirmAction(() => () => softDeleteEntry(entry.id));
-                        setConfirmOpen(true);
-                      }}
-                      disabled={activePeriodStatus === "locked"}
-                      className="rounded-xl border px-3 py-1 text-red-600 disabled:opacity-50"
-                    >
-                      Delete
-                    </button>
+                    <div className="flex items-start gap-2 self-end md:self-start">
+                      <div className="group relative">
+                        <div
+                          aria-label={
+                            creator
+                              ? `Created by ${creator.displayName}`
+                              : "Creator not available"
+                          }
+                          className={`flex h-10 w-10 items-center justify-center rounded-full text-xs font-semibold ring-1 ${badgeColorClass}`}
+                        >
+                          {creator?.initials || "?"}
+                        </div>
+
+                        <div className="pointer-events-none absolute right-0 top-12 z-10 hidden whitespace-nowrap rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-lg group-hover:block">
+                          {creator ? `Created by ${creator.displayName}` : "Creator not available"}
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => beginEdit(entry)}
+                          disabled={activePeriodStatus === "locked"}
+                          className="rounded-xl border px-3 py-1 disabled:opacity-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConfirmAction(() => () => softDeleteEntry(entry.id));
+                            setConfirmOpen(true);
+                          }}
+                          disabled={activePeriodStatus === "locked"}
+                          className="rounded-xl border px-3 py-1 text-red-600 disabled:opacity-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

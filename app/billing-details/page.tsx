@@ -1,10 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import {
   ensureCurrentBillingPeriod,
   createNextBillingPeriodFromList,
 } from "@/lib/billingPeriods";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { writeAuditLog } from "@/lib/audit";
 import Toast from "@/components/ui/Toast";
@@ -19,6 +20,8 @@ type BillingPeriod = {
   id: string;
   label: string;
   status: string;
+  month: number;
+  year: number;
 };
 
 type DetailCategory = "humm_fee" | "afterpay_fee" | "incorrect_payment";
@@ -55,6 +58,64 @@ const emptyForm: DetailForm = {
   notes: "",
 };
 
+function getCurrentBillingPeriodId(periods: BillingPeriod[]) {
+  if (!periods.length) return "";
+
+  const today = new Date();
+  const month = today.getMonth() + 1;
+  const year = today.getFullYear();
+
+  const match = periods.find((p) => p.month === month && p.year === year);
+
+  return match?.id || periods[0]?.id || "";
+}
+
+function getLatestYear(periods: BillingPeriod[]) {
+  if (!periods.length) return "";
+  return String(Math.max(...periods.map((p) => p.year)));
+}
+
+function getDefaultMonthForYear(periods: BillingPeriod[], year: string) {
+  if (!year) return "";
+
+  const numericYear = Number(year);
+  const today = new Date();
+  const currentMonth = today.getMonth() + 1;
+
+  const monthsForYear = periods
+    .filter((p) => p.year === numericYear)
+    .map((p) => p.month)
+    .sort((a, b) => a - b);
+
+  if (!monthsForYear.length) return "";
+
+  if (monthsForYear.includes(currentMonth)) {
+    return String(currentMonth);
+  }
+
+  return String(monthsForYear[0]);
+}
+
+function getPeriodIdFromYearMonth(
+  periods: BillingPeriod[],
+  year: string,
+  month: string
+) {
+  if (!year || !month) return "";
+
+  const match = periods.find(
+    (p) => p.year === Number(year) && p.month === Number(month)
+  );
+
+  return match?.id || "";
+}
+
+function monthLabel(month: number) {
+  return new Date(2000, month - 1, 1).toLocaleString("en-AU", {
+    month: "long",
+  });
+}
+
 export default function BillingDetailsPage() {
   const supabase = createClient();
 
@@ -65,6 +126,8 @@ export default function BillingDetailsPage() {
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
   const [entries, setEntries] = useState<BillingDetailEntry[]>([]);
   const [selectedPeriodId, setSelectedPeriodId] = useState("");
+  const [selectedYear, setSelectedYear] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState("");
   const [activePeriodStatus, setActivePeriodStatus] = useState<"open" | "locked">(
     "open"
   );
@@ -76,6 +139,24 @@ export default function BillingDetailsPage() {
   const [confirmAction, setConfirmAction] = useState<null | (() => void)>(null);
 
   const [form, setForm] = useState<DetailForm>(emptyForm);
+
+  const yearOptions = useMemo(() => {
+    return Array.from(new Set(billingPeriods.map((p) => p.year)))
+      .sort((a, b) => b - a)
+      .map(String);
+  }, [billingPeriods]);
+
+  const monthOptions = useMemo(() => {
+    if (!selectedYear) return [];
+
+    return Array.from(
+      new Set(
+        billingPeriods
+          .filter((p) => p.year === Number(selectedYear))
+          .map((p) => p.month)
+      )
+    ).sort((a, b) => a - b);
+  }, [billingPeriods, selectedYear]);
 
   async function loadData(periodId?: string) {
     setMessage("");
@@ -93,7 +174,7 @@ export default function BillingDetailsPage() {
 
     const { data: periodData, error: periodError } = await supabase
       .from("billing_periods")
-      .select("id, label, status")
+      .select("id, label, status, month, year")
       .order("year", { ascending: false })
       .order("month", { ascending: false });
 
@@ -109,13 +190,36 @@ export default function BillingDetailsPage() {
     setProviders(providerList);
     setBillingPeriods(periodList);
 
-    const activePeriodId = periodId || selectedPeriodId || periodList[0]?.id || "";
+    const latestYear = getLatestYear(periodList);
+    const defaultMonth = getDefaultMonthForYear(periodList, latestYear);
+    const defaultPeriodId = getPeriodIdFromYearMonth(
+      periodList,
+      latestYear,
+      defaultMonth
+    );
+
+    const activePeriodId =
+      periodId ||
+      selectedPeriodId ||
+      getCurrentBillingPeriodId(periodList) ||
+      defaultPeriodId ||
+      periodList[0]?.id ||
+      "";
 
     if (activePeriodId && activePeriodId !== selectedPeriodId) {
       setSelectedPeriodId(activePeriodId);
     }
 
     const activePeriod = periodList.find((p) => p.id === activePeriodId);
+
+    if (activePeriod) {
+      setSelectedYear(String(activePeriod.year));
+      setSelectedMonth(String(activePeriod.month));
+    } else {
+      setSelectedYear(latestYear);
+      setSelectedMonth(defaultMonth);
+    }
+
     setActivePeriodStatus((activePeriod?.status as "open" | "locked") || "open");
 
     let query = supabase
@@ -141,7 +245,7 @@ export default function BillingDetailsPage() {
     setForm((prev) => ({
       ...prev,
       provider_id: prev.provider_id || providerList[0]?.id || "",
-      billing_period_id: activePeriodId || "",
+      billing_period_id: prev.billing_period_id || activePeriodId || "",
     }));
   }
 
@@ -155,7 +259,11 @@ export default function BillingDetailsPage() {
     setForm({
       ...emptyForm,
       provider_id: providers[0]?.id || "",
-      billing_period_id: nextPeriodId || selectedPeriodId || "",
+      billing_period_id:
+        nextPeriodId ||
+        selectedPeriodId ||
+        getCurrentBillingPeriodId(billingPeriods) ||
+        "",
     });
   }
 
@@ -351,30 +459,99 @@ export default function BillingDetailsPage() {
           }}
         />
 
-        <h1 className="text-3xl font-semibold">Billing Detail Entries</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Add, edit, and delete merchant fee and incorrect payment entries.
-        </p>
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold">Billing Detail Entries</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Add, edit, and delete merchant fee and incorrect payment entries.
+            </p>
+          </div>
 
-        <div className="mt-4 max-w-sm">
-          <label className="mb-1 block text-sm">Billing period</label>
-          <select
-            className="w-full rounded-2xl border bg-white px-3 py-2"
-            value={selectedPeriodId}
-            onChange={(e) => {
-              const value = e.target.value;
-              setSelectedPeriodId(value);
-              setEditingEntryId(null);
-              loadData(value);
-            }}
+          <Link
+            href="/billing-details/upload-afterpay"
+            className="inline-flex items-center rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800"
           >
-            <option value="">Select billing period</option>
-            {billingPeriods.map((period) => (
-              <option key={period.id} value={period.id}>
-                {period.label}
-              </option>
-            ))}
-          </select>
+            Upload Afterpay Reconciliation Spreadsheet
+          </Link>
+        </div>
+
+        <div className="mt-4">
+          <label className="mb-1 block text-sm">Billing period</label>
+
+          <div className="grid max-w-md gap-3 sm:grid-cols-2">
+            <select
+              className="w-full rounded-2xl border bg-white px-3 py-2"
+              value={selectedYear}
+              onChange={(e) => {
+                const nextYear = e.target.value;
+                const nextMonth = getDefaultMonthForYear(
+                  billingPeriods,
+                  nextYear
+                );
+                const nextPeriodId = getPeriodIdFromYearMonth(
+                  billingPeriods,
+                  nextYear,
+                  nextMonth
+                );
+                const period = billingPeriods.find((p) => p.id === nextPeriodId);
+
+                setSelectedYear(nextYear);
+                setSelectedMonth(nextMonth);
+                setSelectedPeriodId(nextPeriodId);
+                setEditingEntryId(null);
+                setForm((prev) => ({
+                  ...prev,
+                  billing_period_id: nextPeriodId,
+                }));
+                setActivePeriodStatus(
+                  (period?.status as "open" | "locked") || "open"
+                );
+
+                loadData(nextPeriodId);
+              }}
+            >
+              <option value="">Select year</option>
+              {yearOptions.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="w-full rounded-2xl border bg-white px-3 py-2"
+              value={selectedMonth}
+              onChange={(e) => {
+                const nextMonth = e.target.value;
+                const nextPeriodId = getPeriodIdFromYearMonth(
+                  billingPeriods,
+                  selectedYear,
+                  nextMonth
+                );
+                const period = billingPeriods.find((p) => p.id === nextPeriodId);
+
+                setSelectedMonth(nextMonth);
+                setSelectedPeriodId(nextPeriodId);
+                setEditingEntryId(null);
+                setForm((prev) => ({
+                  ...prev,
+                  billing_period_id: nextPeriodId,
+                }));
+                setActivePeriodStatus(
+                  (period?.status as "open" | "locked") || "open"
+                );
+
+                loadData(nextPeriodId);
+              }}
+            >
+              <option value="">Select month</option>
+              {monthOptions.map((month) => (
+                <option key={month} value={String(month)}>
+                  {monthLabel(month)}
+                </option>
+              ))}
+            </select>
+          </div>
 
           <div className="mt-2 text-sm text-slate-600">
             Status:{" "}

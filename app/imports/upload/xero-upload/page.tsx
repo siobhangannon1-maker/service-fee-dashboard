@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { parseXeroProfitLossCsv } from "@/lib/parse-xero-profit-loss-csv";
 import { useEffect, useMemo, useRef, useState } from "react";
+import Toast from "@/components/ui/Toast";
 import {
   getStatusColors,
   getStatusLabel,
@@ -14,6 +15,7 @@ type BillingPeriod = {
   label: string;
   month: number;
   year: number;
+  status?: string;
 };
 
 type ResultRow = {
@@ -46,7 +48,49 @@ type XeroImportItem = {
   year: number | null;
   linked: boolean;
   is_processed: boolean;
+  download_url?: string | null;
 };
+
+const MONTH_LABELS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function getDefaultYear(periods: BillingPeriod[]) {
+  if (!periods.length) return "";
+
+  const years = Array.from(new Set(periods.map((p) => p.year))).sort((a, b) => b - a);
+
+  return String(years[0] ?? "");
+}
+
+function getDefaultMonth(periods: BillingPeriod[], year: number) {
+  const monthsForYear = periods
+    .filter((p) => p.year === year)
+    .map((p) => p.month)
+    .sort((a, b) => a - b);
+
+  if (!monthsForYear.length) return "";
+
+  const currentMonth = new Date().getMonth() + 1;
+  const currentYear = new Date().getFullYear();
+
+  if (year === currentYear && monthsForYear.includes(currentMonth)) {
+    return String(currentMonth);
+  }
+
+  return String(monthsForYear[0] ?? "");
+}
 
 async function safeReadJson(response: Response) {
   const text = await response.text();
@@ -58,12 +102,14 @@ async function safeReadJson(response: Response) {
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`Server returned non-JSON response with status ${response.status}`);
+    throw new Error(
+      `Server returned a non-JSON response (${response.status}). Check the API route for a crash, missing route, or server-side error.`
+    );
   }
 }
 
 function formatCurrency(value: number) {
-  return `$${Number(value).toLocaleString(undefined, {
+  return `$${Number(value).toLocaleString("en-AU", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -84,30 +130,35 @@ function formatDateTime(value: string | null) {
 
 function getImportStatusClasses(status: string) {
   if (status === "processed") {
-    return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200";
+    return "border border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+
+  if (status === "uploaded") {
+    return "border border-amber-200 bg-amber-50 text-amber-700";
   }
 
   if (status === "failed") {
-    return "bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200";
+    return "border border-rose-200 bg-rose-50 text-rose-700";
   }
 
-  return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200";
+  return "border border-slate-200 bg-slate-100 text-slate-700";
 }
 
 export default function XeroUploadPage() {
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
   const [selectedBillingPeriodId, setSelectedBillingPeriodId] = useState("");
+  const [selectedYear, setSelectedYear] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const [report, setReport] = useState<ReportData | null>(null);
   const [imports, setImports] = useState<XeroImportItem[]>([]);
 
+  const [message, setMessage] = useState("");
+  const [tone, setTone] = useState<"default" | "success" | "error">("default");
   const [loading, setLoading] = useState(false);
   const [loadingImports, setLoadingImports] = useState(false);
   const [busyImportId, setBusyImportId] = useState<string | null>(null);
-
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -118,8 +169,6 @@ export default function XeroUploadPage() {
 
   async function loadBillingPeriods() {
     try {
-      setError("");
-
       const res = await fetch("/api/billing-periods", {
         method: "GET",
         cache: "no-store",
@@ -142,15 +191,31 @@ export default function XeroUploadPage() {
 
       setBillingPeriods(nextBillingPeriods);
 
-      if (nextBillingPeriods.length > 0) {
-        setSelectedBillingPeriodId((prev) => prev || nextBillingPeriods[0].id);
+      const defaultYear = getDefaultYear(nextBillingPeriods);
+      setSelectedYear(defaultYear);
+
+      const numericDefaultYear = Number(defaultYear);
+      const defaultMonth = Number.isNaN(numericDefaultYear)
+        ? ""
+        : getDefaultMonth(nextBillingPeriods, numericDefaultYear);
+
+      setSelectedMonth(defaultMonth);
+
+      if (!Number.isNaN(numericDefaultYear) && defaultMonth) {
+        const defaultPeriod =
+          nextBillingPeriods.find(
+            (period) =>
+              period.year === numericDefaultYear &&
+              period.month === Number(defaultMonth)
+          ) || null;
+
+        setSelectedBillingPeriodId(defaultPeriod?.id || "");
+      } else {
+        setSelectedBillingPeriodId("");
       }
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("Failed to load billing periods");
-      }
+      setTone("error");
+      setMessage(err instanceof Error ? err.message : "Failed to load billing periods");
     }
   }
 
@@ -178,31 +243,100 @@ export default function XeroUploadPage() {
 
       setImports(nextImports);
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("Failed to load Xero imports");
-      }
+      setTone("error");
+      setMessage(err instanceof Error ? err.message : "Failed to load Xero imports");
     } finally {
       setLoadingImports(false);
     }
   }
+
+  const availableYears = useMemo(() => {
+    return Array.from(new Set(billingPeriods.map((period) => period.year))).sort(
+      (a, b) => b - a
+    );
+  }, [billingPeriods]);
+
+  const availableMonthsForSelectedYear = useMemo(() => {
+    if (!selectedYear) return [];
+
+    const year = Number(selectedYear);
+
+    return billingPeriods
+      .filter((period) => period.year === year)
+      .sort((a, b) => a.month - b.month);
+  }, [billingPeriods, selectedYear]);
+
+  useEffect(() => {
+    if (!selectedYear) {
+      setSelectedMonth("");
+      setSelectedBillingPeriodId("");
+      return;
+    }
+
+    const year = Number(selectedYear);
+
+    if (Number.isNaN(year)) {
+      setSelectedMonth("");
+      setSelectedBillingPeriodId("");
+      return;
+    }
+
+    const validMonths = billingPeriods
+      .filter((period) => period.year === year)
+      .map((period) => period.month)
+      .sort((a, b) => a - b);
+
+    if (!validMonths.length) {
+      setSelectedMonth("");
+      setSelectedBillingPeriodId("");
+      return;
+    }
+
+    const currentSelectedMonth = Number(selectedMonth);
+
+    if (!selectedMonth || !validMonths.includes(currentSelectedMonth)) {
+      const nextMonth = getDefaultMonth(billingPeriods, year);
+      setSelectedMonth(nextMonth);
+
+      const matchedPeriod =
+        billingPeriods.find(
+          (period) => period.year === year && period.month === Number(nextMonth)
+        ) || null;
+
+      setSelectedBillingPeriodId(matchedPeriod?.id || "");
+      return;
+    }
+
+    const matchedPeriod =
+      billingPeriods.find(
+        (period) => period.year === year && period.month === currentSelectedMonth
+      ) || null;
+
+    setSelectedBillingPeriodId(matchedPeriod?.id || "");
+  }, [billingPeriods, selectedYear, selectedMonth]);
+
+  const selectedBillingPeriod = useMemo(() => {
+    return billingPeriods.find((period) => period.id === selectedBillingPeriodId) || null;
+  }, [billingPeriods, selectedBillingPeriodId]);
+
+  const duplicateImport = useMemo(() => {
+    return imports.find((item) => item.billing_period_id === selectedBillingPeriodId);
+  }, [imports, selectedBillingPeriodId]);
 
   async function handleUploadAndProcess() {
     let importId: string | null = null;
 
     try {
       setLoading(true);
-      setError("");
       setMessage("");
       setReport(null);
 
       if (!selectedFile) {
-        throw new Error("Please choose a CSV file");
+        throw new Error("Please choose a CSV file.");
       }
 
       if (!selectedBillingPeriodId) {
-        throw new Error("Please select a billing month");
+        throw new Error("Please choose a billing month.");
       }
 
       const billingPeriod = billingPeriods.find(
@@ -210,7 +344,13 @@ export default function XeroUploadPage() {
       );
 
       if (!billingPeriod) {
-        throw new Error("Invalid billing period");
+        throw new Error("Invalid billing period.");
+      }
+
+      if (duplicateImport) {
+        throw new Error(
+          `A Xero CSV is already linked to this billing month (${duplicateImport.file_name}). Unlink or delete it first.`
+        );
       }
 
       const uploadForm = new FormData();
@@ -261,11 +401,12 @@ export default function XeroUploadPage() {
       }
 
       if (!processData) {
-        throw new Error("The server returned an empty response");
+        throw new Error("The server returned an empty response.");
       }
 
       setReport(processData as ReportData);
-      setMessage("Xero file uploaded, processed, and saved successfully.");
+      setTone("success");
+      setMessage("Xero CSV uploaded, processed, and saved successfully.");
       setSelectedFile(null);
 
       if (fileInputRef.current) {
@@ -274,12 +415,8 @@ export default function XeroUploadPage() {
 
       await loadImports();
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("Upload failed");
-      }
-
+      setTone("error");
+      setMessage(err instanceof Error ? err.message : "Upload failed");
       await loadImports();
     } finally {
       setLoading(false);
@@ -289,11 +426,20 @@ export default function XeroUploadPage() {
   async function handleLink(importId: string) {
     try {
       setBusyImportId(importId);
-      setError("");
       setMessage("");
 
       if (!selectedBillingPeriodId) {
-        throw new Error("Please select a billing month first.");
+        throw new Error("Please choose a billing month first.");
+      }
+
+      const conflictingImport = imports.find(
+        (item) => item.id !== importId && item.billing_period_id === selectedBillingPeriodId
+      );
+
+      if (conflictingImport) {
+        throw new Error(
+          `Another Xero CSV is already linked to this billing month (${conflictingImport.file_name}).`
+        );
       }
 
       const res = await fetch("/api/xero-imports/link", {
@@ -314,14 +460,12 @@ export default function XeroUploadPage() {
         );
       }
 
+      setTone("success");
       setMessage("Import linked successfully.");
       await loadImports();
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("Failed to link import");
-      }
+      setTone("error");
+      setMessage(err instanceof Error ? err.message : "Failed to link import");
     } finally {
       setBusyImportId(null);
     }
@@ -330,7 +474,6 @@ export default function XeroUploadPage() {
   async function handleUnlink(importId: string) {
     try {
       setBusyImportId(importId);
-      setError("");
       setMessage("");
 
       const res = await fetch("/api/xero-imports/unlink", {
@@ -350,14 +493,12 @@ export default function XeroUploadPage() {
         );
       }
 
+      setTone("success");
       setMessage("Import unlinked successfully.");
       await loadImports();
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("Failed to unlink import");
-      }
+      setTone("error");
+      setMessage(err instanceof Error ? err.message : "Failed to unlink import");
     } finally {
       setBusyImportId(null);
     }
@@ -365,14 +506,13 @@ export default function XeroUploadPage() {
 
   async function handleDelete(importId: string) {
     const confirmed = window.confirm(
-      "Delete this Xero upload record and stored file?"
+      "Delete this uploaded CSV, its log row, and the stored Xero file?"
     );
 
     if (!confirmed) return;
 
     try {
       setBusyImportId(importId);
-      setError("");
       setMessage("");
 
       const res = await fetch(
@@ -391,301 +531,279 @@ export default function XeroUploadPage() {
         );
       }
 
+      setTone("success");
       setMessage("Import deleted successfully.");
       await loadImports();
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("Failed to delete import");
-      }
+      setTone("error");
+      setMessage(err instanceof Error ? err.message : "Failed to delete import");
     } finally {
       setBusyImportId(null);
     }
   }
 
-  const selectedBillingPeriodLabel = useMemo(() => {
-    return (
-      billingPeriods.find((period) => period.id === selectedBillingPeriodId)?.label ||
-      "No month selected"
-    );
-  }, [billingPeriods, selectedBillingPeriodId]);
-
   return (
-    <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-100 p-6">
+    <main className="min-h-screen bg-slate-50 p-6">
       <div className="mx-auto max-w-7xl">
-        <section className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 px-6 py-7 text-white">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div className="max-w-3xl">
-                <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-200">
-                  Benchmark reporting
-                </p>
-                <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
-                  Xero Expense Upload
-                </h1>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-200">
-                  Upload your Xero Profit and Loss CSV, process it into benchmark data,
-                  and manage a clean log of Xero imports.
-                </p>
-              </div>
-
-              <Link
-                href="/benchmark/expense-reports"
-                className="inline-flex rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/15"
-              >
-                Return to Benchmark Reports
-              </Link>
-            </div>
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold">
+              Upload Xero Profit and Loss CSV
+            </h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Upload a CSV, process it into benchmark data, and manage uploaded files.
+            </p>
           </div>
 
-          <div className="grid gap-6 px-6 py-6 xl:grid-cols-[1.1fr_0.9fr]">
-            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-xl font-semibold tracking-tight text-slate-900">
-                Upload and process
-              </h2>
-              <p className="mt-1 text-sm text-slate-500">
-                Select the billing month, choose a CSV file, then upload and process it.
-              </p>
+          <Link
+            href="/benchmark/expense-reports"
+            className="inline-flex items-center rounded-2xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            Back to Benchmark Reports
+          </Link>
+        </div>
 
-              {error ? (
-                <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {error}
-                </div>
-              ) : null}
-
-              {message ? (
-                <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                  {message}
-                </div>
-              ) : null}
-
-              <div className="mt-6 grid gap-4 md:grid-cols-2">
-                <div>
-                  <label
-                    htmlFor="billing-period"
-                    className="mb-1.5 block text-sm font-medium text-slate-700"
-                  >
-                    Billing month
-                  </label>
-                  <select
-                    id="billing-period"
-                    value={selectedBillingPeriodId}
-                    onChange={(e) => setSelectedBillingPeriodId(e.target.value)}
-                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
-                  >
-                    <option value="">Select billing month</option>
-                    {billingPeriods.map((period) => (
-                      <option key={period.id} value={period.id}>
-                        {period.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                    CSV file
-                  </label>
-
-                  <input
-                    ref={fileInputRef}
-                    id="xero-file"
-                    type="file"
-                    accept=".csv"
-                    onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
-                    className="hidden"
-                  />
-
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                  >
-                    Choose CSV file
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                {selectedFile ? (
-                  <>
-                    <span className="font-medium text-slate-900">Selected file:</span>{" "}
-                    {selectedFile.name}
-                  </>
-                ) : (
-                  "No file selected"
-                )}
-              </div>
-
-              <div className="mt-6 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleUploadAndProcess}
-                  disabled={loading}
-                  className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {loading ? "Uploading & Processing..." : "Upload & Process"}
-                </button>
-
-                <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-                  Selected month: {selectedBillingPeriodLabel}
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 shadow-sm">
-              <h2 className="text-xl font-semibold tracking-tight text-slate-900">
-                Upload status guide
-              </h2>
-              <div className="mt-4 space-y-3 text-sm text-slate-600">
-                <div className="rounded-2xl bg-white px-4 py-3">
-                  <span className="font-medium text-slate-900">Uploaded:</span> file stored and log row created
-                </div>
-                <div className="rounded-2xl bg-white px-4 py-3">
-                  <span className="font-medium text-slate-900">Processed:</span> benchmark processing completed successfully
-                </div>
-                <div className="rounded-2xl bg-white px-4 py-3">
-                  <span className="font-medium text-slate-900">Failed:</span> upload exists but processing did not complete
-                </div>
-                <div className="rounded-2xl bg-white px-4 py-3">
-                  <span className="font-medium text-slate-900">Linked month:</span> billing period currently attached to the upload
-                </div>
-              </div>
-            </div>
+        {message ? (
+          <div className="mt-4">
+            <Toast message={message} tone={tone} />
           </div>
-        </section>
+        ) : null}
 
-        <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold text-slate-900">Upload CSV</h2>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
             <div>
-              <h2 className="text-xl font-semibold tracking-tight text-slate-900">
-                Xero upload log
+              <label className="mb-1 block text-sm font-medium text-slate-700">
+                Billing year
+              </label>
+              <select
+                className="w-full rounded-2xl border border-slate-200 px-3 py-2"
+                value={selectedYear}
+                onChange={(e) => setSelectedYear(e.target.value)}
+              >
+                <option value="">Select year</option>
+                {availableYears.map((year) => (
+                  <option key={year} value={String(year)}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">
+                Billing month
+              </label>
+              <select
+                className="w-full rounded-2xl border border-slate-200 px-3 py-2"
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                disabled={!selectedYear}
+              >
+                <option value="">Select month</option>
+                {availableMonthsForSelectedYear.map((period) => (
+                  <option key={period.id} value={String(period.month)}>
+                    {MONTH_LABELS[period.month - 1]}
+                  </option>
+                ))}
+              </select>
+
+              {selectedBillingPeriod ? (
+                <div className="mt-2 text-sm text-slate-600">
+                  Selected:{" "}
+                  <span className="font-semibold text-slate-900">
+                    {selectedBillingPeriod.label}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">
+                CSV file
+              </label>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2"
+                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+              />
+            </div>
+          </div>
+
+          {duplicateImport ? (
+            <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+              A CSV is already linked to this billing month:
+              <span className="ml-1 font-semibold">{duplicateImport.file_name}</span>.
+              Delete or unlink it before uploading another one.
+            </div>
+          ) : null}
+
+          {selectedFile ? (
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              <span className="font-medium">Selected file:</span> {selectedFile.name}
+            </div>
+          ) : (
+            <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+              No CSV file selected yet.
+            </div>
+          )}
+
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={handleUploadAndProcess}
+              disabled={loading || !!duplicateImport}
+              className="rounded-2xl bg-slate-900 px-4 py-2 text-white disabled:opacity-50"
+            >
+              {loading ? "Uploading and Processing..." : "Upload and Process"}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-900">
+                Uploaded CSV files
               </h2>
               <p className="mt-1 text-sm text-slate-500">
-                See what has been uploaded, whether it has been processed, and manage linking.
+                See what has been uploaded, what month it is linked to, and manage files.
               </p>
             </div>
 
             <button
               type="button"
               onClick={() => void loadImports()}
-              className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
-              {loadingImports ? "Refreshing..." : "Refresh log"}
+              {loadingImports ? "Refreshing..." : "Refresh"}
             </button>
           </div>
 
-          <div className="mt-5 overflow-x-auto">
-            <table className="min-w-full border-separate border-spacing-0">
-              <thead>
-                <tr className="text-left">
-                  <th className="border-b border-slate-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    File
-                  </th>
-                  <th className="border-b border-slate-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Uploaded
-                  </th>
-                  <th className="border-b border-slate-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Processed
-                  </th>
-                  <th className="border-b border-slate-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Linked month
-                  </th>
-                  <th className="border-b border-slate-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Status
-                  </th>
-                  <th className="border-b border-slate-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {loadingImports ? (
+          {imports.length === 0 ? (
+            <div className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+              No Xero CSV files uploaded yet.
+            </div>
+          ) : (
+            <div className="mt-6 overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="border-b border-slate-200 text-left text-slate-500">
                   <tr>
-                    <td colSpan={6} className="px-4 py-6 text-sm text-slate-500">
-                      Loading imports...
-                    </td>
+                    <th className="pb-3 pr-4 font-medium">File</th>
+                    <th className="pb-3 pr-4 font-medium">Linked month</th>
+                    <th className="pb-3 pr-4 font-medium">Uploaded</th>
+                    <th className="pb-3 pr-4 font-medium">Processed</th>
+                    <th className="pb-3 pr-4 font-medium">Status</th>
+                    <th className="pb-3 font-medium">Actions</th>
                   </tr>
-                ) : imports.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-6 text-sm text-slate-500">
-                      No Xero uploads yet.
-                    </td>
-                  </tr>
-                ) : (
-                  imports.map((item) => (
-                    <tr key={item.id} className="align-top">
-                      <td className="border-b border-slate-100 px-4 py-4">
-                        <div className="font-medium text-slate-900">{item.file_name}</div>
-                      </td>
+                </thead>
+                <tbody>
+                  {imports.map((item) => {
+                    const linkDisabled =
+                      busyImportId === item.id ||
+                      (!!selectedBillingPeriodId &&
+                        item.billing_period_id !== selectedBillingPeriodId &&
+                        !!duplicateImport);
 
-                      <td className="border-b border-slate-100 px-4 py-4 text-sm text-slate-600">
-                        {formatDateTime(item.created_at)}
-                      </td>
+                    return (
+                      <tr
+                        key={item.id}
+                        className="border-b border-slate-100 align-top hover:bg-slate-50/60"
+                      >
+                        <td className="py-4 pr-4">
+                          <div className="font-medium text-slate-900">
+                            {item.file_name}
+                          </div>
 
-                      <td className="border-b border-slate-100 px-4 py-4 text-sm text-slate-600">
-                        {formatDateTime(item.processed_at)}
-                      </td>
+                          {item.download_url ? (
+                            <a
+                              href={item.download_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-1 inline-flex text-xs font-medium text-sky-700 hover:text-sky-800"
+                            >
+                              Download file
+                            </a>
+                          ) : (
+                            <div className="mt-1 text-xs text-slate-400">
+                              Download unavailable
+                            </div>
+                          )}
+                        </td>
 
-                      <td className="border-b border-slate-100 px-4 py-4 text-sm text-slate-600">
-                        {item.billing_period_label || "Not linked"}
-                      </td>
+                        <td className="py-4 pr-4 text-slate-700">
+                          {item.billing_period_label || "Not linked"}
+                        </td>
 
-                      <td className="border-b border-slate-100 px-4 py-4">
-                        <span
-                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getImportStatusClasses(
-                            item.status
-                          )}`}
-                        >
-                          {item.status}
-                        </span>
-                      </td>
+                        <td className="py-4 pr-4 text-slate-700">
+                          {formatDateTime(item.created_at)}
+                        </td>
 
-                      <td className="border-b border-slate-100 px-4 py-4">
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void handleLink(item.id)}
-                            disabled={busyImportId === item.id}
-                            className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        <td className="py-4 pr-4 text-slate-700">
+                          {formatDateTime(item.processed_at)}
+                        </td>
+
+                        <td className="py-4 pr-4">
+                          <span
+                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold capitalize ${getImportStatusClasses(
+                              item.status
+                            )}`}
                           >
-                            Link
-                          </button>
+                            {item.status}
+                          </span>
+                        </td>
 
-                          <button
-                            type="button"
-                            onClick={() => void handleUnlink(item.id)}
-                            disabled={busyImportId === item.id}
-                            className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
-                          >
-                            Unlink
-                          </button>
+                        <td className="py-4">
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void handleLink(item.id)}
+                              disabled={linkDisabled}
+                              className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                              title={
+                                linkDisabled && duplicateImport && item.billing_period_id !== selectedBillingPeriodId
+                                  ? "Another import is already linked to the selected billing month"
+                                  : ""
+                              }
+                            >
+                              Link
+                            </button>
 
-                          <button
-                            type="button"
-                            onClick={() => void handleDelete(item.id)}
-                            disabled={busyImportId === item.id}
-                            className="rounded-xl border border-rose-200 px-3 py-1.5 text-sm text-rose-700 transition hover:bg-rose-50 disabled:opacity-50"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+                            <button
+                              type="button"
+                              onClick={() => void handleUnlink(item.id)}
+                              disabled={busyImportId === item.id}
+                              className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                            >
+                              Unlink
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => void handleDelete(item.id)}
+                              disabled={busyImportId === item.id}
+                              className="rounded-xl border border-rose-200 px-3 py-1.5 text-sm text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
 
         {report ? (
           <>
             <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-xl font-semibold tracking-tight text-slate-900">
-                Summary
-              </h2>
+              <h2 className="text-xl font-semibold text-slate-900">Summary</h2>
 
               <div className="mt-5 grid gap-4 md:grid-cols-4">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -719,32 +837,20 @@ export default function XeroUploadPage() {
             </section>
 
             <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-xl font-semibold tracking-tight text-slate-900">
+              <h2 className="text-xl font-semibold text-slate-900">
                 Benchmark result details
               </h2>
 
               <div className="mt-5 overflow-x-auto">
-                <table className="min-w-full border-separate border-spacing-0">
-                  <thead>
+                <table className="min-w-full text-sm">
+                  <thead className="border-b border-slate-200 text-left text-slate-500">
                     <tr>
-                      <th className="border-b border-slate-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Category
-                      </th>
-                      <th className="border-b border-slate-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Amount
-                      </th>
-                      <th className="border-b border-slate-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        %
-                      </th>
-                      <th className="border-b border-slate-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Target %
-                      </th>
-                      <th className="border-b border-slate-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Variance
-                      </th>
-                      <th className="border-b border-slate-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Status
-                      </th>
+                      <th className="pb-3 pr-4 font-medium">Category</th>
+                      <th className="pb-3 pr-4 font-medium">Amount</th>
+                      <th className="pb-3 pr-4 font-medium">%</th>
+                      <th className="pb-3 pr-4 font-medium">Target %</th>
+                      <th className="pb-3 pr-4 font-medium">Variance</th>
+                      <th className="pb-3 font-medium">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -752,23 +858,26 @@ export default function XeroUploadPage() {
                       const colors = getStatusColors(row.status);
 
                       return (
-                        <tr key={row.category_name}>
-                          <td className="border-b border-slate-100 px-4 py-4 text-sm text-slate-900">
+                        <tr
+                          key={row.category_name}
+                          className="border-b border-slate-100 align-top hover:bg-slate-50/60"
+                        >
+                          <td className="py-4 pr-4 text-slate-900">
                             {row.category_name}
                           </td>
-                          <td className="border-b border-slate-100 px-4 py-4 text-sm text-slate-600">
+                          <td className="py-4 pr-4 text-slate-700">
                             {formatCurrency(row.expense_amount)}
                           </td>
-                          <td className="border-b border-slate-100 px-4 py-4 text-sm text-slate-600">
+                          <td className="py-4 pr-4 text-slate-700">
                             {row.actual_percent.toFixed(2)}%
                           </td>
-                          <td className="border-b border-slate-100 px-4 py-4 text-sm text-slate-600">
+                          <td className="py-4 pr-4 text-slate-700">
                             {row.target_percent.toFixed(2)}%
                           </td>
-                          <td className="border-b border-slate-100 px-4 py-4 text-sm text-slate-600">
+                          <td className="py-4 pr-4 text-slate-700">
                             {row.variance_from_target.toFixed(2)}%
                           </td>
-                          <td className="border-b border-slate-100 px-4 py-4">
+                          <td className="py-4">
                             <span
                               className="inline-flex rounded-full px-3 py-1 text-xs font-semibold"
                               style={{

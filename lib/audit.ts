@@ -17,15 +17,19 @@ export async function writeAuditLog(params: AuditLogParams) {
       data: { user },
     } = await supabase.auth.getUser();
 
-    await supabase.from("audit_logs").insert({
+    const { error } = await supabase.from("audit_log").insert({
       action: params.action,
       entity_type: params.entityType,
       entity_id: params.entityId || null,
       billing_period_id: params.billingPeriodId || null,
       provider_id: params.providerId || null,
       metadata: params.metadata || {},
-      user_id: user?.id || null,
+      actor_user_id: user?.id || null,
     });
+
+    if (error) {
+      console.error("Audit log insert failed:", error.message);
+    }
   } catch (error) {
     console.error("Audit log failed:", error);
   }
@@ -49,7 +53,7 @@ export async function writeStatementHistory(
       data: { user },
     } = await supabase.auth.getUser();
 
-    await supabase.from("statement_history").insert({
+    const { error } = await supabase.from("statement_history").insert({
       action: params.action,
       billing_period_id: params.billingPeriodId,
       provider_id: params.providerId,
@@ -57,6 +61,10 @@ export async function writeStatementHistory(
       metadata: params.metadata || {},
       user_id: user?.id || null,
     });
+
+    if (error) {
+      console.error("Statement history insert failed:", error.message);
+    }
   } catch (error) {
     console.error("Statement history failed:", error);
   }

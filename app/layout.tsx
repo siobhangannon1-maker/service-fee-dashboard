@@ -16,6 +16,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Financial Dashboard",
   description: "Focus Dental Specialists Financial Dashboard",
+  icons: {
+    icon: "/favicon-v3.ico",
+    shortcut: "/favicon-v3.ico",
+    apple: "/favicon-v3.ico",
+  },
 };
 
 export default function RootLayout({
@@ -29,9 +34,9 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body>
-  <TopNav />
-  {children}
-</body>
+        <TopNav />
+        {children}
+      </body>
     </html>
   );
 }
