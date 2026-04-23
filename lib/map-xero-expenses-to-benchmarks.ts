@@ -31,9 +31,7 @@ export async function mapXeroExpensesToBenchmarkCategories(
       throw new Error(`Amount must be a valid number for ${row.account_name}`)
     }
 
-    if (row.amount < 0) {
-      throw new Error(`Amount must not be negative for ${row.account_name}`)
-    }
+    // Negative amounts are allowed
   }
 
   const uniqueAccountNames = [...new Set(cleanedRows.map((row) => row.account_name))]

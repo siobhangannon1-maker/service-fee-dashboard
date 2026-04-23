@@ -48,7 +48,7 @@ export async function GET(
       .select("provider_id, import_id, item_number, total_gross_production")
       .eq("provider_id", providerId)
       .eq("import_id", importId)
-      .eq("item_number", "949");
+      .eq("item_number", 949);
 
     console.log("Item 949 rows:", item949Rows);
     console.log("Item 949 error:", itemError);

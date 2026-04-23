@@ -13,13 +13,13 @@ export async function requireAdmin() {
     redirect("/login");
   }
 
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
+  const { data: roleRow, error: roleError } = await supabase
+    .from("user_roles")
     .select("role")
-    .eq("id", user.id)
+    .eq("user_id", user.id)
     .single();
 
-  if (profileError || !profile || profile.role !== "admin") {
+  if (roleError || !roleRow || roleRow.role !== "admin") {
     redirect("/");
   }
 

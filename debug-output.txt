@@ -1,0 +1,63 @@
+◇ injected env (10) from .env.local // tip: ⌘ suppress logs { quiet: true }
+ENV CHECK { hasSupabaseUrl: true, hasServiceRoleKey: true }
+
+========================================
+PROVIDER CLINICAL DEBUG
+========================================
+Provider: Dr Siobhan Gannon
+Provider ID: dc74f8bf-5a41-4125-a7d2-6eb304188146
+Month: 2026-03
+Date range: 2026-03-01 to 2026-03-31
+Raw row count: 2
+Deduped row count: 2
+
+{
+  "appointment_date": "2026-03-05",
+  "appointment_start": "2026-03-05T12:20:00",
+  "patient_name_raw": "Ly Lam Hoa, Mrs (100577)",
+  "treatment_type": "REVIEW",
+  "appointment_status": null,
+  "arrival_status": null,
+  "response_status": null,
+  "following_appointment_raw": null,
+  "stored_has_following_appointment": false,
+  "derived_has_following_appointment": false,
+  "stored_is_cancelled": false,
+  "derived_is_cancelled": false,
+  "stored_is_fta": false,
+  "derived_is_fta": false,
+  "is_consultation": false,
+  "counts_in_total_appointments": true,
+  "counts_in_completed_consults": false
+}
+{
+  "appointment_date": "2026-03-27",
+  "appointment_start": "2026-03-27T09:50:00",
+  "patient_name_raw": "Tamayo Rebecca, Ms (112776)",
+  "treatment_type": "Maintenance",
+  "appointment_status": null,
+  "arrival_status": null,
+  "response_status": null,
+  "following_appointment_raw": null,
+  "stored_has_following_appointment": false,
+  "derived_has_following_appointment": false,
+  "stored_is_cancelled": false,
+  "derived_is_cancelled": false,
+  "stored_is_fta": false,
+  "derived_is_fta": false,
+  "is_consultation": false,
+  "counts_in_total_appointments": true,
+  "counts_in_completed_consults": false
+}
+
+========================================
+SUMMARY
+========================================
+totalAppointments = 2
+cancelledNoRebook = 0
+ftaCount = 0
+consultCompletedCount = 0
+consultRebookedCount = 0
+consultNotRebookedCount = 0
+consultRebookingRate = 0
+

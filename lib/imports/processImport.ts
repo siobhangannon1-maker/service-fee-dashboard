@@ -6,10 +6,7 @@ type RawCsvRow = Record<string, string>;
 function parseMoney(value: string | null | undefined): number {
   if (!value) return 0;
 
-  const cleaned = value
-    .replace(/\$/g, "")
-    .replace(/,/g, "")
-    .trim();
+  const cleaned = value.replace(/\$/g, "").replace(/,/g, "").trim();
 
   const parsed = Number(cleaned);
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -331,12 +328,13 @@ export async function processImport(importId: string) {
       providerSummary.service_fee_base += rowGrossProduction;
 
       if (itemNumber) {
-        const itemKey = `${providerId}::${itemNumber}`;
+        const normalizedItemNumber = String(itemNumber).trim();
+        const itemKey = `${providerId}::${normalizedItemNumber}`;
 
         if (!providerItemTotalsMap.has(itemKey)) {
           providerItemTotalsMap.set(itemKey, {
             provider_id: providerId,
-            item_number: itemNumber,
+            item_number: normalizedItemNumber,
             total_gross_production: 0,
             total_collections: 0,
             row_count: 0,
@@ -414,13 +412,29 @@ export async function processImport(importId: string) {
     console.log("STEP K2: auto-saving provider monthly records");
 
     if (importRecord.billing_period_id && providerSummariesToInsert.length > 0) {
+      const provider949TotalsByProvider = new Map<string, number>();
+
+      for (const item of providerItemTotalsToInsert) {
+        const normalizedItemNumber = String(item.item_number).trim();
+
+        if (normalizedItemNumber !== "949") continue;
+
+        const currentTotal = provider949TotalsByProvider.get(item.provider_id) ?? 0;
+        provider949TotalsByProvider.set(
+          item.provider_id,
+          currentTotal + Number(item.total_gross_production || 0)
+        );
+      }
+
       const providerMonthlyRecordsPayload = providerSummariesToInsert.map((summary) => ({
         provider_id: summary.provider_id,
         billing_period_id: importRecord.billing_period_id,
         gross_production: summary.gross_production,
         adjustments: summary.adjustments,
         incorrect_payments: 0,
-        iv_facility_fees: 0,
+        iv_facility_fees: Number(
+          (provider949TotalsByProvider.get(summary.provider_id) ?? 0).toFixed(2)
+        ),
         other_deductions: 0,
       }));
 
@@ -444,6 +458,7 @@ export async function processImport(importId: string) {
             .update({
               gross_production: row.gross_production,
               adjustments: row.adjustments,
+              iv_facility_fees: row.iv_facility_fees,
             })
             .eq("id", existingRecord.id);
 
@@ -509,8 +524,8 @@ export async function processImport(importId: string) {
     ).length;
 
     const total949 = providerItemTotalsToInsert
-      .filter((row) => row.item_number === "949")
-      .reduce((sum, row) => sum + row.total_gross_production, 0);
+      .filter((row) => String(row.item_number).trim() === "949")
+      .reduce((sum, row) => sum + Number(row.total_gross_production || 0), 0);
 
     return {
       success: true,
