@@ -97,6 +97,10 @@ export async function getXeroAccessToken(): Promise<string> {
 
     const tokenData = data as XeroTokenResponse;
 
+    console.log("Xero token scopes:", tokenData.scope);
+console.log("Xero token type:", tokenData.token_type);
+console.log("Xero token expires in:", tokenData.expires_in);
+
     if (!tokenData.access_token) {
       throw new Error("Xero token response did not include access_token");
     }

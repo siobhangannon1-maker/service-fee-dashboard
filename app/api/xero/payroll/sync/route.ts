@@ -90,9 +90,11 @@ function getOvertimeMultiplier(earningsName: string): number | null {
   const name = earningsName.toLowerCase();
 
   if (!name.includes("overtime")) return null;
+
   if (name.includes("2.0") || name.includes("x 2") || name.includes("x2")) {
     return 2.0;
   }
+
   if (
     name.includes("1.5") ||
     name.includes("x 1.5") ||
@@ -126,6 +128,7 @@ async function fetchXero(accessToken: string, url: string, delayMs: number) {
     const text = await response.text();
 
     let json: any = null;
+
     try {
       json = text ? JSON.parse(text) : null;
     } catch {
@@ -167,30 +170,16 @@ export async function POST(request: Request) {
     const to = url.searchParams.get("to");
     const force = url.searchParams.get("force") === "1";
 
-    /*
-      Backfill controls:
-
-      limit=1 means sync one pay run only.
-      offset=0 means the newest matching pay run.
-      offset=1 means the next matching pay run.
-      offset=2 means the next one after that.
-
-      Example:
-      /api/xero/payroll/sync?from=2025-07-01&to=2025-09-30&force=1&limit=1&offset=0
-      /api/xero/payroll/sync?from=2025-07-01&to=2025-09-30&force=1&limit=1&offset=1
-      /api/xero/payroll/sync?from=2025-07-01&to=2025-09-30&force=1&limit=1&offset=2
-    */
     const isBulkSync = Boolean(from && to);
-    const defaultLimit = isBulkSync ? 1 : 3;
 
     const limit = getPositiveIntegerParam(
       url.searchParams.get("limit"),
-      defaultLimit
+      isBulkSync ? 25 : 10
     );
 
     const offset = getPositiveIntegerParam(url.searchParams.get("offset"), 0);
 
-    const delayMs = isBulkSync ? 2500 : 1200;
+    const delayMs = isBulkSync ? 1200 : 1200;
 
     const supabase = getServiceRoleSupabaseClient();
     const accessToken = await getXeroAccessToken();
@@ -217,6 +206,7 @@ export async function POST(request: Request) {
     const allMatchingPayRuns: XeroPayRun[] = (payRunsJson?.PayRuns ?? [])
       .filter((run: XeroPayRun) => {
         const periodStart = parseXeroDate(run.PayRunPeriodStartDate);
+        const periodEnd = parseXeroDate(run.PayRunPeriodEndDate);
 
         const isStaffPayroll =
           run.PayRunStatus === "POSTED" &&
@@ -224,18 +214,26 @@ export async function POST(request: Request) {
           ALLOWED_STAFF_PAYROLL_CALENDAR_IDS.includes(run.PayrollCalendarID!) &&
           Number(run.Wages ?? 0) > 1000;
 
-        const isInRequestedRange =
+        const overlapsRequestedRange =
           !from ||
           !to ||
-          (periodStart !== null && periodStart >= from && periodStart <= to);
+          (periodStart !== null &&
+            periodEnd !== null &&
+            periodStart <= to &&
+            periodEnd >= from);
 
-        return isStaffPayroll && isInRequestedRange;
+        return isStaffPayroll && overlapsRequestedRange;
       })
       .sort((a: XeroPayRun, b: XeroPayRun) => {
-        const aDate = parseXeroDate(a.PayRunPeriodStartDate) ?? "";
-        const bDate = parseXeroDate(b.PayRunPeriodStartDate) ?? "";
+        const aStart = parseXeroDate(a.PayRunPeriodStartDate) ?? "";
+        const bStart = parseXeroDate(b.PayRunPeriodStartDate) ?? "";
+        const aPayment = parseXeroDate(a.PaymentDate) ?? "";
+        const bPayment = parseXeroDate(b.PaymentDate) ?? "";
 
-        return bDate.localeCompare(aDate);
+        const dateCompare = bStart.localeCompare(aStart);
+        if (dateCompare !== 0) return dateCompare;
+
+        return bPayment.localeCompare(aPayment);
       });
 
     const payRunsToSync = allMatchingPayRuns.slice(offset, offset + limit);
@@ -301,7 +299,9 @@ export async function POST(request: Request) {
             status: payRun.PayRunStatus ?? "POSTED",
             updated_at: new Date().toISOString(),
           },
-          { onConflict: "period_start,period_end" }
+          {
+            onConflict: "xero_pay_run_id",
+          }
         )
         .select("id")
         .single();
@@ -414,7 +414,7 @@ export async function POST(request: Request) {
 
     const nextOffset = offset + limit;
     const checkedSoFar = Math.min(nextOffset, allMatchingPayRuns.length);
-    const hasMore = isBulkSync && nextOffset < allMatchingPayRuns.length;
+    const hasMore = nextOffset < allMatchingPayRuns.length;
 
     return NextResponse.json({
       success: true,
