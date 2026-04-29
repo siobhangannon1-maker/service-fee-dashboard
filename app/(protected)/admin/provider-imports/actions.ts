@@ -101,7 +101,7 @@ async function saveUploadedFileToTemp(
   const bytes = await file.arrayBuffer();
   const buffer = Buffer.from(bytes);
 
-  const tempDir = path.join(process.cwd(), ".tmp", "provider-imports");
+  const tempDir = path.join("/tmp", "provider-imports");
   await fs.mkdir(tempDir, { recursive: true });
 
   const safeOriginalName = file.name || `${prefix}.csv`;
@@ -535,4 +535,4 @@ export async function runProviderImports(
       await fs.rm(tempPath, { force: true });
     }
   }
-}
+} 
