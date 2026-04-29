@@ -359,7 +359,7 @@ export default function TopNav() {
   }
 
   return (
-    <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/95 shadow-[0_10px_35px_rgba(15,23,42,0.06)] backdrop-blur-xl">
+    <header className="sticky top-0 z-[9999] border-b border-slate-300 bg-white shadow-md">
       <div className="w-full px-3 sm:px-5 xl:px-6">
         <div className="flex min-h-[76px] items-center justify-between gap-3 py-3 sm:min-h-[88px]">
           <Link href="/" className="flex min-w-0 shrink items-center gap-3 pr-2 sm:gap-4 sm:pr-4">
@@ -385,7 +385,7 @@ export default function TopNav() {
             </div>
           </Link>
 
-          <div className="hidden min-w-0 flex-1 items-center justify-end gap-3 xl:flex">
+          <div className="hidden min-w-0 flex-1 items-center justify-end gap-3 lg:flex">
             <nav className="relative flex min-w-0 items-center gap-2 rounded-2xl border border-slate-200/80 bg-white/80 p-2 shadow-[0_6px_18px_rgba(15,23,42,0.05)] backdrop-blur">
               {primaryNavItems.map((item) => (
                 <DesktopNavItem
@@ -425,14 +425,13 @@ export default function TopNav() {
             aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
             aria-expanded={mobileMenuOpen}
             onClick={() => setMobileMenuOpen((prev) => !prev)}
-            className="inline-flex shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 xl:hidden"
-          >
-            {mobileMenuOpen ? "Close" : "Menu"}
+            
+          >className="inline-flex shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 lg:hidden"
           </button>
         </div>
 
         {mobileMenuOpen && (
-          <div className="max-h-[calc(100vh-88px)] overflow-y-auto border-t border-slate-200 py-4 xl:hidden">
+          <div className="max-h-[calc(100vh-88px)] overflow-y-auto border-t border-slate-200 py-4 lg:hidden">
             <nav className="grid gap-3">
               {primaryNavItems.map((item) => (
                 <MobileNavItem
