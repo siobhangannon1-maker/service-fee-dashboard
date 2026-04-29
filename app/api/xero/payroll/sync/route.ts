@@ -112,6 +112,31 @@ function getPositiveIntegerParam(value: string | null, fallback: number) {
   return parsed;
 }
 
+function getEarningsLineKey(line: XeroEarningsLine) {
+  return [
+    line.EarningsRateID ?? "",
+    Number(line.RatePerUnit ?? 0).toFixed(6),
+    Number(line.NumberOfUnits ?? 0).toFixed(6),
+    Number(getLineAmount(line) ?? 0).toFixed(2),
+  ].join("|");
+}
+
+function dedupeEarningsLines(lines: XeroEarningsLine[]) {
+  const seen = new Set<string>();
+  const deduped: XeroEarningsLine[] = [];
+
+  for (const line of lines) {
+    const key = getEarningsLineKey(line);
+
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    deduped.push(line);
+  }
+
+  return deduped;
+}
+
 async function fetchXero(accessToken: string, url: string, delayMs: number) {
   await sleep(delayMs);
 
@@ -146,10 +171,6 @@ async function fetchXero(accessToken: string, url: string, delayMs: number) {
       const backoffMs =
         retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : attempt * 10000;
 
-      console.warn(
-        `Xero rate limit hit. Attempt ${attempt}/5. Waiting ${backoffMs}ms before retry.`
-      );
-
       await sleep(backoffMs);
       continue;
     }
@@ -179,7 +200,7 @@ export async function POST(request: Request) {
 
     const offset = getPositiveIntegerParam(url.searchParams.get("offset"), 0);
 
-    const delayMs = isBulkSync ? 1200 : 1200;
+    const delayMs = 1200;
 
     const supabase = getServiceRoleSupabaseClient();
     const accessToken = await getXeroAccessToken();
@@ -243,6 +264,7 @@ export async function POST(request: Request) {
     let insertedWageLines = 0;
     let totalOvertimeHours = 0;
     let totalOvertimeAmount = 0;
+    let duplicateEarningsLinesSkipped = 0;
 
     for (const payRun of payRunsToSync) {
       const periodStart = parseXeroDate(payRun.PayRunPeriodStartDate);
@@ -325,11 +347,16 @@ export async function POST(request: Request) {
 
         const employeeName = getEmployeeName(payslipSummary);
 
-        const allEarningsLines: XeroEarningsLine[] = [
+        const rawEarningsLines: XeroEarningsLine[] = [
           ...(payslip.EarningsLines ?? []),
           ...(payslip.TimesheetEarningsLines ?? []),
           ...(payslip.LeaveEarningsLines ?? []),
         ];
+
+        const allEarningsLines = dedupeEarningsLines(rawEarningsLines);
+
+        duplicateEarningsLinesSkipped +=
+          rawEarningsLines.length - allEarningsLines.length;
 
         for (const line of allEarningsLines) {
           const earningsRateId = line.EarningsRateID;
@@ -370,7 +397,18 @@ export async function POST(request: Request) {
           });
         }
 
+        const seenSuperLines = new Set<string>();
+
         for (const superLine of payslip.SuperannuationLines ?? []) {
+          const superKey = [
+            employeeName,
+            Number(superLine.Amount ?? 0).toFixed(2),
+            JSON.stringify(superLine),
+          ].join("|");
+
+          if (seenSuperLines.has(superKey)) continue;
+          seenSuperLines.add(superKey);
+
           rowsToInsert.push({
             pay_period_id: payPeriodId,
             employee_name: employeeName,
@@ -433,6 +471,7 @@ export async function POST(request: Request) {
         payRunsSynced: syncedPayRuns,
         payRunsSkipped: skippedPayRuns,
         wageLinesInserted: insertedWageLines,
+        duplicateEarningsLinesSkipped,
         overtimeHours: money(totalOvertimeHours),
         overtimeAmount: money(totalOvertimeAmount),
         checkedSoFar,
