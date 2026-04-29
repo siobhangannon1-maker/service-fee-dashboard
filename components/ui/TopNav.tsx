@@ -82,17 +82,16 @@ const navGroups: NavGroup[] = [
         description: "Analysis of staff wages and overtime",
       },
       {
-    label: "Benchmark Analysis",
-    href: "/practice-manager/benchmark-analysis",
-    description:
-      "Review benchmark percentages with category trend charts, status colours, and benchmark advice popups.",
-  },
-  {
-    label: "Tasks",
-    href: "/practice-manager/tasks",
-    description:
-      "Review automatically generated tasks",
-  },
+        href: "/practice-manager/benchmark-analysis",
+        label: "Benchmark Analysis",
+        description:
+          "Review benchmark percentages with category trend charts, status colours, and benchmark advice popups.",
+      },
+      {
+        href: "/practice-manager/tasks",
+        label: "Tasks",
+        description: "Review automatically generated tasks",
+      },
     ],
   },
   {
@@ -207,7 +206,7 @@ function DesktopDropdown({
       </button>
 
       {open && (
-       <div className="absolute left-1/2 top-full z-50 mt-2 w-80 -translate-x-1/2 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+        <div className="absolute left-1/2 top-full z-50 mt-2 w-80 -translate-x-1/2 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
           {group.items.map((item) => (
             <Link
               key={item.href}
@@ -334,6 +333,7 @@ export default function TopNav() {
 
   const visibleNavGroups = useMemo(() => {
     if (!role) return [];
+
     return navGroups
       .filter((group) => group.roles.includes(role))
       .map((group) => ({
@@ -362,21 +362,24 @@ export default function TopNav() {
     <header className="sticky top-0 z-[9999] border-b border-slate-300 bg-white shadow-md">
       <div className="w-full px-3 sm:px-5 xl:px-6">
         <div className="flex min-h-[76px] items-center justify-between gap-3 py-3 sm:min-h-[88px]">
-          <Link href="/" className="flex min-w-0 shrink items-center gap-3 pr-2 sm:gap-4 sm:pr-4">
+          <Link
+            href="/"
+            className="flex min-w-0 shrink items-center gap-3 pr-2 sm:gap-4 sm:pr-4"
+          >
             <div className="flex shrink-0 items-center justify-center">
               {logo ? (
                 <img
                   src={logo}
                   alt="Practice logo"
-                  className="h-12 w-auto object-contain sm:h-20 xl:h-24"
+                  className="h-12 w-auto object-contain sm:h-16 lg:h-20"
                 />
               ) : (
-                <div className="h-12 w-12 rounded-full bg-slate-100 sm:h-20 sm:w-20 xl:h-24 xl:w-24" />
+                <div className="h-12 w-12 rounded-full bg-slate-100 sm:h-16 sm:w-16 lg:h-20 lg:w-20" />
               )}
             </div>
 
             <div className="min-w-0">
-              <div className="truncate text-base font-semibold tracking-tight text-slate-900 sm:text-xl xl:text-2xl">
+              <div className="truncate text-base font-semibold tracking-tight text-slate-900 sm:text-xl">
                 Focus Dental Specialists
               </div>
               <div className="hidden text-sm text-slate-500 sm:block">
@@ -413,6 +416,7 @@ export default function TopNav() {
             </nav>
 
             <button
+              type="button"
               onClick={handleLogout}
               className="shrink-0 rounded-2xl bg-slate-800 px-4 py-2.5 text-sm font-medium text-white shadow-[0_6px_18px_rgba(15,23,42,0.25)] transition hover:bg-slate-900"
             >
@@ -425,8 +429,9 @@ export default function TopNav() {
             aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
             aria-expanded={mobileMenuOpen}
             onClick={() => setMobileMenuOpen((prev) => !prev)}
-            
-          >className="inline-flex shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 lg:hidden"
+            className="inline-flex shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 lg:hidden"
+          >
+            {mobileMenuOpen ? "Close" : "Menu"}
           </button>
         </div>
 
@@ -491,6 +496,7 @@ export default function TopNav() {
               )}
 
               <button
+                type="button"
                 onClick={handleLogout}
                 className="mt-2 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
               >
