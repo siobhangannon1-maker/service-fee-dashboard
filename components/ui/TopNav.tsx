@@ -136,7 +136,7 @@ const navGroups: NavGroup[] = [
           "Import Praktika reports - new patients, appointments, provider performance, FTAs and cancellations",
       },
       {
-        href: "/benchmarks/expense-reports",
+        href: "/benchmark/expense-reports",
         label: "Expense Reports",
         description: "Analysis of practice benchmarks",
       },
