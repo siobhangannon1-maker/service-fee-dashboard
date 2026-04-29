@@ -15,9 +15,6 @@ type PageProps = {
   }>;
 };
 
-export default async function Page({ searchParams }: PageProps) {
-  const params = await searchParams;
-
 function getServiceRoleSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -33,7 +30,10 @@ function getServiceRoleSupabaseClient() {
   return createClient(supabaseUrl, serviceRoleKey);
 }
 
-export default async function AdminProviderMappingsPage({ searchParams }: PageProps) {
+export default async function AdminProviderMappingsPage({
+  searchParams,
+}: PageProps) {
+  const params = await searchParams;
   const supabase = getServiceRoleSupabaseClient();
 
   const { data, error } = await supabase
@@ -55,11 +55,11 @@ export default async function AdminProviderMappingsPage({ searchParams }: PagePr
 
     const result = await createProviderNameMapping(formData);
 
-    const params = new URLSearchParams();
-    params.set("status", result.ok ? "success" : "error");
-    params.set("message", result.message || "");
+    const redirectParams = new URLSearchParams();
+    redirectParams.set("status", result.ok ? "success" : "error");
+    redirectParams.set("message", result.message || "");
 
-    redirect(`/admin/provider-mappings?${params.toString()}`);
+    redirect(`/admin/provider-mappings?${redirectParams.toString()}`);
   }
 
   const status = params?.status ?? "";

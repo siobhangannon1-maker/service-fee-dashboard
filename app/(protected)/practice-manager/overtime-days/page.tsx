@@ -5,6 +5,14 @@ export const dynamic = "force-dynamic";
 const STANDARD_DAILY_HOURS = 9.5;
 const FIXED_BREAK_MINUTES = 30;
 
+type PageProps = {
+  searchParams?: Promise<{
+    from?: string;
+    to?: string;
+    staff?: string;
+  }>;
+};
+
 function formatHours(minutes: number) {
   return (minutes / 60).toFixed(2);
 }
@@ -39,19 +47,17 @@ function getShiftMinutes(startTs: number, endTs: number) {
   return Math.max((endTs - startTs) / 60, 0);
 }
 
-export default async function Page({
-  searchParams,
-}: {
-  searchParams: { from?: string; to?: string; staff?: string };
-}) {
+export default async function Page({ searchParams }: PageProps) {
+  const params = await searchParams;
+
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
-  const from = searchParams.from || "2026-04-01";
-  const to = searchParams.to || "2026-04-10";
-  const staffFilter = searchParams.staff;
+  const from = params?.from || "2026-04-01";
+  const to = params?.to || "2026-04-10";
+  const staffFilter = params?.staff;
 
   const { data: timesheets } = await supabase
     .from("connecteam_daily_timesheets")
@@ -79,7 +85,6 @@ export default async function Page({
 
       const totalMinutes = Number(row.total_minutes || 0);
       const paidMinutes = Math.max(totalMinutes - FIXED_BREAK_MINUTES, 0);
-
       const overtimeMinutes = Math.max(paidMinutes - standardMinutes, 0);
 
       const records = Array.isArray(rawJson.records) ? rawJson.records : [];
@@ -146,7 +151,8 @@ export default async function Page({
       </p>
 
       <p style={{ marginTop: 4, color: "#555" }}>
-        Rule: 30 min break deducted, then overtime after {STANDARD_DAILY_HOURS} paid hours.
+        Rule: 30 min break deducted, then overtime after{" "}
+        {STANDARD_DAILY_HOURS} paid hours.
       </p>
 
       {staffFilter && (
