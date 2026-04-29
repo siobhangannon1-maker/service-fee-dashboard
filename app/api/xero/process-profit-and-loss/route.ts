@@ -86,7 +86,7 @@ function extractExpenseRowsFromSection(section: any): ParsedExpenseRow[] {
         amount,
       };
     })
-    .filter((row) => row.account_name.length > 0);
+    .filter((row: { account_name?: string }) => (row.account_name || "").length > 0);
 }
 
 function normalizeCategoryName(value: string) {

@@ -1,5 +1,5 @@
 import { normalizeProviderName } from "./normalize-provider-name";
-import { getAppointmentCategory } from "./appointment-categories";
+import { getAppointmentCategory } from "@/lib/appointmentCategories";
 
 export type ProviderCancellationsFtasCsvRow = Record<string, string | undefined>;
 

@@ -1426,8 +1426,8 @@ export default async function AdminProviderDashboardPage({
   const safeSelectedMonthNumber = getMonthFromMonthKey(safeSelectedMonthKey);
 
   const allMetric = allDashboard.metric;
-  const perioMetric = perioDashboard.metric;
-  const omsMetric = omsDashboard.metric;
+ const perioMetric = perioDashboard?.metric ?? null;
+const omsMetric = omsDashboard?.metric ?? null;
 
   const fallbackCategoryPeriodStart =
     allMetric?.period_start ?? perioMetric?.period_start ?? omsMetric?.period_start ?? null;

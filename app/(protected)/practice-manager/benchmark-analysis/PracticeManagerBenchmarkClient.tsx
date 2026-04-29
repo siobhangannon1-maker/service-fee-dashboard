@@ -492,10 +492,18 @@ function buildComparisonRows(
   allCategoryNames: string[]
 ): ComparisonCategoryRow[] {
   return allCategoryNames
-    .map((category_name) => {
+    .map((category_name): ComparisonCategoryRow => {
       const summaryA = buildPeriodCategorySummary(periodA, category_name);
       const summaryB = buildPeriodCategorySummary(periodB, category_name);
       const variance = summaryB.percent - summaryA.percent;
+
+      let direction: ComparisonCategoryRow["direction"] = "no_change";
+
+      if (variance > 0) {
+        direction = "worse";
+      } else if (variance < 0) {
+        direction = "better";
+      }
 
       return {
         category_name,
@@ -503,8 +511,7 @@ function buildComparisonRows(
         percentB: summaryB.percent,
         benchmark: summaryB.benchmark || summaryA.benchmark,
         variance,
-        direction:
-          variance > 0 ? "worse" : variance < 0 ? "better" : "no_change",
+        direction,
       };
     })
     .sort((a, b) => Math.abs(b.variance) - Math.abs(a.variance));

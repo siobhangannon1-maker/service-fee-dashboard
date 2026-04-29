@@ -427,12 +427,12 @@ export default function XeroTestPage() {
               />
             )}
 
-            {profitAndLossResult.samples?.firstSectionWithChildren && (
-              <JsonBlock
-                label="First section with children"
-                value={profitAndLossResult.samples.firstSectionWithChildren}
-              />
-            )}
+           {Boolean(profitAndLossResult.samples?.firstSectionWithChildren) && (
+  <JsonBlock
+    label="First section with children"
+    value={profitAndLossResult.samples?.firstSectionWithChildren as unknown}
+  />
+)}
 
             {profitAndLossResult.samples?.firstPotentialDetailRows && (
               <JsonBlock

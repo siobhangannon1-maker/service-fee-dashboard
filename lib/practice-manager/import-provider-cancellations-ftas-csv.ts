@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { parse } from "csv-parse/sync";
 import { createClient } from "@supabase/supabase-js";
-import { getAppointmentCategory } from "@/lib/appointment-categories";
+import { getAppointmentCategory } from "@/lib/appointmentCategories";
 
 type ImportProviderCancellationsFtasCsvParams = {
   filePath: string;

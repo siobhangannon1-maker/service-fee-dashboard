@@ -58,8 +58,8 @@ export async function POST(request: Request) {
     const body = await request.json();
     const entryIds = Array.isArray(body.entryIds)
       ? body.entryIds.filter(
-          (value): value is string =>
-            typeof value === "string" && value.length > 0
+         (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0
         )
       : [];
 

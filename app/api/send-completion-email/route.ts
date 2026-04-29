@@ -19,7 +19,9 @@ export async function POST(request: Request) {
     const subject = String(body.subject || "").trim();
     const intro = String(body.intro || "").trim();
     const checklistItems = Array.isArray(body.checklistItems)
-      ? body.checklistItems.map((item) => String(item).trim()).filter(Boolean)
+      ? body.checklistItems
+    .map((item: unknown) => String(item).trim())
+    .filter(Boolean)
       : [];
 
     if (!to || !isValidEmail(to)) {
@@ -50,20 +52,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const checklistHtml = checklistItems
-      .map(
-        (item) => `
-          <li style="margin-bottom: 10px;">
-            <span style="font-size: 18px;">☐</span>
-            <span>${item}</span>
-          </li>
-        `
-      )
-      .join("");
+   const checklistHtml = checklistItems
+  .map(
+    (item: string) => `
+      <li style="margin-bottom: 10px;">
+        <span style="font-size: 18px;">☐</span>
+        <span>${item}</span>
+      </li>
+    `
+  )
+  .join("");
 
     const checklistText = checklistItems
-      .map((item) => `☐ ${item}`)
-      .join("\n");
+  .map((item: string) => `☐ ${item}`)
+  .join("\n");
 
     const html = `
       <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #0f172a;">

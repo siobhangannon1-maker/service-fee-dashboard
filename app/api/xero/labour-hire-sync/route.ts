@@ -21,7 +21,11 @@ function parseMoney(value: any) {
   return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
-function findAmountInRows(rows: any[], accountId: string, accountName: string) {
+function findAmountInRows(
+  rows: any[],
+  accountId: string,
+  accountName: string
+): number {
   for (const row of rows || []) {
     const cells = row.Cells || [];
 
@@ -48,7 +52,7 @@ function findAmountInRows(rows: any[], accountId: string, accountName: string) {
     }
   }
 
-  return null;
+  return 0;
 }
 
 function buildMonthlyRanges(from: string, to: string) {
