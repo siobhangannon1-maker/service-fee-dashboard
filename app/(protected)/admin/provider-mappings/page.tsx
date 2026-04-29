@@ -9,11 +9,14 @@ type ProviderRow = {
 };
 
 type PageProps = {
-  searchParams?: {
+  searchParams?: Promise<{
     status?: string;
     message?: string;
-  };
+  }>;
 };
+
+export default async function Page({ searchParams }: PageProps) {
+  const params = await searchParams;
 
 function getServiceRoleSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -59,8 +62,8 @@ export default async function AdminProviderMappingsPage({ searchParams }: PagePr
     redirect(`/admin/provider-mappings?${params.toString()}`);
   }
 
-  const status = searchParams?.status ?? "";
-  const message = searchParams?.message ?? "";
+  const status = params?.status ?? "";
+  const message = params?.message ?? "";
 
   return (
     <main className="min-h-screen bg-gray-50">
