@@ -6,6 +6,13 @@ const DAILY_STANDARD_HOURS = 9.5;
 const WEEKLY_STANDARD_HOURS = 38;
 const FIXED_BREAK_MINUTES = 30;
 
+type PageProps = {
+  searchParams?: Promise<{
+    from?: string;
+    to?: string;
+  }>;
+};
+
 function formatHours(minutes: number) {
   return (minutes / 60).toFixed(2);
 }
@@ -35,18 +42,16 @@ function getReason(diff: number, daily: number, weekly: number) {
   return "Check data";
 }
 
-export default async function Page({
-  searchParams,
-}: {
-  searchParams: { from?: string; to?: string };
-}) {
+export default async function Page({ searchParams }: PageProps) {
+  const params = await searchParams;
+
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
-  const from = searchParams.from || "2026-04-01";
-  const to = searchParams.to || "2026-04-17";
+  const from = params?.from || "2026-04-01";
+  const to = params?.to || "2026-04-17";
 
   const { data: timesheets } = await supabase
     .from("connecteam_daily_timesheets")
@@ -63,6 +68,7 @@ export default async function Page({
     .select("employee_name, hours, line_type");
 
   const userMap: Record<string, string> = {};
+
   (users || []).forEach((u: any) => {
     userMap[String(u.connecteam_user_id)] =
       u.display_name || String(u.connecteam_user_id);
@@ -73,8 +79,7 @@ export default async function Page({
 
   (timesheets || []).forEach((row: any) => {
     const staff =
-      userMap[String(row.connecteam_user_id)] ||
-      row.connecteam_user_id;
+      userMap[String(row.connecteam_user_id)] || row.connecteam_user_id;
 
     const totalMinutes = Number(row.total_minutes || 0);
     const paidMinutes = Math.max(totalMinutes - FIXED_BREAK_MINUTES, 0);
@@ -161,7 +166,7 @@ export default async function Page({
   );
 }
 
-const th = { textAlign: "left", padding: 8 };
-const right = { textAlign: "right", padding: 8 };
+const th = { textAlign: "left" as const, padding: 8 };
+const right = { textAlign: "right" as const, padding: 8 };
 const td = { padding: 8 };
-const rightTd = { padding: 8, textAlign: "right" };
+const rightTd = { padding: 8, textAlign: "right" as const };
