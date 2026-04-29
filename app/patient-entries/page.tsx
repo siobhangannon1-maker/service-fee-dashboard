@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { writeAuditLog } from "@/lib/audit";
 import Toast from "@/components/ui/Toast";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import CompletionEmailButtons from "@/components/CompletionEmailButtons";
 
 type Provider = {
   id: string;
@@ -1168,6 +1169,8 @@ export default function PatientEntriesPage() {
             <Toast message={message} tone={tone} />
           </div>
         )}
+
+        <CompletionEmailButtons />
 
         <form
           ref={formRef}

@@ -7,6 +7,7 @@ import { createClient } from "@supabase/supabase-js";
 import { importProviderAppointmentsCsv } from "@/lib/providers/import-provider-appointments-csv";
 import { importProviderPerformanceCsv } from "@/lib/providers/import-provider-performance-csv";
 import { importProviderCancellationsFtasCsv } from "@/lib/providers/import-provider-cancellations-ftas-csv";
+import { importProviderNewPatientsCsv } from "@/lib/providers/import-provider-new-patients-csv";
 import { calculateProviderMonthlyMetrics } from "@/lib/providers/calculate-provider-monthly-metrics";
 import { calculateProviderYearlyMetrics } from "@/lib/providers/calculate-provider-yearly-metrics";
 import { calculateProviderAtoQuarterMetrics } from "@/lib/providers/calculate-provider-ato-quarter-metrics";
@@ -20,7 +21,7 @@ export type RunProviderImportsState = {
   message: string;
 };
 
-type ImportType = "appointments" | "performance" | "cancellations";
+type ImportType = "appointments" | "performance" | "cancellations" | "new_patients";
 
 function getServiceRoleSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -115,17 +116,27 @@ async function saveUploadedFileToTemp(
   };
 }
 
-async function deleteAllDataForMonth(importType: ImportType, monthKey: string) {
+async function deleteAllDataForMonth(
+  importType: ImportType,
+  monthKey: string,
+  excludeImportBatchId?: string
+) {
   const supabase = getServiceRoleSupabaseClient();
   const monthStart = getMonthStartIso(monthKey);
   const monthEnd = getMonthEndIso(monthKey);
 
   if (importType === "appointments") {
-    const { error } = await supabase
+    let query = supabase
       .from("provider_appointments_raw")
       .delete()
       .gte("appointment_date", monthStart)
       .lte("appointment_date", monthEnd);
+
+    if (excludeImportBatchId) {
+      query = query.neq("import_batch_id", excludeImportBatchId);
+    }
+
+    const { error } = await query;
 
     if (error) {
       throw new Error(`Failed to clear appointments raw rows for ${monthKey}: ${error.message}`);
@@ -133,11 +144,17 @@ async function deleteAllDataForMonth(importType: ImportType, monthKey: string) {
   }
 
   if (importType === "performance") {
-    const { error } = await supabase
+    let query = supabase
       .from("provider_performance_raw")
       .delete()
       .eq("period_start", monthStart)
       .eq("period_end", monthEnd);
+
+    if (excludeImportBatchId) {
+      query = query.neq("import_batch_id", excludeImportBatchId);
+    }
+
+    const { error } = await query;
 
     if (error) {
       throw new Error(`Failed to clear performance raw rows for ${monthKey}: ${error.message}`);
@@ -145,22 +162,53 @@ async function deleteAllDataForMonth(importType: ImportType, monthKey: string) {
   }
 
   if (importType === "cancellations") {
-    const { error } = await supabase
+    let query = supabase
       .from("provider_cancellations_ftas_raw")
       .delete()
       .gte("event_date", monthStart)
       .lte("event_date", monthEnd);
+
+    if (excludeImportBatchId) {
+      query = query.neq("import_batch_id", excludeImportBatchId);
+    }
+
+    const { error } = await query;
 
     if (error) {
       throw new Error(`Failed to clear cancellations raw rows for ${monthKey}: ${error.message}`);
     }
   }
 
-  const { error: batchError } = await supabase
+
+  if (importType === "new_patients") {
+    let query = supabase
+      .from("provider_new_patients_raw")
+      .delete()
+      .gte("joined_date", monthStart)
+      .lte("joined_date", monthEnd);
+
+    if (excludeImportBatchId) {
+      query = query.neq("import_batch_id", excludeImportBatchId);
+    }
+
+    const { error } = await query;
+
+    if (error) {
+      throw new Error(`Failed to clear new patient rows for ${monthKey}: ${error.message}`);
+    }
+  }
+
+  let batchDeleteQuery = supabase
     .from("provider_import_batches")
     .delete()
     .eq("import_type", importType)
     .eq("month_key", monthKey);
+
+  if (excludeImportBatchId) {
+    batchDeleteQuery = batchDeleteQuery.neq("import_batch_id", excludeImportBatchId);
+  }
+
+  const { error: batchError } = await batchDeleteQuery;
 
   if (batchError) {
     throw new Error(`Failed to clear import batches for ${monthKey}: ${batchError.message}`);
@@ -204,13 +252,155 @@ async function recalculatePeriodsForMonth(monthKey: string) {
   };
 }
 
+async function getMonthsForImportedAppointments(importBatchId: string): Promise<string[]> {
+  const supabase = getServiceRoleSupabaseClient();
+  const pageSize = 1000;
+  let from = 0;
+  const months = new Set<string>();
+
+  while (true) {
+    const to = from + pageSize - 1;
+
+    const { data, error } = await supabase
+      .from("provider_appointments_raw")
+      .select("appointment_date")
+      .eq("import_batch_id", importBatchId)
+      .order("appointment_date", { ascending: true })
+      .range(from, to);
+
+    if (error) {
+      throw new Error(`Failed to detect appointment months: ${error.message}`);
+    }
+
+    const rows = (data ?? []) as Array<{ appointment_date: string | null }>;
+
+    for (const row of rows) {
+      if (row.appointment_date) {
+        months.add(row.appointment_date.slice(0, 7));
+      }
+    }
+
+    if (rows.length < pageSize) {
+      break;
+    }
+
+    from += pageSize;
+  }
+
+  return Array.from(months).sort();
+}
+
+async function getMonthsForImportedCancellations(importBatchId: string): Promise<string[]> {
+  const supabase = getServiceRoleSupabaseClient();
+  const pageSize = 1000;
+  let from = 0;
+  const months = new Set<string>();
+
+  while (true) {
+    const to = from + pageSize - 1;
+
+    const { data, error } = await supabase
+      .from("provider_cancellations_ftas_raw")
+      .select("event_date")
+      .eq("import_batch_id", importBatchId)
+      .order("event_date", { ascending: true })
+      .range(from, to);
+
+    if (error) {
+      throw new Error(`Failed to detect cancellations months: ${error.message}`);
+    }
+
+    const rows = (data ?? []) as Array<{ event_date: string | null }>;
+
+    for (const row of rows) {
+      if (row.event_date) {
+        months.add(row.event_date.slice(0, 7));
+      }
+    }
+
+    if (rows.length < pageSize) {
+      break;
+    }
+
+    from += pageSize;
+  }
+
+  return Array.from(months).sort();
+}
+
+
+async function getMonthsForImportedNewPatients(importBatchId: string): Promise<string[]> {
+  const supabase = getServiceRoleSupabaseClient();
+  const pageSize = 1000;
+  let from = 0;
+  const months = new Set<string>();
+
+  while (true) {
+    const to = from + pageSize - 1;
+
+    const { data, error } = await supabase
+      .from("provider_new_patients_raw")
+      .select("joined_date")
+      .eq("import_batch_id", importBatchId)
+      .order("joined_date", { ascending: true })
+      .range(from, to);
+
+    if (error) {
+      throw new Error(`Failed to detect new patient months: ${error.message}`);
+    }
+
+    const rows = (data ?? []) as Array<{ joined_date: string | null }>;
+
+    for (const row of rows) {
+      if (row.joined_date) {
+        months.add(row.joined_date.slice(0, 7));
+      }
+    }
+
+    if (rows.length < pageSize) {
+      break;
+    }
+
+    from += pageSize;
+  }
+
+  return Array.from(months).sort();
+}
+
+async function getDetectedMonthsForImport(params: {
+  importType: ImportType;
+  importBatchId: string;
+  selectedMonthKey: string;
+}): Promise<string[]> {
+  if (params.importType === "appointments") {
+    return getMonthsForImportedAppointments(params.importBatchId);
+  }
+
+  if (params.importType === "cancellations") {
+    return getMonthsForImportedCancellations(params.importBatchId);
+  }
+
+  if (params.importType === "new_patients") {
+    return getMonthsForImportedNewPatients(params.importBatchId);
+  }
+
+  return [params.selectedMonthKey];
+}
+
+function getImportTypeLabel(importType: ImportType): string {
+  if (importType === "appointments") return "Appointments";
+  if (importType === "performance") return "Performance";
+  if (importType === "cancellations") return "Cancellations";
+  return "New Patients";
+}
+
 export async function runProviderImports(
   _prevState: RunProviderImportsState,
   formData: FormData
 ): Promise<RunProviderImportsState> {
   const file = formData.get("file");
   const importType = String(formData.get("importType") ?? "").trim() as ImportType;
-  const monthKey = String(formData.get("monthKey") ?? "").trim();
+  const selectedMonthKey = String(formData.get("monthKey") ?? "").trim();
 
   if (!(file instanceof File) || file.size === 0) {
     return {
@@ -222,7 +412,8 @@ export async function runProviderImports(
   if (
     importType !== "appointments" &&
     importType !== "performance" &&
-    importType !== "cancellations"
+    importType !== "cancellations" &&
+    importType !== "new_patients"
   ) {
     return {
       ok: false,
@@ -230,25 +421,24 @@ export async function runProviderImports(
     };
   }
 
-  if (!monthKey || !isValidMonthKey(monthKey)) {
+  if (importType === "performance" && (!selectedMonthKey || !isValidMonthKey(selectedMonthKey))) {
     return {
       ok: false,
-      message: "Please select a valid month.",
+      message: "Please select a valid month for the performance upload.",
     };
   }
 
   let tempPath = "";
 
   try {
-    await deleteAllDataForMonth(importType, monthKey);
-
     const saved = await saveUploadedFileToTemp(file, importType);
     tempPath = saved.tempFilePath;
 
     let importResult:
       | Awaited<ReturnType<typeof importProviderAppointmentsCsv>>
       | Awaited<ReturnType<typeof importProviderPerformanceCsv>>
-      | Awaited<ReturnType<typeof importProviderCancellationsFtasCsv>>;
+      | Awaited<ReturnType<typeof importProviderCancellationsFtasCsv>>
+      | Awaited<ReturnType<typeof importProviderNewPatientsCsv>>;
 
     if (importType === "appointments") {
       importResult = await importProviderAppointmentsCsv({
@@ -256,11 +446,18 @@ export async function runProviderImports(
         sourceFileName: saved.originalFileName,
       });
     } else if (importType === "performance") {
+      await deleteAllDataForMonth(importType, selectedMonthKey);
+
       importResult = await importProviderPerformanceCsv({
         filePath: tempPath,
         sourceFileName: saved.originalFileName,
-        periodStart: convertIsoToDdMmYyyy(getMonthStartIso(monthKey)),
-        periodEnd: convertIsoToDdMmYyyy(getMonthEndIso(monthKey)),
+        periodStart: convertIsoToDdMmYyyy(getMonthStartIso(selectedMonthKey)),
+        periodEnd: convertIsoToDdMmYyyy(getMonthEndIso(selectedMonthKey)),
+      });
+    } else if (importType === "new_patients") {
+      importResult = await importProviderNewPatientsCsv({
+        filePath: tempPath,
+        sourceFileName: saved.originalFileName,
       });
     } else {
       importResult = await importProviderCancellationsFtasCsv({
@@ -269,29 +466,59 @@ export async function runProviderImports(
       });
     }
 
-    await insertImportBatch({
-      importBatchId: importResult.importBatchId,
+    const detectedMonths = await getDetectedMonthsForImport({
       importType,
-      sourceFileName: importResult.sourceFileName,
-      monthKey,
+      importBatchId: importResult.importBatchId,
+      selectedMonthKey,
     });
 
-    const recalculated = await recalculatePeriodsForMonth(monthKey);
+    if (detectedMonths.length === 0) {
+      return {
+        ok: false,
+        message:
+          "The file was imported, but no dates could be detected from the uploaded rows. Please check the CSV date columns.",
+      };
+    }
+
+    if (importType === "appointments" || importType === "cancellations" || importType === "new_patients") {
+      for (const monthKey of detectedMonths) {
+        await deleteAllDataForMonth(importType, monthKey, importResult.importBatchId);
+      }
+    }
+
+    for (const monthKey of detectedMonths) {
+      await insertImportBatch({
+        importBatchId: importResult.importBatchId,
+        importType,
+        sourceFileName: importResult.sourceFileName,
+        monthKey,
+      });
+    }
+
+    const recalculatedResults = [];
+
+    for (const monthKey of detectedMonths) {
+      const recalculated = await recalculatePeriodsForMonth(monthKey);
+      recalculatedResults.push({
+        monthKey,
+        recalculated,
+      });
+    }
 
     return {
       ok: true,
       message: [
-        `${importType === "appointments"
-          ? "Appointments"
-          : importType === "performance"
-          ? "Performance"
-          : "Cancellations"} import completed successfully.`,
-        `Import month: ${monthKey}.`,
-        `Replaced existing ${importType} data for ${formatMonthLabel(monthKey)}.`,
+        `${getImportTypeLabel(importType)} import completed successfully.`,
+        importType === "performance"
+          ? `Import month: ${selectedMonthKey}.`
+          : `Detected month(s): ${detectedMonths.join(", ")}.`,
+        importType === "performance"
+          ? `Replaced existing ${importType} data for ${formatMonthLabel(selectedMonthKey)}.`
+          : `Replaced existing ${importType} data for detected month(s).`,
         `Rows imported: ${importResult.insertedCount}.`,
-        `Providers calculated for month ${recalculated.monthlyResult.monthKey}: ${recalculated.monthlyResult.providersCalculated}.`,
-        `Providers calculated for year ${recalculated.yearlyResult.yearKey}: ${recalculated.yearlyResult.providersCalculated}.`,
-        `Providers calculated for ATO quarter ${recalculated.quarterResult.quarterKey}: ${recalculated.quarterResult.providersCalculated}.`,
+        `Months recalculated: ${recalculatedResults
+          .map((item) => item.monthKey)
+          .join(", ")}.`,
         `Unmatched provider names: ${importResult.unmatchedProviders.length}.`,
       ].join("\n"),
     };

@@ -34,9 +34,9 @@ const cards = [
       "Review charts, trends, and month-to-month financial performance.",
   },
   {
-    title: "Benchmark Reports",
-    href: "/benchmark/expense-reports",
-    description: "Analyse practice expenses against set benchmarks.",
+    title: "Practice Manager",
+    href: "/practice-manager",
+    description: "Practice Manager tools",
   },
   {
     title: "Admin",
@@ -62,10 +62,9 @@ export default function DashboardPage() {
               </h1>
 
               <p className="mt-4 text-sm leading-6 text-slate-600 sm:text-base sm:leading-7">
-                Welcome to the Focus Dental Specialists Service Fee Portal.
+                Welcome to the Focus Dental Specialists Portal.
                 Enter implant, lab and materials costs, record incorrect
-                payments, and generate service fee statements from one central
-                dashboard.
+                payments, and generate service fee statements.
               </p>
             </div>
 

@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
+import { createClient as createServerClient } from "@/lib/supabase/server";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import {
   getProviderDashboardMetrics,
   getProviderSnapshotsForNames,
@@ -8,6 +9,7 @@ import {
   type ProviderSnapshotCard,
 } from "@/lib/providers/get-provider-dashboard-metrics";
 import type { ProviderPeriodType } from "@/lib/providers/provider-periods";
+import { getAppointmentCategory } from "@/lib/appointmentCategories";
 
 type AdminProviderDashboardPageProps = {
   searchParams?: Promise<{
@@ -45,6 +47,8 @@ const ORAL_MAXFAX_SURGEONS = [
   "Dr Omar Breik",
   "Dr William Huynh",
 ];
+
+
 
 function formatPercent(value: number | null | undefined): string {
   const safeValue = Number(value ?? 0);
@@ -107,6 +111,34 @@ function getMonthFromMonthKey(periodKey?: string | null): string {
   if (!periodKey) return "";
   return periodKey.slice(5, 7);
 }
+
+function getMonthEndIso(monthKey: string): string {
+  const [yearRaw, monthRaw] = monthKey.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+
+  const endDate = new Date(year, month, 0);
+  const endMonth = String(endDate.getMonth() + 1).padStart(2, "0");
+  const endDay = String(endDate.getDate()).padStart(2, "0");
+
+  return `${endDate.getFullYear()}-${endMonth}-${endDay}`;
+}
+
+function getServiceRoleSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl) {
+    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
+  }
+
+  if (!serviceRoleKey) {
+    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+  }
+
+  return createSupabaseClient(supabaseUrl, serviceRoleKey);
+}
+
 
 function formatMonthNameFromKey(periodKey?: string | null): string {
   if (!periodKey) return "";
@@ -281,6 +313,332 @@ function SummaryStat({
   );
 }
 
+
+
+
+type AppointmentCategoryBreakdownRow = {
+  appointmentCategory: string;
+  totalAppointments: number;
+  ftaCount: number;
+  ftaNoRebookingCount: number;
+  cancellationNoRebookingCount: number;
+  ftaPct: number;
+  ftaNoRebookingPct: number;
+  cancellationNoRebookingPct: number;
+};
+
+type CancellationFtaRawBreakdownRow = {
+  provider_id: string | null;
+  treatment_type: string | null;
+  appointment_category: string | null;
+  is_fta: boolean | null;
+  is_fta_no_rebooking: boolean | null;
+  is_cancellation_no_rebooking: boolean | null;
+};
+
+type CompletedAppointmentBreakdownRow = {
+  provider_id: string | null;
+  treatment_type: string | null;
+  arrival_status: string | null;
+};
+
+function hasCompletedArrivalStatus(value: string | null | undefined): boolean {
+  return String(value ?? "").trim() !== "";
+}
+
+function formatPercentFromWholeNumber(value: number | null | undefined): string {
+  const safeValue = Number(value ?? 0);
+  return `${safeValue.toFixed(1)}%`;
+}
+
+function calculatePercent(numerator: number, denominator: number): number {
+  if (!denominator) return 0;
+  return (numerator / denominator) * 100;
+}
+
+type PaginatedQueryResult<T> = {
+  data: T[] | null;
+  error: { message: string } | null;
+};
+
+async function fetchAllPaginatedRows<T>(
+  createQuery: (from: number, to: number) => PromiseLike<PaginatedQueryResult<T>>,
+  errorPrefix: string
+): Promise<T[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const rows: T[] = [];
+
+  while (true) {
+    const to = from + pageSize - 1;
+    const { data, error } = await createQuery(from, to);
+
+    if (error) {
+      throw new Error(`${errorPrefix}: ${error.message}`);
+    }
+
+    const pageRows = data ?? [];
+    rows.push(...pageRows);
+
+    if (pageRows.length < pageSize) {
+      break;
+    }
+
+    from += pageSize;
+  }
+
+  return rows;
+}
+
+function createEmptyCategoryBreakdownRow(category: string): AppointmentCategoryBreakdownRow {
+  return {
+    appointmentCategory: category,
+    totalAppointments: 0,
+    ftaCount: 0,
+    ftaNoRebookingCount: 0,
+    cancellationNoRebookingCount: 0,
+    ftaPct: 0,
+    ftaNoRebookingPct: 0,
+    cancellationNoRebookingPct: 0,
+  };
+}
+
+function summariseCategoryBreakdown(params: {
+  cancellationRows: CancellationFtaRawBreakdownRow[];
+  appointmentRows: CompletedAppointmentBreakdownRow[];
+}): AppointmentCategoryBreakdownRow[] {
+  const map = new Map<string, AppointmentCategoryBreakdownRow>();
+
+  for (const row of params.appointmentRows) {
+    if (!hasCompletedArrivalStatus(row.arrival_status)) continue;
+
+    const category = getAppointmentCategory(row.treatment_type);
+    const existing = map.get(category) ?? createEmptyCategoryBreakdownRow(category);
+
+    existing.totalAppointments += 1;
+    map.set(category, existing);
+  }
+
+  for (const row of params.cancellationRows) {
+    const category = getAppointmentCategory(row.treatment_type ?? row.appointment_category);
+    const existing = map.get(category) ?? createEmptyCategoryBreakdownRow(category);
+
+    if (row.is_fta) existing.ftaCount += 1;
+    if (row.is_fta_no_rebooking) existing.ftaNoRebookingCount += 1;
+    if (row.is_cancellation_no_rebooking) existing.cancellationNoRebookingCount += 1;
+
+    map.set(category, existing);
+  }
+
+  return Array.from(map.values())
+    .map((row) => ({
+      ...row,
+      ftaPct: calculatePercent(row.ftaCount, row.totalAppointments),
+      ftaNoRebookingPct: calculatePercent(row.ftaNoRebookingCount, row.totalAppointments),
+      cancellationNoRebookingPct: calculatePercent(
+        row.cancellationNoRebookingCount,
+        row.totalAppointments
+      ),
+    }))
+    .sort((a, b) => {
+      if (b.totalAppointments !== a.totalAppointments) {
+        return b.totalAppointments - a.totalAppointments;
+      }
+
+      return a.appointmentCategory.localeCompare(b.appointmentCategory);
+    });
+}
+
+async function getAppointmentCategoryBreakdown(params: {
+  periodStart: string | null | undefined;
+  periodEnd: string | null | undefined;
+  providerIds?: string[];
+}): Promise<AppointmentCategoryBreakdownRow[]> {
+  if (!params.periodStart || !params.periodEnd) return [];
+  if (params.providerIds && params.providerIds.length === 0) return [];
+
+  const supabase = getServiceRoleSupabaseClient();
+
+  const appointmentRows = await fetchAllPaginatedRows<CompletedAppointmentBreakdownRow>(
+    (from, to) => {
+      let query = supabase
+        .from("provider_appointments_raw")
+        .select("provider_id, treatment_type, arrival_status")
+        .gte("appointment_date", params.periodStart!)
+        .lte("appointment_date", params.periodEnd!)
+        .order("appointment_date", { ascending: true })
+        .range(from, to);
+
+      if (params.providerIds && params.providerIds.length > 0) {
+        query = query.in("provider_id", params.providerIds);
+      }
+
+      return query;
+    },
+    "Failed to load completed appointment denominators"
+  );
+
+  const cancellationRows = await fetchAllPaginatedRows<CancellationFtaRawBreakdownRow>(
+    (from, to) => {
+      let query = supabase
+        .from("provider_cancellations_ftas_raw")
+        .select(
+          "provider_id, treatment_type, appointment_category, is_fta, is_fta_no_rebooking, is_cancellation_no_rebooking"
+        )
+        .gte("event_date", params.periodStart!)
+        .lte("event_date", params.periodEnd!)
+        .order("event_date", { ascending: true })
+        .range(from, to);
+
+      if (params.providerIds && params.providerIds.length > 0) {
+        query = query.in("provider_id", params.providerIds);
+      }
+
+      return query;
+    },
+    "Failed to load cancellation/FTA category breakdown"
+  );
+
+  return summariseCategoryBreakdown({
+    appointmentRows,
+    cancellationRows,
+  });
+}
+
+async function getAppointmentCategoryBreakdownByProvider(params: {
+  periodStart: string | null | undefined;
+  periodEnd: string | null | undefined;
+  providerIds: string[];
+}): Promise<Record<string, AppointmentCategoryBreakdownRow[]>> {
+  if (!params.periodStart || !params.periodEnd || params.providerIds.length === 0) return {};
+
+  const supabase = getServiceRoleSupabaseClient();
+
+  const appointmentRows = await fetchAllPaginatedRows<CompletedAppointmentBreakdownRow>(
+    (from, to) =>
+      supabase
+        .from("provider_appointments_raw")
+        .select("provider_id, treatment_type, arrival_status")
+        .gte("appointment_date", params.periodStart!)
+        .lte("appointment_date", params.periodEnd!)
+        .in("provider_id", params.providerIds)
+        .order("appointment_date", { ascending: true })
+        .range(from, to),
+    "Failed to load provider completed appointment denominators"
+  );
+
+  const cancellationRows = await fetchAllPaginatedRows<CancellationFtaRawBreakdownRow>(
+    (from, to) =>
+      supabase
+        .from("provider_cancellations_ftas_raw")
+        .select(
+          "provider_id, treatment_type, appointment_category, is_fta, is_fta_no_rebooking, is_cancellation_no_rebooking"
+        )
+        .gte("event_date", params.periodStart!)
+        .lte("event_date", params.periodEnd!)
+        .in("provider_id", params.providerIds)
+        .order("event_date", { ascending: true })
+        .range(from, to),
+    "Failed to load provider cancellation/FTA category breakdown"
+  );
+
+  const result: Record<string, AppointmentCategoryBreakdownRow[]> = {};
+
+  for (const providerId of params.providerIds) {
+    result[providerId] = summariseCategoryBreakdown({
+      appointmentRows: appointmentRows.filter((row) => row.provider_id === providerId),
+      cancellationRows: cancellationRows.filter((row) => row.provider_id === providerId),
+    });
+  }
+
+  return result;
+}
+
+function AppointmentCategoryBreakdownCard({
+  title,
+  subtitle,
+  rows,
+  compact = false,
+}: {
+  title: string;
+  subtitle?: string;
+  rows: AppointmentCategoryBreakdownRow[];
+  compact?: boolean;
+}) {
+  const visibleRows = compact ? rows.slice(0, 6) : rows;
+
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+      <div className="border-b border-gray-100 px-5 py-4">
+        <h3 className="text-base font-semibold text-gray-900">{title}</h3>
+        {subtitle ? <p className="mt-1 text-xs text-gray-500">{subtitle}</p> : null}
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="px-5 py-5 text-sm text-gray-500">
+          No cancellation or FTA category data available for this period.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-100 text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Category
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Completed
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  FTA %
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  FTA no rebook %
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Cancel no rebook %
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 bg-white">
+              {visibleRows.map((row) => (
+                <tr key={row.appointmentCategory}>
+                  <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
+                    {row.appointmentCategory}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                    {row.totalAppointments}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                    {formatPercentFromWholeNumber(row.ftaPct)}
+                    <div className="text-[11px] text-gray-400">{row.ftaCount}</div>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                    {formatPercentFromWholeNumber(row.ftaNoRebookingPct)}
+                    <div className="text-[11px] text-gray-400">{row.ftaNoRebookingCount}</div>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                    {formatPercentFromWholeNumber(row.cancellationNoRebookingPct)}
+                    <div className="text-[11px] text-gray-400">
+                      {row.cancellationNoRebookingCount}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {compact && rows.length > visibleRows.length ? (
+            <div className="border-t border-gray-100 px-5 py-3 text-xs text-gray-500">
+              Showing top {visibleRows.length} categories by completed appointment volume.
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SimpleBarRow({
   label,
   value,
@@ -408,9 +766,11 @@ function ProviderMiniVisual({
 function ProviderSnapshotCardView({
   snapshot,
   module,
+  categoryBreakdown,
 }: {
   snapshot: ProviderSnapshotCard;
   module: ProviderDashboardModule;
+  categoryBreakdown?: AppointmentCategoryBreakdownRow[];
 }) {
   const metric = snapshot.metric;
 
@@ -460,7 +820,7 @@ function ProviderSnapshotCardView({
         </div>
 
         <div className="mt-4 space-y-3">
-          <ProviderMiniVisual label="Cancellation" value={cancelPct} />
+          <ProviderMiniVisual label="Cancel no rebook" value={cancelPct} />
           <ProviderMiniVisual label="FTA" value={ftaPct} />
           <ProviderMiniVisual label="Conversion Rate" value={consultPct} />
         </div>
@@ -484,6 +844,15 @@ function ProviderSnapshotCardView({
               {metric.consult_not_rebooked_count}
             </div>
           </div>
+        </div>
+
+        <div className="mt-4">
+          <AppointmentCategoryBreakdownCard
+            title="By appointment category"
+            subtitle="FTA, FTA no rebooking, and cancellation no rebooking for this provider"
+            rows={categoryBreakdown ?? []}
+            compact
+          />
         </div>
       </div>
     );
@@ -568,10 +937,12 @@ function ProviderSnapshotGrid({
   title,
   snapshots,
   module,
+  categoryBreakdownsByProviderId = {},
 }: {
   title: string;
   snapshots: ProviderSnapshotCard[];
   module: ProviderDashboardModule;
+  categoryBreakdownsByProviderId?: Record<string, AppointmentCategoryBreakdownRow[]>;
 }) {
   return (
     <div className="mt-6">
@@ -591,6 +962,7 @@ function ProviderSnapshotGrid({
               key={snapshot.provider.id}
               snapshot={snapshot}
               module={module}
+              categoryBreakdown={categoryBreakdownsByProviderId[snapshot.provider.id] ?? []}
             />
           ))}
         </div>
@@ -604,11 +976,15 @@ function ClinicalGroupSection({
   subtitle,
   metric,
   snapshots,
+  categoryBreakdown,
+  categoryBreakdownsByProviderId,
 }: {
   title: string;
   subtitle?: string;
   metric: ProviderMetricRow | null;
   snapshots: ProviderSnapshotCard[];
+  categoryBreakdown: AppointmentCategoryBreakdownRow[];
+  categoryBreakdownsByProviderId: Record<string, AppointmentCategoryBreakdownRow[]>;
 }) {
   if (!metric) {
     return (
@@ -617,7 +993,7 @@ function ClinicalGroupSection({
         <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-6 text-sm text-gray-600">
           No clinical data available for this period.
         </div>
-        <ProviderSnapshotGrid title="Provider snapshots" snapshots={snapshots} module="clinical" />
+        <ProviderSnapshotGrid title="Provider snapshots" snapshots={snapshots} module="clinical" categoryBreakdownsByProviderId={categoryBreakdownsByProviderId} />
       </section>
     );
   }
@@ -648,7 +1024,7 @@ function ClinicalGroupSection({
           subtitle={`${metric.period_start} to ${metric.period_end}`}
         />
         <MetricCard
-          title="Cancellation %"
+          title="Cancellation no rebooking %"
           value={formatPercent(metric.cancel_no_rebook_pct)}
           subtitle={`${metric.cancel_no_rebook_count} appointments`}
         />
@@ -702,7 +1078,15 @@ function ClinicalGroupSection({
         </div>
       </div>
 
-      <ProviderSnapshotGrid title="Provider snapshots" snapshots={snapshots} module="clinical" />
+      <div className="mt-6">
+        <AppointmentCategoryBreakdownCard
+          title="Appointment category breakdown"
+          subtitle="FTA, FTA no rebooking, and cancellation no rebooking by appointment category"
+          rows={categoryBreakdown}
+        />
+      </div>
+
+      <ProviderSnapshotGrid title="Provider snapshots" snapshots={snapshots} module="clinical" categoryBreakdownsByProviderId={categoryBreakdownsByProviderId} />
     </section>
   );
 }
@@ -822,8 +1206,75 @@ function FinancialGroupSection({
   );
 }
 
+
+function normalizeProviderGroupName(value: string | null | undefined): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[–—]/g, "-")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function getProviderIdsForNames(providerNames: string[]): Promise<string[]> {
+  if (providerNames.length === 0) return [];
+
+  const supabase = getServiceRoleSupabaseClient();
+  const requestedNames = new Set(providerNames.map(normalizeProviderGroupName));
+
+  const [providersResult, mappingsResult] = await Promise.all([
+    supabase.from("providers").select("id, name"),
+    supabase
+      .from("provider_name_mappings")
+      .select("provider_id, raw_provider_name, normalized_provider_name"),
+  ]);
+
+  if (providersResult.error) {
+    throw new Error(
+      `Failed to load providers for category breakdowns: ${providersResult.error.message}`
+    );
+  }
+
+  if (mappingsResult.error) {
+    throw new Error(
+      `Failed to load provider name mappings for category breakdowns: ${mappingsResult.error.message}`
+    );
+  }
+
+  const providerIds = new Set<string>();
+
+  for (const provider of providersResult.data ?? []) {
+    if (requestedNames.has(normalizeProviderGroupName(provider.name))) {
+      providerIds.add(String(provider.id));
+    }
+  }
+
+  for (const mapping of mappingsResult.data ?? []) {
+    const rawName = normalizeProviderGroupName(mapping.raw_provider_name);
+    const normalizedName = normalizeProviderGroupName(mapping.normalized_provider_name);
+
+    if (requestedNames.has(rawName) || requestedNames.has(normalizedName)) {
+      providerIds.add(String(mapping.provider_id));
+    }
+  }
+
+  return Array.from(providerIds);
+}
+
+async function getAllProviderIds(): Promise<string[]> {
+  const supabase = getServiceRoleSupabaseClient();
+
+  const { data, error } = await supabase.from("providers").select("id");
+
+  if (error) {
+    throw new Error(`Failed to load all provider IDs: ${error.message}`);
+  }
+
+  return Array.from(new Set((data ?? []).map((provider) => String(provider.id))));
+}
+
 async function getAdminProfile() {
-  const supabase = await createClient();
+  const supabase = await createServerClient();
 
   const {
     data: { user },
@@ -977,6 +1428,63 @@ export default async function AdminProviderDashboardPage({
   const allMetric = allDashboard.metric;
   const perioMetric = perioDashboard.metric;
   const omsMetric = omsDashboard.metric;
+
+  const fallbackCategoryPeriodStart =
+    allMetric?.period_start ?? perioMetric?.period_start ?? omsMetric?.period_start ?? null;
+  const fallbackCategoryPeriodEnd =
+    allMetric?.period_end ?? perioMetric?.period_end ?? omsMetric?.period_end ?? null;
+
+  const categoryPeriodStart =
+    selectedPeriodType === "month"
+      ? `${safeSelectedMonthKey}-01`
+      : fallbackCategoryPeriodStart;
+
+  const categoryPeriodEnd =
+    selectedPeriodType === "month"
+      ? getMonthEndIso(safeSelectedMonthKey)
+      : fallbackCategoryPeriodEnd;
+
+  const allClinicalSnapshots = [...perioSnapshots, ...omsSnapshots].sort((a, b) =>
+    a.provider.name.localeCompare(b.provider.name)
+  );
+
+  // Important: category denominators must use the full configured provider groups,
+  // not only providers that have a snapshot row for the selected period.
+  const [perioProviderIds, omsProviderIds, allProviderIds] = await Promise.all([
+    getProviderIdsForNames(PERIODONTISTS),
+    getProviderIdsForNames(ORAL_MAXFAX_SURGEONS),
+    getAllProviderIds(),
+  ]);
+
+  const [
+    allCategoryBreakdown,
+    perioCategoryBreakdown,
+    omsCategoryBreakdown,
+    providerCategoryBreakdowns,
+  ] =
+    selectedModule === "clinical"
+      ? await Promise.all([
+          getAppointmentCategoryBreakdown({
+            periodStart: categoryPeriodStart,
+            periodEnd: categoryPeriodEnd,
+          }),
+          getAppointmentCategoryBreakdown({
+            periodStart: categoryPeriodStart,
+            periodEnd: categoryPeriodEnd,
+            providerIds: perioProviderIds,
+          }),
+          getAppointmentCategoryBreakdown({
+            periodStart: categoryPeriodStart,
+            periodEnd: categoryPeriodEnd,
+            providerIds: omsProviderIds,
+          }),
+          getAppointmentCategoryBreakdownByProvider({
+            periodStart: categoryPeriodStart,
+            periodEnd: categoryPeriodEnd,
+            providerIds: allProviderIds,
+          }),
+        ])
+      : [[], [], [], {} as Record<string, AppointmentCategoryBreakdownRow[]>];
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -1219,21 +1727,25 @@ export default async function AdminProviderDashboardPage({
                 title="All Providers"
                 subtitle="Combined results across all clinicians"
                 metric={allMetric}
-                snapshots={[...perioSnapshots, ...omsSnapshots].sort((a, b) =>
-                  a.provider.name.localeCompare(b.provider.name)
-                )}
+                snapshots={allClinicalSnapshots}
+                categoryBreakdown={allCategoryBreakdown}
+                categoryBreakdownsByProviderId={providerCategoryBreakdowns}
               />
               <ClinicalGroupSection
                 title="Periodontists"
                 subtitle={PERIODONTISTS.join(", ")}
                 metric={perioMetric}
                 snapshots={perioSnapshots}
+                categoryBreakdown={perioCategoryBreakdown}
+                categoryBreakdownsByProviderId={providerCategoryBreakdowns}
               />
               <ClinicalGroupSection
                 title="Oral & Maxillofacial Surgeons"
                 subtitle={ORAL_MAXFAX_SURGEONS.join(", ")}
                 metric={omsMetric}
                 snapshots={omsSnapshots}
+                categoryBreakdown={omsCategoryBreakdown}
+                categoryBreakdownsByProviderId={providerCategoryBreakdowns}
               />
             </>
           ) : (
@@ -1242,9 +1754,7 @@ export default async function AdminProviderDashboardPage({
                 title="All Providers"
                 subtitle="Combined results across all clinicians"
                 metric={allMetric}
-                snapshots={[...perioSnapshots, ...omsSnapshots].sort((a, b) =>
-                  a.provider.name.localeCompare(b.provider.name)
-                )}
+                snapshots={allClinicalSnapshots}
               />
               <FinancialGroupSection
                 title="Periodontists"

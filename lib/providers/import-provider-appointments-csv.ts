@@ -36,25 +36,20 @@ type ProviderAppointmentsCsvRow = {
 type ProviderAppointmentsRawInsert = {
   source_file_name: string;
   import_batch_id: string;
-
   provider_id: string | null;
   provider_name_raw: string;
   provider_name_normalized: string;
-
   appointment_date: string;
   appointment_start: string;
   appointment_end: string;
   duration_minutes: number;
-
   patient_name_raw: string | null;
   treatment_type: string | null;
   appointment_value: number;
-
   appointment_status: string | null;
   arrival_status: string | null;
   response_status: string | null;
   following_appointment_raw: string | null;
-
   is_cancelled: boolean;
   is_fta: boolean;
   has_following_appointment: boolean;
@@ -71,13 +66,8 @@ function getServiceRoleSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!supabaseUrl) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
-  }
-
-  if (!serviceRoleKey) {
-    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
-  }
+  if (!supabaseUrl) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
+  if (!serviceRoleKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
 
   return createClient(supabaseUrl, serviceRoleKey);
 }

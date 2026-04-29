@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import {
   getProviderDashboardMetrics,
   type ProviderDashboardModule,
 } from "@/lib/providers/get-provider-dashboard-metrics";
 import type { ProviderPeriodType } from "@/lib/providers/provider-periods";
+import { getAppointmentCategory } from "@/lib/appointmentCategories";
 
 type ProviderPageProps = {
   searchParams?: Promise<{
@@ -196,6 +198,254 @@ function SpecialtyAverageCard({
   );
 }
 
+
+
+
+type AppointmentCategoryBreakdownRow = {
+  appointmentCategory: string;
+  totalAppointments: number;
+  ftaCount: number;
+  ftaNoRebookingCount: number;
+  cancellationNoRebookingCount: number;
+  ftaPct: number;
+  ftaNoRebookingPct: number;
+  cancellationNoRebookingPct: number;
+};
+
+type CancellationFtaRawBreakdownRow = {
+  appointment_category: string | null;
+  is_fta: boolean | null;
+  is_fta_no_rebooking: boolean | null;
+  is_cancellation_no_rebooking: boolean | null;
+};
+
+type CompletedAppointmentBreakdownRow = {
+  treatment_type: string | null;
+  arrival_status: string | null;
+};
+
+function hasCompletedArrivalStatus(value: string | null | undefined): boolean {
+  return String(value ?? "").trim() !== "";
+}
+
+function formatPercentFromWholeNumber(value: number | null | undefined): string {
+  const safeValue = Number(value ?? 0);
+  return `${safeValue.toFixed(1)}%`;
+}
+
+function calculatePercent(numerator: number, denominator: number): number {
+  if (!denominator) return 0;
+  return (numerator / denominator) * 100;
+}
+
+function createEmptyCategoryBreakdownRow(category: string): AppointmentCategoryBreakdownRow {
+  return {
+    appointmentCategory: category,
+    totalAppointments: 0,
+    ftaCount: 0,
+    ftaNoRebookingCount: 0,
+    cancellationNoRebookingCount: 0,
+    ftaPct: 0,
+    ftaNoRebookingPct: 0,
+    cancellationNoRebookingPct: 0,
+  };
+}
+
+function summariseCategoryBreakdown(params: {
+  cancellationRows: CancellationFtaRawBreakdownRow[];
+  appointmentRows: CompletedAppointmentBreakdownRow[];
+}): AppointmentCategoryBreakdownRow[] {
+  const map = new Map<string, AppointmentCategoryBreakdownRow>();
+
+  for (const row of params.appointmentRows) {
+    if (!hasCompletedArrivalStatus(row.arrival_status)) continue;
+
+    const category = getAppointmentCategory(row.treatment_type);
+    const existing = map.get(category) ?? createEmptyCategoryBreakdownRow(category);
+
+    existing.totalAppointments += 1;
+    map.set(category, existing);
+  }
+
+  for (const row of params.cancellationRows) {
+    const category = row.appointment_category || "Unmapped";
+    const existing = map.get(category) ?? createEmptyCategoryBreakdownRow(category);
+
+    if (row.is_fta) existing.ftaCount += 1;
+    if (row.is_fta_no_rebooking) existing.ftaNoRebookingCount += 1;
+    if (row.is_cancellation_no_rebooking) existing.cancellationNoRebookingCount += 1;
+
+    map.set(category, existing);
+  }
+
+  return Array.from(map.values())
+    .map((row) => ({
+      ...row,
+      ftaPct: calculatePercent(row.ftaCount, row.totalAppointments),
+      ftaNoRebookingPct: calculatePercent(row.ftaNoRebookingCount, row.totalAppointments),
+      cancellationNoRebookingPct: calculatePercent(
+        row.cancellationNoRebookingCount,
+        row.totalAppointments
+      ),
+    }))
+    .sort((a, b) => {
+      if (b.totalAppointments !== a.totalAppointments) {
+        return b.totalAppointments - a.totalAppointments;
+      }
+
+      return a.appointmentCategory.localeCompare(b.appointmentCategory);
+    });
+}
+
+function getServiceRoleSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl) {
+    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
+  }
+
+  if (!serviceRoleKey) {
+    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+  }
+
+  return createSupabaseClient(supabaseUrl, serviceRoleKey);
+}
+
+function getMonthEndIso(monthKey: string): string {
+  const [yearRaw, monthRaw] = monthKey.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+
+  const endDate = new Date(year, month, 0);
+  const endMonth = String(endDate.getMonth() + 1).padStart(2, "0");
+  const endDay = String(endDate.getDate()).padStart(2, "0");
+
+  return `${endDate.getFullYear()}-${endMonth}-${endDay}`;
+}
+
+async function getAppointmentCategoryBreakdownForProvider(params: {
+  periodStart: string | null | undefined;
+  periodEnd: string | null | undefined;
+  providerId: string | null | undefined;
+}): Promise<AppointmentCategoryBreakdownRow[]> {
+  if (!params.periodStart || !params.periodEnd || !params.providerId) return [];
+
+  const supabase = getServiceRoleSupabaseClient();
+
+  const [appointmentsResult, cancellationsResult] = await Promise.all([
+    supabase
+      .from("provider_appointments_raw")
+      .select("treatment_type, arrival_status")
+      .eq("provider_id", params.providerId)
+      .gte("appointment_date", params.periodStart)
+      .lte("appointment_date", params.periodEnd),
+
+    supabase
+      .from("provider_cancellations_ftas_raw")
+      .select(
+        "appointment_category, is_fta, is_fta_no_rebooking, is_cancellation_no_rebooking"
+      )
+      .eq("provider_id", params.providerId)
+      .gte("event_date", params.periodStart)
+      .lte("event_date", params.periodEnd),
+  ]);
+
+  if (appointmentsResult.error) {
+    throw new Error(
+      `Failed to load completed appointment denominators: ${appointmentsResult.error.message}`
+    );
+  }
+
+  if (cancellationsResult.error) {
+    throw new Error(
+      `Failed to load appointment category breakdown: ${cancellationsResult.error.message}`
+    );
+  }
+
+  return summariseCategoryBreakdown({
+    appointmentRows: (appointmentsResult.data ?? []) as CompletedAppointmentBreakdownRow[],
+    cancellationRows: (cancellationsResult.data ?? []) as CancellationFtaRawBreakdownRow[],
+  });
+}
+
+function AppointmentCategoryBreakdownCard({
+  title,
+  subtitle,
+  rows,
+}: {
+  title: string;
+  subtitle?: string;
+  rows: AppointmentCategoryBreakdownRow[];
+}) {
+  return (
+    <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight text-gray-900">{title}</h2>
+          {subtitle ? <p className="mt-1 text-sm text-gray-500">{subtitle}</p> : null}
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="mt-5 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-6 text-sm text-gray-600">
+          No cancellation or FTA category data available for this period.
+        </div>
+      ) : (
+        <div className="mt-5 overflow-x-auto rounded-2xl border border-gray-200">
+          <table className="min-w-full divide-y divide-gray-100 text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Category
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Completed
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  FTA %
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  FTA no rebook %
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Cancel no rebook %
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 bg-white">
+              {rows.map((row) => (
+                <tr key={row.appointmentCategory}>
+                  <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
+                    {row.appointmentCategory}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                    {row.totalAppointments}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                    {formatPercentFromWholeNumber(row.ftaPct)}
+                    <div className="text-[11px] text-gray-400">{row.ftaCount}</div>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                    {formatPercentFromWholeNumber(row.ftaNoRebookingPct)}
+                    <div className="text-[11px] text-gray-400">{row.ftaNoRebookingCount}</div>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                    {formatPercentFromWholeNumber(row.cancellationNoRebookingPct)}
+                    <div className="text-[11px] text-gray-400">
+                      {row.cancellationNoRebookingCount}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SelectField({
   label,
   name,
@@ -343,6 +593,25 @@ export default async function ProviderPage({ searchParams }: ProviderPageProps) 
 
   const showFinancialSpecialtyAverages =
     selectedModule === "financial" && Boolean(specialtyAverages?.financial);
+
+  const categoryPeriodStart =
+    selectedPeriodType === "month"
+      ? `${safeSelectedMonthKey}-01`
+      : metric?.period_start ?? null;
+
+  const categoryPeriodEnd =
+    selectedPeriodType === "month"
+      ? getMonthEndIso(safeSelectedMonthKey)
+      : metric?.period_end ?? null;
+
+  const appointmentCategoryBreakdown =
+    selectedModule === "clinical"
+      ? await getAppointmentCategoryBreakdownForProvider({
+          periodStart: categoryPeriodStart,
+          periodEnd: categoryPeriodEnd,
+          providerId: provider.id,
+        })
+      : [];
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -555,6 +824,16 @@ export default async function ProviderPage({ searchParams }: ProviderPageProps) 
               title="Total appointments"
               value={String(metric.total_appointments)}
               subtitle={`${metric.period_start} to ${metric.period_end}`}
+            />
+          </section>
+        ) : null}
+
+        {metric && selectedModule === "clinical" ? (
+          <section className="mt-6">
+            <AppointmentCategoryBreakdownCard
+              title="Appointment category breakdown"
+              subtitle="FTA, FTA no rebooking, and cancellation no rebooking by appointment category"
+              rows={appointmentCategoryBreakdown}
             />
           </section>
         ) : null}

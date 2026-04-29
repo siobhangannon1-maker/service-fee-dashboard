@@ -18,9 +18,11 @@ type CancellationFtaRow = {
   treatment_type: string | null;
   status_raw: string | null;
   next_appointment_raw: string | null;
-  has_next_appointment: boolean;
-  is_fta: boolean;
-  is_cancellation: boolean;
+  has_next_appointment: boolean | null;
+  is_fta: boolean | null;
+  is_cancellation: boolean | null;
+  is_fta_no_rebooking: boolean | null;
+  is_cancellation_no_rebooking: boolean | null;
 };
 
 type AppointmentRow = {
@@ -31,6 +33,7 @@ type AppointmentRow = {
   provider_name_raw: string | null;
   treatment_type: string | null;
   appointment_status: string | null;
+  arrival_status: string | null;
 };
 
 function getServiceRoleSupabaseClient() {
@@ -44,11 +47,7 @@ function getServiceRoleSupabaseClient() {
 }
 
 function normalizeText(value: string | null | undefined): string {
-  return (value ?? "").trim().toLowerCase();
-}
-
-function isBlank(value: string | null | undefined): boolean {
-  return normalizeText(value) === "";
+  return String(value ?? "").trim().toLowerCase();
 }
 
 function safeDivide(numerator: number, denominator: number): number {
@@ -60,20 +59,8 @@ function round4(value: number): number {
   return Math.round(value * 10000) / 10000;
 }
 
-function isCompletedAppointment(row: Pick<AppointmentRow, "appointment_status">): boolean {
-  return !isBlank(row.appointment_status);
-}
-
-function isFtaRow(row: CancellationFtaRow): boolean {
-  if (row.is_fta) return true;
-  return normalizeText(row.status_raw) === "fta";
-}
-
-function isCancellationNoRebookRow(row: CancellationFtaRow): boolean {
-  const statusIsCancelled =
-    row.is_cancellation || normalizeText(row.status_raw) === "cancelled";
-
-  return statusIsCancelled && (isBlank(row.next_appointment_raw) || !row.has_next_appointment);
+function isCompletedAppointment(row: Pick<AppointmentRow, "arrival_status">): boolean {
+  return normalizeText(row.arrival_status) !== "";
 }
 
 function getCancellationRowKey(row: CancellationFtaRow): string {
@@ -111,6 +98,7 @@ function getAppointmentRowKey(row: AppointmentRow): string {
     normalizeText(row.provider_name_raw),
     normalizeText(row.treatment_type),
     normalizeText(row.appointment_status),
+    normalizeText(row.arrival_status),
   ].join("|");
 }
 
@@ -150,7 +138,8 @@ async function fetchAllAppointmentRows(
         patient_name_raw,
         provider_name_raw,
         treatment_type,
-        appointment_status
+        appointment_status,
+        arrival_status
         `
       )
       .gte("appointment_date", overallStart)
@@ -165,10 +154,7 @@ async function fetchAllAppointmentRows(
     const rows = (data ?? []) as AppointmentRow[];
     allRows.push(...rows);
 
-    if (rows.length < pageSize) {
-      break;
-    }
-
+    if (rows.length < pageSize) break;
     from += pageSize;
   }
 
@@ -200,7 +186,9 @@ async function fetchAllCancellationRows(
         next_appointment_raw,
         has_next_appointment,
         is_fta,
-        is_cancellation
+        is_cancellation,
+        is_fta_no_rebooking,
+        is_cancellation_no_rebooking
         `
       )
       .gte("event_date", overallStart)
@@ -215,10 +203,7 @@ async function fetchAllCancellationRows(
     const rows = (data ?? []) as CancellationFtaRow[];
     allRows.push(...rows);
 
-    if (rows.length < pageSize) {
-      break;
-    }
-
+    if (rows.length < pageSize) break;
     from += pageSize;
   }
 
@@ -241,49 +226,31 @@ export async function getWeeklyCancellationFtaKpis(
   const allCancellationRows = dedupeCancellationRows(allCancellationRowsRaw);
   const allAppointmentRows = dedupeAppointmentRows(allAppointmentRowsRaw);
 
-  console.log("KPI DEBUG OVERALL", {
-    overallStart,
-    overallEnd,
-    rawCancellationRows: allCancellationRowsRaw.length,
-    dedupedCancellationRows: allCancellationRows.length,
-    rawAppointmentRows: allAppointmentRowsRaw.length,
-    dedupedAppointmentRows: allAppointmentRows.length,
-  });
-
   return weeks.map((week) => {
-    const appointmentRows = allAppointmentRows.filter(
-      (row) =>
-        row.appointment_date >= week.weekStart &&
-        row.appointment_date <= week.weekEnd &&
-        isCompletedAppointment(row)
+    const appointmentRowsForWeek = allAppointmentRows.filter(
+      (row) => row.appointment_date >= week.weekStart && row.appointment_date <= week.weekEnd
     );
 
-    const cancellationRows = allCancellationRows.filter(
+    const cancellationRowsForWeek = allCancellationRows.filter(
       (row) => row.event_date >= week.weekStart && row.event_date <= week.weekEnd
     );
 
-    const totalAppointments = appointmentRows.length;
-    const ftaCount = cancellationRows.filter(isFtaRow).length;
-    const cancelNoRebookCount = cancellationRows.filter(isCancellationNoRebookRow).length;
+    const completedAppointments = appointmentRowsForWeek.filter(isCompletedAppointment).length;
 
-    console.log("KPI DEBUG WEEK", {
-      weekStart: week.weekStart,
-      weekEnd: week.weekEnd,
-      totalAppointments,
-      appointmentRows: appointmentRows.length,
-      cancellationRows: cancellationRows.length,
-      ftaCount,
-      cancelNoRebookCount,
-    });
+    const ftaCount = cancellationRowsForWeek.filter((row) => row.is_fta === true).length;
+
+    const cancelNoRebookCount = cancellationRowsForWeek.filter(
+      (row) => row.is_cancellation_no_rebooking === true
+    ).length;
 
     return {
       weekStart: week.weekStart,
       weekEnd: week.weekEnd,
-      totalAppointments,
+      totalAppointments: completedAppointments,
       ftaCount,
-      ftaPct: round4(safeDivide(ftaCount, totalAppointments)),
+      ftaPct: round4(safeDivide(ftaCount, completedAppointments)),
       cancelNoRebookCount,
-      cancelNoRebookPct: round4(safeDivide(cancelNoRebookCount, totalAppointments)),
+      cancelNoRebookPct: round4(safeDivide(cancelNoRebookCount, completedAppointments)),
     };
   });
 }

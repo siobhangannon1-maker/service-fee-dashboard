@@ -3,6 +3,11 @@
 import { createClient } from "@supabase/supabase-js";
 import { normalizeProviderName } from "@/lib/providers/normalize-provider-name";
 
+type ProviderMappingSourceType =
+  | "appointments_csv"
+  | "provider_performance_csv"
+  | "cancellations_csv";
+
 function getServiceRoleSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -18,10 +23,12 @@ function getServiceRoleSupabaseClient() {
   return createClient(supabaseUrl, serviceRoleKey);
 }
 
-function isValidSourceType(
-  value: string
-): value is "appointments_csv" | "provider_performance_csv" {
-  return value === "appointments_csv" || value === "provider_performance_csv";
+function isValidSourceType(value: string): value is ProviderMappingSourceType {
+  return (
+    value === "appointments_csv" ||
+    value === "provider_performance_csv" ||
+    value === "cancellations_csv"
+  );
 }
 
 export async function createProviderNameMapping(formData: FormData): Promise<{

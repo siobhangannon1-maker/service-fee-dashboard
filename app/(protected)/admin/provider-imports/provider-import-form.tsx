@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 type ImportActionState = {
   ok: boolean;
   message: string;
-} | null;
+};
 
 type ProviderImportFormProps = {
   action: (
@@ -16,7 +16,12 @@ type ProviderImportFormProps = {
   ) => Promise<ImportActionState>;
 };
 
-const initialState: ImportActionState = null;
+const initialState: ImportActionState = {
+  ok: false,
+  message: "",
+};
+
+type ImportType = "appointments" | "performance" | "cancellations" | "new_patients";
 
 function UploadSubmitButton({ label }: { label: string }) {
   const { pending } = useFormStatus();
@@ -41,7 +46,7 @@ function UploadCard({
 }: {
   title: string;
   description: string;
-  importType: "appointments" | "performance" | "cancellations";
+  importType: ImportType;
   monthKey: string;
   action: (
     prevState: ImportActionState,
@@ -52,8 +57,10 @@ function UploadCard({
   const [state, formAction] = useActionState(action, initialState);
   const [selectedFileName, setSelectedFileName] = useState("");
 
+  const usesSelectedMonth = importType === "performance";
+
   useEffect(() => {
-    if (state) {
+    if (state.message) {
       router.refresh();
     }
   }, [state, router]);
@@ -63,11 +70,7 @@ function UploadCard({
       <div className="text-sm font-semibold text-gray-900">{title}</div>
       <p className="mt-1 text-sm text-gray-600">{description}</p>
 
-      <form
-        action={formAction}
-        encType="multipart/form-data"
-        className="mt-4 flex flex-col gap-3"
-      >
+      <form action={formAction} encType="multipart/form-data" className="mt-4 flex flex-col gap-3">
         <input type="hidden" name="monthKey" value={monthKey} />
         <input type="hidden" name="importType" value={importType} />
 
@@ -90,8 +93,10 @@ function UploadCard({
         <div className="text-xs font-medium text-gray-700">Latest status</div>
 
         <div className="mt-2 text-xs text-gray-600">
-          <span className="font-medium text-gray-700">Selected month:</span>{" "}
-          {monthKey || "Not selected"}
+          <span className="font-medium text-gray-700">
+            {usesSelectedMonth ? "Selected month:" : "Month handling:"}
+          </span>{" "}
+          {usesSelectedMonth ? monthKey || "Not selected" : "Detected automatically from file dates"}
         </div>
 
         <div className="mt-1 text-xs text-gray-600">
@@ -99,9 +104,9 @@ function UploadCard({
           {selectedFileName || "No file selected yet"}
         </div>
 
-        <div className="mt-1 text-xs">
+        <div className="mt-1 whitespace-pre-wrap text-xs">
           <span className="font-medium text-gray-700">Status:</span>{" "}
-          {state ? (
+          {state.message ? (
             <span className={state.ok ? "text-green-600" : "text-red-600"}>
               {state.message}
             </span>
@@ -155,7 +160,8 @@ export function ProviderImportForm({ action }: ProviderImportFormProps) {
       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="text-sm font-semibold text-gray-900">Import month</div>
         <p className="mt-1 text-sm text-gray-600">
-          Select the month once here. All upload cards below will use this month.
+          Performance uploads still use this selected month. Appointments, cancellations, and new
+          patients detect months automatically from the CSV date rows.
         </p>
 
         <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -164,7 +170,7 @@ export function ProviderImportForm({ action }: ProviderImportFormProps) {
               htmlFor="provider-import-month"
               className="mb-1 block text-xs font-medium text-gray-700"
             >
-              Month
+              Month for performance upload
             </label>
 
             <input
@@ -178,15 +184,15 @@ export function ProviderImportForm({ action }: ProviderImportFormProps) {
           </div>
 
           <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
-            Selected: <span className="font-medium">{formattedMonth}</span>
+            Selected for performance: <span className="font-medium">{formattedMonth}</span>
           </div>
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-4">
         <UploadCard
           title="Appointments CSV"
-          description="Upload raw provider appointments data for the selected month."
+          description="Upload raw provider appointments data. Months are detected automatically from appointment dates."
           importType="appointments"
           monthKey={monthKey}
           action={action}
@@ -194,7 +200,7 @@ export function ProviderImportForm({ action }: ProviderImportFormProps) {
 
         <UploadCard
           title="Performance CSV"
-          description="Upload raw provider performance data for the selected month."
+          description="Upload raw provider performance monthly summary data for the selected month."
           importType="performance"
           monthKey={monthKey}
           action={action}
@@ -202,8 +208,16 @@ export function ProviderImportForm({ action }: ProviderImportFormProps) {
 
         <UploadCard
           title="Cancellations CSV"
-          description="Upload cancellations and FTAs data for the selected month."
+          description="Upload cancellations and FTAs data. Months are detected automatically from event dates."
           importType="cancellations"
+          monthKey={monthKey}
+          action={action}
+        />
+
+        <UploadCard
+          title="New Patients CSV"
+          description="Upload new patient/referral data. Months are detected automatically from joined/referral dates."
+          importType="new_patients"
           monthKey={monthKey}
           action={action}
         />

@@ -49,4 +49,7 @@ export async function linkImportBatchMonth(formData: FormData) {
   }
 
   revalidatePath("/admin/provider-imports");
+  revalidatePath("/practice-manager/kpis");
+  revalidatePath("/provider");
+  revalidatePath("/admin/provider-dashboard");
 }

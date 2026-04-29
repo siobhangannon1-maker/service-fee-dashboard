@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import KpiBenchmarksEditor from "./KpiBenchmarksEditor";
 
 type ExpenseBenchmark = {
   id?: number | null;
@@ -584,6 +585,8 @@ export default function EditBenchmarksClient() {
           </tbody>
         </table>
       </div>
+
+      <KpiBenchmarksEditor />
     </main>
   );
 }

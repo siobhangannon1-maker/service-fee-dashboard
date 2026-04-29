@@ -53,6 +53,7 @@ function groupLinkedBatchesByMonth(batches: BatchRow[]) {
       const linkedTypes = rows.map((row) => row.import_type);
       const hasAppointments = linkedTypes.includes("appointments");
       const hasPerformance = linkedTypes.includes("performance");
+      const hasCancellations = linkedTypes.includes("cancellations");
       const canRecalculate = hasAppointments && hasPerformance;
 
       return {
@@ -60,9 +61,14 @@ function groupLinkedBatchesByMonth(batches: BatchRow[]) {
         rows,
         hasAppointments,
         hasPerformance,
+        hasCancellations,
         canRecalculate,
       };
     });
+}
+
+function getBatchDisplayKey(batch: BatchRow): string {
+  return `${batch.import_batch_id}-${batch.month_key ?? "no-month"}-${batch.import_type}`;
 }
 
 export default async function ProviderImportsPage() {
@@ -77,14 +83,15 @@ export default async function ProviderImportsPage() {
         </h1>
 
         <p className="mt-2 text-sm text-gray-600">
-          Upload provider appointments and provider performance CSV files for a selected month.
+          Upload provider appointments, performance, and cancellations CSV files.
+          Appointments and cancellations can now contain multiple months.
         </p>
 
         <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <div className="font-medium">Important</div>
           <p className="mt-1">
-            Use upload to replace raw data for a month. Use <strong>Recalculate only</strong> when
-            the raw data is already correct and you only need to rebuild provider metrics.
+            Appointments and cancellations detect months from the uploaded file.
+            Performance still uses the selected month because it is monthly summary data.
           </p>
         </div>
 
@@ -107,6 +114,7 @@ export default async function ProviderImportsPage() {
                   rows,
                   hasAppointments,
                   hasPerformance,
+                  hasCancellations,
                   canRecalculate,
                 }) => (
                   <div
@@ -139,6 +147,14 @@ export default async function ProviderImportsPage() {
                           >
                             Performance {hasPerformance ? "linked" : "missing"}
                           </span>
+
+                          <span
+                            className={`rounded-full border px-2 py-1 text-xs font-medium ${getTypeBadgeClass(
+                              hasCancellations
+                            )}`}
+                          >
+                            Cancellations {hasCancellations ? "linked" : "missing"}
+                          </span>
                         </div>
                       </div>
 
@@ -149,7 +165,7 @@ export default async function ProviderImportsPage() {
                           disabledReason={
                             canRecalculate
                               ? undefined
-                              : "Both linked types are required before recalculation can run."
+                              : "Appointments and performance are required before recalculation can run."
                           }
                         />
                       </div>
@@ -172,7 +188,7 @@ export default async function ProviderImportsPage() {
             <div className="mt-4 space-y-4">
               {batches.map((batch) => (
                 <div
-                  key={batch.import_batch_id}
+                  key={getBatchDisplayKey(batch)}
                   className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
                 >
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">

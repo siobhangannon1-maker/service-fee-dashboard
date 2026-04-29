@@ -1,4 +1,5 @@
 import { normalizeProviderName } from "./normalize-provider-name";
+import { getAppointmentCategory } from "./appointment-categories";
 
 export type ProviderCancellationsFtasCsvRow = Record<string, string | undefined>;
 
@@ -11,6 +12,7 @@ export type ParsedProviderCancellationsFtasRow = {
 
   patientNameRaw: string | null;
   treatmentType: string | null;
+  appointmentCategory: string;
 
   statusRaw: string | null;
   nextAppointmentRaw: string | null;
@@ -18,6 +20,8 @@ export type ParsedProviderCancellationsFtasRow = {
   hasNextAppointment: boolean;
   isFta: boolean;
   isCancellation: boolean;
+  isFtaNoRebooking: boolean;
+  isCancellationNoRebooking: boolean;
 
   rawJson: Record<string, string | undefined>;
 };
@@ -55,17 +59,24 @@ export function parseProviderCancellationsFtasCsvRow(
   row: ProviderCancellationsFtasCsvRow
 ): ParsedProviderCancellationsFtasRow {
   const providerNameRaw = getString(row, "Provider");
+
   if (!providerNameRaw) {
     throw new Error('Missing required "Provider" value');
   }
 
   const appointmentDateRaw = getString(row, "Appointment Date");
+
   if (!appointmentDateRaw) {
     throw new Error('Missing required "Appointment Date" value');
   }
 
+  const treatmentType = toNullableString(getString(row, "Tx Type"));
   const statusRaw = toNullableString(getString(row, "Status"));
   const nextAppointmentRaw = toNullableString(getString(row, "Next Appointment"));
+
+  const hasNextAppointment = !isBlank(nextAppointmentRaw);
+  const isFta = normalizeText(statusRaw) === "fta";
+  const isCancellation = normalizeText(statusRaw) === "cancelled";
 
   return {
     providerNameRaw,
@@ -75,14 +86,17 @@ export function parseProviderCancellationsFtasCsvRow(
     eventTime: toNullableString(getString(row, "Appointment Time")),
 
     patientNameRaw: toNullableString(getString(row, "Patient Name")),
-    treatmentType: toNullableString(getString(row, "Tx Type")),
+    treatmentType,
+    appointmentCategory: getAppointmentCategory(treatmentType),
 
     statusRaw,
     nextAppointmentRaw,
 
-    hasNextAppointment: !isBlank(nextAppointmentRaw),
-    isFta: normalizeText(statusRaw) === "fta",
-    isCancellation: normalizeText(statusRaw) === "cancelled",
+    hasNextAppointment,
+    isFta,
+    isCancellation,
+    isFtaNoRebooking: isFta && !hasNextAppointment,
+    isCancellationNoRebooking: isCancellation && !hasNextAppointment,
 
     rawJson: row,
   };

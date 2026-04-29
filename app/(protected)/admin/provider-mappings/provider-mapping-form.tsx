@@ -29,6 +29,7 @@ export function ProviderMappingForm({ providers }: { providers: ProviderOption[]
           <label className="mb-2 block text-sm font-medium text-gray-700" htmlFor="sourceType">
             Source type
           </label>
+
           <select
             id="sourceType"
             name="sourceType"
@@ -37,6 +38,7 @@ export function ProviderMappingForm({ providers }: { providers: ProviderOption[]
           >
             <option value="appointments_csv">appointments_csv</option>
             <option value="provider_performance_csv">provider_performance_csv</option>
+            <option value="cancellations_csv">cancellations_csv</option>
           </select>
         </div>
 
@@ -44,6 +46,7 @@ export function ProviderMappingForm({ providers }: { providers: ProviderOption[]
           <label className="mb-2 block text-sm font-medium text-gray-700" htmlFor="rawProviderName">
             Raw provider name
           </label>
+
           <input
             id="rawProviderName"
             name="rawProviderName"
@@ -58,6 +61,7 @@ export function ProviderMappingForm({ providers }: { providers: ProviderOption[]
           <label className="mb-2 block text-sm font-medium text-gray-700" htmlFor="providerId">
             Provider
           </label>
+
           <select
             id="providerId"
             name="providerId"
@@ -77,6 +81,7 @@ export function ProviderMappingForm({ providers }: { providers: ProviderOption[]
           <label className="mb-2 block text-sm font-medium text-gray-700" htmlFor="notes">
             Notes
           </label>
+
           <textarea
             id="notes"
             name="notes"

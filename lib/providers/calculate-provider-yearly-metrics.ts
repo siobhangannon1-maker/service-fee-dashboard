@@ -154,7 +154,6 @@ function aggregateRows(
     0
   );
 
-  // gap_hours should now represent scheduled - billed
   const gapHours = rows.reduce((sum, row) => sum + Number(row.gap_hours || 0), 0);
 
   const productionTotal = rows.reduce((sum, row) => sum + Number(row.production_total || 0), 0);

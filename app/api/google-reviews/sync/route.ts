@@ -1,214 +1,166 @@
-import { NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 type GoogleReview = {
-  reviewId?: string
-  starRating?: string
-  createTime?: string
-}
+  reviewId?: string;
+  starRating?: string;
+  createTime?: string;
+  comment?: string;
+  reviewer?: {
+    displayName?: string;
+  };
+};
 
 type GoogleReviewsResponse = {
-  reviews?: GoogleReview[]
-  nextPageToken?: string
-  averageRating?: number
-  totalReviewCount?: number
-}
+  reviews?: GoogleReview[];
+  nextPageToken?: string;
+};
 
-type MonthlyBucket = {
-  year: number
-  month: number
-  month_key: string
-  review_count: number
-  average_rating: number
-}
-
-function getMonthKey(year: number, month: number) {
-  return `${year}-${String(month).padStart(2, '0')}`
-}
-
-function parseStarRating(value?: string) {
-  if (!value) return 0
-
-  const map: Record<string, number> = {
+function ratingToNumber(rating?: string) {
+  const ratings: Record<string, number> = {
     ONE: 1,
     TWO: 2,
     THREE: 3,
     FOUR: 4,
     FIVE: 5,
-  }
+  };
 
-  return map[value] ?? Number(value) ?? 0
+  return ratings[rating || ""] || 0;
 }
 
-async function fetchAllReviews() {
-  const accountId = process.env.GOOGLE_BUSINESS_ACCOUNT_ID
-  const locationId = process.env.GOOGLE_BUSINESS_LOCATION_ID
-  const accessToken = process.env.GOOGLE_BUSINESS_ACCESS_TOKEN
+function toDateOnly(value: string) {
+  return value.slice(0, 10);
+}
 
-  if (!accountId) {
-    throw new Error('Missing GOOGLE_BUSINESS_ACCOUNT_ID')
+async function getAccessToken() {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      client_id: process.env.GOOGLE_BUSINESS_CLIENT_ID!,
+      client_secret: process.env.GOOGLE_BUSINESS_CLIENT_SECRET!,
+      refresh_token: process.env.GOOGLE_BUSINESS_REFRESH_TOKEN!,
+      grant_type: "refresh_token",
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data?.error_description || "Failed to get Google access token");
   }
 
-  if (!locationId) {
-    throw new Error('Missing GOOGLE_BUSINESS_LOCATION_ID')
-  }
+  return data.access_token as string;
+}
 
-  if (!accessToken) {
-    throw new Error('Missing GOOGLE_BUSINESS_ACCESS_TOKEN')
-  }
-
-  const allReviews: GoogleReview[] = []
-  let nextPageToken: string | undefined
+async function fetchReviewsForLocation(
+  accessToken: string,
+  accountId: string,
+  locationId: string
+) {
+  const allReviews: GoogleReview[] = [];
+  let nextPageToken = "";
 
   do {
     const url = new URL(
       `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews`
-    )
+    );
 
-    url.searchParams.set('pageSize', '50')
+    url.searchParams.set("pageSize", "50");
 
     if (nextPageToken) {
-      url.searchParams.set('pageToken', nextPageToken)
+      url.searchParams.set("pageToken", nextPageToken);
     }
 
     const response = await fetch(url.toString(), {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
       },
-      cache: 'no-store',
-    })
+      cache: "no-store",
+    });
+
+    const data = (await response.json()) as GoogleReviewsResponse;
 
     if (!response.ok) {
-      const text = await response.text()
-      throw new Error(`Google reviews fetch failed: ${response.status} ${text}`)
+      throw new Error(
+        `Google reviews error for location ${locationId}: ${JSON.stringify(data)}`
+      );
     }
 
-    const json = (await response.json()) as GoogleReviewsResponse
-    allReviews.push(...(json.reviews || []))
-    nextPageToken = json.nextPageToken
-  } while (nextPageToken)
+    allReviews.push(...(data.reviews || []));
+    nextPageToken = data.nextPageToken || "";
+  } while (nextPageToken);
 
-  return allReviews
-}
-
-function buildMonthlyBuckets(reviews: GoogleReview[]): MonthlyBucket[] {
-  const map = new Map<
-    string,
-    {
-      year: number
-      month: number
-      review_count: number
-      rating_sum: number
-    }
-  >()
-
-  for (const review of reviews) {
-    if (!review.createTime) continue
-
-    const created = new Date(review.createTime)
-
-    if (Number.isNaN(created.getTime())) continue
-
-    const year = created.getUTCFullYear()
-    const month = created.getUTCMonth() + 1
-    const month_key = getMonthKey(year, month)
-    const rating = parseStarRating(review.starRating)
-
-    const existing = map.get(month_key) || {
-      year,
-      month,
-      review_count: 0,
-      rating_sum: 0,
-    }
-
-    existing.review_count += 1
-    existing.rating_sum += rating
-
-    map.set(month_key, existing)
-  }
-
-  return Array.from(map.entries())
-    .map(([month_key, value]) => ({
-      year: value.year,
-      month: value.month,
-      month_key,
-      review_count: value.review_count,
-      average_rating:
-        value.review_count > 0
-          ? Number((value.rating_sum / value.review_count).toFixed(2))
-          : 0,
-    }))
-    .sort((a, b) => a.month_key.localeCompare(b.month_key))
+  return allReviews;
 }
 
 export async function POST() {
   try {
-    const supabase = createAdminClient()
+    const accountId = process.env.GOOGLE_BUSINESS_ACCOUNT_ID;
+    const locationIds = process.env.GOOGLE_BUSINESS_LOCATION_IDS;
 
-    const reviews = await fetchAllReviews()
-    const monthlyBuckets = buildMonthlyBuckets(reviews)
+    if (!accountId) throw new Error("Missing GOOGLE_BUSINESS_ACCOUNT_ID");
+    if (!locationIds) throw new Error("Missing GOOGLE_BUSINESS_LOCATION_IDS");
 
-    const { data: benchmarks, error: benchmarkError } = await supabase
-      .from('google_review_benchmarks')
-      .select('id, year, month, month_key, review_target')
+    const accessToken = await getAccessToken();
 
-    if (benchmarkError) {
-      throw benchmarkError
+    const locationIdList = locationIds
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    const allRowsToSave = [];
+
+    for (const locationId of locationIdList) {
+      const reviews = await fetchReviewsForLocation(
+        accessToken,
+        accountId,
+        locationId
+      );
+
+      for (const review of reviews) {
+        if (!review.reviewId || !review.createTime) continue;
+
+        const starRating = ratingToNumber(review.starRating);
+        if (!starRating) continue;
+
+        allRowsToSave.push({
+          google_review_id: `${locationId}-${review.reviewId}`,
+          location_id: locationId,
+          review_date: toDateOnly(review.createTime),
+          star_rating: starRating,
+          comment: review.comment || null,
+          reviewer_name: review.reviewer?.displayName || null,
+          raw_json: review,
+          synced_at: new Date().toISOString(),
+        });
+      }
     }
 
-    const benchmarkMap = new Map(
-      (benchmarks || []).map((row) => [
-        row.month_key,
-        {
-          id: row.id,
-          review_target: Number(row.review_target || 0),
-        },
-      ])
-    )
+    if (allRowsToSave.length > 0) {
+      const { error } = await supabaseAdmin
+        .from("google_reviews_raw")
+        .upsert(allRowsToSave, {
+          onConflict: "google_review_id",
+        });
 
-    const rowsToUpsert = monthlyBuckets.map((row) => {
-      const benchmark = benchmarkMap.get(row.month_key)
-
-      const reviewTarget = benchmark?.review_target ?? 0
-      const varianceReviews = row.review_count - reviewTarget
-
-      return {
-        year: row.year,
-        month: row.month,
-        month_key: row.month_key,
-        review_count: row.review_count,
-        average_rating: row.average_rating,
-        benchmark_id: benchmark?.id ?? null,
-        review_target: reviewTarget,
-        variance_reviews: varianceReviews,
-        location_name: process.env.GOOGLE_BUSINESS_LOCATION_NAME || null,
-        last_synced_at: new Date().toISOString(),
-      }
-    })
-
-    if (rowsToUpsert.length > 0) {
-      const { error: upsertError } = await supabase
-        .from('google_review_monthly_metrics')
-        .upsert(rowsToUpsert, { onConflict: 'month_key' })
-
-      if (upsertError) {
-        throw upsertError
-      }
+      if (error) throw error;
     }
 
     return NextResponse.json({
       success: true,
-      months_synced: rowsToUpsert.length,
-      reviews_processed: reviews.length,
-    })
+      locations_checked: locationIdList.length,
+      reviews_saved: allRowsToSave.length,
+    });
   } catch (error: any) {
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || 'Unknown error',
+        error: error?.message || "Unknown error",
       },
       { status: 500 }
-    )
+    );
   }
 }

@@ -30,14 +30,6 @@ function getAtoQuarterKeyFromMonthKey(monthKey: string): string {
   const calendarYear = Number(match[1]);
   const month = Number(match[2]);
 
-  // Your quarter calculator expects YYYY-QN-ATO
-  // where YYYY is the financial year START.
-  //
-  // Q1 = Jul-Sep of financial year start
-  // Q2 = Oct-Dec of financial year start
-  // Q3 = Jan-Mar of financial year start + 1
-  // Q4 = Apr-Jun of financial year start + 1
-
   if (month >= 7 && month <= 9) {
     return `${calendarYear}-Q1-ATO`;
   }
@@ -58,8 +50,7 @@ export async function recalculateOnlyAction(
   formData: FormData
 ): Promise<RecalculateState> {
   const monthKeyValue = formData.get("monthKey");
-  const monthKey =
-    typeof monthKeyValue === "string" ? monthKeyValue.trim() : "";
+  const monthKey = typeof monthKeyValue === "string" ? monthKeyValue.trim() : "";
 
   if (!monthKey) {
     return {
@@ -72,41 +63,23 @@ export async function recalculateOnlyAction(
     const yearKey = getYearKeyFromMonthKey(monthKey);
     const quarterKey = getAtoQuarterKeyFromMonthKey(monthKey);
 
-    console.log("STEP 1: monthly start", { monthKey });
-
     const monthlyResult = await calculateProviderMonthlyMetrics({
       monthKey,
     });
-
-    console.log("STEP 1: monthly success", {
-      monthKey,
-      providersCalculated: monthlyResult.providersCalculated,
-    });
-
-    console.log("STEP 2: yearly start", { yearKey });
 
     const yearlyResult = await calculateProviderYearlyMetrics({
       yearKey,
     });
 
-    console.log("STEP 2: yearly success", {
-      yearKey,
-      providersCalculated: yearlyResult?.providersCalculated ?? 0,
-    });
-
-    console.log("STEP 3: quarter start", { quarterKey });
-
     const quarterResult = await calculateProviderAtoQuarterMetrics({
       quarterKey,
     });
 
-    console.log("STEP 3: quarter success", {
-      quarterKey,
-      providersCalculated: quarterResult?.providersCalculated ?? 0,
-    });
-
     revalidatePath("/admin/provider-imports");
     revalidatePath("/benchmark/expense-reports");
+    revalidatePath("/practice-manager/kpis");
+    revalidatePath("/provider");
+    revalidatePath("/admin/provider-dashboard");
 
     return {
       success: true,
@@ -120,8 +93,7 @@ export async function recalculateOnlyAction(
       ].join(" | "),
     };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unknown error occurred.";
+    const message = error instanceof Error ? error.message : "Unknown error occurred.";
 
     console.error("RECALCULATE ACTION FAILED", {
       monthKey,

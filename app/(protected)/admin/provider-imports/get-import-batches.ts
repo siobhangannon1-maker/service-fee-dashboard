@@ -2,10 +2,16 @@
 
 import { createClient } from "@supabase/supabase-js";
 
+export type ProviderImportType =
+  | "appointments"
+  | "performance"
+  | "cancellations"
+  | "new_patients";
+
 export type ImportBatchRow = {
   id: number;
   import_batch_id: string;
-  import_type: "appointments" | "performance";
+  import_type: ProviderImportType;
   source_file_name: string;
   month_key: string | null;
   is_linked: boolean;
@@ -28,6 +34,13 @@ function getClient() {
   return createClient(supabaseUrl, serviceRoleKey);
 }
 
+function getRawTableName(importType: ProviderImportType): string {
+  if (importType === "appointments") return "provider_appointments_raw";
+  if (importType === "performance") return "provider_performance_raw";
+  if (importType === "cancellations") return "provider_cancellations_ftas_raw";
+  return "provider_new_patients_raw";
+}
+
 export async function getImportBatches(): Promise<ImportBatchRow[]> {
   const supabase = getClient();
 
@@ -43,7 +56,7 @@ export async function getImportBatches(): Promise<ImportBatchRow[]> {
   const rows = (batches ?? []) as Array<{
     id: number;
     import_batch_id: string;
-    import_type: "appointments" | "performance";
+    import_type: ProviderImportType;
     source_file_name: string;
     month_key: string | null;
     is_linked: boolean;
@@ -53,10 +66,7 @@ export async function getImportBatches(): Promise<ImportBatchRow[]> {
   const results: ImportBatchRow[] = [];
 
   for (const batch of rows) {
-    const tableName =
-      batch.import_type === "appointments"
-        ? "provider_appointments_raw"
-        : "provider_performance_raw";
+    const tableName = getRawTableName(batch.import_type);
 
     const { count, error: countError } = await supabase
       .from(tableName)
