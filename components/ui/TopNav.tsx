@@ -25,6 +25,14 @@ type NavGroup = {
   items: NavItem[];
 };
 
+const hiddenNavPaths = [
+  "/login",
+  "/reset-password",
+  "/update-password",
+  "/auth/callback",
+  "/account-inactive",
+];
+
 const primaryNavItems: NavItem[] = [
   { href: "/", label: "Home", description: "Home" },
 ];
@@ -271,6 +279,10 @@ export default function TopNav() {
   const router = useRouter();
   const supabase = createClient();
 
+  const shouldHideNav = hiddenNavPaths.some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`)
+  );
+
   const [logo, setLogo] = useState<string | null>(null);
   const [role, setRole] = useState<UserRole | null>(null);
   const [loadingRole, setLoadingRole] = useState(true);
@@ -281,10 +293,13 @@ export default function TopNav() {
   const [openMobileGroup, setOpenMobileGroup] = useState<string | null>(null);
 
   useEffect(() => {
+    if (shouldHideNav) return;
     fetchStoredLogoDataUrl().then(setLogo);
-  }, []);
+  }, [shouldHideNav]);
 
   useEffect(() => {
+    if (shouldHideNav) return;
+
     async function loadRole() {
       setLoadingRole(true);
 
@@ -318,13 +333,17 @@ export default function TopNav() {
     }
 
     loadRole();
-  }, [supabase]);
+  }, [supabase, shouldHideNav]);
 
   useEffect(() => {
     setMobileMenuOpen(false);
     setOpenDesktopDropdown(null);
     setOpenMobileGroup(null);
   }, [pathname]);
+
+  if (shouldHideNav) {
+    return null;
+  }
 
   function isActive(href: string) {
     if (href === "/") return pathname === "/";
