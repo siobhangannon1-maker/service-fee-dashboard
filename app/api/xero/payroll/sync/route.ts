@@ -137,10 +137,20 @@ function dedupeEarningsLines(lines: XeroEarningsLine[]) {
   return deduped;
 }
 
-async function fetchXero(accessToken: string, url: string, delayMs: number) {
+async function fetchXero(
+  accessToken: string,
+  url: string,
+  delayMs: number,
+  label = "Xero request"
+) {
+  console.log(`[Xero payroll sync] Starting: ${label}`);
+  console.log(`[Xero payroll sync] URL: ${url}`);
+
   await sleep(delayMs);
 
   for (let attempt = 1; attempt <= 5; attempt++) {
+    console.log(`[Xero payroll sync] Attempt ${attempt}/5: ${label}`);
+
     const response = await fetch(url, {
       method: "GET",
       headers: {
@@ -152,6 +162,9 @@ async function fetchXero(accessToken: string, url: string, delayMs: number) {
 
     const text = await response.text();
 
+    console.log(`[Xero payroll sync] Finished: ${label}`);
+    console.log(`[Xero payroll sync] Status: ${response.status}`);
+
     let json: any = null;
 
     try {
@@ -161,8 +174,12 @@ async function fetchXero(accessToken: string, url: string, delayMs: number) {
     }
 
     if (response.ok) {
+      console.log(`[Xero payroll sync] Success: ${label}`);
       return json;
     }
+
+    console.error(`[Xero payroll sync] Failed: ${label}`);
+    console.error(`[Xero payroll sync] Response: ${text}`);
 
     if (response.status === 429 && attempt < 5) {
       const retryAfterHeader = response.headers.get("retry-after");
@@ -171,14 +188,20 @@ async function fetchXero(accessToken: string, url: string, delayMs: number) {
       const backoffMs =
         retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : attempt * 10000;
 
+      console.warn(
+        `[Xero payroll sync] Rate limit on ${label}. Waiting ${backoffMs}ms before retry.`
+      );
+
       await sleep(backoffMs);
       continue;
     }
 
-    throw new Error(`Xero request failed: ${response.status} ${text}`);
+    throw new Error(
+      `Xero request failed during ${label}: ${response.status} ${text}`
+    );
   }
 
-  throw new Error("Xero request failed after retries");
+  throw new Error(`Xero request failed after retries during ${label}`);
 }
 
 export async function POST(request: Request) {
@@ -191,6 +214,11 @@ export async function POST(request: Request) {
     const to = url.searchParams.get("to");
     const force = url.searchParams.get("force") === "1";
 
+    console.log("[Xero payroll sync] Request started");
+    console.log("[Xero payroll sync] From:", from);
+    console.log("[Xero payroll sync] To:", to);
+    console.log("[Xero payroll sync] Force:", force);
+
     const isBulkSync = Boolean(from && to);
 
     const limit = getPositiveIntegerParam(
@@ -202,17 +230,29 @@ export async function POST(request: Request) {
 
     const delayMs = 1200;
 
+    console.log("[Xero payroll sync] Limit:", limit);
+    console.log("[Xero payroll sync] Offset:", offset);
+    console.log("[Xero payroll sync] Delay ms:", delayMs);
+
     const supabase = getServiceRoleSupabaseClient();
     const accessToken = await getXeroAccessToken();
+
+    console.log("[Xero payroll sync] Access token received");
 
     const payItemsJson = await fetchXero(
       accessToken,
       "https://api.xero.com/payroll.xro/1.0/PayItems",
-      delayMs
+      delayMs,
+      "PayItems"
     );
 
     const earningsRates: XeroEarningsRate[] =
       payItemsJson?.PayItems?.EarningsRates ?? [];
+
+    console.log(
+      "[Xero payroll sync] Earnings rates found:",
+      earningsRates.length
+    );
 
     const earningsRateById = new Map(
       earningsRates.map((rate) => [rate.EarningsRateID, rate])
@@ -221,7 +261,8 @@ export async function POST(request: Request) {
     const payRunsJson = await fetchXero(
       accessToken,
       "https://api.xero.com/payroll.xro/1.0/PayRuns",
-      delayMs
+      delayMs,
+      "PayRuns list"
     );
 
     const allMatchingPayRuns: XeroPayRun[] = (payRunsJson?.PayRuns ?? [])
@@ -257,7 +298,17 @@ export async function POST(request: Request) {
         return bPayment.localeCompare(aPayment);
       });
 
+    console.log(
+      "[Xero payroll sync] Matching pay runs:",
+      allMatchingPayRuns.length
+    );
+
     const payRunsToSync = allMatchingPayRuns.slice(offset, offset + limit);
+
+    console.log(
+      "[Xero payroll sync] Pay runs selected this request:",
+      payRunsToSync.length
+    );
 
     let syncedPayRuns = 0;
     let skippedPayRuns = 0;
@@ -267,11 +318,21 @@ export async function POST(request: Request) {
     let duplicateEarningsLinesSkipped = 0;
 
     for (const payRun of payRunsToSync) {
+      console.log("[Xero payroll sync] Processing pay run:", payRun.PayRunID);
+
       const periodStart = parseXeroDate(payRun.PayRunPeriodStartDate);
       const periodEnd = parseXeroDate(payRun.PayRunPeriodEndDate);
       const paymentDate = parseXeroDate(payRun.PaymentDate);
 
+      console.log("[Xero payroll sync] Period start:", periodStart);
+      console.log("[Xero payroll sync] Period end:", periodEnd);
+      console.log("[Xero payroll sync] Payment date:", paymentDate);
+
       if (!periodStart || !periodEnd) {
+        console.warn(
+          "[Xero payroll sync] Skipping pay run because period dates are missing:",
+          payRun.PayRunID
+        );
         skippedPayRuns += 1;
         continue;
       }
@@ -289,6 +350,10 @@ export async function POST(request: Request) {
       }
 
       if (existingPayPeriod && !force) {
+        console.log(
+          "[Xero payroll sync] Skipping existing pay run because force is false:",
+          payRun.PayRunID
+        );
         skippedPayRuns += 1;
         continue;
       }
@@ -296,13 +361,20 @@ export async function POST(request: Request) {
       const detailedPayRunJson = await fetchXero(
         accessToken,
         `https://api.xero.com/payroll.xro/1.0/PayRuns/${payRun.PayRunID}`,
-        delayMs
+        delayMs,
+        `PayRun detail ${payRun.PayRunID}`
       );
 
       const detailedPayRun: XeroPayRun | null =
         detailedPayRunJson?.PayRuns?.[0] ?? null;
 
       const payslips = detailedPayRun?.Payslips ?? [];
+
+      console.log(
+        "[Xero payroll sync] Payslips found for pay run:",
+        payRun.PayRunID,
+        payslips.length
+      );
 
       if (payslips.length === 0) {
         skippedPayRuns += 1;
@@ -336,14 +408,26 @@ export async function POST(request: Request) {
       const rowsToInsert: any[] = [];
 
       for (const payslipSummary of payslips) {
+        console.log(
+          "[Xero payroll sync] Fetching payslip:",
+          payslipSummary.PayslipID
+        );
+
         const fullPayslipJson = await fetchXero(
           accessToken,
           `https://api.xero.com/payroll.xro/1.0/Payslip/${payslipSummary.PayslipID}`,
-          delayMs
+          delayMs,
+          `Payslip ${payslipSummary.PayslipID}`
         );
 
         const payslip = fullPayslipJson?.Payslip;
-        if (!payslip) continue;
+        if (!payslip) {
+          console.warn(
+            "[Xero payroll sync] No payslip body returned:",
+            payslipSummary.PayslipID
+          );
+          continue;
+        }
 
         const employeeName = getEmployeeName(payslipSummary);
 
@@ -355,8 +439,22 @@ export async function POST(request: Request) {
 
         const allEarningsLines = dedupeEarningsLines(rawEarningsLines);
 
-        duplicateEarningsLinesSkipped +=
+        const duplicatesSkipped =
           rawEarningsLines.length - allEarningsLines.length;
+
+        duplicateEarningsLinesSkipped += duplicatesSkipped;
+
+        console.log(
+          "[Xero payroll sync] Payslip line counts:",
+          JSON.stringify({
+            payslipId: payslipSummary.PayslipID,
+            employeeName,
+            rawEarningsLines: rawEarningsLines.length,
+            dedupedEarningsLines: allEarningsLines.length,
+            duplicatesSkipped,
+            superLines: payslip.SuperannuationLines?.length ?? 0,
+          })
+        );
 
         for (const line of allEarningsLines) {
           const earningsRateId = line.EarningsRateID;
@@ -424,6 +522,12 @@ export async function POST(request: Request) {
         }
       }
 
+      console.log(
+        "[Xero payroll sync] Rows prepared for pay run:",
+        payRun.PayRunID,
+        rowsToInsert.length
+      );
+
       if (rowsToInsert.length === 0) {
         skippedPayRuns += 1;
         continue;
@@ -448,11 +552,28 @@ export async function POST(request: Request) {
 
       insertedWageLines += rowsToInsert.length;
       syncedPayRuns += 1;
+
+      console.log("[Xero payroll sync] Finished pay run:", payRun.PayRunID);
     }
 
     const nextOffset = offset + limit;
     const checkedSoFar = Math.min(nextOffset, allMatchingPayRuns.length);
     const hasMore = nextOffset < allMatchingPayRuns.length;
+
+    console.log("[Xero payroll sync] Completed request");
+    console.log(
+      "[Xero payroll sync] Summary:",
+      JSON.stringify({
+        matchingPayRuns: allMatchingPayRuns.length,
+        payRunsCheckedThisRequest: payRunsToSync.length,
+        payRunsSynced: syncedPayRuns,
+        payRunsSkipped: skippedPayRuns,
+        wageLinesInserted: insertedWageLines,
+        duplicateEarningsLinesSkipped,
+        checkedSoFar,
+        hasMore,
+      })
+    );
 
     return NextResponse.json({
       success: true,
@@ -486,7 +607,7 @@ export async function POST(request: Request) {
           : null,
     });
   } catch (error: any) {
-    console.error("Xero payroll sync error", error);
+    console.error("[Xero payroll sync] Fatal error:", error);
 
     return NextResponse.json(
       {
