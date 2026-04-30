@@ -25,14 +25,6 @@ type NavGroup = {
   items: NavItem[];
 };
 
-const hiddenNavPaths = [
-  "/login",
-  "/reset-password",
-  "/update-password",
-  "/auth/callback",
-  "/account-inactive",
-];
-
 const primaryNavItems: NavItem[] = [
   { href: "/", label: "Home", description: "Home" },
 ];
@@ -167,7 +159,7 @@ function DesktopNavItem({
     <div className="group relative">
       <Link
         href={href}
-        className={`inline-flex whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-medium transition ${
+        className={`inline-flex whitespace-nowrap rounded-xl px-3 py-2 text-xs font-medium transition xl:px-4 xl:py-2.5 xl:text-sm ${
           active
             ? "bg-slate-900 text-white shadow-sm"
             : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
@@ -203,7 +195,7 @@ function DesktopDropdown({
       <button
         type="button"
         onClick={onToggle}
-        className={`inline-flex items-center gap-2 whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-medium transition ${
+        className={`inline-flex items-center gap-2 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-medium transition xl:px-4 xl:py-2.5 xl:text-sm ${
           groupIsActive
             ? "bg-slate-900 text-white shadow-sm"
             : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
@@ -279,10 +271,6 @@ export default function TopNav() {
   const router = useRouter();
   const supabase = createClient();
 
-  const shouldHideNav = hiddenNavPaths.some(
-    (path) => pathname === path || pathname.startsWith(`${path}/`)
-  );
-
   const [logo, setLogo] = useState<string | null>(null);
   const [role, setRole] = useState<UserRole | null>(null);
   const [loadingRole, setLoadingRole] = useState(true);
@@ -293,13 +281,10 @@ export default function TopNav() {
   const [openMobileGroup, setOpenMobileGroup] = useState<string | null>(null);
 
   useEffect(() => {
-    if (shouldHideNav) return;
     fetchStoredLogoDataUrl().then(setLogo);
-  }, [shouldHideNav]);
+  }, []);
 
   useEffect(() => {
-    if (shouldHideNav) return;
-
     async function loadRole() {
       setLoadingRole(true);
 
@@ -333,17 +318,13 @@ export default function TopNav() {
     }
 
     loadRole();
-  }, [supabase, shouldHideNav]);
+  }, [supabase]);
 
   useEffect(() => {
     setMobileMenuOpen(false);
     setOpenDesktopDropdown(null);
     setOpenMobileGroup(null);
   }, [pathname]);
-
-  if (shouldHideNav) {
-    return null;
-  }
 
   function isActive(href: string) {
     if (href === "/") return pathname === "/";
@@ -407,8 +388,8 @@ export default function TopNav() {
             </div>
           </Link>
 
-          <div className="hidden min-w-0 flex-1 items-center justify-end gap-3 lg:flex">
-            <nav className="relative flex min-w-0 items-center gap-2 rounded-2xl border border-slate-200/80 bg-white/80 p-2 shadow-[0_6px_18px_rgba(15,23,42,0.05)] backdrop-blur">
+          <div className="hidden min-w-0 flex-1 items-center justify-end gap-2 md:flex xl:gap-3">
+            <nav className="relative flex min-w-0 flex-wrap items-center justify-end gap-1 rounded-2xl border border-slate-200/80 bg-white/80 p-2 shadow-[0_6px_18px_rgba(15,23,42,0.05)] backdrop-blur xl:gap-2">
               {primaryNavItems.map((item) => (
                 <DesktopNavItem
                   key={item.href}
@@ -437,7 +418,7 @@ export default function TopNav() {
             <button
               type="button"
               onClick={handleLogout}
-              className="shrink-0 rounded-2xl bg-slate-800 px-4 py-2.5 text-sm font-medium text-white shadow-[0_6px_18px_rgba(15,23,42,0.25)] transition hover:bg-slate-900"
+              className="shrink-0 rounded-2xl bg-slate-800 px-3 py-2 text-xs font-medium text-white shadow-[0_6px_18px_rgba(15,23,42,0.25)] transition hover:bg-slate-900 xl:px-4 xl:py-2.5 xl:text-sm"
             >
               Log out
             </button>
@@ -448,14 +429,14 @@ export default function TopNav() {
             aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
             aria-expanded={mobileMenuOpen}
             onClick={() => setMobileMenuOpen((prev) => !prev)}
-            className="inline-flex shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 lg:hidden"
+            className="inline-flex shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 md:hidden"
           >
             {mobileMenuOpen ? "Close" : "Menu"}
           </button>
         </div>
 
         {mobileMenuOpen && (
-          <div className="max-h-[calc(100vh-88px)] overflow-y-auto border-t border-slate-200 py-4 lg:hidden">
+          <div className="max-h-[calc(100vh-88px)] overflow-y-auto border-t border-slate-200 py-4 md:hidden">
             <nav className="grid gap-3">
               {primaryNavItems.map((item) => (
                 <MobileNavItem
