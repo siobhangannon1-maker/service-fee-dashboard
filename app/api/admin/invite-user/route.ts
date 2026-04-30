@@ -10,11 +10,15 @@ type Role =
   | "provider_readonly";
 
 function getBaseUrl() {
+  if (process.env.NEXT_PUBLIC_SITE_URL) {
+    return process.env.NEXT_PUBLIC_SITE_URL;
+  }
+
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL}`;
   }
 
-  return process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+  return "http://localhost:3000";
 }
 
 export async function POST(request: Request) {
@@ -66,17 +70,11 @@ export async function POST(request: Request) {
     const role = body.role as Role;
 
     if (!email) {
-      return NextResponse.json(
-        { error: "Missing email." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing email." }, { status: 400 });
     }
 
     if (!role) {
-      return NextResponse.json(
-        { error: "Missing role." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing role." }, { status: 400 });
     }
 
     const supabaseAdmin = createClient(
@@ -84,7 +82,7 @@ export async function POST(request: Request) {
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
 
-    const redirectTo = `${getBaseUrl()}/reset-password`;
+    const redirectTo = `${getBaseUrl()}/auth/callback?next=/update-password`;
 
     const { data, error } = await supabaseAdmin.auth.admin.inviteUserByEmail(
       email,
@@ -98,10 +96,7 @@ export async function POST(request: Request) {
     );
 
     if (error) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
     const invitedUser = data.user;
@@ -175,9 +170,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to invite user.",
+          error instanceof Error ? error.message : "Failed to invite user.",
       },
       { status: 500 }
     );
