@@ -64,6 +64,18 @@ function getMonthFromMonthKey(periodKey?: string | null): string {
   return periodKey.slice(5, 7);
 }
 
+function buildCalendarMonthOptions() {
+  return Array.from({ length: 12 }, (_, index) => {
+    const monthNumber = index + 1;
+    const value = String(monthNumber).padStart(2, "0");
+    const label = new Intl.DateTimeFormat("en-AU", {
+      month: "long",
+    }).format(new Date(2000, index, 1));
+
+    return { value, label };
+  });
+}
+
 function buildHref(params: {
   module: ProviderDashboardModule;
   periodType: ProviderPeriodType;
@@ -213,6 +225,7 @@ type AppointmentCategoryBreakdownRow = {
 };
 
 type CancellationFtaRawBreakdownRow = {
+  treatment_type: string | null;
   appointment_category: string | null;
   is_fta: boolean | null;
   is_fta_no_rebooking: boolean | null;
@@ -268,7 +281,7 @@ function summariseCategoryBreakdown(params: {
   }
 
   for (const row of params.cancellationRows) {
-    const category = row.appointment_category || "Unmapped";
+    const category = getAppointmentCategory(row.treatment_type ?? row.appointment_category);
     const existing = map.get(category) ?? createEmptyCategoryBreakdownRow(category);
 
     if (row.is_fta) existing.ftaCount += 1;
@@ -344,7 +357,7 @@ async function getAppointmentCategoryBreakdownForProvider(params: {
     supabase
       .from("provider_cancellations_ftas_raw")
       .select(
-        "appointment_category, is_fta, is_fta_no_rebooking, is_cancellation_no_rebooking"
+        "treatment_type, appointment_category, is_fta, is_fta_no_rebooking, is_cancellation_no_rebooking"
       )
       .eq("provider_id", params.providerId)
       .gte("event_date", params.periodStart)
@@ -503,7 +516,7 @@ export default async function ProviderPage({ searchParams }: ProviderPageProps) 
 
   const requestedPeriodKey =
     requestedPeriodType === "month"
-      ? `${requestedYear}-${requestedMonth}`
+      ? (resolvedSearchParams?.periodKey ?? `${requestedYear}-${requestedMonth}`)
       : (resolvedSearchParams?.periodKey ?? null);
 
   const dashboard = await getProviderDashboardMetrics({
@@ -566,24 +579,24 @@ export default async function ProviderPage({ searchParams }: ProviderPageProps) 
 
   const availableMonthYears = Array.from(
     new Set(monthOptionsAscending.map((option) => getYearFromMonthKey(option.key))),
-  ).sort((a, b) => a.localeCompare(b));
+  ).sort((a, b) => b.localeCompare(a));
 
-  const selectedMonthYear =
-    selectedPeriodType === "month"
-      ? getYearFromMonthKey(selectedPeriodKey) || requestedYear
-      : requestedYear;
-
-  const monthsForSelectedYear = monthOptionsAscending.filter(
-    (option) => getYearFromMonthKey(option.key) === selectedMonthYear,
-  );
+  const newestAvailableMonthKey =
+    monthOptionsAscending[monthOptionsAscending.length - 1]?.key ?? previousMonthKey;
 
   const safeSelectedMonthKey =
     selectedPeriodType === "month" &&
-    monthsForSelectedYear.some((option) => option.key === selectedPeriodKey)
+    monthOptionsAscending.some((option) => option.key === selectedPeriodKey)
       ? selectedPeriodKey
-      : (monthsForSelectedYear[0]?.key ?? monthOptionsAscending[0]?.key ?? previousMonthKey);
+      : newestAvailableMonthKey;
+
+  const selectedMonthYear =
+    selectedPeriodType === "month"
+      ? getYearFromMonthKey(safeSelectedMonthKey) || requestedYear
+      : requestedYear;
 
   const safeSelectedMonthNumber = getMonthFromMonthKey(safeSelectedMonthKey);
+  const calendarMonthOptions = buildCalendarMonthOptions();
 
   const periodLabel = formatBenchmarkPeriodLabel(metric);
   const specialtyLabel = specialtyAverages?.specialtyLabel ?? "Specialty group";
@@ -717,10 +730,7 @@ export default async function ProviderPage({ searchParams }: ProviderPageProps) 
                   label="Month"
                   name="month"
                   defaultValue={safeSelectedMonthNumber}
-                  options={monthsForSelectedYear.map((option) => ({
-                    value: getMonthFromMonthKey(option.key),
-                    label: option.label,
-                  }))}
+                  options={calendarMonthOptions}
                 />
 
                 <button

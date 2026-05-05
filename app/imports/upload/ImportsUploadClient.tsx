@@ -20,6 +20,8 @@ type ImportRow = {
   billing_period_id: string | null;
   linked: boolean;
   month: number | null;
+  row_count?: number;
+  source?: "CSV" | "Praktika";
 };
 
 type Tone = "default" | "success" | "error";
@@ -39,6 +41,26 @@ const MONTHS = [
   { value: 12, label: "December" },
 ];
 
+function getMonthDateRange(period: BillingPeriod) {
+  const start = new Date(period.year, period.month - 1, 1);
+  const end = new Date(period.year, period.month, 0);
+
+  const fromDate = `${start.getFullYear()}-${String(
+    start.getMonth() + 1
+  ).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
+
+  const toDate = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(
+    2,
+    "0"
+  )}-${String(end.getDate()).padStart(2, "0")}`;
+
+  return { fromDate, toDate };
+}
+
+function detectSource(fileName: string): "CSV" | "Praktika" {
+  return fileName.toLowerCase().includes("praktika") ? "Praktika" : "CSV";
+}
+
 export default function ImportsUploadPage() {
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
   const [imports, setImports] = useState<ImportRow[]>([]);
@@ -48,6 +70,7 @@ export default function ImportsUploadPage() {
   const [message, setMessage] = useState("");
   const [tone, setTone] = useState<Tone>("default");
   const [uploading, setUploading] = useState(false);
+  const [syncingPeriodId, setSyncingPeriodId] = useState<string | null>(null);
   const [unlinkingImportId, setUnlinkingImportId] = useState<string | null>(null);
   const [deletingImportId, setDeletingImportId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,7 +85,9 @@ export default function ImportsUploadPage() {
   }
 
   const availableYears = useMemo(() => {
-    const uniqueYears = Array.from(new Set(billingPeriods.map((period) => period.year)));
+    const uniqueYears = Array.from(
+      new Set(billingPeriods.map((period) => period.year))
+    );
     return uniqueYears.sort((a, b) => b - a);
   }, [billingPeriods]);
 
@@ -167,7 +192,8 @@ export default function ImportsUploadPage() {
 
     const monthsForYear = MONTHS.filter((month) =>
       billingPeriods.some(
-        (period) => period.year === Number(selectedYear) && period.month === month.value
+        (period) =>
+          period.year === Number(selectedYear) && period.month === month.value
       )
     );
 
@@ -263,7 +289,10 @@ export default function ImportsUploadPage() {
       let importIdToProcess = uploadedImportId;
 
       if (!importIdToProcess) {
-        const newestImport = await findNewestMatchingImport(fileName, billingPeriodId);
+        const newestImport = await findNewestMatchingImport(
+          fileName,
+          billingPeriodId
+        );
 
         if (!newestImport?.id) {
           throw new Error(
@@ -300,6 +329,58 @@ export default function ImportsUploadPage() {
     }
   }
 
+  async function handleResyncPeriod(period: BillingPeriod) {
+    if (period.status === "locked") {
+      showMessage("This billing period is locked. Unlock it before resyncing.", "error");
+      return;
+    }
+
+    const { fromDate, toDate } = getMonthDateRange(period);
+
+    const confirmed = window.confirm(
+      `Resync Praktika production for ${period.label}?\n\nThis will create a new Praktika production import and link it to this billing month. The older import will remain saved in history but should become unlinked.`
+    );
+
+    if (!confirmed) return;
+
+    setSyncingPeriodId(period.id);
+    setMessage("");
+
+    try {
+      showMessage(`Syncing Praktika production for ${period.label}...`, "default");
+
+      const res = await fetch("/api/praktika/production-sync", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          billingPeriodId: period.id,
+          fromDate,
+          toDate,
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Praktika production resync failed.");
+      }
+
+      showMessage(
+        data?.message || `Praktika production resynced for ${period.label}.`,
+        "success"
+      );
+
+      await loadPageData();
+    } catch (error: any) {
+      showMessage(error?.message || "Praktika production resync failed.", "error");
+      await loadPageData();
+    } finally {
+      setSyncingPeriodId(null);
+    }
+  }
+
   async function handleUnlinkImport(importId: string) {
     setUnlinkingImportId(importId);
     setMessage("");
@@ -326,7 +407,7 @@ export default function ImportsUploadPage() {
 
   async function handleDeleteImport(importId: string) {
     const confirmed = window.confirm(
-      "Delete this import? This will also remove its processed rows and summaries."
+      "Delete this import? This will also remove its raw rows and normalized rows."
     );
 
     if (!confirmed) return;
@@ -364,22 +445,31 @@ export default function ImportsUploadPage() {
     return billingPeriods.find((p) => p.id === id)?.label || "Unknown";
   }
 
+  function billingPeriodForImport(item: ImportRow) {
+    if (!item.billing_period_id) return null;
+    return billingPeriods.find((period) => period.id === item.billing_period_id) || null;
+  }
+
   function Badge({
     children,
     variant = "default",
   }: {
     children: React.ReactNode;
-    variant?: "default" | "success" | "warning";
+    variant?: "default" | "success" | "warning" | "danger";
   }) {
     const className =
       variant === "success"
         ? "bg-emerald-100 text-emerald-700 border-emerald-200"
         : variant === "warning"
         ? "bg-amber-100 text-amber-700 border-amber-200"
+        : variant === "danger"
+        ? "bg-red-100 text-red-700 border-red-200"
         : "bg-slate-100 text-slate-700 border-slate-200";
 
     return (
-      <span className={`rounded-full border px-2 py-1 text-xs font-medium ${className}`}>
+      <span
+        className={`rounded-full border px-2 py-1 text-xs font-medium ${className}`}
+      >
         {children}
       </span>
     );
@@ -387,90 +477,143 @@ export default function ImportsUploadPage() {
 
   return (
     <main className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto max-w-5xl space-y-6">
+      <div className="mx-auto max-w-7xl space-y-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
             <h1 className="text-3xl font-semibold">Production Report Imports</h1>
             <p className="mt-1 text-sm text-slate-600">
-              Upload a CSV, choose the year and month, and it will automatically read,
-              process, and link the import.
+              Upload CSV production reports, review Praktika sync history, and resync
+              monthly production when needed.
             </p>
           </div>
 
           <Link
             href="/billing"
-            className="inline-flex rounded-2xl border bg-white px-4 py-2 text-sm"
+            className="inline-flex rounded-2xl border bg-white px-4 py-2 text-sm hover:bg-slate-100"
           >
             Go to Billing Page
           </Link>
         </div>
 
-        <div className="rounded-3xl border bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Upload CSV</h2>
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="rounded-3xl border bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">Upload CSV fallback</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Use this only when you need to manually upload a production report CSV.
+            </p>
 
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
-            <div>
-              <label className="mb-1 block text-sm">Year</label>
-              <select
-                className="w-full rounded-2xl border bg-white px-3 py-2"
-                value={selectedYear}
-                onChange={(e) => setSelectedYear(e.target.value)}
-                disabled={loading || uploading}
-              >
-                <option value="">
-                  {loading ? "Loading years..." : "Select year"}
-                </option>
-                {availableYears.map((year) => (
-                  <option key={year} value={year}>
-                    {year}
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-sm">Year</label>
+                <select
+                  className="w-full rounded-2xl border bg-white px-3 py-2"
+                  value={selectedYear}
+                  onChange={(e) => setSelectedYear(e.target.value)}
+                  disabled={loading || uploading}
+                >
+                  <option value="">
+                    {loading ? "Loading years..." : "Select year"}
                   </option>
-                ))}
-              </select>
+                  {availableYears.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm">Month</label>
+                <select
+                  className="w-full rounded-2xl border bg-white px-3 py-2"
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  disabled={loading || uploading || !selectedYear}
+                >
+                  <option value="">
+                    {loading ? "Loading months..." : "Select month"}
+                  </option>
+                  {availableMonthsForSelectedYear.map((month) => (
+                    <option key={month.value} value={month.value}>
+                      {month.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm">CSV file</label>
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
+                  className="block w-full rounded-2xl border bg-white px-3 py-2"
+                  disabled={uploading}
+                />
+              </div>
             </div>
 
-            <div>
-              <label className="mb-1 block text-sm">Month</label>
-              <select
-                className="w-full rounded-2xl border bg-white px-3 py-2"
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-                disabled={loading || uploading || !selectedYear}
-              >
-                <option value="">
-                  {loading ? "Loading months..." : "Select month"}
-                </option>
-                {availableMonthsForSelectedYear.map((month) => (
-                  <option key={month.value} value={month.value}>
-                    {month.label}
-                  </option>
-                ))}
-              </select>
+            <div className="mt-2 text-xs text-slate-500">
+              Loaded billing periods: {billingPeriods.length}
             </div>
 
-            <div>
-              <label className="mb-1 block text-sm">CSV file</label>
-              <input
-                type="file"
-                accept=".csv"
-                onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
-                className="block w-full rounded-2xl border bg-white px-3 py-2"
-                disabled={uploading}
-              />
+            <div className="mt-4">
+              <button
+                onClick={handleUpload}
+                disabled={uploading || loading}
+                className="rounded-2xl bg-slate-900 px-4 py-2 text-white disabled:opacity-50"
+              >
+                {uploading ? "Uploading and Processing..." : "Upload CSV"}
+              </button>
             </div>
           </div>
 
-          <div className="mt-2 text-xs text-slate-500">
-            Loaded billing periods: {billingPeriods.length}
-          </div>
+          <div className="rounded-3xl border bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">Quick Praktika resync</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Select a billing month on the left, then sync or resync that full month
+              from Praktika.
+            </p>
 
-          <div className="mt-4">
+            <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">
+              <div>
+                Selected month:{" "}
+                <span className="font-medium">
+                  {selectedBillingPeriod?.label || "None selected"}
+                </span>
+              </div>
+              <div className="mt-1">
+                Status:{" "}
+                <span className="font-medium">
+                  {selectedBillingPeriod?.status || "-"}
+                </span>
+              </div>
+            </div>
+
             <button
-              onClick={handleUpload}
-              disabled={uploading || loading}
-              className="rounded-2xl bg-slate-900 px-4 py-2 text-white disabled:opacity-50"
+              onClick={() => {
+                if (selectedBillingPeriod) {
+                  handleResyncPeriod(selectedBillingPeriod);
+                }
+              }}
+              disabled={
+                !selectedBillingPeriod ||
+                selectedBillingPeriod.status === "locked" ||
+                syncingPeriodId === selectedBillingPeriod.id ||
+                loading
+              }
+              className="mt-4 rounded-2xl bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-700 disabled:opacity-50"
             >
-              {uploading ? "Uploading and Processing..." : "Upload CSV"}
+              {syncingPeriodId === selectedBillingPeriod?.id
+                ? "Syncing..."
+                : "Sync / Resync Selected Month"}
             </button>
+
+            {selectedBillingPeriod?.status === "locked" && (
+              <p className="mt-3 text-sm text-amber-700">
+                This billing month is locked. Unlock it before resyncing.
+              </p>
+            )}
           </div>
         </div>
 
@@ -489,65 +632,134 @@ export default function ImportsUploadPage() {
         )}
 
         <div className="rounded-3xl border bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Imports</h2>
+          <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Import History</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                See what was uploaded or synced, when it happened, and which billing
+                month it is linked to.
+              </p>
+            </div>
+
+            <button
+              onClick={loadPageData}
+              disabled={loading}
+              className="rounded-2xl border bg-white px-4 py-2 text-sm hover:bg-slate-100 disabled:opacity-50"
+            >
+              {loading ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
 
           <div className="mt-4 overflow-x-auto">
             <table className="min-w-full border-collapse text-sm">
               <thead>
                 <tr className="border-b">
-                  <th className="px-3 py-2 text-left">File</th>
+                  <th className="px-3 py-2 text-left">Source</th>
+                  <th className="px-3 py-2 text-left">File / Sync</th>
                   <th className="px-3 py-2 text-left">Billing Month</th>
+                  <th className="px-3 py-2 text-left">Rows</th>
                   <th className="px-3 py-2 text-left">Status</th>
                   <th className="px-3 py-2 text-left">Linked</th>
                   <th className="px-3 py-2 text-left">Created</th>
                   <th className="px-3 py-2 text-left">Actions</th>
                 </tr>
               </thead>
-              <tbody>
-                {imports.map((item) => (
-                  <tr key={item.id} className="border-b align-top">
-                    <td className="px-3 py-2">{item.file_name}</td>
-                    <td className="px-3 py-2">
-                      {billingPeriodLabel(item.billing_period_id)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <Badge variant={item.status === "processed" ? "success" : "default"}>
-                        {item.status}
-                      </Badge>
-                    </td>
-                    <td className="px-3 py-2">
-                      {item.linked ? (
-                        <Badge variant="success">Linked</Badge>
-                      ) : (
-                        <Badge variant="warning">Unlinked</Badge>
-                      )}
-                    </td>
-                    <td className="px-3 py-2">{formatDate(item.created_at)}</td>
-                    <td className="px-3 py-2">
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={() => handleUnlinkImport(item.id)}
-                          disabled={unlinkingImportId === item.id || !item.linked}
-                          className="rounded-xl border px-3 py-1 disabled:opacity-50"
-                        >
-                          {unlinkingImportId === item.id ? "Unlinking..." : "Unlink"}
-                        </button>
 
-                        <button
-                          onClick={() => handleDeleteImport(item.id)}
-                          disabled={deletingImportId === item.id}
-                          className="rounded-xl border border-red-200 px-3 py-1 text-red-700 disabled:opacity-50"
+              <tbody>
+                {imports.map((item) => {
+                  const source = item.source || detectSource(item.file_name);
+                  const rowCount = Number(item.row_count || 0);
+                  const period = billingPeriodForImport(item);
+                  const canResync = Boolean(period);
+
+                  return (
+                    <tr key={item.id} className="border-b align-top">
+                      <td className="px-3 py-2">
+                        <Badge variant={source === "Praktika" ? "success" : "default"}>
+                          {source}
+                        </Badge>
+                      </td>
+
+                      <td className="max-w-sm px-3 py-2">
+                        <div className="font-medium text-slate-900">
+                          {item.file_name}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Import ID: {item.id.slice(0, 8)}...
+                        </div>
+                      </td>
+
+                      <td className="px-3 py-2">
+                        <div>{billingPeriodLabel(item.billing_period_id)}</div>
+                        {period?.status === "locked" && (
+                          <div className="mt-1">
+                            <Badge variant="warning">Locked</Badge>
+                          </div>
+                        )}
+                      </td>
+
+                      <td className="px-3 py-2">
+                        {rowCount.toLocaleString("en-AU")}
+                      </td>
+
+                      <td className="px-3 py-2">
+                        <Badge
+                          variant={
+                            item.status === "processed" ? "success" : "default"
+                          }
                         >
-                          {deletingImportId === item.id ? "Deleting..." : "Delete"}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          {item.status}
+                        </Badge>
+                      </td>
+
+                      <td className="px-3 py-2">
+                        {item.linked ? (
+                          <Badge variant="success">Linked</Badge>
+                        ) : (
+                          <Badge variant="warning">Unlinked</Badge>
+                        )}
+                      </td>
+
+                      <td className="px-3 py-2">{formatDate(item.created_at)}</td>
+
+                      <td className="px-3 py-2">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => period && handleResyncPeriod(period)}
+                            disabled={
+                              !canResync ||
+                              period?.status === "locked" ||
+                              syncingPeriodId === period?.id
+                            }
+                            className="rounded-xl border border-emerald-200 px-3 py-1 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                          >
+                            {syncingPeriodId === period?.id ? "Syncing..." : "Resync"}
+                          </button>
+
+                          <button
+                            onClick={() => handleUnlinkImport(item.id)}
+                            disabled={unlinkingImportId === item.id || !item.linked}
+                            className="rounded-xl border px-3 py-1 hover:bg-slate-100 disabled:opacity-50"
+                          >
+                            {unlinkingImportId === item.id ? "Unlinking..." : "Unlink"}
+                          </button>
+
+                          <button
+                            onClick={() => handleDeleteImport(item.id)}
+                            disabled={deletingImportId === item.id}
+                            className="rounded-xl border border-red-200 px-3 py-1 text-red-700 hover:bg-red-50 disabled:opacity-50"
+                          >
+                            {deletingImportId === item.id ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
 
                 {imports.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-3 py-4 text-slate-500">
+                    <td colSpan={8} className="px-3 py-4 text-slate-500">
                       No imports yet.
                     </td>
                   </tr>

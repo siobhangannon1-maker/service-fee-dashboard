@@ -10,15 +10,30 @@ type Role =
   | "provider_readonly";
 
 function getBaseUrl() {
-  if (process.env.NEXT_PUBLIC_SITE_URL) {
-    return process.env.NEXT_PUBLIC_SITE_URL;
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+
+  if (siteUrl) {
+    return siteUrl.replace(/\/$/, "");
+  }
+
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`.replace(
+      /\/$/,
+      ""
+    );
   }
 
   if (process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}`;
+    return `https://${process.env.VERCEL_URL}`.replace(/\/$/, "");
   }
 
-  return "http://localhost:3000";
+  if (process.env.NODE_ENV === "development") {
+    return "http://localhost:3000";
+  }
+
+  throw new Error(
+    "Missing NEXT_PUBLIC_SITE_URL in production. Add it in Vercel Project Settings → Environment Variables, then redeploy."
+  );
 }
 
 export async function POST(request: Request) {
@@ -82,7 +97,11 @@ export async function POST(request: Request) {
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
 
-    const redirectTo = `${getBaseUrl()}/auth/callback?next=/update-password`;
+    const baseUrl = getBaseUrl();
+    const redirectTo = `${baseUrl}/auth/callback?next=/update-password`;
+
+    console.log("Invite baseUrl:", baseUrl);
+    console.log("Invite redirectTo:", redirectTo);
 
     const { data, error } = await supabaseAdmin.auth.admin.inviteUserByEmail(
       email,
@@ -109,9 +128,7 @@ export async function POST(request: Request) {
             id: invitedUser.id,
             full_name: fullName,
           },
-          {
-            onConflict: "id",
-          }
+          { onConflict: "id" }
         );
 
       if (profileError) {
@@ -128,9 +145,7 @@ export async function POST(request: Request) {
             user_id: invitedUser.id,
             role,
           },
-          {
-            onConflict: "user_id",
-          }
+          { onConflict: "user_id" }
         );
 
       if (roleUpsertError) {
@@ -148,9 +163,7 @@ export async function POST(request: Request) {
             is_active: true,
             updated_at: new Date().toISOString(),
           },
-          {
-            onConflict: "user_id",
-          }
+          { onConflict: "user_id" }
         );
 
       if (statusUpsertError) {

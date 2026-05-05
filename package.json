@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev --webpack",
     "build": "next build --webpack",
-    "start": "next start"
+    "start": "next start",
+    "refresh:praktika-cookie": "tsx scripts/refresh-praktika-cookie.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -31,6 +32,7 @@
     "lucide-react": "^0.511.0",
     "next": "16.2.3",
     "papaparse": "^5.5.3",
+    "playwright": "^1.59.1",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "recharts": "^2.15.4",
@@ -49,6 +51,7 @@
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
     "tailwindcss": "^4.1.11",
+    "tsx": "^4.21.0",
     "typescript": "^5.4.0"
   }
 }

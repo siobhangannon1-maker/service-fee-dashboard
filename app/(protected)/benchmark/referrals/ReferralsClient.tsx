@@ -376,6 +376,55 @@ export default function ReferralsClient() {
       setLoading(false);
     }
   }
+  async function syncPraktikaReferrals() {
+  if (!weekStart || !weekEnd) {
+    setMessage("Please choose a week start and week end date first.");
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Sync Praktika referrals from ${weekStart} to ${weekEnd}?\n\nThis will replace any previous Praktika referral sync for this same period.`
+  );
+
+  if (!confirmed) return;
+
+  try {
+    setLoading(true);
+    setMessage("Syncing Praktika referrals...");
+
+    const res = await fetch("/api/praktika/referrals-sync", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fromDate: weekStart,
+        toDate: weekEnd,
+      }),
+    });
+
+    const json = await res.json();
+
+    if (!res.ok) {
+      setMessage(json.error || "Praktika referrals sync failed.");
+      return;
+    }
+
+    setMessage(json.message || "Praktika referrals synced.");
+
+    setRows([]);
+    setFileName("");
+
+    await loadPreviousUploads();
+    await loadMapData(filterStart, filterEnd);
+    await loadNewReferrers();
+  } catch (error) {
+    console.error(error);
+    setMessage("Unexpected error while syncing Praktika referrals.");
+  } finally {
+    setLoading(false);
+  }
+}
 
   async function updateUploadPeriod(
     uploadId: string,
@@ -588,10 +637,16 @@ export default function ReferralsClient() {
             />
           </label>
 
-          <button onClick={saveUpload} disabled={loading} style={primaryButton}>
-            {loading ? "Saving..." : "Save Referral Upload"}
-          </button>
-        </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "end" }}>
+  <button onClick={saveUpload} disabled={loading} style={primaryButton}>
+    {loading ? "Working..." : "Save Referral Upload"}
+  </button>
+
+  <button onClick={syncPraktikaReferrals} disabled={loading} style={secondaryButton}>
+    {loading ? "Working..." : "Sync Praktika Referrals"}
+  </button>
+</div>
+</div>
 
         {fileName && (
           <p style={subtleTextStyle}>

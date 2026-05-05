@@ -5,6 +5,8 @@ import { deleteImportBatch } from "./delete-import-batch";
 import { linkImportBatchMonth } from "./link-import-batch-month";
 import { unlinkImportBatchMonth } from "./unlink-import-batch-month";
 import RecalculateMonthButton from "./RecalculateMonthButton";
+import PraktikaSyncPanel from "./PraktikaSyncPanel";
+
 
 type BatchRow = Awaited<ReturnType<typeof getImportBatches>>[number];
 
@@ -75,6 +77,9 @@ export default async function ProviderImportsPage() {
   const batches = await getImportBatches();
   const linkedMonths = groupLinkedBatchesByMonth(batches);
 
+  const today = new Date();
+  const monthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+
   return (
     <main className="min-h-screen bg-gray-50">
       <div className="mx-auto max-w-5xl px-6 py-8">
@@ -94,6 +99,11 @@ export default async function ProviderImportsPage() {
             Performance still uses the selected month because it is monthly summary data.
           </p>
         </div>
+
+
+        <div className="mt-6">
+  <PraktikaSyncPanel />
+</div>
 
         <div className="mt-6">
           <ProviderImportForm action={runProviderImports} />

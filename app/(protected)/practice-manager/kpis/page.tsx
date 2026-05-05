@@ -1,4 +1,3 @@
-import SyncGoogleReviewsButton from "@/components/SyncGoogleReviewsButton";
 import KpiPdfExportButtons from "@/components/KpiPdfExportButtons";
 import { requireRole } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
@@ -19,6 +18,8 @@ import {
   getKpiToneStyles,
   type PracticeKpiBenchmark,
 } from "../../../../lib/practice-manager/kpi-benchmark-utils";
+
+import GoogleReviewsSyncCard from "@/components/GoogleReviewsSyncCard";
 
 type PageProps = {
   searchParams?: Promise<{
@@ -919,49 +920,57 @@ export default async function PracticeManagerKpisPage({
         </div>
 
         <div style={headerControlsStyle}>
-          <div style={filterActionBarStyle}>
-            <div style={filterAreaStyle}>
-              <KpiDateSelector
-                selectedYear={selectedYear}
-                selectedPeriodType={selectedPeriodType}
-                selectedMonth={
-                  selectedPeriodOption.periodType === "month"
-                    ? selectedPeriodOption.periodKey
-                    : monthOptionsForYear[0]?.periodKey ?? ""
-                }
-                selectedQuarter={
-                  selectedPeriodOption.periodType === "quarter_ato"
-                    ? selectedPeriodOption.periodKey
-                    : quarterOptionsForYear[0]?.periodKey ?? ""
-                }
-                availableYears={availableYears}
-                monthOptionsForYear={monthOptionsForYear}
-                quarterOptionsForYear={quarterOptionsForYear}
-              />
-            </div>
-
-            <div style={buttonAreaStyle}>
-              <SyncGoogleReviewsButton />
-              <KpiPdfExportButtons
-                targetId="kpi-report-content"
-                fileName="practice-kpis"
-              />
-            </div>
+          <div style={filterAreaStyle}>
+            <KpiDateSelector
+              selectedYear={selectedYear}
+              selectedPeriodType={selectedPeriodType}
+              selectedMonth={
+                selectedPeriodOption.periodType === "month"
+                  ? selectedPeriodOption.periodKey
+                  : monthOptionsForYear[0]?.periodKey ?? ""
+              }
+              selectedQuarter={
+                selectedPeriodOption.periodType === "quarter_ato"
+                  ? selectedPeriodOption.periodKey
+                  : quarterOptionsForYear[0]?.periodKey ?? ""
+              }
+              availableYears={availableYears}
+              monthOptionsForYear={monthOptionsForYear}
+              quarterOptionsForYear={quarterOptionsForYear}
+            />
           </div>
 
-          <div style={summaryCardsWrapperStyle}>
-            <div style={summaryCardStyle}>
-              <div style={summaryLabelStyle}>New Patients</div>
-              <div style={summaryValueStyle}>{formatCount(totalNewPatients)}</div>
-              <div style={summaryHelpStyle}>selected period total</div>
+          <div style={dashboardActionsGridStyle}>
+            <div style={summaryCardsWrapperStyle}>
+              <div style={summaryCardStyle}>
+                <div style={summaryLabelStyle}>New Patients</div>
+                <div style={summaryValueStyle}>{formatCount(totalNewPatients)}</div>
+                <div style={summaryHelpStyle}>selected period total</div>
+              </div>
+
+              <div style={summaryCardStyle}>
+                <div style={summaryLabelStyle}>Google Reviews</div>
+                <div style={summaryValueStyle}>
+                  {formatCount(totalGoogleReviews)}
+                </div>
+                <div style={summaryHelpStyle}>selected period total</div>
+              </div>
             </div>
 
-            <div style={summaryCardStyle}>
-              <div style={summaryLabelStyle}>Google Reviews</div>
-              <div style={summaryValueStyle}>
-                {formatCount(totalGoogleReviews)}
+            <div style={utilityPanelStyle}>
+              <GoogleReviewsSyncCard />
+
+              <div style={pdfActionsStyle}>
+                <div style={pdfActionsTextStyle}>
+                  <div style={pdfActionsTitleStyle}>Export report</div>
+                  <div style={pdfActionsHelpStyle}>Download this KPI view as a PDF.</div>
+                </div>
+
+                <KpiPdfExportButtons
+                  targetId="kpi-report-content"
+                  fileName="practice-kpis"
+                />
               </div>
-              <div style={summaryHelpStyle}>selected period total</div>
             </div>
           </div>
         </div>
@@ -1048,17 +1057,17 @@ export default async function PracticeManagerKpisPage({
                 </td>
 
                 {row.isFirstWeekOfPayPeriod && (
-  <td
-    rowSpan={row.payPeriodWeekCount}
-    style={getMetricCellStyle(
-      row.overtimeHours,
-      "overtime_hours",
-      benchmarks
-    )}
-  >
-    {formatHours(row.overtimeHours)}
-  </td>
-)}
+                  <td
+                    rowSpan={row.payPeriodWeekCount}
+                    style={getMetricCellStyle(
+                      row.overtimeHours,
+                      "overtime_hours",
+                      benchmarks
+                    )}
+                  >
+                    {formatHours(row.overtimeHours)}
+                  </td>
+                )}
 
                 {row.isFirstWeekOfPayPeriod && (
                   <td
@@ -1115,32 +1124,59 @@ const headerControlsStyle: React.CSSProperties = {
   width: "100%",
 };
 
-const filterActionBarStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "minmax(0, 1fr) auto",
-  gap: "16px",
-  alignItems: "end",
-  width: "100%",
-};
-
 const filterAreaStyle: React.CSSProperties = {
   minWidth: 0,
+  padding: "14px",
+  borderRadius: "16px",
+  border: "1px solid #e5e7eb",
+  backgroundColor: "#f8fafc",
 };
 
-const buttonAreaStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "end",
-  justifyContent: "flex-end",
-  gap: "10px",
-  flexWrap: "wrap",
-  minWidth: "420px",
+const dashboardActionsGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(320px, 520px) minmax(360px, 1fr)",
+  gap: "14px",
+  alignItems: "stretch",
 };
 
 const summaryCardsWrapperStyle: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(2, minmax(180px, 1fr))",
+  gridTemplateColumns: "repeat(2, minmax(150px, 1fr))",
   gap: "12px",
-  maxWidth: "520px",
+};
+
+const utilityPanelStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr",
+  gap: "12px",
+  minWidth: 0,
+};
+
+const pdfActionsStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "12px",
+  padding: "14px 16px",
+  borderRadius: "16px",
+  border: "1px solid #e5e7eb",
+  backgroundColor: "#ffffff",
+};
+
+const pdfActionsTextStyle: React.CSSProperties = {
+  minWidth: 0,
+};
+
+const pdfActionsTitleStyle: React.CSSProperties = {
+  color: "#0f172a",
+  fontSize: "14px",
+  fontWeight: 900,
+};
+
+const pdfActionsHelpStyle: React.CSSProperties = {
+  color: "#64748b",
+  fontSize: "12px",
+  marginTop: "2px",
 };
 
 const eyebrowStyle: React.CSSProperties = {
@@ -1168,12 +1204,13 @@ const subheadingStyle: React.CSSProperties = {
 
 const summaryCardStyle: React.CSSProperties = {
   width: "100%",
-  minWidth: "160px",
-  padding: "16px",
-  borderRadius: "16px",
+  minWidth: "150px",
+  padding: "18px 16px",
+  borderRadius: "18px",
   backgroundColor: "#eff6ff",
   border: "1px solid #bfdbfe",
   textAlign: "center",
+  boxShadow: "0 8px 18px rgba(37, 99, 235, 0.08)",
 };
 
 const summaryLabelStyle: React.CSSProperties = {

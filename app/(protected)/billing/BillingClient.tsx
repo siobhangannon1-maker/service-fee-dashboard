@@ -14,6 +14,8 @@ import { writeAuditLog, writeStatementHistory } from "@/lib/audit";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import Toast from "@/components/ui/Toast";
 import ExcelJS from "exceljs";
+import PraktikaProductionSyncButton from "./PraktikaProductionSyncButton";
+import LinkedProductionImportCard from "./LinkedProductionImportCard";
 
 type Provider = {
   id: string;
@@ -1863,6 +1865,17 @@ export default function BillingClient() {
               Import Production Report
             </Link>
 
+            <PraktikaProductionSyncButton
+  selectedPeriodId={selectedPeriodId}
+  billingPeriods={billingPeriods}
+  activePeriodStatus={activePeriodStatus}
+  loadingMetrics={loadingMetrics}
+  showToast={showToast}
+  onSynced={async () => {
+    await loadData(selectedPeriodId);
+  }}
+/>
+
             <button
               onClick={createNextBillingPeriod}
               className="rounded-2xl border bg-white px-4 py-2 hover:bg-slate-100"
@@ -1961,6 +1974,7 @@ export default function BillingClient() {
             Status: <StatusBadge status={activePeriodStatus} />
           </div>
         </div>
+        <LinkedProductionImportCard billingPeriodId={selectedPeriodId} />
 
         {loadingMetrics && (
           <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">

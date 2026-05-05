@@ -10,10 +10,7 @@ export type WeeklyReferralBookingKpiRow = {
 
 type NewPatientRow = {
   joined_date: string;
-  patient_name_raw: string | null;
   provider_name_raw: string | null;
-  first_appointment_raw: string | null;
-  has_first_appointment: boolean | null;
 };
 
 function getServiceRoleSupabaseClient() {
@@ -35,41 +32,8 @@ function round4(value: number): number {
   return Math.round(value * 10000) / 10000;
 }
 
-function normalizeText(value: string | null | undefined): string {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-function hasFirstAppointmentValue(row: NewPatientRow): boolean {
-  if (row.has_first_appointment === true) return true;
-
-  const value = normalizeText(row.first_appointment_raw);
-
-  if (!value) return false;
-
-  return !["no", "n", "false", "0", "none", "null", "-", "nil"].includes(value);
-}
-
-function getRowKey(row: NewPatientRow): string {
-  return [
-    row.joined_date,
-    normalizeText(row.patient_name_raw),
-    normalizeText(row.provider_name_raw),
-    normalizeText(row.first_appointment_raw),
-  ].join("|");
-}
-
-function dedupeRows(rows: NewPatientRow[]): NewPatientRow[] {
-  const map = new Map<string, NewPatientRow>();
-
-  for (const row of rows) {
-    const key = getRowKey(row);
-
-    if (!map.has(key)) {
-      map.set(key, row);
-    }
-  }
-
-  return Array.from(map.values());
+function hasFirstProvider(row: NewPatientRow): boolean {
+  return String(row.provider_name_raw ?? "").trim().length > 0;
 }
 
 async function fetchAllNewPatientRows(
@@ -86,15 +50,7 @@ async function fetchAllNewPatientRows(
 
     const { data, error } = await supabase
       .from("provider_new_patients_raw")
-      .select(
-        `
-        joined_date,
-        patient_name_raw,
-        provider_name_raw,
-        first_appointment_raw,
-        has_first_appointment
-        `
-      )
+      .select("joined_date, provider_name_raw")
       .gte("joined_date", overallStart)
       .lte("joined_date", overallEnd)
       .order("joined_date", { ascending: true })
@@ -108,7 +64,6 @@ async function fetchAllNewPatientRows(
     allRows.push(...rows);
 
     if (rows.length < pageSize) break;
-
     from += pageSize;
   }
 
@@ -123,8 +78,7 @@ export async function getWeeklyReferralBookingKpis(
   const overallStart = weeks[0].weekStart;
   const overallEnd = weeks[weeks.length - 1].weekEnd;
 
-  const allRowsRaw = await fetchAllNewPatientRows(overallStart, overallEnd);
-  const allRows = dedupeRows(allRowsRaw);
+  const allRows = await fetchAllNewPatientRows(overallStart, overallEnd);
 
   return weeks.map((week) => {
     const rowsForWeek = allRows.filter(
@@ -132,7 +86,7 @@ export async function getWeeklyReferralBookingKpis(
     );
 
     const totalReferrals = rowsForWeek.length;
-    const bookedCount = rowsForWeek.filter(hasFirstAppointmentValue).length;
+    const bookedCount = rowsForWeek.filter(hasFirstProvider).length;
 
     return {
       weekStart: week.weekStart,

@@ -112,6 +112,18 @@ function getMonthFromMonthKey(periodKey?: string | null): string {
   return periodKey.slice(5, 7);
 }
 
+function buildCalendarMonthOptions() {
+  return Array.from({ length: 12 }, (_, index) => {
+    const monthNumber = index + 1;
+    const value = String(monthNumber).padStart(2, "0");
+    const label = new Intl.DateTimeFormat("en-AU", {
+      month: "long",
+    }).format(new Date(2000, index, 1));
+
+    return { value, label };
+  });
+}
+
 function getMonthEndIso(monthKey: string): string {
   const [yearRaw, monthRaw] = monthKey.split("-");
   const year = Number(yearRaw);
@@ -1338,7 +1350,7 @@ export default async function AdminProviderDashboardPage({
 
   const requestedPeriodKey =
     requestedPeriodType === "month"
-      ? `${requestedYear}-${requestedMonth}`
+      ? (resolvedSearchParams?.periodKey ?? `${requestedYear}-${requestedMonth}`)
       : (resolvedSearchParams?.periodKey ?? null);
 
   const allDashboard = await getProviderDashboardMetrics({
@@ -1406,24 +1418,24 @@ export default async function AdminProviderDashboardPage({
 
   const availableMonthYears = Array.from(
     new Set(monthOptionsAscending.map((option) => getYearFromMonthKey(option.key))),
-  ).sort((a, b) => a.localeCompare(b));
+  ).sort((a, b) => b.localeCompare(a));
 
-  const selectedMonthYear =
-    selectedPeriodType === "month"
-      ? getYearFromMonthKey(selectedPeriodKey) || requestedYear
-      : requestedYear;
-
-  const monthsForSelectedYear = monthOptionsAscending.filter(
-    (option) => getYearFromMonthKey(option.key) === selectedMonthYear,
-  );
+  const newestAvailableMonthKey =
+    monthOptionsAscending[monthOptionsAscending.length - 1]?.key ?? previousMonthKey;
 
   const safeSelectedMonthKey =
     selectedPeriodType === "month" &&
-    monthsForSelectedYear.some((option) => option.key === selectedPeriodKey)
+    monthOptionsAscending.some((option) => option.key === selectedPeriodKey)
       ? selectedPeriodKey
-      : (monthsForSelectedYear[0]?.key ?? monthOptionsAscending[0]?.key ?? previousMonthKey);
+      : newestAvailableMonthKey;
+
+  const selectedMonthYear =
+    selectedPeriodType === "month"
+      ? getYearFromMonthKey(safeSelectedMonthKey) || requestedYear
+      : requestedYear;
 
   const safeSelectedMonthNumber = getMonthFromMonthKey(safeSelectedMonthKey);
+  const calendarMonthOptions = buildCalendarMonthOptions();
 
   const allMetric = allDashboard.metric;
  const perioMetric = perioDashboard?.metric ?? null;
@@ -1601,7 +1613,7 @@ const omsMetric = omsDashboard?.metric ?? null;
                   label="Month"
                   name="month"
                   defaultValue={safeSelectedMonthNumber}
-                  options={buildMonthOptionsFromPeriodOptions(monthsForSelectedYear)}
+                  options={calendarMonthOptions}
                 />
 
                 <button

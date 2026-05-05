@@ -124,6 +124,16 @@ const navGroups: NavGroup[] = [
         label: "Referrals",
         description: "Analyse metrics of referrals received",
       },
+        {
+        href: "/benchmark/referrer-performance",
+        label: "Top Referrers",
+        description: "Analysis of top referrer metrics",
+      },
+      {
+        href: "/benchmark/referrer-opportunities",
+        label: "Referrer Opportunities",
+        description: "Analysis of non referring clinics",
+      },
       {
         href: "/admin/provider-dashboard",
         label: "Provider Dashboard",
@@ -145,6 +155,7 @@ const navGroups: NavGroup[] = [
         label: "Edit Benchmarks",
         description: "Edit benchmarks for KPI categories",
       },
+
     ],
   },
 ];
