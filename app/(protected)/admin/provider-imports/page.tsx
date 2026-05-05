@@ -1,3 +1,7 @@
+import PageLayout from "@/components/ui/PageLayout";
+import PageSection from "@/components/ui/PageSection";
+import CollapsibleSection from "@/components/ui/CollapsibleSection";
+
 import { ProviderImportForm } from "./provider-import-form";
 import { runProviderImports } from "./actions";
 import { getImportBatches } from "./get-import-batches";
@@ -7,13 +11,13 @@ import { unlinkImportBatchMonth } from "./unlink-import-batch-month";
 import RecalculateMonthButton from "./RecalculateMonthButton";
 import PraktikaSyncPanel from "./PraktikaSyncPanel";
 
-
 type BatchRow = Awaited<ReturnType<typeof getImportBatches>>[number];
 
 function formatMonthLabel(monthKey: string | null): string {
   if (!monthKey) return "Not linked";
 
   const [year, month] = monthKey.split("-");
+
   const monthNames: Record<string, string> = {
     "01": "January",
     "02": "February",
@@ -34,8 +38,8 @@ function formatMonthLabel(monthKey: string | null): string {
 
 function getTypeBadgeClass(isActive: boolean) {
   return isActive
-    ? "border-green-200 bg-green-50 text-green-700"
-    : "border-gray-200 bg-gray-50 text-gray-500";
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    : "border-slate-200 bg-slate-50 text-slate-500";
 }
 
 function groupLinkedBatchesByMonth(batches: BatchRow[]) {
@@ -70,201 +74,294 @@ function groupLinkedBatchesByMonth(batches: BatchRow[]) {
 }
 
 function getBatchDisplayKey(batch: BatchRow): string {
-  return `${batch.import_batch_id}-${batch.month_key ?? "no-month"}-${batch.import_type}`;
+  return `${batch.import_batch_id}-${batch.month_key ?? "no-month"}-${
+    batch.import_type
+  }`;
+}
+
+function StatCard({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string | number;
+  helper: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-sm backdrop-blur">
+      <div className="text-xs font-medium uppercase tracking-wide text-white/70">
+        {label}
+      </div>
+      <div className="mt-2 text-3xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-1 text-xs text-white/70">{helper}</div>
+    </div>
+  );
 }
 
 export default async function ProviderImportsPage() {
   const batches = await getImportBatches();
   const linkedMonths = groupLinkedBatchesByMonth(batches);
 
-  const today = new Date();
-  const monthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+  const readyToRecalculate = linkedMonths.filter(
+    (month) => month.canRecalculate
+  ).length;
+
+  const missingDataMonths = linkedMonths.filter(
+    (month) => !month.canRecalculate
+  ).length;
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      <div className="mx-auto max-w-5xl px-6 py-8">
-        <h1 className="text-3xl font-semibold tracking-tight text-gray-900">
-          Provider Imports
-        </h1>
+    <PageLayout
+      eyebrow="Admin"
+      title="Provider Imports"
+      description="Sync provider data from Praktika or upload CSV files for appointments, performance, cancellations, and new patients."
+    >
+      <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+        <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
+          <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr] lg:items-end">
+            <div>
+              <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+                Provider data hub
+              </div>
 
-        <p className="mt-2 text-sm text-gray-600">
-          Upload provider appointments, performance, and cancellations CSV files.
-          Appointments and cancellations can now contain multiple months.
-        </p>
+              <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                Keep data synced, linked, and ready for reporting.
+              </h2>
 
-        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <div className="font-medium">Important</div>
-          <p className="mt-1">
-            Appointments and cancellations detect months from the uploaded file.
-            Performance still uses the selected month because it is monthly summary data.
-          </p>
-        </div>
-
-
-        <div className="mt-6">
-  <PraktikaSyncPanel />
-</div>
-
-        <div className="mt-6">
-          <ProviderImportForm action={runProviderImports} />
-        </div>
-
-        <div className="mt-10">
-          <h2 className="text-lg font-semibold text-gray-900">Recalculate by Month</h2>
-
-          {linkedMonths.length === 0 ? (
-            <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-600">
-              No linked months found yet.
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
+                Use Praktika sync for current data or CSV uploads when needed.
+                Recalculate months once appointments and performance data are
+                linked.
+              </p>
             </div>
-          ) : (
-            <div className="mt-4 space-y-3">
-              {linkedMonths.map(
-                ({
-                  monthKey,
-                  rows,
-                  hasAppointments,
-                  hasPerformance,
-                  hasCancellations,
-                  canRecalculate,
-                }) => (
-                  <div
-                    key={monthKey}
-                    className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
-                  >
-                    <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                      <div>
-                        <div className="text-sm font-medium text-gray-900">
-                          {formatMonthLabel(monthKey)}
-                        </div>
 
-                        <div className="mt-1 text-xs text-gray-500">
-                          Linked batches: {rows.length}
-                        </div>
-
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <span
-                            className={`rounded-full border px-2 py-1 text-xs font-medium ${getTypeBadgeClass(
-                              hasAppointments
-                            )}`}
-                          >
-                            Appointments {hasAppointments ? "linked" : "missing"}
-                          </span>
-
-                          <span
-                            className={`rounded-full border px-2 py-1 text-xs font-medium ${getTypeBadgeClass(
-                              hasPerformance
-                            )}`}
-                          >
-                            Performance {hasPerformance ? "linked" : "missing"}
-                          </span>
-
-                          <span
-                            className={`rounded-full border px-2 py-1 text-xs font-medium ${getTypeBadgeClass(
-                              hasCancellations
-                            )}`}
-                          >
-                            Cancellations {hasCancellations ? "linked" : "missing"}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="md:w-64">
-                        <RecalculateMonthButton
-                          monthKey={monthKey}
-                          disabled={!canRecalculate}
-                          disabledReason={
-                            canRecalculate
-                              ? undefined
-                              : "Appointments and performance are required before recalculation can run."
-                          }
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )
-              )}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <StatCard
+                label="Total uploads"
+                value={batches.length}
+                helper="CSV and synced import batches"
+              />
+              <StatCard
+                label="Linked months"
+                value={linkedMonths.length}
+                helper="Months connected to batches"
+              />
+              <StatCard
+                label="Ready"
+                value={readyToRecalculate}
+                helper="Months ready to recalculate"
+              />
+              <StatCard
+                label="Needs attention"
+                value={missingDataMonths}
+                helper="Months missing required data"
+              />
             </div>
-          )}
+          </div>
         </div>
+      </section>
 
-        <div className="mt-10">
-          <h2 className="text-lg font-semibold text-gray-900">Existing Uploads</h2>
+      <PageSection
+        title="Sync from Praktika"
+        description="Use this when you want to pull provider data directly from Praktika."
+      >
+        <PraktikaSyncPanel />
+      </PageSection>
 
-          {batches.length === 0 ? (
-            <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-600">
-              No uploads found yet.
-            </div>
-          ) : (
-            <div className="mt-4 space-y-4">
-              {batches.map((batch) => (
+      <PageSection
+        title="Upload CSV files"
+        description="Use CSV uploads when historical files or manual imports are needed."
+      >
+        <ProviderImportForm action={runProviderImports} />
+      </PageSection>
+
+      <PageSection
+        title="Recalculate by month"
+        description="A month can be recalculated once appointments and performance data are linked."
+      >
+        {linkedMonths.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
+            No linked months found yet.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {linkedMonths.map(
+              ({
+                monthKey,
+                rows,
+                hasAppointments,
+                hasPerformance,
+                hasCancellations,
+                canRecalculate,
+              }) => (
                 <div
-                  key={getBatchDisplayKey(batch)}
-                  className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+                  key={monthKey}
+                  className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
                 >
-                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
-                      <div className="text-sm font-medium text-gray-900">
-                        {batch.source_file_name}
+                      <div className="text-base font-semibold text-slate-950">
+                        {formatMonthLabel(monthKey)}
                       </div>
-                      <div className="mt-1 text-xs text-gray-500">
-                        Batch: {batch.import_batch_id}
+
+                      <div className="mt-1 text-sm text-slate-500">
+                        {rows.length} linked batch{rows.length === 1 ? "" : "es"}
                       </div>
-                      <div className="text-xs text-gray-500">Type: {batch.import_type}</div>
-                      <div className="text-xs text-gray-500">Rows: {batch.row_count}</div>
-                      <div className="text-xs text-gray-500">
-                        Month: {formatMonthLabel(batch.month_key)}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        Status: {batch.is_linked ? "Linked" : "Unlinked"}
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <span
+                          className={`rounded-full border px-3 py-1 text-xs font-medium ${getTypeBadgeClass(
+                            hasAppointments
+                          )}`}
+                        >
+                          Appointments {hasAppointments ? "linked" : "missing"}
+                        </span>
+
+                        <span
+                          className={`rounded-full border px-3 py-1 text-xs font-medium ${getTypeBadgeClass(
+                            hasPerformance
+                          )}`}
+                        >
+                          Performance {hasPerformance ? "linked" : "missing"}
+                        </span>
+
+                        <span
+                          className={`rounded-full border px-3 py-1 text-xs font-medium ${getTypeBadgeClass(
+                            hasCancellations
+                          )}`}
+                        >
+                          Cancellations{" "}
+                          {hasCancellations ? "linked" : "optional / missing"}
+                        </span>
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-2 md:w-72">
-                      <form action={linkImportBatchMonth} className="flex gap-2">
-                        <input type="hidden" name="batchId" value={batch.import_batch_id} />
-                        <input
-                          type="month"
-                          name="monthKey"
-                          defaultValue={batch.month_key ?? ""}
-                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
-                          required
-                        />
-                        <button
-                          type="submit"
-                          className="rounded-lg bg-black px-3 py-2 text-xs font-medium text-white hover:bg-gray-800"
-                        >
-                          Link
-                        </button>
-                      </form>
-
-                      <form action={unlinkImportBatchMonth}>
-                        <input type="hidden" name="batchId" value={batch.import_batch_id} />
-                        <button
-                          type="submit"
-                          className="w-full rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700"
-                        >
-                          Unlink
-                        </button>
-                      </form>
-
-                      <form action={deleteImportBatch}>
-                        <input type="hidden" name="batchId" value={batch.import_batch_id} />
-                        <input type="hidden" name="importType" value={batch.import_type} />
-                        <button
-                          type="submit"
-                          className="w-full rounded-lg bg-red-600 px-3 py-2 text-xs font-medium text-white hover:bg-red-700"
-                        >
-                          Delete
-                        </button>
-                      </form>
+                    <div className="md:w-64">
+                      <RecalculateMonthButton
+                        monthKey={monthKey}
+                        disabled={!canRecalculate}
+                        disabledReason={
+                          canRecalculate
+                            ? undefined
+                            : "Appointments and performance are required before recalculation can run."
+                        }
+                      />
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </main>
+              )
+            )}
+          </div>
+        )}
+      </PageSection>
+
+      <CollapsibleSection
+        title={`Previous uploads (${batches.length})`}
+        description="Historical upload records, linking tools, and delete actions."
+      >
+        {batches.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
+            No uploads found yet.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {batches.map((batch) => (
+              <div
+                key={getBatchDisplayKey(batch)}
+                className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+              >
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-950">
+                      {batch.source_file_name}
+                    </div>
+
+                    <div className="mt-2 grid gap-1 text-xs text-slate-500">
+                      <div>Batch: {batch.import_batch_id}</div>
+                      <div>Type: {batch.import_type}</div>
+                      <div>Rows: {batch.row_count}</div>
+                      <div>Month: {formatMonthLabel(batch.month_key)}</div>
+                      <div>
+                        Status:{" "}
+                        <span
+                          className={
+                            batch.is_linked
+                              ? "font-medium text-emerald-700"
+                              : "font-medium text-slate-500"
+                          }
+                        >
+                          {batch.is_linked ? "Linked" : "Unlinked"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 md:w-72">
+                    <form action={linkImportBatchMonth} className="flex gap-2">
+                      <input
+                        type="hidden"
+                        name="batchId"
+                        value={batch.import_batch_id}
+                      />
+
+                      <input
+                        type="month"
+                        name="monthKey"
+                        defaultValue={batch.month_key ?? ""}
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                        required
+                      />
+
+                      <button
+                        type="submit"
+                        className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800"
+                      >
+                        Link
+                      </button>
+                    </form>
+
+                    <form action={unlinkImportBatchMonth}>
+                      <input
+                        type="hidden"
+                        name="batchId"
+                        value={batch.import_batch_id}
+                      />
+
+                      <button
+                        type="submit"
+                        className="w-full rounded-xl bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700"
+                      >
+                        Unlink
+                      </button>
+                    </form>
+
+                    <form action={deleteImportBatch}>
+                      <input
+                        type="hidden"
+                        name="batchId"
+                        value={batch.import_batch_id}
+                      />
+                      <input
+                        type="hidden"
+                        name="importType"
+                        value={batch.import_type}
+                      />
+
+                      <button
+                        type="submit"
+                        className="w-full rounded-xl bg-red-600 px-3 py-2 text-xs font-medium text-white hover:bg-red-700"
+                      >
+                        Delete
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CollapsibleSection>
+    </PageLayout>
   );
 }

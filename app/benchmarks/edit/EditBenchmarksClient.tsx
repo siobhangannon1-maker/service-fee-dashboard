@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import PageLayout from "@/components/ui/PageLayout";
 import KpiBenchmarksEditor from "./KpiBenchmarksEditor";
 
 type ExpenseBenchmark = {
@@ -49,6 +50,34 @@ const DEFAULT_STATUS_CONTENT: Record<
   },
 };
 
+function fieldClassName() {
+  return "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-500";
+}
+
+function textareaClassName(extra = "") {
+  return `w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 ${extra}`;
+}
+
+function StatCard({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string | number;
+  helper: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-sm backdrop-blur">
+      <div className="text-xs font-semibold uppercase tracking-wide text-white/70">
+        {label}
+      </div>
+      <div className="mt-2 text-3xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-1 text-xs text-white/70">{helper}</div>
+    </div>
+  );
+}
+
 export default function EditBenchmarksClient() {
   const [benchmarks, setBenchmarks] = useState<ExpenseBenchmark[]>([]);
   const [loading, setLoading] = useState(true);
@@ -88,6 +117,17 @@ export default function EditBenchmarksClient() {
     void loadBenchmarks();
   }, []);
 
+  async function readJsonSafely(response: Response) {
+    const text = await response.text();
+    if (!text) return null;
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`API returned invalid JSON: ${text.slice(0, 200)}`);
+    }
+  }
+
   async function loadBenchmarks() {
     try {
       setLoading(true);
@@ -95,10 +135,10 @@ export default function EditBenchmarksClient() {
       setMessage("");
 
       const response = await fetch("/api/benchmarks");
-      const data = await response.json();
+      const data = await readJsonSafely(response);
 
       if (!response.ok) {
-        throw new Error(data.error || "Failed to load benchmarks");
+        throw new Error(data?.error || "Failed to load benchmarks");
       }
 
       setBenchmarks((Array.isArray(data) ? data : []).map(withDefaultAdvice));
@@ -172,15 +212,17 @@ export default function EditBenchmarksClient() {
       body: JSON.stringify(payload),
     });
 
-    const result = await response.json();
+    const result = await readJsonSafely(response);
 
     if (!response.ok) {
-      throw new Error(result.error || "Failed to save benchmarks");
+      throw new Error(result?.error || "Failed to save benchmarks");
     }
 
-    setBenchmarks((Array.isArray(result.data) ? result.data : []).map(withDefaultAdvice));
+    setBenchmarks((Array.isArray(result?.data) ? result.data : []).map(withDefaultAdvice));
 
-    const renamedMappings = Array.isArray(result.renamedMappings) ? result.renamedMappings : [];
+    const renamedMappings = Array.isArray(result?.renamedMappings)
+      ? result.renamedMappings
+      : [];
 
     if (renamedMappings.length > 0) {
       const renameText = renamedMappings
@@ -257,10 +299,12 @@ export default function EditBenchmarksClient() {
       body: JSON.stringify({ year, month }),
     });
 
-    const result = await response.json();
+    const result = await readJsonSafely(response);
 
     if (!response.ok) {
-      throw new Error(result.message || `Failed to process ${year}-${String(month).padStart(2, "0")}`);
+      throw new Error(
+        result?.message || `Failed to process ${year}-${String(month).padStart(2, "0")}`
+      );
     }
   }
 
@@ -317,277 +361,358 @@ export default function EditBenchmarksClient() {
     ).length;
   }, [benchmarks]);
 
+  const canInteract = !saving && !reprocessing;
+
   if (loading) {
     return (
-      <main style={pageStyle}>
-        <h1 style={headingStyle}>Edit Benchmarks</h1>
-        <p>Loading benchmarks...</p>
-      </main>
+      <PageLayout
+        eyebrow="Admin"
+        title="Edit Benchmarks"
+        description="Manage expense benchmark thresholds, advice text, and KPI targets."
+      >
+        <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-600 shadow-sm">
+          Loading benchmarks...
+        </div>
+      </PageLayout>
     );
   }
 
   return (
-    <main style={pageStyle}>
-      <h1 style={headingStyle}>Edit Benchmarks</h1>
-      <p style={subheadingStyle}>
-        Update benchmark categories and ranges, add new benchmark categories, and edit the text that
-        appears inside the green, orange, and red hover popovers on the benchmarks page.
-      </p>
+    <PageLayout
+      eyebrow="Admin"
+      title="Edit Benchmarks"
+      description="Manage expense benchmark categories, traffic-light thresholds, advice popovers, and KPI benchmark targets."
+    >
+      <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+        <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
+          <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr] lg:items-end">
+            <div>
+              <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+                Benchmark configuration
+              </div>
 
-      <div style={infoPanelStyle}>
-        <div style={infoTitleStyle}>Important</div>
-        <div style={infoTextStyle}>
-          Saving benchmark changes does not automatically update your saved monthly benchmark reports.
-        </div>
-        <div style={infoTextStyle}>
-          Use <strong>Save and Reprocess Range</strong> to refresh the selected months on
-          <strong> benchmark/expense-reports</strong> and
-          <strong> practice-manager/benchmark-analysis</strong>.
-        </div>
-        <div style={infoTextStyle}>
-          If you changed a category name, also review <strong>benchmarks/mappings</strong>.
-        </div>
-      </div>
+              <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                Keep benchmark rules and guidance consistent.
+              </h2>
 
-      <div style={infoPanelStyle}>
-        <div style={infoTitleStyle}>How the advice text works</div>
-        <div style={infoTextStyle}>
-          Each benchmark can now have separate popover text for green, orange, and red. Put one
-          action per line in the actions box. Those lines will be shown as the bullet-style action
-          items in the popover.
-        </div>
-        <div style={infoTextStyle}>
-          Advice added for <strong>{completedAdviceCount}</strong> of <strong>{benchmarks.length}</strong>{" "}
-          benchmark categories.
-        </div>
-      </div>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
+                Update target ranges, category names, and hover advice text. Reprocess months when
+                saved reports need to be refreshed with the latest benchmark settings.
+              </p>
+            </div>
 
-      {message && <div style={successStyle}>{message}</div>}
-      {error && <div style={errorStyle}>{error}</div>}
-
-      <div style={toolbarStyle}>
-        <button
-          onClick={addNewCategoryRow}
-          style={secondaryButtonStyle}
-          disabled={saving || reprocessing}
-        >
-          Add New Category
-        </button>
-
-        <div style={rangeGroupStyle}>
-          <div style={rangeBlockStyle}>
-            <div style={rangeLabelStyle}>From</div>
-            <select
-              value={fromYear}
-              onChange={(e) => setFromYear(e.target.value)}
-              style={selectStyle}
-              disabled={saving || reprocessing}
-            >
-              {availableYears.map((year) => (
-                <option key={`from-year-${year}`} value={year}>
-                  {year}
-                </option>
-              ))}
-            </select>
-
-            <select
-              value={fromMonth}
-              onChange={(e) => setFromMonth(e.target.value)}
-              style={selectStyle}
-              disabled={saving || reprocessing}
-            >
-              {monthOptions.map((month) => (
-                <option key={`from-month-${month.value}`} value={month.value}>
-                  {month.label}
-                </option>
-              ))}
-            </select>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <StatCard
+                label="Categories"
+                value={benchmarks.length}
+                helper="Expense benchmark rows"
+              />
+              <StatCard
+                label="Advice"
+                value={completedAdviceCount}
+                helper="Rows with guidance"
+              />
+              <StatCard
+                label="Status"
+                value={reprocessing ? "Running" : saving ? "Saving" : "Ready"}
+                helper="Current workflow"
+              />
+            </div>
           </div>
+        </div>
+      </section>
 
-          <div style={rangeBlockStyle}>
-            <div style={rangeLabelStyle}>To</div>
-            <select
-              value={toYear}
-              onChange={(e) => setToYear(e.target.value)}
-              style={selectStyle}
-              disabled={saving || reprocessing}
-            >
-              {availableYears.map((year) => (
-                <option key={`to-year-${year}`} value={year}>
-                  {year}
-                </option>
-              ))}
-            </select>
+      {message ? (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+          {message}
+        </div>
+      ) : null}
 
-            <select
-              value={toMonth}
-              onChange={(e) => setToMonth(e.target.value)}
-              style={selectStyle}
-              disabled={saving || reprocessing}
-            >
-              {monthOptions.map((month) => (
-                <option key={`to-month-${month.value}`} value={month.value}>
-                  {month.label}
-                </option>
-              ))}
-            </select>
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          {error}
+        </div>
+      ) : null}
+
+      <section className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-3xl border border-blue-100 bg-blue-50/70 p-5">
+          <h3 className="text-base font-semibold text-slate-950">Important</h3>
+          <div className="mt-2 space-y-2 text-sm leading-6 text-slate-700">
+            <p>
+              Saving benchmark changes does not automatically update saved monthly benchmark
+              reports.
+            </p>
+            <p>
+              Use <strong>Save and Reprocess Range</strong> to refresh selected months on{" "}
+              <strong>benchmark/expense-reports</strong> and{" "}
+              <strong>practice-manager/benchmark-analysis</strong>.
+            </p>
+            <p>
+              If you changed a category name, also review{" "}
+              <strong>benchmarks/mappings</strong>.
+            </p>
           </div>
         </div>
 
-        <button
-          onClick={handleSave}
-          disabled={saving || reprocessing}
-          style={secondaryButtonStyle}
-        >
-          {saving && !reprocessing ? "Saving..." : "Save Changes"}
-        </button>
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h3 className="text-base font-semibold text-slate-950">
+            How advice text works
+          </h3>
+          <div className="mt-2 space-y-2 text-sm leading-6 text-slate-600">
+            <p>
+              Each benchmark can have separate popover text for green, orange,
+              and red statuses.
+            </p>
+            <p>
+              Put one action per line in the actions box. These lines appear as
+              bullet-style action items in report popovers.
+            </p>
+          </div>
+        </div>
+      </section>
 
-        <button
-          onClick={handleSaveAndReprocessRange}
-          disabled={saving || reprocessing}
-          style={buttonStyle}
-        >
-          {reprocessing ? "Saving and Reprocessing..." : "Save and Reprocess Range"}
-        </button>
-      </div>
+      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-950">
+              Save and reprocess
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Save changes only, or save and refresh benchmark reports for a selected range.
+            </p>
+          </div>
 
-      <div style={{ overflowX: "auto" }}>
-        <table style={tableStyle}>
-          <thead>
-            <tr>
-              <th style={thStyle}>Category</th>
-              <th style={thStyle}>Advice</th>
-              <th style={thStyle}>Target %</th>
-              <th style={thStyle}>Green Min</th>
-              <th style={thStyle}>Green Max</th>
-              <th style={thStyle}>Orange Min</th>
-              <th style={thStyle}>Orange Max</th>
-              <th style={thStyle}>Red Min</th>
-              <th style={thStyle}>Advice Text</th>
-            </tr>
-          </thead>
-          <tbody>
-            {benchmarks.map((row, index) => {
-              const rowKey = String(row.id ?? `new-${index}`);
-              const isExpanded = Boolean(expandedRows[rowKey]);
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+            <button
+              type="button"
+              onClick={addNewCategoryRow}
+              disabled={!canInteract}
+              className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              Add Category
+            </button>
 
-              return (
-                <FragmentRows key={rowKey}>
-                  <tr>
-                    <td style={tdStyle}>
-                      <input
-                        type="text"
-                        value={row.category_name}
-                        onChange={(e) => updateField(index, "category_name", e.target.value)}
-                        style={inputStyle}
-                        placeholder="e.g. Staff Wages and Superannuation"
-                      />
-                    </td>
-                    <td style={tdStyle}>
-                      <div style={adviceCellStyle}>
-                        <div style={adviceSummaryStyle}>
-                          <div style={adviceSummaryTextStyle}>Edit popover text.</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  From
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <select
+                    value={fromYear}
+                    onChange={(e) => setFromYear(e.target.value)}
+                    className={fieldClassName()}
+                    disabled={!canInteract}
+                  >
+                    {availableYears.map((year) => (
+                      <option key={`from-year-${year}`} value={year}>
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={fromMonth}
+                    onChange={(e) => setFromMonth(e.target.value)}
+                    className={fieldClassName()}
+                    disabled={!canInteract}
+                  >
+                    {monthOptions.map((month) => (
+                      <option key={`from-month-${month.value}`} value={month.value}>
+                        {month.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  To
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <select
+                    value={toYear}
+                    onChange={(e) => setToYear(e.target.value)}
+                    className={fieldClassName()}
+                    disabled={!canInteract}
+                  >
+                    {availableYears.map((year) => (
+                      <option key={`to-year-${year}`} value={year}>
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={toMonth}
+                    onChange={(e) => setToMonth(e.target.value)}
+                    className={fieldClassName()}
+                    disabled={!canInteract}
+                  >
+                    {monthOptions.map((month) => (
+                      <option key={`to-month-${month.value}`} value={month.value}>
+                        {month.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={!canInteract}
+              className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              {saving && !reprocessing ? "Saving..." : "Save Changes"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSaveAndReprocessRange}
+              disabled={!canInteract}
+              className="inline-flex items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              {reprocessing ? "Saving and Reprocessing..." : "Save and Reprocess"}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-5">
+          <h2 className="text-lg font-semibold text-slate-950">
+            Expense benchmark categories
+          </h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Edit target percentages and traffic-light ranges for each expense category.
+          </p>
+        </div>
+
+        <div className="overflow-x-auto rounded-2xl border border-slate-200">
+          <table className="min-w-[1220px] w-full divide-y divide-slate-100 bg-white text-sm">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Category
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Advice
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Target %
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Green Min
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Green Max
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Orange Min
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Orange Max
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Red Min
+                </th>
+              </tr>
+            </thead>
+
+            <tbody className="divide-y divide-slate-100">
+              {benchmarks.map((row, index) => {
+                const rowKey = String(row.id ?? `new-${index}`);
+                const isExpanded = Boolean(expandedRows[rowKey]);
+
+                return (
+                  <FragmentRows key={rowKey}>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-3 align-top">
+                        <input
+                          type="text"
+                          value={row.category_name}
+                          onChange={(e) => updateField(index, "category_name", e.target.value)}
+                          className={fieldClassName()}
+                          placeholder="e.g. Staff Wages and Superannuation"
+                        />
+                      </td>
+
+                      <td className="px-4 py-3 align-top">
+                        <div className="flex min-w-[230px] items-center justify-between gap-3">
+                          <div className="text-xs text-slate-500">
+                            Popover guidance
+                          </div>
                           <button
                             type="button"
                             onClick={() => toggleAdviceRow(rowKey)}
-                            style={smallSecondaryButtonStyle}
+                            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
                           >
                             {isExpanded ? "Hide Advice" : "Edit Advice"}
                           </button>
                         </div>
-                      </div>
-                    </td>
-                    <td style={tdStyle}>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={row.target_percent}
-                        onChange={(e) => updateField(index, "target_percent", e.target.value)}
-                        style={inputStyle}
-                      />
-                    </td>
-                    <td style={tdStyle}>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={row.green_min}
-                        onChange={(e) => updateField(index, "green_min", e.target.value)}
-                        style={inputStyle}
-                      />
-                    </td>
-                    <td style={tdStyle}>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={row.green_max}
-                        onChange={(e) => updateField(index, "green_max", e.target.value)}
-                        style={inputStyle}
-                      />
-                    </td>
-                    <td style={tdStyle}>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={row.orange_min}
-                        onChange={(e) => updateField(index, "orange_min", e.target.value)}
-                        style={inputStyle}
-                      />
-                    </td>
-                    <td style={tdStyle}>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={row.orange_max}
-                        onChange={(e) => updateField(index, "orange_max", e.target.value)}
-                        style={inputStyle}
-                      />
-                    </td>
-                    <td style={tdStyle}>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={row.red_min}
-                        onChange={(e) => updateField(index, "red_min", e.target.value)}
-                        style={inputStyle}
-                      />
-                    </td>
-                  </tr>
-
-                  {isExpanded ? (
-                    <tr>
-                      <td style={expandedTdStyle} colSpan={8}>
-                        <div style={adviceGridStyle}>
-                          <StatusEditorCard
-                            tone="green"
-                            row={row}
-                            index={index}
-                            updateField={updateField}
-                          />
-                          <StatusEditorCard
-                            tone="orange"
-                            row={row}
-                            index={index}
-                            updateField={updateField}
-                          />
-                          <StatusEditorCard
-                            tone="red"
-                            row={row}
-                            index={index}
-                            updateField={updateField}
-                          />
-                        </div>
                       </td>
+
+                      {(
+                        [
+                          "target_percent",
+                          "green_min",
+                          "green_max",
+                          "orange_min",
+                          "orange_max",
+                          "red_min",
+                        ] as const
+                      ).map((field) => (
+                        <td key={field} className="px-4 py-3 align-top">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={row[field]}
+                            onChange={(e) => updateField(index, field, e.target.value)}
+                            className={fieldClassName()}
+                          />
+                        </td>
+                      ))}
                     </tr>
-                  ) : null}
-                </FragmentRows>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+
+                    {isExpanded ? (
+                      <tr>
+                        <td colSpan={8} className="bg-slate-50 px-4 py-4">
+                          <div className="grid gap-4 xl:grid-cols-3">
+                            <StatusEditorCard
+                              tone="green"
+                              row={row}
+                              index={index}
+                              updateField={updateField}
+                            />
+                            <StatusEditorCard
+                              tone="orange"
+                              row={row}
+                              index={index}
+                              updateField={updateField}
+                            />
+                            <StatusEditorCard
+                              tone="red"
+                              row={row}
+                              index={index}
+                              updateField={updateField}
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </FragmentRows>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <KpiBenchmarksEditor />
-    </main>
+    </PageLayout>
   );
 }
 
@@ -613,37 +738,39 @@ function StatusEditorCard({
   const fieldMap = getStatusFieldMap(tone);
 
   return (
-    <div style={statusCardStyle(tone)}>
-      <div style={statusCardTitleStyle}>{capitalize(tone)} popover</div>
+    <div className={statusCardClassName(tone)}>
+      <div className="text-base font-semibold text-slate-950">
+        {capitalize(tone)} popover
+      </div>
 
-      <label style={labelStyle}>
+      <label className="block text-sm font-medium text-slate-700">
         Heading
         <input
           type="text"
           value={String(row[fieldMap.heading] || "")}
           onChange={(e) => updateField(index, fieldMap.heading, e.target.value)}
-          style={inputStyle}
+          className={`mt-1 ${fieldClassName()}`}
           placeholder={DEFAULT_STATUS_CONTENT[tone].heading}
         />
       </label>
 
-      <label style={labelStyle}>
+      <label className="block text-sm font-medium text-slate-700">
         Intro text
         <textarea
           value={String(row[fieldMap.intro] || "")}
           onChange={(e) => updateField(index, fieldMap.intro, e.target.value)}
-          style={textareaStyle}
+          className={`mt-1 ${textareaClassName("min-h-[84px]")}`}
           placeholder={DEFAULT_STATUS_CONTENT[tone].intro}
           rows={3}
         />
       </label>
 
-      <label style={labelStyle}>
+      <label className="block text-sm font-medium text-slate-700">
         Actions (one per line)
         <textarea
           value={String(row[fieldMap.actions] || "")}
           onChange={(e) => updateField(index, fieldMap.actions, e.target.value)}
-          style={largeTextareaStyle}
+          className={`mt-1 ${textareaClassName("min-h-[140px]")}`}
           placeholder={DEFAULT_STATUS_CONTENT[tone].actionsText}
           rows={6}
         />
@@ -714,237 +841,12 @@ function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-const pageStyle: React.CSSProperties = {
-  padding: "24px",
-  fontFamily: "Arial, sans-serif",
-  maxWidth: "1600px",
-  margin: "0 auto",
-};
-
-const headingStyle: React.CSSProperties = {
-  marginBottom: "12px",
-};
-
-const subheadingStyle: React.CSSProperties = {
-  marginBottom: "20px",
-  color: "#475569",
-  lineHeight: 1.5,
-};
-
-const infoPanelStyle: React.CSSProperties = {
-  marginBottom: "16px",
-  padding: "16px",
-  backgroundColor: "#eff6ff",
-  border: "1px solid #bfdbfe",
-  borderRadius: "12px",
-};
-
-const infoTitleStyle: React.CSSProperties = {
-  fontWeight: 700,
-  marginBottom: "8px",
-  color: "#1e3a8a",
-};
-
-const infoTextStyle: React.CSSProperties = {
-  color: "#1e40af",
-  fontSize: "14px",
-  lineHeight: 1.5,
-  marginBottom: "6px",
-};
-
-const toolbarStyle: React.CSSProperties = {
-  marginBottom: "16px",
-  display: "flex",
-  gap: "12px",
-  flexWrap: "wrap",
-  alignItems: "center",
-};
-
-const rangeGroupStyle: React.CSSProperties = {
-  display: "flex",
-  gap: "16px",
-  flexWrap: "wrap",
-  alignItems: "center",
-};
-
-const rangeBlockStyle: React.CSSProperties = {
-  display: "flex",
-  gap: "8px",
-  alignItems: "center",
-  flexWrap: "wrap",
-};
-
-const rangeLabelStyle: React.CSSProperties = {
-  fontSize: "13px",
-  fontWeight: 700,
-  color: "#334155",
-  minWidth: "36px",
-};
-
-const selectStyle: React.CSSProperties = {
-  padding: "10px 12px",
-  fontSize: "14px",
-  border: "1px solid #cbd5e1",
-  borderRadius: "8px",
-  backgroundColor: "#ffffff",
-};
-
-const tableStyle: React.CSSProperties = {
-  borderCollapse: "collapse",
-  width: "100%",
-  minWidth: "1220px",
-  backgroundColor: "#ffffff",
-};
-
-const thStyle: React.CSSProperties = {
-  border: "1px solid #d1d5db",
-  padding: "12px",
-  textAlign: "left",
-  backgroundColor: "#f3f4f6",
-  fontWeight: 700,
-  verticalAlign: "top",
-};
-
-const tdStyle: React.CSSProperties = {
-  border: "1px solid #d1d5db",
-  padding: "12px",
-  verticalAlign: "top",
-};
-
-const expandedTdStyle: React.CSSProperties = {
-  ...tdStyle,
-  backgroundColor: "#f8fafc",
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px",
-  fontSize: "14px",
-  border: "1px solid #cbd5e1",
-  borderRadius: "6px",
-  boxSizing: "border-box",
-  backgroundColor: "#ffffff",
-};
-
-const textareaStyle: React.CSSProperties = {
-  ...inputStyle,
-  minHeight: "84px",
-  resize: "vertical",
-  fontFamily: "Arial, sans-serif",
-};
-
-const largeTextareaStyle: React.CSSProperties = {
-  ...textareaStyle,
-  minHeight: "140px",
-  whiteSpace: "pre-wrap",
-};
-
-const buttonStyle: React.CSSProperties = {
-  backgroundColor: "#2563eb",
-  color: "#ffffff",
-  border: "none",
-  borderRadius: "8px",
-  padding: "10px 16px",
-  fontSize: "14px",
-  cursor: "pointer",
-};
-
-const secondaryButtonStyle: React.CSSProperties = {
-  backgroundColor: "#e5e7eb",
-  color: "#111827",
-  border: "none",
-  borderRadius: "8px",
-  padding: "10px 16px",
-  fontSize: "14px",
-  cursor: "pointer",
-};
-
-const smallSecondaryButtonStyle: React.CSSProperties = {
-  backgroundColor: "#e2e8f0",
-  color: "#0f172a",
-  border: "none",
-  borderRadius: "8px",
-  padding: "8px 12px",
-  fontSize: "13px",
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-};
-
-const successStyle: React.CSSProperties = {
-  marginBottom: "16px",
-  padding: "12px",
-  backgroundColor: "#dcfce7",
-  color: "#166534",
-  borderRadius: "8px",
-};
-
-const errorStyle: React.CSSProperties = {
-  marginBottom: "16px",
-  padding: "12px",
-  backgroundColor: "#fee2e2",
-  color: "#991b1b",
-  borderRadius: "8px",
-};
-
-const adviceCellStyle: React.CSSProperties = {
-  minWidth: "260px",
-};
-
-const adviceSummaryStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: "12px",
-};
-
-const adviceSummaryTextStyle: React.CSSProperties = {
-  color: "#475569",
-  fontSize: "13px",
-  lineHeight: 1.4,
-};
-
-const adviceGridStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-  gap: "16px",
-  alignItems: "start",
-};
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: "13px",
-  fontWeight: 600,
-  color: "#334155",
-};
-
-const statusCardTitleStyle: React.CSSProperties = {
-  fontSize: "15px",
-  fontWeight: 700,
-  marginBottom: "12px",
-};
-
-function statusCardStyle(tone: StatusTone): React.CSSProperties {
-  const toneStyles: Record<StatusTone, React.CSSProperties> = {
-    green: {
-      backgroundColor: "#ecfdf5",
-      border: "1px solid #a7f3d0",
-    },
-    orange: {
-      backgroundColor: "#fffbeb",
-      border: "1px solid #fde68a",
-    },
-    red: {
-      backgroundColor: "#fef2f2",
-      border: "1px solid #fecaca",
-    },
+function statusCardClassName(tone: StatusTone) {
+  const toneClass: Record<StatusTone, string> = {
+    green: "border-emerald-200 bg-emerald-50",
+    orange: "border-amber-200 bg-amber-50",
+    red: "border-red-200 bg-red-50",
   };
 
-  return {
-    borderRadius: "12px",
-    padding: "16px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-    ...toneStyles[tone],
-  };
+  return `rounded-2xl border ${toneClass[tone]} p-4 shadow-sm`;
 }

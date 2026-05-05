@@ -1290,9 +1290,23 @@ export default function BillingClient() {
           serviceFee,
           gst,
           totalFeesDue,
-          feesAndCostsTotal,
-          finalTotalDue,
         } = getProviderCalculations(provider);
+
+        const labMaterialsGst = autoTotals.labImplantMaterials * 0.1;
+        const hummMerchantFeesGst = autoTotals.hummFees * 0.1;
+        const gstOnExpenses = labMaterialsGst + hummMerchantFeesGst;
+        const totalGstIncluded = gst + gstOnExpenses;
+        const labMaterialsTotalIncGst =
+          autoTotals.labImplantMaterials + labMaterialsGst;
+        const hummMerchantFeesTotalIncGst = autoTotals.hummFees + hummMerchantFeesGst;
+        const feesAndCostsTotalWithExpenseGst =
+          totalFeesDue + labMaterialsTotalIncGst + hummMerchantFeesTotalIncGst;
+        const finalTotalDueWithExpenseGst =
+          feesAndCostsTotalWithExpenseGst -
+          autoTotals.feesPaidToFocus +
+          autoTotals.feesOwed -
+          autoTotals.feesPaidInError +
+          manualInputs.ivFacilityFees;
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet("Statement", {
@@ -1416,7 +1430,7 @@ export default function BillingClient() {
         addLabeledValueRow(
           worksheet,
           row,
-          "Lab / Materials expenses",
+          "Lab / Materials expenses (ex GST)",
           autoTotals.labImplantMaterials
         );
         row += 1;
@@ -1424,7 +1438,7 @@ export default function BillingClient() {
         addLabeledValueRow(
           worksheet,
           row,
-          "Humm merchant fees",
+          "Humm merchant fees (ex GST)",
           autoTotals.hummFees
         );
         row += 1;
@@ -1432,10 +1446,23 @@ export default function BillingClient() {
         addLabeledValueRow(
           worksheet,
           row,
+          "Plus GST on lab/materials and Humm",
+          gstOnExpenses
+        );
+        row += 1;
+
+        addLabeledValueRow(
+          worksheet,
+          row,
           "Fees and costs total",
-          feesAndCostsTotal,
+          feesAndCostsTotalWithExpenseGst,
           { bold: true }
         );
+        row += 1;
+
+        addLabeledValueRow(worksheet, row, "Includes GST", totalGstIncluded, {
+          bold: true,
+        });
         row += 2;
 
         worksheet.getCell(`A${row}`).value =
@@ -1475,9 +1502,13 @@ export default function BillingClient() {
         );
         row += 1;
 
-        addLabeledValueRow(worksheet, row, "FINAL TOTAL DUE", finalTotalDue, {
-          bold: true,
-        });
+        addLabeledValueRow(
+          worksheet,
+          row,
+          "FINAL TOTAL DUE",
+          finalTotalDueWithExpenseGst,
+          { bold: true }
+        );
 
         for (const col of ["A", "B", "C", "D"]) {
           worksheet.getCell(`${col}${row}`).border = {
@@ -1830,9 +1861,32 @@ export default function BillingClient() {
     loadingMetrics ||
     savingAll;
 
+  const selectedBillingPeriodLabel =
+    billingPeriods.find((period) => period.id === selectedPeriodId)?.label ||
+    "No billing period selected";
+
+  const dashboardTotals = providers.reduce(
+    (totals, provider) => {
+      const calculations = getProviderCalculations(provider);
+
+      totals.grossProduction += calculations.manualInputs.grossProduction;
+      totals.serviceFees += calculations.serviceFee;
+      totals.gst += calculations.gst;
+      totals.finalTotalDue += calculations.finalTotalDue;
+
+      return totals;
+    },
+    {
+      grossProduction: 0,
+      serviceFees: 0,
+      gst: 0,
+      finalTotalDue: 0,
+    }
+  );
+
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto max-w-6xl">
+    <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl space-y-6">
         <ConfirmDialog
           open={confirmOpen}
           title={confirmTitle}
@@ -1849,18 +1903,66 @@ export default function BillingClient() {
           }}
         />
 
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold">Monthly Billing</h1>
-            <p className="mt-1 text-sm text-slate-600">
-              Enter monthly values for each provider and calculate service fees.
-            </p>
-          </div>
+        <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+          <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
+            <div className="grid gap-6 lg:grid-cols-[1.1fr_1fr] lg:items-end">
+              <div>
+                <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+                  Provider service fees
+                </div>
+                <h1 className="mt-4 text-3xl font-semibold tracking-tight text-white md:text-4xl">
+                  Monthly Billing
+                </h1>
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
+                  Enter monthly values, review provider calculations, and export bookkeeper-ready statements.
+                </p>
+                <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-white/75">
+                  <span className="rounded-full border border-white/20 bg-white/10 px-3 py-1">
+                    {selectedBillingPeriodLabel}
+                  </span>
+                  <span className="rounded-full border border-white/20 bg-white/10 px-3 py-1">
+                    Status: {activePeriodStatus}
+                  </span>
+                </div>
+              </div>
 
-          <div className="flex flex-wrap gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-sm backdrop-blur">
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/70">Providers</div>
+                  <div className="mt-2 text-3xl font-semibold tracking-tight">{providers.length}</div>
+                  <div className="mt-1 text-xs text-white/70">Loaded for this month</div>
+                </div>
+                <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-sm backdrop-blur">
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/70">Gross production</div>
+                  <div className="mt-2 text-2xl font-semibold tracking-tight">${currency(dashboardTotals.grossProduction)}</div>
+                  <div className="mt-1 text-xs text-white/70">Across all providers</div>
+                </div>
+                <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-sm backdrop-blur">
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/70">GST on service fees</div>
+                  <div className="mt-2 text-2xl font-semibold tracking-tight">${currency(dashboardTotals.gst)}</div>
+                  <div className="mt-1 text-xs text-white/70">Current on-screen total</div>
+                </div>
+                <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-sm backdrop-blur">
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/70">Final total due</div>
+                  <div className="mt-2 text-2xl font-semibold tracking-tight">${currency(dashboardTotals.finalTotalDue)}</div>
+                  <div className="mt-1 text-xs text-white/70">Current on-screen total</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-950">Actions</div>
+              <p className="mt-1 text-sm text-slate-500">Import, save, lock, or export the selected billing month.</p>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
             <Link
               href="/imports/upload"
-              className="rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+              className="rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-950 shadow-sm hover:bg-slate-100"
             >
               Import Production Report
             </Link>
@@ -1878,7 +1980,7 @@ export default function BillingClient() {
 
             <button
               onClick={createNextBillingPeriod}
-              className="rounded-2xl border bg-white px-4 py-2 hover:bg-slate-100"
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
             >
               Add New Month
             </button>
@@ -1900,7 +2002,7 @@ export default function BillingClient() {
                 })
               }
               disabled={!selectedPeriodId}
-              className="rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
+              className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {activePeriodStatus === "locked" ? "Unlock Month" : "Lock Month"}
             </button>
@@ -1917,7 +2019,7 @@ export default function BillingClient() {
                 })
               }
               disabled={actionsDisabled}
-              className="rounded-2xl bg-slate-900 px-4 py-2 text-white hover:bg-slate-800 disabled:opacity-50"
+              className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {savingAll ? "Saving All..." : "Save All"}
             </button>
@@ -1925,21 +2027,25 @@ export default function BillingClient() {
             <button
               onClick={exportProviderStatements}
               disabled={!selectedPeriodId || exporting || loadingMetrics}
-              className="rounded-2xl border bg-white px-4 py-2 hover:bg-slate-100 disabled:opacity-50"
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {exporting ? "Exporting..." : "Export Provider Statements"}
             </button>
+            </div>
           </div>
-        </div>
+        </section>
 
-        <div className="mt-4 max-w-xl">
-          <label className="mb-1 block text-sm">Billing period</label>
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mb-4">
+            <div className="text-sm font-semibold text-slate-950">Billing period</div>
+            <p className="mt-1 text-sm text-slate-500">Choose the month and year you want to review.</p>
+          </div>
 
           <div className="grid gap-3 md:grid-cols-2">
             <div>
-              <label className="mb-1 block text-sm text-slate-600">Year</label>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Year</label>
               <select
-                className="w-full rounded-2xl border bg-white px-3 py-2"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                 value={selectedYear}
                 onChange={(e) => handleYearChange(e.target.value)}
               >
@@ -1953,9 +2059,9 @@ export default function BillingClient() {
             </div>
 
             <div>
-              <label className="mb-1 block text-sm text-slate-600">Month</label>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Month</label>
               <select
-                className="w-full rounded-2xl border bg-white px-3 py-2"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                 value={selectedMonth}
                 onChange={(e) => handleMonthChange(e.target.value)}
                 disabled={!selectedYear}
@@ -1973,29 +2079,30 @@ export default function BillingClient() {
           <div className="mt-2 text-sm text-slate-600">
             Status: <StatusBadge status={activePeriodStatus} />
           </div>
-        </div>
+        </section>
+
         <LinkedProductionImportCard billingPeriodId={selectedPeriodId} />
 
         {loadingMetrics && (
-          <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+          <div className="rounded-3xl border border-blue-200 bg-blue-50 p-5 text-sm leading-6 text-blue-900 shadow-sm">
             Loading imported production values for this billing period. Gross production
             and IV Facility Fees may appear blank until loading is complete.
           </div>
         )}
 
         {activePeriodStatus === "locked" && (
-          <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+          <div className="rounded-3xl border border-amber-300 bg-amber-50 p-5 text-sm leading-6 text-amber-900 shadow-sm">
             This billing period is locked. Values cannot be changed until it is reopened.
           </div>
         )}
 
         {message && (
-          <div className="mt-4">
+          <div className="">
             <Toast message={message} tone={toastTone} />
           </div>
         )}
 
-        <div className="mt-6 space-y-6">
+        <div className="space-y-5">
           {providers.map((provider) => {
             const manualInputs = manualBillingData[provider.id] || emptyManualInputs;
             const autoTotals = autoTotalsByProvider[provider.id] || {
@@ -2025,18 +2132,18 @@ export default function BillingClient() {
             return (
               <div
                 key={provider.id}
-                className="rounded-3xl border bg-white p-6 shadow-sm"
+                className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm"
               >
-                <div className="mb-4 flex items-start justify-between gap-4">
+                <div className="flex flex-col gap-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white p-5 md:flex-row md:items-start md:justify-between">
                   <div>
-                    <h2 className="text-xl font-semibold">{provider.name}</h2>
+                    <h2 className="text-xl font-semibold tracking-tight text-slate-950">{provider.name}</h2>
                     <p className="text-sm text-slate-600">{provider.specialty}</p>
                     {provider.email && (
                       <p className="mt-1 text-xs text-slate-500">{provider.email}</p>
                     )}
                   </div>
 
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <button
                       onClick={() =>
                         openConfirm({
@@ -2050,7 +2157,7 @@ export default function BillingClient() {
                         })
                       }
                       disabled={!selectedPeriodId || loadingMetrics}
-                      className="rounded-2xl border px-4 py-2 hover:bg-slate-100 disabled:opacity-50"
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Email Preview
                     </button>
@@ -2064,20 +2171,20 @@ export default function BillingClient() {
                         loadingMetrics ||
                         savingAll
                       }
-                      className="rounded-2xl bg-slate-900 px-4 py-2 text-white hover:bg-slate-800 disabled:opacity-50"
+                      className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {savingProviderId === provider.id ? "Saving..." : "Save"}
                     </button>
                   </div>
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                <div className="grid gap-4 p-5 md:grid-cols-2 lg:grid-cols-3">
                   <div>
-                    <label className="mb-1 block text-sm">Gross production</label>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Gross production</label>
                     <input
                       type="number"
                       disabled={activePeriodStatus === "locked" || loadingMetrics}
-                      className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100"
                       value={
                         importedFieldsLoading
                           ? ""
@@ -2101,11 +2208,11 @@ export default function BillingClient() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm">Adjustments</label>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Adjustments</label>
                     <input
                       type="number"
                       disabled={activePeriodStatus === "locked"}
-                      className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100"
                       value={manualInputs.adjustments === 0 ? "" : manualInputs.adjustments}
                       placeholder="0"
                       onChange={(e) => {
@@ -2120,11 +2227,11 @@ export default function BillingClient() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm">Incorrect payments</label>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Incorrect payments</label>
                     <input
                       type="number"
                       disabled={activePeriodStatus === "locked"}
-                      className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100"
                       value={
                         manualInputs.incorrectPayments === 0
                           ? ""
@@ -2146,10 +2253,10 @@ export default function BillingClient() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm">Humm merchant fees</label>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Humm merchant fees</label>
                     <input
                       type="number"
-                      className="w-full rounded-2xl border bg-slate-100 px-3 py-2"
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 shadow-inner"
                       value={autoTotals.hummFees}
                       readOnly
                     />
@@ -2159,10 +2266,10 @@ export default function BillingClient() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm">Afterpay merchant fees</label>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Afterpay merchant fees</label>
                     <input
                       type="number"
-                      className="w-full rounded-2xl border bg-slate-100 px-3 py-2"
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 shadow-inner"
                       value={autoTotals.afterpayFees}
                       readOnly
                     />
@@ -2172,11 +2279,11 @@ export default function BillingClient() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm">IV Facility Fees</label>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">IV Facility Fees</label>
                     <input
                       type="number"
                       disabled={activePeriodStatus === "locked" || loadingMetrics}
-                      className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100"
                       value={
                         importedFieldsLoading
                           ? ""
@@ -2200,12 +2307,12 @@ export default function BillingClient() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm">
+                    <label className="mb-1 block text-sm font-medium text-slate-700">
                       Lab, Implants & Materials Expenses
                     </label>
                     <input
                       type="number"
-                      className="w-full rounded-2xl border bg-slate-100 px-3 py-2"
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 shadow-inner"
                       value={autoTotals.labImplantMaterials}
                       readOnly
                     />
@@ -2215,11 +2322,11 @@ export default function BillingClient() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm">Other Deductions</label>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Other Deductions</label>
                     <input
                       type="number"
                       disabled={activePeriodStatus === "locked"}
-                      className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100"
                       value={
                         manualInputs.otherDeductions === 0
                           ? ""
@@ -2238,7 +2345,7 @@ export default function BillingClient() {
                   </div>
                 </div>
 
-                <div className="mt-6 rounded-2xl bg-slate-50 p-4">
+                <div className="mx-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="grid gap-4 md:grid-cols-3">
                     <div>
                       <div className="text-sm text-slate-500">Fee base</div>
@@ -2269,7 +2376,7 @@ export default function BillingClient() {
                   </div>
                 </div>
 
-                <div className="mt-4 rounded-2xl border bg-white p-4">
+                <div className="mx-5 mt-4 rounded-2xl border border-slate-200 bg-white p-4">
                   <div className="text-sm text-slate-500">Patient fee tracking only</div>
                   <div className="mt-3 grid gap-3 md:grid-cols-3">
                     <div>
@@ -2295,7 +2402,7 @@ export default function BillingClient() {
                   </div>
                 </div>
 
-                <div className="mt-4 text-sm text-slate-500">
+                <div className="px-5 pb-5 pt-4 text-sm text-slate-500">
                   Formula type: {provider.service_fee_type}
                 </div>
               </div>

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import PageLayout from "@/components/ui/PageLayout";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import {
@@ -213,10 +214,10 @@ function ModuleTab({
     <Link
       href={href}
       className={[
-        "inline-flex items-center rounded-full px-4 py-2 text-sm font-medium transition",
+        "inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold transition",
         isActive
-          ? "bg-gray-900 text-white shadow-sm"
-          : "bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50",
+          ? "bg-slate-950 text-white shadow-sm"
+          : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
       ].join(" ")}
     >
       {label}
@@ -237,10 +238,10 @@ function SegmentTab({
     <Link
       href={href}
       className={[
-        "rounded-full px-4 py-2 text-sm font-medium transition",
+        "inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold transition",
         isActive
           ? "bg-blue-600 text-white shadow-sm"
-          : "text-gray-600 hover:bg-gray-100 hover:text-gray-900",
+          : "text-slate-600 hover:bg-white hover:text-slate-950",
       ].join(" ")}
     >
       {label}
@@ -258,10 +259,16 @@ function MetricCard({
   subtitle?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className="text-sm font-medium text-gray-500">{title}</div>
-      <div className="mt-2 text-3xl font-semibold tracking-tight text-gray-900">{value}</div>
-      {subtitle ? <div className="mt-2 text-sm text-gray-500">{subtitle}</div> : null}
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md">
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </div>
+      <div className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
+        {value}
+      </div>
+      {subtitle ? (
+        <div className="mt-2 text-sm leading-5 text-slate-500">{subtitle}</div>
+      ) : null}
     </div>
   );
 }
@@ -279,11 +286,13 @@ function SelectField({
 }) {
   return (
     <label className="block">
-      <div className="mb-2 text-sm font-medium text-gray-700">{label}</div>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {label}
+      </div>
       <select
         name={name}
         defaultValue={defaultValue}
-        className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
       >
         {options.map((option) => (
           <option key={`${name}-${option.value}`} value={option.value}>
@@ -303,9 +312,13 @@ function SectionHeading({
   subtitle?: string;
 }) {
   return (
-    <div className="mb-5">
-      <h2 className="text-xl font-semibold text-gray-900">{title}</h2>
-      {subtitle ? <p className="mt-1 text-sm text-gray-500">{subtitle}</p> : null}
+    <div className="mb-5 border-b border-slate-100 pb-4">
+      <h2 className="text-xl font-semibold tracking-tight text-slate-950">
+        {title}
+      </h2>
+      {subtitle ? (
+        <p className="mt-1 text-sm leading-6 text-slate-500">{subtitle}</p>
+      ) : null}
     </div>
   );
 }
@@ -318,9 +331,31 @@ function SummaryStat({
   value: string;
 }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</div>
-      <div className="mt-1 text-lg font-semibold text-gray-900">{value}</div>
+    <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {label}
+      </div>
+      <div className="mt-1 text-lg font-semibold text-slate-950">{value}</div>
+    </div>
+  );
+}
+
+function HeaderStatCard({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string;
+  helper: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-sm backdrop-blur">
+      <div className="text-xs font-medium uppercase tracking-wide text-white/70">
+        {label}
+      </div>
+      <div className="mt-2 text-2xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-1 text-xs text-white/70">{helper}</div>
     </div>
   );
 }
@@ -580,58 +615,58 @@ function AppointmentCategoryBreakdownCard({
   const visibleRows = compact ? rows.slice(0, 6) : rows;
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
-      <div className="border-b border-gray-100 px-5 py-4">
-        <h3 className="text-base font-semibold text-gray-900">{title}</h3>
-        {subtitle ? <p className="mt-1 text-xs text-gray-500">{subtitle}</p> : null}
+    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 px-5 py-4">
+        <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+        {subtitle ? <p className="mt-1 text-xs text-slate-500">{subtitle}</p> : null}
       </div>
 
       {rows.length === 0 ? (
-        <div className="px-5 py-5 text-sm text-gray-500">
+        <div className="px-5 py-5 text-sm text-slate-500">
           No cancellation or FTA category data available for this period.
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-100 text-sm">
-            <thead className="bg-gray-50">
+          <table className="min-w-full divide-y divide-slate-100 text-sm">
+            <thead className="bg-slate-50">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                   Category
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                   Completed
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                   FTA %
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                   FTA no rebook %
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                   Cancel no rebook %
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100 bg-white">
+            <tbody className="divide-y divide-slate-100 bg-white">
               {visibleRows.map((row) => (
                 <tr key={row.appointmentCategory}>
-                  <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
+                  <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-900">
                     {row.appointmentCategory}
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-slate-700">
                     {row.totalAppointments}
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-slate-700">
                     {formatPercentFromWholeNumber(row.ftaPct)}
-                    <div className="text-[11px] text-gray-400">{row.ftaCount}</div>
+                    <div className="text-[11px] text-slate-400">{row.ftaCount}</div>
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-slate-700">
                     {formatPercentFromWholeNumber(row.ftaNoRebookingPct)}
-                    <div className="text-[11px] text-gray-400">{row.ftaNoRebookingCount}</div>
+                    <div className="text-[11px] text-slate-400">{row.ftaNoRebookingCount}</div>
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-slate-700">
                     {formatPercentFromWholeNumber(row.cancellationNoRebookingPct)}
-                    <div className="text-[11px] text-gray-400">
+                    <div className="text-[11px] text-slate-400">
                       {row.cancellationNoRebookingCount}
                     </div>
                   </td>
@@ -641,7 +676,7 @@ function AppointmentCategoryBreakdownCard({
           </table>
 
           {compact && rows.length > visibleRows.length ? (
-            <div className="border-t border-gray-100 px-5 py-3 text-xs text-gray-500">
+            <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
               Showing top {visibleRows.length} categories by completed appointment volume.
             </div>
           ) : null}
@@ -667,12 +702,12 @@ function SimpleBarRow({
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-4">
-        <div className="text-sm font-medium text-gray-700">{label}</div>
-        <div className="text-sm text-gray-500">{valueLabel}</div>
+        <div className="text-sm font-medium text-slate-700">{label}</div>
+        <div className="text-sm text-slate-500">{valueLabel}</div>
       </div>
-      <div className="h-3 w-full rounded-full bg-gray-100">
+      <div className="h-3 w-full rounded-full bg-slate-100">
         <div
-          className="h-3 rounded-full bg-gray-900"
+          className="h-3 rounded-full bg-slate-900"
           style={{ width: `${widthPercent}%` }}
         />
       </div>
@@ -696,10 +731,10 @@ function PercentBarRow({
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-4">
-        <div className="text-sm font-medium text-gray-700">{label}</div>
-        <div className="text-sm text-gray-500">{valueLabel}</div>
+        <div className="text-sm font-medium text-slate-700">{label}</div>
+        <div className="text-sm text-slate-500">{valueLabel}</div>
       </div>
-      <div className="h-3 w-full rounded-full bg-gray-100">
+      <div className="h-3 w-full rounded-full bg-slate-100">
         <div
           className={`h-3 rounded-full ${colorClassName}`}
           style={{ width: `${widthPercent}%` }}
@@ -723,26 +758,26 @@ function ComparisonTable({
   formatter: (value: number) => string;
 }) {
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
-      <div className="border-b border-gray-100 px-5 py-4">
-        <h3 className="text-base font-semibold text-gray-900">{title}</h3>
+    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 px-5 py-4">
+        <h3 className="text-base font-semibold text-slate-900">{title}</h3>
       </div>
 
       <div className="px-5 py-4">
         <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4 rounded-xl bg-gray-50 px-4 py-3">
-            <div className="font-medium text-gray-900">All Providers</div>
-            <div className="text-gray-700">{formatter(allValue)}</div>
+          <div className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 px-4 py-3">
+            <div className="font-medium text-slate-900">All Providers</div>
+            <div className="text-slate-700">{formatter(allValue)}</div>
           </div>
-          <div className="flex items-center justify-between gap-4 rounded-xl bg-gray-50 px-4 py-3">
-            <div className="font-medium text-gray-900">Periodontists</div>
-            <div className="text-gray-700">{formatter(perioValue)}</div>
+          <div className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 px-4 py-3">
+            <div className="font-medium text-slate-900">Periodontists</div>
+            <div className="text-slate-700">{formatter(perioValue)}</div>
           </div>
-          <div className="flex items-center justify-between gap-4 rounded-xl bg-gray-50 px-4 py-3">
-            <div className="font-medium text-gray-900">
+          <div className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 px-4 py-3">
+            <div className="font-medium text-slate-900">
               Oral &amp; Maxillofacial Surgeons
             </div>
-            <div className="text-gray-700">{formatter(omsValue)}</div>
+            <div className="text-slate-700">{formatter(omsValue)}</div>
           </div>
         </div>
       </div>
@@ -762,10 +797,10 @@ function ProviderMiniVisual({
   return (
     <div>
       <div className="mb-1 flex items-center justify-between gap-3">
-        <div className="text-xs font-medium text-gray-500">{label}</div>
-        <div className="text-xs text-gray-500">{value.toFixed(1)}%</div>
+        <div className="text-xs font-medium text-slate-500">{label}</div>
+        <div className="text-xs text-slate-500">{value.toFixed(1)}%</div>
       </div>
-      <div className="h-2 w-full rounded-full bg-gray-100">
+      <div className="h-2 w-full rounded-full bg-slate-100">
         <div
           className="h-2 rounded-full bg-blue-600"
           style={{ width: `${width}%` }}
@@ -788,9 +823,9 @@ function ProviderSnapshotCardView({
 
   if (!metric) {
     return (
-      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="text-sm font-semibold text-gray-900">{snapshot.provider.name}</div>
-        <div className="mt-3 rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-5 text-sm text-gray-500">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="text-sm font-semibold text-slate-900">{snapshot.provider.name}</div>
+        <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500">
           No data for this period
         </div>
       </div>
@@ -803,12 +838,12 @@ function ProviderSnapshotCardView({
     const consultPct = clampPercentFraction(metric.consult_rebooking_rate) * 100;
 
     return (
-      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-gray-900">{snapshot.provider.name}</div>
+            <div className="text-sm font-semibold text-slate-900">{snapshot.provider.name}</div>
             {snapshot.provider.specialty ? (
-              <div className="mt-1 text-xs text-gray-500">{snapshot.provider.specialty}</div>
+              <div className="mt-1 text-xs text-slate-500">{snapshot.provider.specialty}</div>
             ) : null}
           </div>
           <div className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
@@ -817,15 +852,15 @@ function ProviderSnapshotCardView({
         </div>
 
         <div className="mt-4 grid grid-cols-2 gap-3">
-          <div className="rounded-xl bg-gray-50 p-3">
-            <div className="text-xs text-gray-500">Appointments</div>
-            <div className="mt-1 text-lg font-semibold text-gray-900">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <div className="text-xs text-slate-500">Appointments</div>
+            <div className="mt-1 text-lg font-semibold text-slate-900">
               {metric.total_appointments}
             </div>
           </div>
-          <div className="rounded-xl bg-gray-50 p-3">
-            <div className="text-xs text-gray-500">Conversion Rate</div>
-            <div className="mt-1 text-lg font-semibold text-gray-900">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <div className="text-xs text-slate-500">Conversion Rate</div>
+            <div className="mt-1 text-lg font-semibold text-slate-900">
               {formatPercent(metric.consult_rebooking_rate)}
             </div>
           </div>
@@ -838,21 +873,21 @@ function ProviderSnapshotCardView({
         </div>
 
         <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-          <div className="rounded-xl border border-gray-200 px-2 py-3">
-            <div className="text-[11px] text-gray-500">Cancel</div>
-            <div className="mt-1 text-sm font-semibold text-gray-900">
+          <div className="rounded-xl border border-slate-200 px-2 py-3">
+            <div className="text-[11px] text-slate-500">Cancel</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
               {metric.cancel_no_rebook_count}
             </div>
           </div>
-          <div className="rounded-xl border border-gray-200 px-2 py-3">
-            <div className="text-[11px] text-gray-500">FTA</div>
-            <div className="mt-1 text-sm font-semibold text-gray-900">
+          <div className="rounded-xl border border-slate-200 px-2 py-3">
+            <div className="text-[11px] text-slate-500">FTA</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
               {metric.fta_count}
             </div>
           </div>
-          <div className="rounded-xl border border-gray-200 px-2 py-3">
-            <div className="text-[11px] text-gray-500">Not converted</div>
-            <div className="mt-1 text-sm font-semibold text-gray-900">
+          <div className="rounded-xl border border-slate-200 px-2 py-3">
+            <div className="text-[11px] text-slate-500">Not converted</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
               {metric.consult_not_rebooked_count}
             </div>
           </div>
@@ -878,12 +913,12 @@ function ProviderSnapshotCardView({
   const maxValue = Math.max(production, ppa, ppb, 1);
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-gray-900">{snapshot.provider.name}</div>
+          <div className="text-sm font-semibold text-slate-900">{snapshot.provider.name}</div>
           {snapshot.provider.specialty ? (
-            <div className="mt-1 text-xs text-gray-500">{snapshot.provider.specialty}</div>
+            <div className="mt-1 text-xs text-slate-500">{snapshot.provider.specialty}</div>
           ) : null}
         </div>
         <div className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
@@ -892,15 +927,15 @@ function ProviderSnapshotCardView({
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-3">
-        <div className="rounded-xl bg-gray-50 p-3">
-          <div className="text-xs text-gray-500">Production</div>
-          <div className="mt-1 text-lg font-semibold text-gray-900">
+        <div className="rounded-xl bg-slate-50 p-3">
+          <div className="text-xs text-slate-500">Production</div>
+          <div className="mt-1 text-lg font-semibold text-slate-900">
             {formatCurrency(metric.production_total)}
           </div>
         </div>
-        <div className="rounded-xl bg-gray-50 p-3">
-          <div className="text-xs text-gray-500">Prod / billed hr</div>
-          <div className="mt-1 text-lg font-semibold text-gray-900">
+        <div className="rounded-xl bg-slate-50 p-3">
+          <div className="text-xs text-slate-500">Prod / billed hr</div>
+          <div className="mt-1 text-lg font-semibold text-slate-900">
             {formatCurrency(metric.production_per_hour_billed)}
           </div>
         </div>
@@ -928,15 +963,15 @@ function ProviderSnapshotCardView({
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2 text-center">
-        <div className="rounded-xl border border-gray-200 px-2 py-3">
-          <div className="text-[11px] text-gray-500">Appointed</div>
-          <div className="mt-1 text-sm font-semibold text-gray-900">
+        <div className="rounded-xl border border-slate-200 px-2 py-3">
+          <div className="text-[11px] text-slate-500">Appointed</div>
+          <div className="mt-1 text-sm font-semibold text-slate-900">
             {formatHours(appointed)}
           </div>
         </div>
-        <div className="rounded-xl border border-gray-200 px-2 py-3">
-          <div className="text-[11px] text-gray-500">Billed</div>
-          <div className="mt-1 text-sm font-semibold text-gray-900">
+        <div className="rounded-xl border border-slate-200 px-2 py-3">
+          <div className="text-[11px] text-slate-500">Billed</div>
+          <div className="mt-1 text-sm font-semibold text-slate-900">
             {formatHours(billed)}
           </div>
         </div>
@@ -959,12 +994,12 @@ function ProviderSnapshotGrid({
   return (
     <div className="mt-6">
       <div className="mb-4 flex items-center justify-between gap-4">
-        <h3 className="text-base font-semibold text-gray-900">{title}</h3>
-        <div className="text-sm text-gray-500">{snapshots.length} providers</div>
+        <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+        <div className="text-sm text-slate-500">{snapshots.length} providers</div>
       </div>
 
       {snapshots.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-6 text-sm text-gray-600">
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
           No providers found for this group.
         </div>
       ) : (
@@ -1000,9 +1035,9 @@ function ClinicalGroupSection({
 }) {
   if (!metric) {
     return (
-      <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <SectionHeading title={title} subtitle={subtitle} />
-        <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-6 text-sm text-gray-600">
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
           No clinical data available for this period.
         </div>
         <ProviderSnapshotGrid title="Provider snapshots" snapshots={snapshots} module="clinical" categoryBreakdownsByProviderId={categoryBreakdownsByProviderId} />
@@ -1026,7 +1061,7 @@ function ClinicalGroupSection({
   ];
 
   return (
-    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+    <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
       <SectionHeading title={title} subtitle={subtitle} />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -1053,8 +1088,8 @@ function ClinicalGroupSection({
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-        <div className="rounded-2xl border border-gray-200 bg-gray-50 p-5">
-          <h3 className="text-base font-semibold text-gray-900">Clinical rate comparison</h3>
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+          <h3 className="text-base font-semibold text-slate-900">Clinical rate comparison</h3>
           <div className="mt-5 space-y-5">
             {barValues.map((item) => (
               <PercentBarRow
@@ -1067,8 +1102,8 @@ function ClinicalGroupSection({
           </div>
         </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-gray-50 p-5">
-          <h3 className="text-base font-semibold text-gray-900">Clinical summary</h3>
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+          <h3 className="text-base font-semibold text-slate-900">Clinical summary</h3>
           <div className="mt-4 grid gap-3">
             <SummaryStat
               label="Cancelled with no rebooking"
@@ -1116,9 +1151,9 @@ function FinancialGroupSection({
 }) {
   if (!metric) {
     return (
-      <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <SectionHeading title={title} subtitle={subtitle} />
-        <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-6 text-sm text-gray-600">
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
           No financial data available for this period.
         </div>
         <ProviderSnapshotGrid title="Provider snapshots" snapshots={snapshots} module="financial" />
@@ -1147,7 +1182,7 @@ function FinancialGroupSection({
   const maxBarValue = Math.max(...barValues.map((item) => item.value), 1);
 
   return (
-    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+    <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
       <SectionHeading title={title} subtitle={subtitle} />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -1179,8 +1214,8 @@ function FinancialGroupSection({
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-        <div className="rounded-2xl border border-gray-200 bg-gray-50 p-5">
-          <h3 className="text-base font-semibold text-gray-900">Financial volume overview</h3>
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+          <h3 className="text-base font-semibold text-slate-900">Financial volume overview</h3>
           <div className="mt-5 space-y-5">
             {barValues.map((item) => (
               <SimpleBarRow
@@ -1194,8 +1229,8 @@ function FinancialGroupSection({
           </div>
         </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-gray-50 p-5">
-          <h3 className="text-base font-semibold text-gray-900">Financial summary</h3>
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+          <h3 className="text-base font-semibold text-slate-900">Financial summary</h3>
           <div className="mt-4 grid gap-3">
             <SummaryStat
               label="Production per appointed hour"
@@ -1321,7 +1356,7 @@ export default async function AdminProviderDashboardPage({
 
   if (!profile || profile.role !== "admin") {
     return (
-      <main className="min-h-screen bg-gray-50">
+      <main className="min-h-screen bg-slate-50">
         <div className="mx-auto max-w-3xl px-6 py-10">
           <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-red-900">
             <h1 className="text-2xl font-semibold">Access denied</h1>
@@ -1380,7 +1415,7 @@ export default async function AdminProviderDashboardPage({
 
   if (!allDashboard) {
     return (
-      <main className="min-h-screen bg-gray-50">
+      <main className="min-h-screen bg-slate-50">
         <div className="mx-auto max-w-3xl px-6 py-10">
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-amber-900">
             <h1 className="text-2xl font-semibold">Dashboard unavailable</h1>
@@ -1499,69 +1534,105 @@ const omsMetric = omsDashboard?.metric ?? null;
       : [[], [], [], {} as Record<string, AppointmentCategoryBreakdownRow[]>];
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      <div className="mx-auto max-w-7xl px-6 py-8">
-        <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+    <PageLayout
+      eyebrow="Admin Reporting"
+      title="Provider Group Dashboard"
+      description="Compare clinical and financial provider performance across all providers, periodontists, and oral & maxillofacial surgeons."
+    >
+      <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+        <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
+          <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr] lg:items-end">
             <div>
-              <div className="text-sm font-medium uppercase tracking-[0.16em] text-blue-600">
-                Admin Reporting
+              <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+                Provider intelligence
               </div>
-              <h1 className="mt-2 text-3xl font-semibold tracking-tight text-gray-900">
-                Provider Group Dashboard
-              </h1>
-              <p className="mt-2 text-sm text-gray-600">
-                Compare all providers, periodontists, and oral &amp; maxillofacial surgeons
+
+              <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                Compare provider performance by group and reporting period.
+              </h2>
+
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
+                Review clinical and financial results for all providers, periodontists, and oral &amp; maxillofacial surgeons. Use the filters below to change the reporting period.
               </p>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Link
+                  href="/admin/provider-imports"
+                  className="inline-flex items-center justify-center rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-sm transition hover:bg-slate-100"
+                >
+                  Sync or upload provider data
+                </Link>
+
+                <div className="flex flex-wrap gap-2 rounded-2xl border border-white/20 bg-white/10 p-2 backdrop-blur">
+                  <ModuleTab
+                    label="Clinical"
+                    isActive={selectedModule === "clinical"}
+                    href={buildHref({
+                      module: "clinical",
+                      periodType: selectedPeriodType,
+                      periodKey: selectedPeriodType !== "month" ? selectedPeriodKey : undefined,
+                      year: selectedPeriodType === "month" ? selectedMonthYear : undefined,
+                      month: selectedPeriodType === "month" ? safeSelectedMonthNumber : undefined,
+                    })}
+                  />
+                  <ModuleTab
+                    label="Financial"
+                    isActive={selectedModule === "financial"}
+                    href={buildHref({
+                      module: "financial",
+                      periodType: selectedPeriodType,
+                      periodKey: selectedPeriodType !== "month" ? selectedPeriodKey : undefined,
+                      year: selectedPeriodType === "month" ? selectedMonthYear : undefined,
+                      month: selectedPeriodType === "month" ? safeSelectedMonthNumber : undefined,
+                    })}
+                  />
+                </div>
+              </div>
             </div>
 
-            <div className="flex flex-col gap-3 lg:items-end">
-              <Link
-                href="/admin/provider-imports"
-                className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-5 py-3 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700"
-              >
-                Upload Provider Appointments and Performance Data
-              </Link>
-
-              <div className="flex flex-wrap gap-2 rounded-2xl bg-gray-50 p-2 ring-1 ring-gray-200">
-                <ModuleTab
-                  label="Clinical"
-                  isActive={selectedModule === "clinical"}
-                  href={buildHref({
-                    module: "clinical",
-                    periodType: selectedPeriodType,
-                    periodKey: selectedPeriodType !== "month" ? selectedPeriodKey : undefined,
-                    year: selectedPeriodType === "month" ? selectedMonthYear : undefined,
-                    month: selectedPeriodType === "month" ? safeSelectedMonthNumber : undefined,
-                  })}
-                />
-                <ModuleTab
-                  label="Financial"
-                  isActive={selectedModule === "financial"}
-                  href={buildHref({
-                    module: "financial",
-                    periodType: selectedPeriodType,
-                    periodKey: selectedPeriodType !== "month" ? selectedPeriodKey : undefined,
-                    year: selectedPeriodType === "month" ? selectedMonthYear : undefined,
-                    month: selectedPeriodType === "month" ? safeSelectedMonthNumber : undefined,
-                  })}
-                />
-              </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <HeaderStatCard
+                label="Current view"
+                value={selectedModule === "clinical" ? "Clinical" : "Financial"}
+                helper="Selected dashboard module"
+              />
+              <HeaderStatCard
+                label="Period type"
+                value={
+                  selectedPeriodType === "month"
+                    ? "Month"
+                    : selectedPeriodType === "year"
+                      ? "Year"
+                      : "ATO Quarter"
+                }
+                helper="Selected reporting period"
+              />
+              <HeaderStatCard
+                label="Perio providers"
+                value={String(perioSnapshots.length)}
+                helper="Periodontist snapshots"
+              />
+              <HeaderStatCard
+                label="OMS providers"
+                value={String(omsSnapshots.length)}
+                helper="Surgical provider snapshots"
+              />
             </div>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <section className="mt-6 rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-5">
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">Filters</h2>
-                <p className="mt-1 text-sm text-gray-500">
+                <h2 className="text-lg font-semibold text-slate-900">Filters</h2>
+                <p className="mt-1 text-sm text-slate-500">
                   Select the reporting view and period.
                 </p>
               </div>
 
-              <div className="inline-flex rounded-full bg-gray-100 p-1">
+              <div className="inline-flex rounded-full bg-slate-100 p-1">
                 <SegmentTab
                   label="Month"
                   isActive={selectedPeriodType === "month"}
@@ -1618,7 +1689,7 @@ const omsMetric = omsDashboard?.metric ?? null;
 
                 <button
                   type="submit"
-                  className="inline-flex h-[44px] items-center justify-center rounded-xl bg-gray-900 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-black"
+                  className="inline-flex h-[44px] items-center justify-center rounded-xl bg-slate-900 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-black"
                 >
                   Apply
                 </button>
@@ -1642,7 +1713,7 @@ const omsMetric = omsDashboard?.metric ?? null;
 
                 <button
                   type="submit"
-                  className="inline-flex h-[44px] items-center justify-center rounded-xl bg-gray-900 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-black"
+                  className="inline-flex h-[44px] items-center justify-center rounded-xl bg-slate-900 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-black"
                 >
                   Apply
                 </button>
@@ -1666,7 +1737,7 @@ const omsMetric = omsDashboard?.metric ?? null;
 
                 <button
                   type="submit"
-                  className="inline-flex h-[44px] items-center justify-center rounded-xl bg-gray-900 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-black"
+                  className="inline-flex h-[44px] items-center justify-center rounded-xl bg-slate-900 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-black"
                 >
                   Apply
                 </button>
@@ -1675,7 +1746,7 @@ const omsMetric = omsDashboard?.metric ?? null;
           </div>
         </section>
 
-        <section className="mt-6 rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+        <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <SectionHeading
             title="Group comparison table"
             subtitle="Quick comparison of the three reporting groups for the selected period"
@@ -1783,7 +1854,6 @@ const omsMetric = omsDashboard?.metric ?? null;
             </>
           )}
         </div>
-      </div>
-    </main>
+    </PageLayout>
   );
 }

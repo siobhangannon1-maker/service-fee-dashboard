@@ -577,10 +577,10 @@ function Card({
   subtitle?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="text-sm font-medium text-slate-500">{title}</div>
-      <div className="mt-2 text-2xl font-semibold text-slate-900">{value}</div>
-      {subtitle ? <div className="mt-1 text-sm text-slate-500">{subtitle}</div> : null}
+    <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md">
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</div>
+      <div className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{value}</div>
+      {subtitle ? <div className="mt-1 text-sm leading-5 text-slate-500">{subtitle}</div> : null}
     </div>
   );
 }
@@ -597,15 +597,15 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 md:flex-row md:items-center md:justify-between">
+    <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-col gap-3 border-b border-slate-100 bg-white px-6 py-5 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
-          {description ? <p className="mt-1 text-sm text-slate-500">{description}</p> : null}
+          <h2 className="text-base font-semibold text-slate-950">{title}</h2>
+          {description ? <p className="mt-1 text-sm leading-6 text-slate-500">{description}</p> : null}
         </div>
-        {action}
+        {action ? <div className="shrink-0">{action}</div> : null}
       </div>
-      <div className="p-5">{children}</div>
+      <div className="px-6 py-5">{children}</div>
     </section>
   );
 }
@@ -631,8 +631,8 @@ function ViewToggle({
           key={option.value}
           onClick={() => onChange(option.value)}
           className={cn(
-            'rounded-xl px-4 py-2 text-sm font-medium transition',
-            value === option.value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'
+            'rounded-xl px-4 py-2.5 text-sm font-semibold transition shadow-sm',
+            value === option.value ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100'
           )}
         >
           {option.label}
@@ -662,8 +662,8 @@ function CompareModeToggle({
           key={option.value}
           onClick={() => onChange(option.value)}
           className={cn(
-            'rounded-xl px-3 py-2 text-sm font-medium transition',
-            value === option.value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-white'
+            'rounded-xl px-3 py-2 text-sm font-semibold transition',
+            value === option.value ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-600 hover:bg-white'
           )}
         >
           {option.label}
@@ -693,8 +693,8 @@ function TrendRangeToggle({
           key={option.value}
           onClick={() => onChange(option.value)}
           className={cn(
-            'rounded-xl px-3 py-2 text-sm font-medium transition',
-            value === option.value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-white'
+            'rounded-xl px-3 py-2 text-sm font-semibold transition',
+            value === option.value ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-600 hover:bg-white'
           )}
         >
           {option.label}
@@ -724,8 +724,8 @@ function TrendGroupByToggle({
           key={option.value}
           onClick={() => onChange(option.value)}
           className={cn(
-            'rounded-xl px-3 py-2 text-sm font-medium transition',
-            value === option.value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-white'
+            'rounded-xl px-3 py-2 text-sm font-semibold transition',
+            value === option.value ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-600 hover:bg-white'
           )}
         >
           {option.label}
@@ -1391,6 +1391,79 @@ function BenchmarkActionPopover({
         </div>
       </div>
     </div>
+  );
+}
+
+function DashboardStatCard({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string | number;
+  helper: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-sm backdrop-blur">
+      <div className="text-xs font-semibold uppercase tracking-wide text-white/70">{label}</div>
+      <div className="mt-2 text-2xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-1 text-xs leading-5 text-white/70">{helper}</div>
+    </div>
+  );
+}
+
+function DashboardHero({
+  reports,
+  categories,
+}: {
+  reports: ReportWithItems[];
+  categories: string[];
+}) {
+  const latestReport = reports[0];
+
+  return (
+    <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+      <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
+        <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr] lg:items-end">
+          <div>
+            <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+              Financial performance
+            </div>
+
+            <h1 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+              Expense Benchmark Reports
+            </h1>
+
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
+              Review monthly expenses, compare periods, monitor trends, and identify the categories that need attention first.
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <DashboardStatCard
+              label="Reports"
+              value={reports.length}
+              helper="Saved benchmark periods"
+            />
+            <DashboardStatCard
+              label="Categories"
+              value={categories.length}
+              helper="Mapped expense groups"
+            />
+            <DashboardStatCard
+              label="Latest expense %"
+              value={formatPercent(latestReport?.total_expense_percent || 0)}
+              helper={latestReport?.month_label || 'No latest month'}
+            />
+            <DashboardStatCard
+              label="Latest expenses"
+              value={formatCurrency(latestReport?.total_expenses || 0)}
+              helper="Total expenses in latest period"
+            />
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -2114,57 +2187,48 @@ export default function ExpenseReportsClient() {
       ) : null}
 
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <header
-          data-html2canvas-ignore="true"
-          className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm md:flex-row md:items-center md:justify-between"
-        >
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-              Expense Benchmark Reports
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm text-slate-500">
-              Review one month at a time, compare months, quarters, or years, and explore trends
-              in a cleaner layout.
-            </p>
-          </div>
+        <div data-html2canvas-ignore="true" className="space-y-4">
+          <DashboardHero reports={reports} categories={categories} />
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-center lg:justify-between">
             <ViewToggle value={viewMode} onChange={setViewMode} />
 
-            <button
-              type="button"
-              onClick={handleExportPdf}
-              disabled={isExportingPdf}
-              className={cn(
-                'inline-flex items-center rounded-2xl px-4 py-2 text-sm font-medium text-white',
-                isExportingPdf ? 'cursor-not-allowed bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'
-              )}
-            >
-              {isExportingPdf ? 'Exporting PDF...' : 'Export PDF'}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                disabled={isExportingPdf}
+                className={cn(
+                  'inline-flex items-center justify-center rounded-2xl px-4 py-2 text-sm font-semibold text-white shadow-sm transition',
+                  isExportingPdf ? 'cursor-not-allowed bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'
+                )}
+              >
+                {isExportingPdf ? 'Exporting PDF...' : 'Export PDF'}
+              </button>
 
-                        <Link
-              href="/benchmarks/edit"
-              className="inline-flex items-center rounded-2xl border border-slate-300 bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              Edit Benchmarks
-            </Link>
+              <Link
+                href="/benchmarks/edit"
+                className="inline-flex items-center justify-center rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                Edit Benchmarks
+              </Link>
 
-            <Link
-              href="/benchmark/mappings"
-              className="inline-flex items-center rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Edit Mappings
-            </Link>
+              <Link
+                href="/benchmark/mappings"
+                className="inline-flex items-center justify-center rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                Edit Mappings
+              </Link>
 
-            <Link
-              href="/imports/upload/xero-upload"
-              className="inline-flex items-center rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
-            >
-              Upload Xero CSV
-            </Link>
+              <Link
+                href="/imports/upload/xero-upload"
+                className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+              >
+                Upload Xero CSV
+              </Link>
+            </div>
           </div>
-        </header>
+        </div>
         <XeroSyncPanel
           availableYears={syncYearOptions}
           selectedYear={syncYear}

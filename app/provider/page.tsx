@@ -1,4 +1,5 @@
 import Link from "next/link";
+import PageLayout from "@/components/ui/PageLayout";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import {
   getProviderDashboardMetrics,
@@ -118,10 +119,10 @@ function ModuleTab({
     <Link
       href={href}
       className={[
-        "inline-flex items-center rounded-full px-4 py-2 text-sm font-medium transition",
+        "inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-semibold transition",
         isActive
-          ? "bg-gray-900 text-white shadow-sm"
-          : "bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50",
+          ? "bg-slate-950 text-white shadow-sm"
+          : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
       ].join(" ")}
     >
       {label}
@@ -142,10 +143,10 @@ function SegmentTab({
     <Link
       href={href}
       className={[
-        "rounded-full px-4 py-2 text-sm font-medium transition",
+        "inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold transition",
         isActive
           ? "bg-blue-600 text-white shadow-sm"
-          : "text-gray-600 hover:bg-gray-100 hover:text-gray-900",
+          : "text-slate-600 hover:bg-white hover:text-slate-950",
       ].join(" ")}
     >
       {label}
@@ -163,10 +164,16 @@ function MetricCard({
   subtitle?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className="text-sm font-medium text-gray-500">{title}</div>
-      <div className="mt-2 text-3xl font-semibold tracking-tight text-gray-900">{value}</div>
-      {subtitle ? <div className="mt-2 text-sm text-gray-500">{subtitle}</div> : null}
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md">
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </div>
+      <div className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
+        {value}
+      </div>
+      {subtitle ? (
+        <div className="mt-2 text-sm leading-5 text-slate-500">{subtitle}</div>
+      ) : null}
     </div>
   );
 }
@@ -181,16 +188,18 @@ function SpecialtyAverageCard({
   items: Array<{ label: string; value: string }>;
 }) {
   return (
-    <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-6 shadow-sm transition hover:border-slate-300 hover:shadow-md">
       <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-400" />
 
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-base font-semibold tracking-tight text-gray-900">{title}</div>
-          <div className="mt-1 text-xs text-gray-500">{subtitle}</div>
+          <div className="text-base font-semibold tracking-tight text-slate-950">
+            {title}
+          </div>
+          <div className="mt-1 text-xs text-slate-500">{subtitle}</div>
         </div>
 
-        <div className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-blue-700">
+        <div className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-700">
           Benchmark
         </div>
       </div>
@@ -199,19 +208,16 @@ function SpecialtyAverageCard({
         {items.map((item) => (
           <div
             key={item.label}
-            className="flex items-center justify-between gap-4 rounded-2xl bg-slate-50 px-4 py-3"
+            className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
           >
-            <div className="text-sm text-gray-600">{item.label}</div>
-            <div className="text-sm font-semibold text-gray-900">{item.value}</div>
+            <div className="text-sm text-slate-600">{item.label}</div>
+            <div className="text-sm font-semibold text-slate-950">{item.value}</div>
           </div>
         ))}
       </div>
     </div>
   );
 }
-
-
-
 
 type AppointmentCategoryBreakdownRow = {
   appointmentCategory: string;
@@ -392,60 +398,60 @@ function AppointmentCategoryBreakdownCard({
   rows: AppointmentCategoryBreakdownRow[];
 }) {
   return (
-    <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+    <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold tracking-tight text-gray-900">{title}</h2>
-          {subtitle ? <p className="mt-1 text-sm text-gray-500">{subtitle}</p> : null}
+          <h2 className="text-lg font-semibold tracking-tight text-slate-950">{title}</h2>
+          {subtitle ? <p className="mt-1 text-sm text-slate-500">{subtitle}</p> : null}
         </div>
       </div>
 
       {rows.length === 0 ? (
-        <div className="mt-5 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-6 text-sm text-gray-600">
+        <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
           No cancellation or FTA category data available for this period.
         </div>
       ) : (
-        <div className="mt-5 overflow-x-auto rounded-2xl border border-gray-200">
-          <table className="min-w-full divide-y divide-gray-100 text-sm">
-            <thead className="bg-gray-50">
+        <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
+          <table className="min-w-full divide-y divide-slate-100 text-sm">
+            <thead className="bg-slate-50">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                   Category
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                   Completed
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                   FTA %
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                   FTA no rebook %
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                   Cancel no rebook %
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100 bg-white">
+            <tbody className="divide-y divide-slate-100 bg-white">
               {rows.map((row) => (
-                <tr key={row.appointmentCategory}>
-                  <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
+                <tr key={row.appointmentCategory} className="hover:bg-slate-50">
+                  <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-950">
                     {row.appointmentCategory}
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-slate-700">
                     {row.totalAppointments}
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-slate-700">
                     {formatPercentFromWholeNumber(row.ftaPct)}
-                    <div className="text-[11px] text-gray-400">{row.ftaCount}</div>
+                    <div className="text-[11px] text-slate-400">{row.ftaCount}</div>
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-slate-700">
                     {formatPercentFromWholeNumber(row.ftaNoRebookingPct)}
-                    <div className="text-[11px] text-gray-400">{row.ftaNoRebookingCount}</div>
+                    <div className="text-[11px] text-slate-400">{row.ftaNoRebookingCount}</div>
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-slate-700">
                     {formatPercentFromWholeNumber(row.cancellationNoRebookingPct)}
-                    <div className="text-[11px] text-gray-400">
+                    <div className="text-[11px] text-slate-400">
                       {row.cancellationNoRebookingCount}
                     </div>
                   </td>
@@ -472,11 +478,11 @@ function SelectField({
 }) {
   return (
     <label className="block">
-      <div className="mb-2 text-sm font-medium text-gray-700">{label}</div>
+      <div className="mb-2 text-sm font-medium text-slate-700">{label}</div>
       <select
         name={name}
         defaultValue={defaultValue}
-        className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
       >
         {options.map((option) => (
           <option key={`${name}-${option.value}`} value={option.value}>
@@ -527,25 +533,27 @@ export default async function ProviderPage({ searchParams }: ProviderPageProps) 
 
   if (!dashboard) {
     return (
-      <main className="min-h-screen bg-gray-50">
-        <div className="mx-auto max-w-3xl px-6 py-10">
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-amber-900">
-            <h1 className="text-2xl font-semibold">Provider dashboard unavailable</h1>
-            <p className="mt-3 text-sm">
-              We could not find a provider record linked to your current login.
-            </p>
-            <div className="mt-4 text-sm">
-              Please check that:
-              <br />
-              1. you are logged in
-              <br />
-              2. your provider row has a <code>user_id</code> value
-              <br />
-              3. that <code>user_id</code> matches your Supabase auth user ID
-            </div>
+      <PageLayout
+        eyebrow="Provider"
+        title="Provider Dashboard"
+        description="Review clinical and financial performance."
+      >
+        <div className="mx-auto max-w-3xl rounded-2xl border border-amber-200 bg-amber-50 p-6 text-amber-900">
+          <h1 className="text-2xl font-semibold">Provider dashboard unavailable</h1>
+          <p className="mt-3 text-sm">
+            We could not find a provider record linked to your current login.
+          </p>
+          <div className="mt-4 text-sm">
+            Please check that:
+            <br />
+            1. you are logged in
+            <br />
+            2. your provider row has a <code>user_id</code> value
+            <br />
+            3. that <code>user_id</code> matches your Supabase auth user ID
           </div>
         </div>
-      </main>
+      </PageLayout>
     );
   }
 
@@ -627,21 +635,66 @@ export default async function ProviderPage({ searchParams }: ProviderPageProps) 
       : [];
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      <div className="mx-auto max-w-7xl px-6 py-8">
-        <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+    <PageLayout
+      eyebrow="Provider"
+      title="Provider Dashboard"
+      description="Review clinical and financial performance, track period results, and compare against specialty benchmarks."
+    >
+      <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+        <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
+          <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
             <div>
-              <div className="text-sm font-medium uppercase tracking-[0.16em] text-blue-600">
-                Provider Performance
+              <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+                Provider performance
               </div>
-              <h1 className="mt-2 text-3xl font-semibold tracking-tight text-gray-900">
-                Provider Dashboard
-              </h1>
-              <p className="mt-2 text-sm text-gray-600">{provider.name}</p>
+
+              <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                {provider.name}
+              </h2>
+
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
+                View clinical and financial results for the selected period.
+                Use the filters below to switch between month, financial year,
+                and ATO quarter views.
+              </p>
             </div>
 
-            <div className="flex flex-wrap gap-2 rounded-2xl bg-gray-50 p-2 ring-1 ring-gray-200">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white backdrop-blur">
+                <div className="text-xs font-medium uppercase tracking-wide text-white/70">
+                  Active module
+                </div>
+                <div className="mt-2 text-2xl font-semibold capitalize">
+                  {selectedModule}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white backdrop-blur">
+                <div className="text-xs font-medium uppercase tracking-wide text-white/70">
+                  Period
+                </div>
+                <div className="mt-2 text-lg font-semibold">
+                  {metric?.period_start && metric?.period_end
+                    ? `${metric.period_start} → ${metric.period_end}`
+                    : "Selected period"}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">Dashboard filters</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Choose the reporting module and time period to review.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200">
               <ModuleTab
                 label="Clinical"
                 isActive={selectedModule === "clinical"}
@@ -666,283 +719,270 @@ export default async function ProviderPage({ searchParams }: ProviderPageProps) 
               />
             </div>
           </div>
+
+          <div className="flex flex-wrap gap-2 rounded-2xl bg-slate-100 p-1">
+            <SegmentTab
+              label="Month"
+              isActive={selectedPeriodType === "month"}
+              href={buildHref({
+                module: selectedModule,
+                periodType: "month",
+                year: getYearFromMonthKey(previousMonthKey),
+                month: getMonthFromMonthKey(previousMonthKey),
+                periodKey: previousMonthKey,
+              })}
+            />
+            <SegmentTab
+              label="Year"
+              isActive={selectedPeriodType === "year"}
+              href={buildHref({
+                module: selectedModule,
+                periodType: "year",
+                periodKey: yearOptionsAscending[yearOptionsAscending.length - 1]?.key,
+              })}
+            />
+            <SegmentTab
+              label="ATO Quarter"
+              isActive={selectedPeriodType === "quarter_ato"}
+              href={buildHref({
+                module: selectedModule,
+                periodType: "quarter_ato",
+                periodKey: quarterOptionsAscending[quarterOptionsAscending.length - 1]?.key,
+              })}
+            />
+          </div>
+
+          {selectedPeriodType === "month" ? (
+            <form method="get" className="grid gap-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
+              <input type="hidden" name="module" value={selectedModule} />
+              <input type="hidden" name="periodType" value="month" />
+
+              <SelectField
+                label="Year"
+                name="year"
+                defaultValue={selectedMonthYear}
+                options={availableMonthYears.map((year) => ({
+                  value: year,
+                  label: year,
+                }))}
+              />
+
+              <SelectField
+                label="Month"
+                name="month"
+                defaultValue={safeSelectedMonthNumber}
+                options={calendarMonthOptions}
+              />
+
+              <button
+                type="submit"
+                className="inline-flex h-[44px] items-center justify-center rounded-xl bg-slate-950 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+              >
+                Apply
+              </button>
+            </form>
+          ) : null}
+
+          {selectedPeriodType === "year" ? (
+            <form method="get" className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+              <input type="hidden" name="module" value={selectedModule} />
+              <input type="hidden" name="periodType" value="year" />
+
+              <SelectField
+                label="Year"
+                name="periodKey"
+                defaultValue={selectedPeriodKey}
+                options={yearOptionsAscending.map((option) => ({
+                  value: option.key,
+                  label: option.label,
+                }))}
+              />
+
+              <button
+                type="submit"
+                className="inline-flex h-[44px] items-center justify-center rounded-xl bg-slate-950 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+              >
+                Apply
+              </button>
+            </form>
+          ) : null}
+
+          {selectedPeriodType === "quarter_ato" ? (
+            <form method="get" className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+              <input type="hidden" name="module" value={selectedModule} />
+              <input type="hidden" name="periodType" value="quarter_ato" />
+
+              <SelectField
+                label="ATO Quarter"
+                name="periodKey"
+                defaultValue={selectedPeriodKey}
+                options={quarterOptionsAscending.map((option) => ({
+                  value: option.key,
+                  label: option.label,
+                }))}
+              />
+
+              <button
+                type="submit"
+                className="inline-flex h-[44px] items-center justify-center rounded-xl bg-slate-950 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+              >
+                Apply
+              </button>
+            </form>
+          ) : null}
+        </div>
+      </section>
+
+      {!metric ? (
+        <section className="rounded-3xl border border-dashed border-slate-300 bg-white p-8 text-sm text-slate-600 shadow-sm">
+          No metrics are available for the selected period yet.
         </section>
+      ) : null}
 
-        <section className="mt-6 rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-5">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">Filters</h2>
-                <p className="mt-1 text-sm text-gray-500">
-                  Select the reporting view and period.
-                </p>
-              </div>
+      {metric && selectedModule === "clinical" ? (
+        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <MetricCard
+            title="Cancellation (no rebooking) %"
+            value={formatPercent(metric.cancel_no_rebook_pct)}
+            subtitle={`${metric.cancel_no_rebook_count} of ${metric.total_appointments} appointments`}
+          />
+          <MetricCard
+            title="Cancellation (no rebooking) number"
+            value={String(metric.cancel_no_rebook_count)}
+            subtitle="Cancelled appointments with no following appointment"
+          />
+          <MetricCard
+            title="FTA %"
+            value={formatPercent(metric.fta_pct)}
+            subtitle={`${metric.fta_count} FTAs`}
+          />
+          <MetricCard
+            title="FTA number"
+            value={String(metric.fta_count)}
+            subtitle="Appointments marked as FTA"
+          />
+          <MetricCard
+            title="Consultation rebooking rate"
+            value={formatPercent(metric.consult_rebooking_rate)}
+            subtitle={`${metric.consult_rebooked_count} rebooked of ${metric.consult_completed_count} completed consultations`}
+          />
+          <MetricCard
+            title="Consultations not rebooked"
+            value={String(metric.consult_not_rebooked_count)}
+            subtitle="Completed consultations without a following appointment"
+          />
+          <MetricCard
+            title="Total appointments"
+            value={String(metric.total_appointments)}
+            subtitle={`${metric.period_start} to ${metric.period_end}`}
+          />
+        </section>
+      ) : null}
 
-              <div className="inline-flex rounded-full bg-gray-100 p-1">
-                <SegmentTab
-                  label="Month"
-                  isActive={selectedPeriodType === "month"}
-                  href={buildHref({
-                    module: selectedModule,
-                    periodType: "month",
-                    year: getYearFromMonthKey(previousMonthKey),
-                    month: getMonthFromMonthKey(previousMonthKey),
-                    periodKey: previousMonthKey,
-                  })}
-                />
-                <SegmentTab
-                  label="Year"
-                  isActive={selectedPeriodType === "year"}
-                  href={buildHref({
-                    module: selectedModule,
-                    periodType: "year",
-                    periodKey: yearOptionsAscending[yearOptionsAscending.length - 1]?.key,
-                  })}
-                />
-                <SegmentTab
-                  label="ATO Quarter"
-                  isActive={selectedPeriodType === "quarter_ato"}
-                  href={buildHref({
-                    module: selectedModule,
-                    periodType: "quarter_ato",
-                    periodKey: quarterOptionsAscending[quarterOptionsAscending.length - 1]?.key,
-                  })}
-                />
-              </div>
+      {metric && selectedModule === "clinical" ? (
+        <section>
+          <AppointmentCategoryBreakdownCard
+            title="Appointment category breakdown"
+            subtitle="FTA, FTA no rebooking, and cancellation no rebooking by appointment category"
+            rows={appointmentCategoryBreakdown}
+          />
+        </section>
+      ) : null}
+
+      {metric && selectedModule === "financial" ? (
+        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <MetricCard
+            title="Production"
+            value={formatCurrency(metric.production_total)}
+            subtitle={`${metric.period_start} to ${metric.period_end}`}
+          />
+          <MetricCard
+            title="Appointed hours"
+            value={formatHours(metric.hours_appointed)}
+            subtitle="From provider performance import"
+          />
+          <MetricCard
+            title="Billed hours"
+            value={formatHours(metric.hours_billed)}
+            subtitle="From provider performance import"
+          />
+          <MetricCard
+            title="Production per appointed hour"
+            value={formatCurrency(metric.production_per_hour_appointed)}
+            subtitle="Production ÷ appointed hours"
+          />
+          <MetricCard
+            title="Production per billed hour"
+            value={formatCurrency(metric.production_per_hour_billed)}
+            subtitle="Production ÷ billed hours"
+          />
+        </section>
+      ) : null}
+
+      {(showClinicalSpecialtyAverages || showFinancialSpecialtyAverages) && (
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold tracking-tight text-slate-950">
+                Specialty averages
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Compare this provider against average results for {specialtyLabel}.
+              </p>
             </div>
 
-            {selectedPeriodType === "month" ? (
-              <form method="get" className="grid gap-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
-                <input type="hidden" name="module" value={selectedModule} />
-                <input type="hidden" name="periodType" value="month" />
+            <div className="text-xs text-slate-500">{periodLabel}</div>
+          </div>
 
-                <SelectField
-                  label="Year"
-                  name="year"
-                  defaultValue={selectedMonthYear}
-                  options={availableMonthYears.map((year) => ({
-                    value: year,
-                    label: year,
-                  }))}
-                />
-
-                <SelectField
-                  label="Month"
-                  name="month"
-                  defaultValue={safeSelectedMonthNumber}
-                  options={calendarMonthOptions}
-                />
-
-                <button
-                  type="submit"
-                  className="inline-flex h-[44px] items-center justify-center rounded-xl bg-gray-900 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-black"
-                >
-                  Apply
-                </button>
-              </form>
+          <div className="mt-5 grid gap-4">
+            {showClinicalSpecialtyAverages ? (
+              <SpecialtyAverageCard
+                title={`Average Clinical Metrics for ${specialtyLabel}`}
+                subtitle={periodLabel}
+                items={[
+                  {
+                    label: "Cancellation (no rebooking) %",
+                    value: formatPercent(specialtyAverages?.clinical?.cancel_no_rebook_pct),
+                  },
+                  {
+                    label: "FTA %",
+                    value: formatPercent(specialtyAverages?.clinical?.fta_pct),
+                  },
+                  {
+                    label: "Consultation rebooking rate",
+                    value: formatPercent(specialtyAverages?.clinical?.consult_rebooking_rate),
+                  },
+                ]}
+              />
             ) : null}
 
-            {selectedPeriodType === "year" ? (
-              <form method="get" className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
-                <input type="hidden" name="module" value={selectedModule} />
-                <input type="hidden" name="periodType" value="year" />
-
-                <SelectField
-                  label="Year"
-                  name="periodKey"
-                  defaultValue={selectedPeriodKey}
-                  options={yearOptionsAscending.map((option) => ({
-                    value: option.key,
-                    label: option.label,
-                  }))}
-                />
-
-                <button
-                  type="submit"
-                  className="inline-flex h-[44px] items-center justify-center rounded-xl bg-gray-900 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-black"
-                >
-                  Apply
-                </button>
-              </form>
-            ) : null}
-
-            {selectedPeriodType === "quarter_ato" ? (
-              <form method="get" className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
-                <input type="hidden" name="module" value={selectedModule} />
-                <input type="hidden" name="periodType" value="quarter_ato" />
-
-                <SelectField
-                  label="ATO Quarter"
-                  name="periodKey"
-                  defaultValue={selectedPeriodKey}
-                  options={quarterOptionsAscending.map((option) => ({
-                    value: option.key,
-                    label: option.label,
-                  }))}
-                />
-
-                <button
-                  type="submit"
-                  className="inline-flex h-[44px] items-center justify-center rounded-xl bg-gray-900 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-black"
-                >
-                  Apply
-                </button>
-              </form>
+            {showFinancialSpecialtyAverages ? (
+              <SpecialtyAverageCard
+                title={`Average Financial Metrics for ${specialtyLabel}`}
+                subtitle={periodLabel}
+                items={[
+                  {
+                    label: "Production",
+                    value: formatCurrency(specialtyAverages?.financial?.production_total),
+                  },
+                  {
+                    label: "Production per appointed hour",
+                    value: formatCurrency(
+                      specialtyAverages?.financial?.production_per_hour_appointed
+                    ),
+                  },
+                  {
+                    label: "Production per billed hour",
+                    value: formatCurrency(
+                      specialtyAverages?.financial?.production_per_hour_billed
+                    ),
+                  },
+                ]}
+              />
             ) : null}
           </div>
         </section>
-
-        {!metric ? (
-          <section className="mt-6 rounded-3xl border border-dashed border-gray-300 bg-white p-8 text-sm text-gray-600 shadow-sm">
-            No metrics are available for the selected period yet.
-          </section>
-        ) : null}
-
-        {metric && selectedModule === "clinical" ? (
-          <section className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <MetricCard
-              title="Cancellation (no rebooking) %"
-              value={formatPercent(metric.cancel_no_rebook_pct)}
-              subtitle={`${metric.cancel_no_rebook_count} of ${metric.total_appointments} appointments`}
-            />
-            <MetricCard
-              title="Cancellation (no rebooking) number"
-              value={String(metric.cancel_no_rebook_count)}
-              subtitle="Cancelled appointments with no following appointment"
-            />
-            <MetricCard
-              title="FTA %"
-              value={formatPercent(metric.fta_pct)}
-              subtitle={`${metric.fta_count} FTAs`}
-            />
-            <MetricCard
-              title="FTA number"
-              value={String(metric.fta_count)}
-              subtitle="Appointments marked as FTA"
-            />
-            <MetricCard
-              title="Consultation rebooking rate"
-              value={formatPercent(metric.consult_rebooking_rate)}
-              subtitle={`${metric.consult_rebooked_count} rebooked of ${metric.consult_completed_count} completed consultations`}
-            />
-            <MetricCard
-              title="Consultations not rebooked"
-              value={String(metric.consult_not_rebooked_count)}
-              subtitle="Completed consultations without a following appointment"
-            />
-            <MetricCard
-              title="Total appointments"
-              value={String(metric.total_appointments)}
-              subtitle={`${metric.period_start} to ${metric.period_end}`}
-            />
-          </section>
-        ) : null}
-
-        {metric && selectedModule === "clinical" ? (
-          <section className="mt-6">
-            <AppointmentCategoryBreakdownCard
-              title="Appointment category breakdown"
-              subtitle="FTA, FTA no rebooking, and cancellation no rebooking by appointment category"
-              rows={appointmentCategoryBreakdown}
-            />
-          </section>
-        ) : null}
-
-        {metric && selectedModule === "financial" ? (
-          <section className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <MetricCard
-              title="Production"
-              value={formatCurrency(metric.production_total)}
-              subtitle={`${metric.period_start} to ${metric.period_end}`}
-            />
-            <MetricCard
-              title="Appointed hours"
-              value={formatHours(metric.hours_appointed)}
-              subtitle="From provider performance import"
-            />
-            <MetricCard
-              title="Billed hours"
-              value={formatHours(metric.hours_billed)}
-              subtitle="From provider performance import"
-            />
-            <MetricCard
-              title="Production per appointed hour"
-              value={formatCurrency(metric.production_per_hour_appointed)}
-              subtitle="Production ÷ appointed hours"
-            />
-            <MetricCard
-              title="Production per billed hour"
-              value={formatCurrency(metric.production_per_hour_billed)}
-              subtitle="Production ÷ billed hours"
-            />
-          </section>
-        ) : null}
-
-        {(showClinicalSpecialtyAverages || showFinancialSpecialtyAverages) && (
-          <section className="mt-8 rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold tracking-tight text-gray-900">
-                  Specialty averages
-                </h2>
-                <p className="mt-1 text-sm text-gray-500">
-                  Compare this provider against average results for {specialtyLabel}.
-                </p>
-              </div>
-
-              <div className="text-xs text-gray-500">{periodLabel}</div>
-            </div>
-
-            <div className="mt-5 grid gap-4">
-              {showClinicalSpecialtyAverages ? (
-                <SpecialtyAverageCard
-                  title={`Average Clinical Metrics for ${specialtyLabel}`}
-                  subtitle={periodLabel}
-                  items={[
-                    {
-                      label: "Cancellation (no rebooking) %",
-                      value: formatPercent(specialtyAverages?.clinical?.cancel_no_rebook_pct),
-                    },
-                    {
-                      label: "FTA %",
-                      value: formatPercent(specialtyAverages?.clinical?.fta_pct),
-                    },
-                    {
-                      label: "Consultation rebooking rate",
-                      value: formatPercent(specialtyAverages?.clinical?.consult_rebooking_rate),
-                    },
-                  ]}
-                />
-              ) : null}
-
-              {showFinancialSpecialtyAverages ? (
-                <SpecialtyAverageCard
-                  title={`Average Financial Metrics for ${specialtyLabel}`}
-                  subtitle={periodLabel}
-                  items={[
-                    {
-                      label: "Production",
-                      value: formatCurrency(specialtyAverages?.financial?.production_total),
-                    },
-                    {
-                      label: "Production per appointed hour",
-                      value: formatCurrency(
-                        specialtyAverages?.financial?.production_per_hour_appointed
-                      ),
-                    },
-                    {
-                      label: "Production per billed hour",
-                      value: formatCurrency(
-                        specialtyAverages?.financial?.production_per_hour_billed
-                      ),
-                    },
-                  ]}
-                />
-              ) : null}
-            </div>
-          </section>
-        )}
-      </div>
-    </main>
+      )}
+    </PageLayout>
   );
 }

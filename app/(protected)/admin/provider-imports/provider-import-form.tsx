@@ -16,12 +16,23 @@ type ProviderImportFormProps = {
   ) => Promise<ImportActionState>;
 };
 
+type ImportType =
+  | "appointments"
+  | "performance"
+  | "cancellations"
+  | "new_patients";
+
 const initialState: ImportActionState = {
   ok: false,
   message: "",
 };
 
-type ImportType = "appointments" | "performance" | "cancellations" | "new_patients";
+function getCurrentMonthValue() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
 
 function UploadSubmitButton({ label }: { label: string }) {
   const { pending } = useFormStatus();
@@ -30,7 +41,7 @@ function UploadSubmitButton({ label }: { label: string }) {
     <button
       type="submit"
       disabled={pending}
-      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
     >
       {pending ? "Processing..." : label}
     </button>
@@ -60,70 +71,86 @@ function UploadCard({
   const usesSelectedMonth = importType === "performance";
 
   useEffect(() => {
-    if (state.message) {
-      router.refresh();
-    }
-  }, [state, router]);
+    if (state.message) router.refresh();
+  }, [state.message, router]);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="text-sm font-semibold text-gray-900">{title}</div>
-      <p className="mt-1 text-sm text-gray-600">{description}</p>
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
+          <p className="mt-1 text-sm leading-5 text-slate-500">
+            {description}
+          </p>
+        </div>
 
-      <form action={formAction} encType="multipart/form-data" className="mt-4 flex flex-col gap-3">
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-600">
+          CSV
+        </span>
+      </div>
+
+      {/* ✅ FIXED FORM (removed encType) */}
+      <form action={formAction} className="mt-5 space-y-3">
         <input type="hidden" name="monthKey" value={monthKey} />
         <input type="hidden" name="importType" value={importType} />
 
-        <input
-          type="file"
-          name="file"
-          accept=".csv,text/csv"
-          required
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            setSelectedFileName(file?.name ?? "");
-          }}
-          className="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
-        />
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-600">
+            Select file
+          </span>
+
+          <input
+            type="file"
+            name="file"
+            accept=".csv,text/csv"
+            required
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              setSelectedFileName(file?.name ?? "");
+            }}
+            className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+          />
+        </label>
 
         <UploadSubmitButton label={`Upload ${title}`} />
       </form>
 
-      <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
-        <div className="text-xs font-medium text-gray-700">Latest status</div>
-
-        <div className="mt-2 text-xs text-gray-600">
-          <span className="font-medium text-gray-700">
-            {usesSelectedMonth ? "Selected month:" : "Month handling:"}
-          </span>{" "}
-          {usesSelectedMonth ? monthKey || "Not selected" : "Detected automatically from file dates"}
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Status
         </div>
 
-        <div className="mt-1 text-xs text-gray-600">
-          <span className="font-medium text-gray-700">File:</span>{" "}
-          {selectedFileName || "No file selected yet"}
-        </div>
+        <div className="mt-2 space-y-1 text-xs text-slate-600">
+          <div>
+            <span className="font-medium text-slate-700">
+              {usesSelectedMonth ? "Selected month:" : "Month handling:"}
+            </span>{" "}
+            {usesSelectedMonth
+              ? monthKey || "Not selected"
+              : "Detected automatically from file dates"}
+          </div>
 
-        <div className="mt-1 whitespace-pre-wrap text-xs">
-          <span className="font-medium text-gray-700">Status:</span>{" "}
-          {state.message ? (
-            <span className={state.ok ? "text-green-600" : "text-red-600"}>
-              {state.message}
-            </span>
-          ) : (
-            <span className="text-gray-500">Waiting for upload</span>
-          )}
+          <div>
+            <span className="font-medium text-slate-700">File:</span>{" "}
+            {selectedFileName || "No file selected"}
+          </div>
+
+          <div className="whitespace-pre-wrap">
+            <span className="font-medium text-slate-700">Result:</span>{" "}
+            {state.message ? (
+              <span
+                className={state.ok ? "text-emerald-700" : "text-red-700"}
+              >
+                {state.message}
+              </span>
+            ) : (
+              <span className="text-slate-500">Waiting for upload</span>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
-}
-
-function getCurrentMonthValue() {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
 }
 
 export function ProviderImportForm({ action }: ProviderImportFormProps) {
@@ -131,11 +158,7 @@ export function ProviderImportForm({ action }: ProviderImportFormProps) {
 
   const formattedMonth = useMemo(() => {
     const match = monthKey.match(/^(\d{4})-(\d{2})$/);
-
     if (!match) return "No month selected";
-
-    const year = match[1];
-    const month = match[2];
 
     const monthNames: Record<string, string> = {
       "01": "January",
@@ -152,23 +175,28 @@ export function ProviderImportForm({ action }: ProviderImportFormProps) {
       "12": "December",
     };
 
-    return `${monthNames[month] ?? month} ${year}`;
+    return `${monthNames[match[2]] ?? match[2]} ${match[1]}`;
   }, [monthKey]);
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="text-sm font-semibold text-gray-900">Import month</div>
-        <p className="mt-1 text-sm text-gray-600">
-          Performance uploads still use this selected month. Appointments, cancellations, and new
-          patients detect months automatically from the CSV date rows.
-        </p>
+    <div className="space-y-5">
+      <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-5">
+        <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-950">
+              Import month
+            </h3>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              Performance uploads use this selected month. Appointments,
+              cancellations, and new patients detect months automatically from
+              the CSV date rows.
+            </p>
+          </div>
 
-        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
-          <div className="w-full sm:max-w-xs">
+          <div className="w-full lg:w-72">
             <label
               htmlFor="provider-import-month"
-              className="mb-1 block text-xs font-medium text-gray-700"
+              className="mb-1 block text-xs font-medium text-slate-600"
             >
               Month for performance upload
             </label>
@@ -178,45 +206,46 @@ export function ProviderImportForm({ action }: ProviderImportFormProps) {
               type="month"
               value={monthKey}
               onChange={(event) => setMonthKey(event.target.value)}
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
               required
             />
-          </div>
 
-          <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
-            Selected for performance: <span className="font-medium">{formattedMonth}</span>
+            <div className="mt-2 text-xs text-blue-900">
+              Selected:{" "}
+              <span className="font-semibold">{formattedMonth}</span>
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-4">
+      <div className="grid gap-4 xl:grid-cols-4 md:grid-cols-2">
         <UploadCard
-          title="Appointments CSV"
-          description="Upload raw provider appointments data. Months are detected automatically from appointment dates."
+          title="Appointments"
+          description="Upload raw provider appointments data."
           importType="appointments"
           monthKey={monthKey}
           action={action}
         />
 
         <UploadCard
-          title="Performance CSV"
-          description="Upload raw provider performance monthly summary data for the selected month."
+          title="Performance"
+          description="Upload monthly provider performance summary data."
           importType="performance"
           monthKey={monthKey}
           action={action}
         />
 
         <UploadCard
-          title="Cancellations CSV"
-          description="Upload cancellations and FTAs data. Months are detected automatically from event dates."
+          title="Cancellations"
+          description="Upload cancellations and FTA data."
           importType="cancellations"
           monthKey={monthKey}
           action={action}
         />
 
         <UploadCard
-          title="New Patients CSV"
-          description="Upload new patient/referral data. Months are detected automatically from joined/referral dates."
+          title="New Patients"
+          description="Upload new patient and referral data."
           importType="new_patients"
           monthKey={monthKey}
           action={action}

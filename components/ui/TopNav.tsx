@@ -42,7 +42,7 @@ const navGroups: NavGroup[] = [
       {
         href: "/imports/upload",
         label: "Import Production Reports",
-        description: "Upload Praktika Production Reports",
+        description: "Upload and Sync Praktika Production Reports",
       },
     ],
   },
@@ -112,12 +112,12 @@ const navGroups: NavGroup[] = [
       {
         href: "/admin",
         label: "Admin",
-        description: "Admin settings and configuration",
+        description: "Admin settings and configuration including add users and providers",
       },
       {
         href: "/admin/reports",
-        label: "Financial Reports",
-        description: "Financial Reports",
+        label: "Service Fee Reports",
+        description: "Centralised reporting of service fees",
       },
       {
         href: "/benchmark/referrals",
@@ -141,9 +141,9 @@ const navGroups: NavGroup[] = [
       },
       {
         href: "/admin/provider-imports",
-        label: "Imports",
+        label: "Imports and Syncs",
         description:
-          "Import Praktika reports - new patients, appointments, provider performance, FTAs and cancellations",
+          "Import and sync Praktika reports - new patients, appointments, provider performance, FTAs and cancellations",
       },
       {
         href: "/benchmark/expense-reports",

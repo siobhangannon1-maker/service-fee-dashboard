@@ -91,6 +91,10 @@ const DEFAULT_ROWS: PracticeKpiBenchmark[] = [
   },
 ];
 
+function fieldClassName() {
+  return "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-500";
+}
+
 function mergeRows(rows: PracticeKpiBenchmark[]) {
   const map = new Map(DEFAULT_ROWS.map((row) => [row.metric_key, row]));
 
@@ -236,55 +240,99 @@ export default function KpiBenchmarksEditor() {
 
   if (loading) {
     return (
-      <section style={sectionStyle}>
-        <h2 style={headingStyle}>Practice KPI Benchmarks</h2>
-        <p>Loading KPI benchmarks...</p>
+      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-950">
+          Practice KPI Benchmarks
+        </h2>
+        <p className="mt-2 text-sm text-slate-500">Loading KPI benchmarks...</p>
       </section>
     );
   }
 
   return (
-    <section style={sectionStyle}>
-      <h2 style={headingStyle}>Practice KPI Benchmarks</h2>
+    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm lg:p-6">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-950">
+            Practice KPI Benchmarks
+          </h2>
 
-      <p style={subheadingStyle}>
-        Enter percentage values as normal percentages, for example 5 = 5%.
-        Other metrics like hours should be entered as plain numbers.
-      </p>
+          <p className="mt-1 text-sm leading-6 text-slate-500">
+            Enter percentage values as normal percentages, for example 5 = 5%.
+            Other metrics like hours should be entered as plain numbers.
+          </p>
+        </div>
 
-      {message ? <div style={successStyle}>{message}</div> : null}
-      {error ? <div style={errorStyle}>{error}</div> : null}
+        <button
+          type="button"
+          onClick={saveRows}
+          disabled={saving}
+          className="inline-flex items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-50"
+        >
+          {saving ? "Saving..." : "Save KPI Benchmarks"}
+        </button>
+      </div>
 
-      <div style={{ overflowX: "auto" }}>
-        <table style={tableStyle}>
-          <thead>
+      {message ? (
+        <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+          {message}
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          {error}
+        </div>
+      ) : null}
+
+      <div className="overflow-x-auto rounded-2xl border border-slate-200">
+        <table className="min-w-[980px] w-full divide-y divide-slate-100 bg-white text-sm">
+          <thead className="bg-slate-50">
             <tr>
-              <th style={thStyle}>KPI</th>
-              <th style={thStyle}>Key</th>
-              <th style={thStyle}>Target</th>
-              <th style={thStyle}>Green Min</th>
-              <th style={thStyle}>Green Max</th>
-              <th style={thStyle}>Amber Min</th>
-              <th style={thStyle}>Amber Max</th>
-              <th style={thStyle}>Red Min</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                KPI
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Key
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Target
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Green Min
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Green Max
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Amber Min
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Amber Max
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Red Min
+              </th>
             </tr>
           </thead>
 
-          <tbody>
+          <tbody className="divide-y divide-slate-100">
             {rows.map((row, index) => (
-              <tr key={row.metric_key}>
-                <td style={tdStyle}>
+              <tr key={row.metric_key} className="hover:bg-slate-50">
+                <td className="px-4 py-3 align-top">
                   <input
                     value={row.metric_label}
                     onChange={(event) =>
                       updateField(index, "metric_label", event.target.value)
                     }
-                    style={inputStyle}
+                    className={fieldClassName()}
                   />
                 </td>
 
-                <td style={tdStyle}>
-                  <code>{row.metric_key}</code>
+                <td className="px-4 py-3 align-top">
+                  <code className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                    {row.metric_key}
+                  </code>
                 </td>
 
                 {(
@@ -297,7 +345,7 @@ export default function KpiBenchmarksEditor() {
                     "red_min",
                   ] as const
                 ).map((field) => (
-                  <td key={field} style={tdStyle}>
+                  <td key={field} className="px-4 py-3 align-top">
                     <input
                       type="number"
                       step="0.01"
@@ -305,7 +353,7 @@ export default function KpiBenchmarksEditor() {
                       onChange={(event) =>
                         updateField(index, field, event.target.value)
                       }
-                      style={inputStyle}
+                      className={fieldClassName()}
                     />
                   </td>
                 ))}
@@ -314,95 +362,6 @@ export default function KpiBenchmarksEditor() {
           </tbody>
         </table>
       </div>
-
-      <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
-        <button
-          type="button"
-          onClick={saveRows}
-          disabled={saving}
-          style={{
-            ...buttonStyle,
-            opacity: saving ? 0.7 : 1,
-            cursor: saving ? "not-allowed" : "pointer",
-          }}
-        >
-          {saving ? "Saving..." : "Save KPI Benchmarks"}
-        </button>
-      </div>
     </section>
   );
 }
-
-const sectionStyle: React.CSSProperties = {
-  marginTop: 40,
-  paddingTop: 28,
-  borderTop: "2px solid #e5e7eb",
-};
-
-const headingStyle: React.CSSProperties = {
-  fontSize: 22,
-  fontWeight: 700,
-  marginBottom: 8,
-};
-
-const subheadingStyle: React.CSSProperties = {
-  color: "#475569",
-  lineHeight: 1.5,
-  marginBottom: 16,
-};
-
-const tableStyle: React.CSSProperties = {
-  borderCollapse: "collapse",
-  width: "100%",
-  minWidth: 980,
-  backgroundColor: "#fff",
-};
-
-const thStyle: React.CSSProperties = {
-  border: "1px solid #d1d5db",
-  padding: 12,
-  textAlign: "left",
-  backgroundColor: "#f3f4f6",
-  fontWeight: 700,
-};
-
-const tdStyle: React.CSSProperties = {
-  border: "1px solid #d1d5db",
-  padding: 12,
-  verticalAlign: "top",
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: 8,
-  fontSize: 14,
-  border: "1px solid #cbd5e1",
-  borderRadius: 6,
-  boxSizing: "border-box",
-  backgroundColor: "#fff",
-};
-
-const buttonStyle: React.CSSProperties = {
-  backgroundColor: "#2563eb",
-  color: "#fff",
-  border: "none",
-  borderRadius: 8,
-  padding: "10px 16px",
-  fontSize: 14,
-};
-
-const successStyle: React.CSSProperties = {
-  marginBottom: 16,
-  padding: 12,
-  backgroundColor: "#dcfce7",
-  color: "#166534",
-  borderRadius: 8,
-};
-
-const errorStyle: React.CSSProperties = {
-  marginBottom: 16,
-  padding: 12,
-  backgroundColor: "#fee2e2",
-  color: "#991b1b",
-  borderRadius: 8,
-};

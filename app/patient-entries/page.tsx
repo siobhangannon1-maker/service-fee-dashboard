@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import PageLayout from "@/components/ui/PageLayout";
 import { ensureCurrentBillingPeriod } from "@/lib/billingPeriods";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -1072,8 +1073,11 @@ export default function PatientEntriesPage() {
   });
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <div className="mx-auto max-w-6xl">
+    <PageLayout
+      eyebrow="Admin"
+      title="Patient Financial Entries"
+      description="Add, edit, scan, and review patient-level financial adjustments for provider billing."
+    >
         <ConfirmDialog
           open={confirmOpen}
           title="Delete entry?"
@@ -1090,25 +1094,35 @@ export default function PatientEntriesPage() {
           }}
         />
 
-        <div className="flex flex-col gap-3 sm:gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
-              Patient Financial Entries
-            </h1>
-            <p className="mt-1 text-sm leading-6 text-slate-600">
-              Add, edit, and delete patient-level financial adjustments.
-            </p>
+        <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+          <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-3xl">
+                <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+                  Patient billing adjustments
+                </div>
+
+                <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                  Capture materials, corrections, and patient payments accurately.
+                </h2>
+
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
+                  Use barcode/photo scanning for materials, manage patient-level
+                  adjustments, and keep a clear audit trail for provider billing.
+                </p>
+              </div>
+
+              <Link
+                href="/admin/patient-entry-log"
+                className="inline-flex w-full items-center justify-center rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-white/15 sm:w-auto"
+              >
+                Audit Entries
+              </Link>
+            </div>
           </div>
+        </section>
 
-          <Link
-            href="/admin/patient-entry-log"
-            className="inline-flex w-full items-center justify-center rounded-2xl border bg-white px-4 py-3 text-sm font-medium shadow-sm sm:w-auto"
-          >
-            Audit Entries
-          </Link>
-        </div>
-
-        <div className="mt-5 rounded-3xl border bg-white p-4 shadow-sm sm:p-5">
+        <div className="mt-5 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
           <div className="max-w-xl">
             <label className="mb-2 block text-sm font-medium text-slate-700">
               Billing period
@@ -1116,7 +1130,7 @@ export default function PatientEntriesPage() {
 
             <div className="grid gap-3 sm:grid-cols-2">
               <select
-                className="w-full rounded-2xl border bg-white px-3 py-3 text-sm"
+                className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm"
                 value={selectedYear}
                 onChange={(e) => handlePageYearChange(Number(e.target.value))}
               >
@@ -1128,7 +1142,7 @@ export default function PatientEntriesPage() {
               </select>
 
               <select
-                className="w-full rounded-2xl border bg-white px-3 py-3 text-sm"
+                className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm"
                 value={selectedPeriod?.month || ""}
                 onChange={(e) => handlePageMonthChange(Number(e.target.value))}
               >
@@ -1175,7 +1189,7 @@ export default function PatientEntriesPage() {
         <form
           ref={formRef}
           onSubmit={saveEntry}
-          className="mt-6 rounded-3xl border bg-white p-4 shadow-sm sm:p-5 lg:p-6"
+          className="mt-6 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:p-6"
         >
           <div className="mb-5">
             <h2 className="text-lg font-semibold text-slate-900">
@@ -1192,7 +1206,7 @@ export default function PatientEntriesPage() {
                 Provider
               </label>
               <select
-                className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.provider_id}
                 onChange={(e) =>
                   setForm((prev) => ({
@@ -1221,7 +1235,7 @@ export default function PatientEntriesPage() {
               </label>
               <div className="grid gap-3 sm:grid-cols-2">
                 <select
-                  className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                  className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                   value={formSelectedYear}
                   onChange={(e) => handleFormYearChange(Number(e.target.value))}
                   disabled={activePeriodStatus === "locked"}
@@ -1234,7 +1248,7 @@ export default function PatientEntriesPage() {
                 </select>
 
                 <select
-                  className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                  className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                   value={formSelectedPeriod?.month || ""}
                   onChange={(e) => handleFormMonthChange(Number(e.target.value))}
                   disabled={activePeriodStatus === "locked"}
@@ -1256,7 +1270,7 @@ export default function PatientEntriesPage() {
               </label>
               <input
                 type="date"
-                className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.entry_date}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, entry_date: e.target.value }))
@@ -1270,7 +1284,7 @@ export default function PatientEntriesPage() {
                 Patient name
               </label>
               <input
-                className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.patient_name}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, patient_name: e.target.value }))
@@ -1285,7 +1299,7 @@ export default function PatientEntriesPage() {
                 Category
               </label>
               <select
-                className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.category}
                 onChange={(e) =>
                   setForm((prev) => ({
@@ -1324,7 +1338,7 @@ export default function PatientEntriesPage() {
                       value={manualCodeInput}
                       onChange={(e) => setManualCodeInput(e.target.value)}
                       placeholder="Scan or type barcode / REF number"
-                      className="w-full rounded-2xl border bg-white px-3 py-3 text-sm"
+                      className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm"
                       disabled={activePeriodStatus === "locked" || scanLoading}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") {
@@ -1338,7 +1352,7 @@ export default function PatientEntriesPage() {
                       type="button"
                       onClick={handleManualCodeSubmit}
                       disabled={activePeriodStatus === "locked" || scanLoading}
-                      className="inline-flex items-center justify-center rounded-2xl border bg-white px-4 py-3 text-sm font-medium disabled:opacity-50"
+                      className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium disabled:opacity-50"
                     >
                       Match code
                     </button>
@@ -1358,7 +1372,7 @@ export default function PatientEntriesPage() {
                       type="button"
                       onClick={() => uploadInputRef.current?.click()}
                       disabled={activePeriodStatus === "locked" || scanLoading}
-                      className="inline-flex items-center justify-center rounded-2xl border bg-white px-4 py-3 text-sm font-medium disabled:opacity-50"
+                      className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium disabled:opacity-50"
                     >
                       Upload photo
                     </button>
@@ -1409,12 +1423,12 @@ export default function PatientEntriesPage() {
                       }}
                       onFocus={() => setMaterialDropdownOpen(true)}
                       placeholder="Search preset name, barcode, or REF number"
-                      className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                      className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                       disabled={activePeriodStatus === "locked"}
                     />
 
                     {materialDropdownOpen && activePeriodStatus !== "locked" && (
-                      <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-2xl border bg-white p-2 shadow-lg">
+                      <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
                         {filteredMaterialItems.length > 0 ? (
                           <div className="space-y-1">
                             {filteredMaterialItems.map((item) => (
@@ -1508,7 +1522,7 @@ export default function PatientEntriesPage() {
               <input
                 type="number"
                 step="0.01"
-                className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.amount}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, amount: e.target.value }))
@@ -1524,7 +1538,7 @@ export default function PatientEntriesPage() {
                   Provider actually owed
                 </label>
                 <select
-                  className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                  className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                   value={form.related_provider_id}
                   onChange={(e) =>
                     setForm((prev) => ({
@@ -1549,7 +1563,7 @@ export default function PatientEntriesPage() {
                 Notes
               </label>
               <input
-                className="w-full rounded-2xl border px-3 py-3 text-sm disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.notes}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, notes: e.target.value }))
@@ -1584,7 +1598,7 @@ export default function PatientEntriesPage() {
           </div>
         </form>
 
-        <div className="mt-6 rounded-3xl border bg-white p-4 shadow-sm sm:p-5">
+        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
           <div className="mb-4">
             <h2 className="text-lg font-semibold text-slate-900">Filters</h2>
             <p className="mt-1 text-sm text-slate-600">
@@ -1596,13 +1610,13 @@ export default function PatientEntriesPage() {
             <input
               type="text"
               placeholder="Search patient or notes..."
-              className="rounded-2xl border px-3 py-3 text-sm"
+              className="rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
 
             <select
-              className="rounded-2xl border px-3 py-3 text-sm"
+              className="rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
             >
@@ -1623,7 +1637,7 @@ export default function PatientEntriesPage() {
             </select>
 
             <select
-              className="rounded-2xl border px-3 py-3 text-sm"
+              className="rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               value={providerFilter}
               onChange={(e) => setProviderFilter(e.target.value)}
             >
@@ -1646,7 +1660,7 @@ export default function PatientEntriesPage() {
           </Link>
         </div>
 
-        <div className="mt-6 rounded-3xl border bg-white p-4 shadow-sm sm:p-5 lg:p-6">
+        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:p-6">
           <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-xl font-semibold text-slate-900">Saved entries</h2>
             <p className="text-sm text-slate-500">
@@ -1770,7 +1784,6 @@ export default function PatientEntriesPage() {
             })}
           </div>
         </div>
-      </div>
-    </main>
+    </PageLayout>
   );
 }

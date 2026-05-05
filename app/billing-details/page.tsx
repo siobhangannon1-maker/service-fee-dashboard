@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import PageLayout from "@/components/ui/PageLayout";
 import {
   ensureCurrentBillingPeriod,
   createNextBillingPeriodFromList,
@@ -441,8 +442,11 @@ export default function BillingDetailsPage() {
   });
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto max-w-6xl">
+    <PageLayout
+      eyebrow="Admin"
+      title="Billing Detail Entries"
+      description="Add, edit, and manage merchant fees and incorrect payment detail entries."
+    >
         <ConfirmDialog
           open={confirmOpen}
           title="Delete detail entry?"
@@ -459,28 +463,44 @@ export default function BillingDetailsPage() {
           }}
         />
 
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold">Billing Detail Entries</h1>
-            <p className="mt-1 text-sm text-slate-600">
-              Add, edit, and delete merchant fee and incorrect payment entries.
-            </p>
+        <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+          <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-3xl">
+                <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+                  Billing details
+                </div>
+
+                <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                  Track merchant fees.
+                </h2>
+
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
+                  Add Humm, Afterpay, and incorrect payment detail entries for the selected billing period.
+                  These entries flow into provider billing calculations.
+                </p>
+              </div>
+
+              <Link
+                href="/billing-details/upload-afterpay"
+                className="inline-flex w-full items-center justify-center rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-white/15 sm:w-auto"
+              >
+                Upload Afterpay Spreadsheet
+              </Link>
+            </div>
           </div>
+        </section>
 
-          <Link
-            href="/billing-details/upload-afterpay"
-            className="inline-flex items-center rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800"
-          >
-            Upload Afterpay Reconciliation Spreadsheet
-          </Link>
-        </div>
-
-        <div className="mt-4">
-          <label className="mb-1 block text-sm">Billing period</label>
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-slate-950">Billing period</h2>
+            <p className="mt-1 text-sm text-slate-500">Choose the period these detail entries belong to.</p>
+          </div>
+          <label className="mb-1 block text-sm font-medium text-slate-700">Billing period</label>
 
           <div className="grid max-w-md gap-3 sm:grid-cols-2">
             <select
-              className="w-full rounded-2xl border bg-white px-3 py-2"
+              className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2"
               value={selectedYear}
               onChange={(e) => {
                 const nextYear = e.target.value;
@@ -519,7 +539,7 @@ export default function BillingDetailsPage() {
             </select>
 
             <select
-              className="w-full rounded-2xl border bg-white px-3 py-2"
+              className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2"
               value={selectedMonth}
               onChange={(e) => {
                 const nextMonth = e.target.value;
@@ -565,7 +585,7 @@ export default function BillingDetailsPage() {
               {activePeriodStatus}
             </span>
           </div>
-        </div>
+        </section>
 
         {activePeriodStatus === "locked" && (
           <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
@@ -582,13 +602,13 @@ export default function BillingDetailsPage() {
 
         <form
           onSubmit={saveEntry}
-          className="mt-6 rounded-3xl border bg-white p-6 shadow-sm"
+          className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
         >
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             <div>
               <label className="mb-1 block text-sm">Provider</label>
               <select
-                className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.provider_id}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, provider_id: e.target.value }))
@@ -607,7 +627,7 @@ export default function BillingDetailsPage() {
             <div>
               <label className="mb-1 block text-sm">Billing period</label>
               <select
-                className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.billing_period_id}
                 onChange={(e) => {
                   const value = e.target.value;
@@ -632,7 +652,7 @@ export default function BillingDetailsPage() {
               <label className="mb-1 block text-sm">Date</label>
               <input
                 type="date"
-                className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.entry_date}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, entry_date: e.target.value }))
@@ -644,7 +664,7 @@ export default function BillingDetailsPage() {
             <div>
               <label className="mb-1 block text-sm">Patient name</label>
               <input
-                className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.patient_name}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, patient_name: e.target.value }))
@@ -656,7 +676,7 @@ export default function BillingDetailsPage() {
             <div>
               <label className="mb-1 block text-sm">Category</label>
               <select
-                className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.category}
                 onChange={(e) =>
                   setForm((prev) => ({
@@ -676,7 +696,7 @@ export default function BillingDetailsPage() {
               <input
                 type="number"
                 step="0.01"
-                className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.amount}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, amount: e.target.value }))
@@ -688,7 +708,7 @@ export default function BillingDetailsPage() {
             <div className="lg:col-span-3">
               <label className="mb-1 block text-sm">Notes</label>
               <input
-                className="w-full rounded-2xl border px-3 py-2 disabled:bg-slate-100"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
                 value={form.notes}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, notes: e.target.value }))
@@ -701,7 +721,7 @@ export default function BillingDetailsPage() {
           <div className="mt-4">
             <button
               disabled={saving || activePeriodStatus === "locked"}
-              className="rounded-2xl bg-slate-900 px-4 py-2 text-white disabled:opacity-50"
+              className="inline-flex items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-50"
             >
               {saving
                 ? "Saving..."
@@ -714,7 +734,7 @@ export default function BillingDetailsPage() {
               <button
                 type="button"
                 onClick={() => resetForm(selectedPeriodId)}
-                className="ml-3 rounded-2xl border px-4 py-2"
+                className="ml-3 inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
               >
                 Cancel
               </button>
@@ -722,18 +742,18 @@ export default function BillingDetailsPage() {
           </div>
         </form>
 
-        <div className="mt-6 rounded-3xl border bg-white p-4 shadow-sm">
+        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="grid gap-3 md:grid-cols-3">
             <input
               type="text"
               placeholder="Search patient or notes..."
-              className="rounded-2xl border px-3 py-2"
+              className="rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
 
             <select
-              className="rounded-2xl border px-3 py-2"
+              className="rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               value={categoryFilter}
               onChange={(e) =>
                 setCategoryFilter(e.target.value as DetailCategory | "")
@@ -745,7 +765,7 @@ export default function BillingDetailsPage() {
             </select>
 
             <select
-              className="rounded-2xl border px-3 py-2"
+              className="rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               value={providerFilter}
               onChange={(e) => setProviderFilter(e.target.value)}
             >
@@ -759,7 +779,7 @@ export default function BillingDetailsPage() {
           </div>
         </div>
 
-        <div className="mt-6 rounded-3xl border bg-white p-6 shadow-sm">
+        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Saved detail entries</h2>
 
           {filteredEntries.length === 0 && (
@@ -795,7 +815,7 @@ export default function BillingDetailsPage() {
                     type="button"
                     onClick={() => beginEdit(entry)}
                     disabled={activePeriodStatus === "locked"}
-                    className="rounded-xl border px-3 py-1 disabled:opacity-50"
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
                   >
                     Edit
                   </button>
@@ -806,7 +826,7 @@ export default function BillingDetailsPage() {
                       setConfirmOpen(true);
                     }}
                     disabled={activePeriodStatus === "locked"}
-                    className="rounded-xl border px-3 py-1 text-red-600 disabled:opacity-50"
+                    className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-700 shadow-sm transition hover:bg-red-100 disabled:opacity-50"
                   >
                     Delete
                   </button>
@@ -815,7 +835,6 @@ export default function BillingDetailsPage() {
             </div>
           ))}
         </div>
-      </div>
-    </main>
+    </PageLayout>
   );
 }

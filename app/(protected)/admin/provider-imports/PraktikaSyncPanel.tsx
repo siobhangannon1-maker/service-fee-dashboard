@@ -27,9 +27,10 @@ function addDaysIso(dateIso: string, days: number) {
   const date = new Date(Date.UTC(year, month - 1, day));
   date.setUTCDate(date.getUTCDate() + days);
 
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(
-    date.getUTCDate()
-  ).padStart(2, "0")}`;
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
+    2,
+    "0"
+  )}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
 function getCurrentWeekRange() {
@@ -53,9 +54,10 @@ function getCurrentMonthRange() {
   const end = new Date(year, month + 1, 0);
 
   const toIso = (date: Date) =>
-    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-      date.getDate()
-    ).padStart(2, "0")}`;
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+      2,
+      "0"
+    )}-${String(date.getDate()).padStart(2, "0")}`;
 
   return {
     fromDate: toIso(start),
@@ -66,11 +68,9 @@ function getCurrentMonthRange() {
 function SyncSubmitButton({
   label,
   pendingLabel,
-  className,
 }: {
   label: string;
   pendingLabel: string;
-  className: string;
 }) {
   const { pending } = useFormStatus();
 
@@ -78,7 +78,7 @@ function SyncSubmitButton({
     <button
       type="submit"
       disabled={pending}
-      className={`${className} rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50`}
+      className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
     >
       {pending ? pendingLabel : label}
     </button>
@@ -90,9 +90,9 @@ function StatusMessage({ state }: { state: ActionState }) {
 
   return (
     <div
-      className={`mt-3 whitespace-pre-wrap rounded-lg border p-3 text-sm ${
+      className={`mt-4 whitespace-pre-wrap rounded-xl border p-3 text-sm ${
         state.ok
-          ? "border-green-200 bg-green-50 text-green-700"
+          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
           : "border-red-200 bg-red-50 text-red-700"
       }`}
     >
@@ -101,33 +101,43 @@ function StatusMessage({ state }: { state: ActionState }) {
   );
 }
 
-function SyncForm(props: any) {
-  const {
-    title,
-    description,
-    fromDate,
-    toDate,
-    action,
-    state,
-    buttonLabel,
-    pendingLabel,
-    buttonClassName,
-  } = props;
-
+function SyncForm({
+  title,
+  description,
+  fromDate,
+  toDate,
+  action,
+  state,
+  buttonLabel,
+  pendingLabel,
+}: {
+  title: string;
+  description: string;
+  fromDate: string;
+  toDate: string;
+  action: (formData: FormData) => void;
+  state: ActionState;
+  buttonLabel: string;
+  pendingLabel: string;
+}) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-      <div className="text-sm font-semibold text-gray-900">{title}</div>
-      <p className="mt-1 text-xs text-gray-600">{description}</p>
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
+          <p className="mt-1 text-sm leading-5 text-slate-500">{description}</p>
+        </div>
 
-      <form action={action} className="mt-3">
+        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+          Sync
+        </span>
+      </div>
+
+      <form action={action}>
         <input type="hidden" name="fromDate" value={fromDate} />
         <input type="hidden" name="toDate" value={toDate} />
 
-        <SyncSubmitButton
-          label={buttonLabel}
-          pendingLabel={pendingLabel}
-          className={buttonClassName}
-        />
+        <SyncSubmitButton label={buttonLabel} pendingLabel={pendingLabel} />
       </form>
 
       <StatusMessage state={state} />
@@ -157,8 +167,8 @@ export default function PraktikaSyncPanel() {
     initialState
   );
 
-  // ✅ NEW STATE
-  const [newPatientsState, setNewPatientsState] = useState<ActionState>(initialState);
+  const [newPatientsState, setNewPatientsState] =
+    useState<ActionState>(initialState);
 
   async function handleNewPatientsSync(e: React.FormEvent) {
     e.preventDefault();
@@ -174,18 +184,30 @@ export default function PraktikaSyncPanel() {
         body: JSON.stringify({ fromDate, toDate }),
       });
 
-      const data = await res.json();
+      const text = await res.text();
 
-      if (!res.ok) throw new Error(data?.error || "Sync failed");
+      let data: any = null;
+
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = null;
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || text || "Sync failed");
+      }
 
       setNewPatientsState({
         ok: true,
-        message: `Synced ${data.rowCount} new patients.\nCheck terminal for NEW PATIENTS SAMPLE.`,
+        message: `Synced ${
+          data?.rowCount ?? 0
+        } new patients.\nCheck terminal for NEW PATIENTS SAMPLE.`,
       });
     } catch (err: any) {
       setNewPatientsState({
         ok: false,
-        message: err.message,
+        message: err.message || "Sync failed",
       });
     }
   }
@@ -209,72 +231,128 @@ export default function PraktikaSyncPanel() {
   }
 
   return (
-    <section className="rounded-2xl border border-green-200 bg-white p-5 shadow-sm">
-      <h2 className="text-xl font-semibold text-gray-900">
-        Praktika Sync
-      </h2>
+    <div className="space-y-5">
+      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+        <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-end">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-950">
+              Sync date range
+            </h3>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              Choose the date range to use for Praktika syncs. Weekly options
+              are useful for appointments and cancellations; monthly is useful
+              for performance.
+            </p>
+          </div>
 
-      {/* DATE PICKER */}
-      <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-        <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-        <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={usePreviousWeek}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100"
+            >
+              Previous week
+            </button>
 
-        <div className="flex gap-2">
-          <button onClick={usePreviousWeek}>Prev Week</button>
-          <button onClick={useCurrentWeek}>Current Week</button>
-          <button onClick={useCurrentMonth}>Month</button>
+            <button
+              type="button"
+              onClick={useCurrentWeek}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100"
+            >
+              Current week
+            </button>
+
+            <button
+              type="button"
+              onClick={useCurrentMonth}
+              className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+            >
+              Current month
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-slate-600">
+              From date
+            </span>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+            />
+          </label>
+
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-slate-600">
+              To date
+            </span>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+            />
+          </label>
         </div>
       </div>
 
-      {/* SYNC CARDS */}
-      <div className="mt-6 grid gap-4 lg:grid-cols-4">
+      <div className="grid gap-4 xl:grid-cols-4 md:grid-cols-2">
         <SyncForm
           title="Provider Performance"
-          description="Monthly KPI data"
+          description="Monthly KPI and production data."
           fromDate={fromDate}
           toDate={toDate}
           action={performanceAction}
           state={performanceState}
           buttonLabel="Sync Performance"
           pendingLabel="Syncing..."
-          buttonClassName="bg-green-600"
         />
 
         <SyncForm
           title="Appointments"
-          description="Weekly KPI denominator"
+          description="Provider appointment data for KPI calculations."
           fromDate={fromDate}
           toDate={toDate}
           action={appointmentsAction}
           state={appointmentsState}
           buttonLabel="Sync Appointments"
           pendingLabel="Syncing..."
-          buttonClassName="bg-blue-600"
         />
 
         <SyncForm
           title="FTA / Cancellations"
-          description="Weekly KPI rates"
+          description="Cancellation and failed-to-attend data."
           fromDate={fromDate}
           toDate={toDate}
           action={cancellationsAction}
           state={cancellationsState}
           buttonLabel="Sync Cancellations"
           pendingLabel="Syncing..."
-          buttonClassName="bg-purple-600"
         />
 
-        {/* ✅ NEW PATIENTS CARD */}
-        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-          <div className="text-sm font-semibold text-gray-900">New Patients</div>
-          <p className="mt-1 text-xs text-gray-600">
-            Sync new patient joins (PHI removed).
-          </p>
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-950">
+                New Patients
+              </h3>
+              <p className="mt-1 text-sm leading-5 text-slate-500">
+                New patient joins with PHI removed.
+              </p>
+            </div>
 
-          <form onSubmit={handleNewPatientsSync} className="mt-3">
+            <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
+              Sync
+            </span>
+          </div>
+
+          <form onSubmit={handleNewPatientsSync}>
             <button
               type="submit"
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white"
+              className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
             >
               Sync New Patients
             </button>
@@ -283,6 +361,6 @@ export default function PraktikaSyncPanel() {
           <StatusMessage state={newPatientsState} />
         </div>
       </div>
-    </section>
+    </div>
   );
 }

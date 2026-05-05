@@ -239,6 +239,17 @@ function emptySummaryRow(label = "No selection"): SummaryRow {
   };
 }
 
+function limitChartData<T>(data: T[], maxPoints: number) {
+  if (data.length <= maxPoints) return data;
+  return data.slice(-maxPoints);
+}
+
+function getChartPointLimit(mode: PeriodMode) {
+  if (mode === "month") return 12;
+  if (mode === "quarter") return 8;
+  return 5;
+}
+
 export default function FinancialsClient() {
   const supabase = createClient();
 
@@ -660,8 +671,10 @@ export default function FinancialsClient() {
   ]);
 
   const providerTrendData = useMemo(() => {
+    const chartPointLimit = getChartPointLimit(periodMode);
+
     if (periodMode === "month") {
-      return ascendingBillingPeriods.map((period) => {
+      const data = ascendingBillingPeriods.map((period) => {
         const row: Record<string, string | number> = {
           label: period.label,
         };
@@ -685,10 +698,12 @@ export default function FinancialsClient() {
 
         return row;
       });
+
+      return limitChartData(data, chartPointLimit);
     }
 
     if (periodMode === "quarter") {
-      return quarterOptions.map((quarter) => {
+      const data = quarterOptions.map((quarter) => {
         const row: Record<string, string | number> = {
           label: quarter.label,
         };
@@ -715,9 +730,11 @@ export default function FinancialsClient() {
 
         return row;
       });
+
+      return limitChartData(data, chartPointLimit);
     }
 
-    return yearOptions.map((yearOption) => {
+    const data = yearOptions.map((yearOption) => {
       const row: Record<string, string | number> = {
         label: yearOption.label,
       };
@@ -744,6 +761,8 @@ export default function FinancialsClient() {
 
       return row;
     });
+
+    return limitChartData(data, chartPointLimit);
   }, [
     periodMode,
     ascendingBillingPeriods,
@@ -755,9 +774,11 @@ export default function FinancialsClient() {
   ]);
 
   const totalsChartData = useMemo(() => {
-    if (periodMode === "month") return monthlySummary;
-    if (periodMode === "quarter") return quarterlySummary;
-    return yearlySummary;
+    const chartPointLimit = getChartPointLimit(periodMode);
+
+    if (periodMode === "month") return limitChartData(monthlySummary, chartPointLimit);
+    if (periodMode === "quarter") return limitChartData(quarterlySummary, chartPointLimit);
+    return limitChartData(yearlySummary, chartPointLimit);
   }, [periodMode, monthlySummary, quarterlySummary, yearlySummary]);
 
   const comparisonOptions = useMemo(() => {
@@ -883,8 +904,7 @@ export default function FinancialsClient() {
                   Financials Dashboard
                 </h1>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-200">
-                  Centralised financial reporting across providers, billing periods,
-                  service fees, materials, and total balances due.
+                  Centralised service fee reporting across providers and billing periods.
                 </p>
               </div>
 
@@ -1131,10 +1151,10 @@ export default function FinancialsClient() {
                         dataKey="label"
                         tickLine={false}
                         axisLine={false}
-                        interval={0}
-                        angle={-35}
+                        interval="preserveStartEnd"
+                        angle={-25}
                         textAnchor="end"
-                        height={70}
+                        height={58}
                       />
                       <YAxis tickFormatter={(v) => `$${formatCompactMoney(Number(v))}`} />
                       <Tooltip
@@ -1180,10 +1200,10 @@ export default function FinancialsClient() {
                         dataKey="label"
                         tickLine={false}
                         axisLine={false}
-                        interval={0}
-                        angle={-35}
+                        interval="preserveStartEnd"
+                        angle={-25}
                         textAnchor="end"
-                        height={70}
+                        height={58}
                       />
                       <YAxis tickFormatter={(v) => `$${formatCompactMoney(Number(v))}`} />
                       <Tooltip

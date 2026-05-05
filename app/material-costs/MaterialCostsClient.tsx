@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import PageLayout from "@/components/ui/PageLayout";
 import { createClient } from "@/lib/supabase/client";
 import Toast from "@/components/ui/Toast";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -47,6 +48,41 @@ function parseCodesInput(value: string) {
 
 function formatCodesForTextarea(values: string[] | null | undefined) {
   return (values || []).join("\n");
+}
+
+function formatCurrency(value: number) {
+  return Number(value).toLocaleString("en-AU", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function fieldClassName() {
+  return "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100";
+}
+
+function textareaClassName() {
+  return "min-h-[140px] w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100";
+}
+
+function StatCard({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string | number;
+  helper: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/20 bg-white/10 p-4 text-white shadow-sm backdrop-blur">
+      <div className="text-xs font-semibold uppercase tracking-wide text-white/70">
+        {label}
+      </div>
+      <div className="mt-2 text-3xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-1 text-xs text-white/70">{helper}</div>
+    </div>
+  );
 }
 
 export default function MaterialCostsClient() {
@@ -104,6 +140,14 @@ export default function MaterialCostsClient() {
       );
     });
   }, [items, searchTerm]);
+
+  const activeItemCount = items.filter((item) => item.is_active).length;
+  const archivedItemCount = items.length - activeItemCount;
+  const itemsWithCodesCount = items.filter(
+    (item) =>
+      (item.ref_codes && item.ref_codes.length > 0) ||
+      (item.barcode_values && item.barcode_values.length > 0)
+  ).length;
 
   function resetForm() {
     setEditingId(null);
@@ -245,8 +289,11 @@ export default function MaterialCostsClient() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-4 sm:px-6 sm:py-6">
-      <div className="mx-auto max-w-5xl">
+    <PageLayout
+      eyebrow="Setup"
+      title="Material Costs"
+      description="Manage implant and material cost presets, REF numbers, and barcode values used in patient financial entries."
+    >
         <ConfirmDialog
           open={confirmOpen}
           title="Archive item?"
@@ -263,12 +310,44 @@ export default function MaterialCostsClient() {
           }}
         />
 
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
-          Implants / Materials Cost
-        </h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Maintain commonly used materials, default costs, REF numbers, and barcode values.
-        </p>
+        <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+          <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
+            <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr] lg:items-end">
+              <div>
+                <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+                  Materials library
+                </div>
+
+                <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                  Keep implant and material presets accurate.
+                </h2>
+
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
+                  Maintain default costs, REF numbers, and barcode values so
+                  patient entries can be completed faster and more consistently.
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <StatCard
+                  label="Active"
+                  value={activeItemCount}
+                  helper="Available in entry forms"
+                />
+                <StatCard
+                  label="Archived"
+                  value={archivedItemCount}
+                  helper="Hidden from presets"
+                />
+                <StatCard
+                  label="With codes"
+                  value={itemsWithCodesCount}
+                  helper="REF or barcode linked"
+                />
+              </div>
+            </div>
+          </div>
+        </section>
 
         {message && (
           <div className="mt-4">
@@ -278,15 +357,24 @@ export default function MaterialCostsClient() {
 
         <form
           onSubmit={saveItem}
-          className="mt-6 rounded-3xl border bg-white p-4 shadow-sm sm:p-5 lg:p-6"
+          className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm lg:p-6"
         >
+          <div className="mb-5">
+            <h2 className="text-lg font-semibold text-slate-950">
+              {editingId ? "Edit material preset" : "Add material preset"}
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Enter the material name, default cost, and any REF or barcode values used for matching.
+            </p>
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div className="md:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-700">
                 Item name
               </label>
               <input
-                className="w-full rounded-2xl border px-3 py-3 text-sm"
+                className={fieldClassName()}
                 value={form.name}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, name: e.target.value }))
@@ -302,7 +390,7 @@ export default function MaterialCostsClient() {
               <input
                 type="number"
                 step="0.01"
-                className="w-full rounded-2xl border px-3 py-3 text-sm"
+                className={fieldClassName()}
                 value={form.default_cost}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, default_cost: e.target.value }))
@@ -317,7 +405,7 @@ export default function MaterialCostsClient() {
               </label>
               <input
                 type="number"
-                className="w-full rounded-2xl border px-3 py-3 text-sm"
+                className={fieldClassName()}
                 value={form.sort_order}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, sort_order: e.target.value }))
@@ -330,7 +418,7 @@ export default function MaterialCostsClient() {
                 REF codes
               </label>
               <textarea
-                className="min-h-[140px] w-full rounded-2xl border px-3 py-3 text-sm"
+                className={textareaClassName()}
                 value={form.ref_codes_text}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, ref_codes_text: e.target.value }))
@@ -347,7 +435,7 @@ export default function MaterialCostsClient() {
                 Barcode values
               </label>
               <textarea
-                className="min-h-[140px] w-full rounded-2xl border px-3 py-3 text-sm"
+                className={textareaClassName()}
                 value={form.barcode_values_text}
                 onChange={(e) =>
                   setForm((prev) => ({
@@ -363,15 +451,21 @@ export default function MaterialCostsClient() {
             </div>
 
             <div className="md:col-span-2">
-              <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                 <input
                   type="checkbox"
                   checked={form.is_active}
                   onChange={(e) =>
                     setForm((prev) => ({ ...prev, is_active: e.target.checked }))
                   }
+                  className="h-4 w-4 rounded border-slate-300"
                 />
-                Active
+                <span>
+                  <span className="font-medium text-slate-900">Active preset</span>
+                  <span className="block text-xs text-slate-500">
+                    Active materials appear in patient-entry material dropdowns.
+                  </span>
+                </span>
               </label>
             </div>
           </div>
@@ -379,7 +473,7 @@ export default function MaterialCostsClient() {
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
             <button
               disabled={saving}
-              className="inline-flex w-full items-center justify-center rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white disabled:opacity-50 sm:w-auto"
+              className="inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-50 sm:w-auto"
             >
               {saving ? "Saving..." : editingId ? "Update item" : "Add item"}
             </button>
@@ -388,7 +482,7 @@ export default function MaterialCostsClient() {
               <button
                 type="button"
                 onClick={resetForm}
-                className="inline-flex w-full items-center justify-center rounded-2xl border px-4 py-3 text-sm font-medium sm:w-auto"
+                className="inline-flex w-full items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 sm:w-auto"
               >
                 Cancel
               </button>
@@ -396,7 +490,7 @@ export default function MaterialCostsClient() {
           </div>
         </form>
 
-        <div className="mt-6 rounded-3xl border bg-white p-4 shadow-sm sm:p-5 lg:p-6">
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm lg:p-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
             <div>
               <h2 className="text-xl font-semibold text-slate-900">Saved items</h2>
@@ -414,7 +508,7 @@ export default function MaterialCostsClient() {
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Search materials, REF, or barcode..."
-                className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               />
             </div>
           </div>
@@ -433,22 +527,27 @@ export default function MaterialCostsClient() {
             {filteredItems.map((item) => (
               <div
                 key={item.id}
-                className="rounded-2xl border p-4"
+                className="rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm"
               >
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div className="min-w-0">
                     <div className="font-medium text-slate-900">{item.name}</div>
 
                     <div className="mt-1 text-sm text-slate-600">
-                      ${Number(item.default_cost).toLocaleString("en-AU", {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}
+                      ${formatCurrency(item.default_cost)}
                     </div>
 
-                    <div className="mt-1 text-xs text-slate-500">
-                      Sort order: {item.sort_order} ·{" "}
-                      {item.is_active ? "Active" : "Archived"}
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                      <span>Sort order: {item.sort_order}</span>
+                      <span
+                        className={
+                          item.is_active
+                            ? "rounded-full bg-emerald-50 px-2.5 py-1 font-medium text-emerald-700 ring-1 ring-emerald-200"
+                            : "rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-600 ring-1 ring-slate-200"
+                        }
+                      >
+                        {item.is_active ? "Active" : "Archived"}
+                      </span>
                     </div>
 
                     <div className="mt-3">
@@ -496,7 +595,7 @@ export default function MaterialCostsClient() {
                     <button
                       type="button"
                       onClick={() => beginEdit(item)}
-                      className="rounded-xl border px-3 py-2 text-sm font-medium"
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
                     >
                       Edit
                     </button>
@@ -508,7 +607,7 @@ export default function MaterialCostsClient() {
                           setConfirmAction(() => () => archiveItem(item));
                           setConfirmOpen(true);
                         }}
-                        className="rounded-xl border px-3 py-2 text-sm font-medium text-red-600"
+                        className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 shadow-sm transition hover:bg-red-100"
                       >
                         Archive
                       </button>
@@ -516,7 +615,7 @@ export default function MaterialCostsClient() {
                       <button
                         type="button"
                         onClick={() => restoreItem(item)}
-                        className="rounded-xl border px-3 py-2 text-sm font-medium"
+                        className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
                       >
                         Restore
                       </button>
@@ -527,7 +626,6 @@ export default function MaterialCostsClient() {
             ))}
           </div>
         </div>
-      </div>
-    </main>
+    </PageLayout>
   );
 }

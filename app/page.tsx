@@ -1,149 +1,263 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 
-const cards = [
+const primaryActions = [
   {
-    title: "Service Fee Generation",
+    title: "Generate Service Fees",
     href: "/billing",
-    description:
-      "Generate service fee statements, locking, exports, and statement email workflows.",
+    description: "Run, lock, export, and email service fee statements.",
   },
   {
-    title: "Enter Lab, Materials & Incorrect Payments",
+    title: "Enter Lab, Implants & Corrections",
     href: "/patient-entries",
-    description:
-      "Record details of implants, material costs, and incorrect patient payment adjustments.",
+    description: "Record lab costs, implant materials, and incorrect payments.",
   },
   {
     title: "Enter Merchant Fees",
     href: "/billing-details",
-    description:
-      "Record merchant fees and any other supporting billing detail entries.",
-  },
-  {
-    title: "Edit Implant & Material Costs",
-    href: "/material-costs",
-    description:
-      "Update common implant and material cost presets used across billing.",
-  },
-  {
-    title: "Financial Dashboard",
-    href: "/financials",
-    description:
-      "Review charts, trends, and month-to-month financial performance.",
-  },
-  {
-    title: "Practice Manager",
-    href: "/practice-manager",
-    description: "Practice Manager tools",
-  },
-  {
-    title: "Admin",
-    href: "/admin",
-    description:
-      "Manage user access, permissions, edit providers and benchmarks.",
+    description: "Enter Afterpay, Humm, and supporting billing detail entries.",
   },
 ];
 
-export default function DashboardPage() {
+const modules = [
+  {
+    section: "Billing & Data Entry",
+    items: [
+      {
+        title: "Service Fee Generation",
+        href: "/billing",
+        description: "Generate statements, exports, locking, and billing workflows.",
+      },
+      {
+        title: "Patient Entries",
+        href: "/patient-entries",
+        description: "Implants, materials, lab costs, and incorrect payments.",
+      },
+      {
+        title: "Merchant Fees",
+        href: "/billing-details",
+        description: "Record merchant fees and billing adjustments.",
+      },
+    ],
+  },
+  {
+    section: "Reporting",
+    items: [
+      {
+        title: "Service Fee Reports",
+        href: "/financials",
+        description: "Review service fee trends and financial performance.",
+      },
+      {
+        title: "Benchmark Reports",
+        href: "/benchmarks/expense-reports",
+        description: "Track expenses, benchmarks, and performance trends.",
+      },
+      {
+        title: "KPI Scorecard",
+        href: "/practice-manager/kpis",
+        description: "Review practice KPIs and operational performance.",
+      },
+      {
+        title: "Wages and Overtime",
+        href: "/practice-manager/staff-wages-overtime-analysis",
+        description: "Review wage benchmarks and overtime patterns.",
+      },
+    ],
+  },
+  {
+    section: "Setup & Admin",
+    items: [
+      {
+        title: "Edit Material Costs",
+        href: "/material-costs",
+        description: "Manage implant and material cost presets.",
+      },
+      {
+        title: "Practice Manager Hub",
+        href: "/practice-manager",
+        description: "Operational tools and practice management reports.",
+      },
+      {
+        title: "Admin",
+        href: "/admin",
+        description: "Manage users, permissions, providers, and system settings.",
+      },
+    ],
+  },
+];
+
+function formatRole(role: string) {
+  if (!role) return "User";
+
+  return role
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function Card({
+  title,
+  description,
+  href,
+}: {
+  title: string;
+  description: string;
+  href: string;
+}) {
   return (
-    <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-100">
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
-        <section className="mb-6 overflow-hidden rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm backdrop-blur sm:mb-8 sm:p-6 lg:mb-10 lg:p-8">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-2xl">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-700 sm:text-sm">
-                Billing Portal
-              </p>
+    <Link
+      href={href}
+      className="group relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-6 shadow-sm transition duration-200 hover:-translate-y-1 hover:border-blue-200 hover:shadow-xl"
+    >
+      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-400" />
 
-              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl lg:text-5xl">
-                Financial Operations Dashboard
-              </h1>
+      <div className="flex h-full min-h-[150px] flex-col">
+        <div>
+          <h3 className="text-lg font-semibold text-slate-950 transition group-hover:text-blue-700">
+            {title}
+          </h3>
 
-              <p className="mt-4 text-sm leading-6 text-slate-600 sm:text-base sm:leading-7">
-                Welcome to the Focus Dental Specialists Portal.
-                Enter implant, lab and materials costs, record incorrect
-                payments, and generate service fee statements.
-              </p>
-            </div>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            {description}
+          </p>
+        </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:min-w-[360px]">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  Modules
+        <div className="mt-auto pt-6 text-sm font-semibold text-blue-700 transition group-hover:translate-x-1">
+          Open →
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+export default function DashboardPage() {
+  const [displayName, setDisplayName] = useState("there");
+  const [role, setRole] = useState("User");
+
+  useEffect(() => {
+    async function loadProfile() {
+      const supabase = createClient();
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) return;
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("full_name, role")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      const name =
+        profile?.full_name?.split(" ")[0] ||
+        user.email?.split("@")[0] ||
+        "there";
+
+      setDisplayName(name);
+      setRole(formatRole(profile?.role || "User"));
+    }
+
+    loadProfile();
+  }, []);
+
+  return (
+    <main className="min-h-screen bg-slate-50">
+      <div className="mx-auto max-w-7xl px-6 py-8">
+        <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
+          <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-8 py-10">
+            <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-3xl">
+                <div className="flex flex-wrap gap-2">
+                  <div className="inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80">
+                    Focus Dental Specialists
+                  </div>
+
+                  <div className="inline-flex rounded-full border border-emerald-300/30 bg-emerald-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-100">
+                    Secure Workspace
+                  </div>
                 </div>
-                <div className="mt-1 text-2xl font-semibold text-slate-900">
-                  {cards.length}
+
+                <h1 className="mt-4 text-3xl font-semibold tracking-tight text-white md:text-4xl">
+                  Welcome back, {displayName}
+                </h1>
+
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-white/80 md:text-base">
+                  Manage billing, track financial performance, and maintain
+                  accurate provider-level records from one central workspace.
+                </p>
+
+                <div className="mt-5 inline-flex items-center rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-sm text-white/85">
+                  <span className="mr-2 text-white/50">Role</span>
+                  <span className="font-semibold text-white">{role}</span>
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  Access
-                </div>
-                <div className="mt-1 text-sm font-semibold text-slate-900">
-                  Secure
-                </div>
-              </div>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <Link
+                  href="/billing"
+                  className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-slate-900 shadow-sm transition hover:bg-slate-100"
+                >
+                  Generate Service Fees
+                </Link>
 
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  Area
-                </div>
-                <div className="mt-1 text-sm font-semibold text-slate-900">
-                  Admin & Billing
-                </div>
+                <Link
+                  href="/financials"
+                  className="rounded-xl border border-white/30 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+                >
+                  View Reports
+                </Link>
               </div>
             </div>
           </div>
         </section>
 
-        <section>
-          <div className="mb-4 sm:mb-5">
-            <h2 className="text-lg font-semibold text-slate-900 sm:text-xl">
-              Portal Modules
+        <section className="mt-8">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-950">
+              Daily Actions
             </h2>
             <p className="mt-1 text-sm text-slate-600">
-              Select a section to manage billing, fees, providers, and
-              reporting.
+              Start with the workflows your team uses most often.
             </p>
           </div>
 
-          <div className="grid gap-4 sm:gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {cards.map((card) => (
-              <Link
-                key={card.href}
-                href={card.href}
-                className="group relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-1 hover:border-sky-200 hover:shadow-xl sm:p-6"
-              >
-                <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-sky-600 via-cyan-500 to-teal-400 opacity-90" />
-
-                <div className="mb-4 inline-flex rounded-full border border-sky-100 bg-sky-50 px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-sky-700 sm:mb-5 sm:text-xs">
-                  Module
-                </div>
-
-                <div className="flex min-h-[140px] flex-col sm:min-h-[160px]">
-                  <div>
-                    <h3 className="text-lg font-semibold leading-snug text-slate-900 transition-colors group-hover:text-sky-800 sm:text-xl">
-                      {card.title}
-                    </h3>
-
-                    <p className="mt-3 text-sm leading-6 text-slate-600">
-                      {card.description}
-                    </p>
-                  </div>
-
-                  <div className="mt-auto pt-6">
-                    <div className="inline-flex items-center gap-2 text-sm font-semibold text-sky-700 transition-all group-hover:gap-3">
-                      Open section
-                      <span aria-hidden="true">→</span>
-                    </div>
-                  </div>
-                </div>
-              </Link>
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            {primaryActions.map((item) => (
+              <Card key={item.href} {...item} />
             ))}
           </div>
+        </section>
+
+        <section className="mt-10 space-y-10">
+          {modules.map((group) => (
+            <div key={group.section}>
+              <div className="flex items-end justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-950">
+                    {group.section}
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {group.section === "Billing & Data Entry"
+                      ? "Core billing workflows and supporting entries."
+                      : group.section === "Reporting"
+                      ? "Dashboards and reports for monitoring performance."
+                      : "Configuration, setup, and administrative tools."}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {group.items.map((item) => (
+                  <Card key={item.href} {...item} />
+                ))}
+              </div>
+            </div>
+          ))}
         </section>
       </div>
     </main>
