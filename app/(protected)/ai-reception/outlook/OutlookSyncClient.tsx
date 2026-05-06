@@ -6,6 +6,9 @@ type SyncResult = {
   messageId: string;
   subject: string;
   status: "created" | "skipped" | "failed";
+  inboxItemId?: string;
+  pipeline?: any[];
+  attachmentDebug?: any;
   error?: string;
 };
 
@@ -41,11 +44,14 @@ export default function OutlookSyncClient() {
       }
 
       setSyncResponse(result);
+
       setMessage(
         `Sync complete. Imported ${result.imported}, skipped ${result.skipped}, failed ${result.failed}.`
       );
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Outlook sync failed.");
+      setMessage(
+        err instanceof Error ? err.message : "Outlook sync failed."
+      );
     } finally {
       setLoading(false);
     }
@@ -98,6 +104,7 @@ export default function OutlookSyncClient() {
             <div className="mb-3 grid gap-3 sm:grid-cols-4">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-xs text-slate-500">Mailbox</p>
+
                 <p className="mt-1 truncate text-sm font-medium text-slate-900">
                   {syncResponse.mailbox}
                 </p>
@@ -105,6 +112,7 @@ export default function OutlookSyncClient() {
 
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                 <p className="text-xs text-emerald-700">Imported</p>
+
                 <p className="mt-1 text-xl font-semibold text-emerald-800">
                   {syncResponse.imported}
                 </p>
@@ -112,6 +120,7 @@ export default function OutlookSyncClient() {
 
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-xs text-slate-500">Skipped</p>
+
                 <p className="mt-1 text-xl font-semibold text-slate-800">
                   {syncResponse.skipped}
                 </p>
@@ -119,6 +128,7 @@ export default function OutlookSyncClient() {
 
               <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
                 <p className="text-xs text-red-700">Failed</p>
+
                 <p className="mt-1 text-xl font-semibold text-red-800">
                   {syncResponse.failed}
                 </p>
@@ -131,7 +141,7 @@ export default function OutlookSyncClient() {
                   <tr>
                     <th className="px-4 py-3">Subject</th>
                     <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3">Error</th>
+                    <th className="px-4 py-3">Error / Pipeline</th>
                   </tr>
                 </thead>
 
@@ -141,6 +151,7 @@ export default function OutlookSyncClient() {
                       <td className="px-4 py-3 text-slate-800">
                         {result.subject}
                       </td>
+
                       <td className="px-4 py-3">
                         <span
                           className={`rounded-full px-2 py-1 text-xs font-medium ${
@@ -154,19 +165,20 @@ export default function OutlookSyncClient() {
                           {result.status}
                         </span>
                       </td>
-                     <td className="px-4 py-3 text-xs text-red-700">
-  {result.error ? (
-    <pre className="whitespace-pre-wrap">
-      {JSON.stringify(result.error, null, 2)}
-    </pre>
-  ) : result.pipeline ? (
-    <pre className="whitespace-pre-wrap text-slate-600">
-      {JSON.stringify(result.pipeline, null, 2)}
-    </pre>
-  ) : (
-    "—"
-  )}
-</td>
+
+                      <td className="px-4 py-3 text-xs text-red-700">
+                        {result.error ? (
+                          <pre className="whitespace-pre-wrap">
+                            {JSON.stringify(result.error, null, 2)}
+                          </pre>
+                        ) : result.pipeline ? (
+                          <pre className="whitespace-pre-wrap text-slate-600">
+                            {JSON.stringify(result.pipeline, null, 2)}
+                          </pre>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
