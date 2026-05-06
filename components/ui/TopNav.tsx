@@ -7,6 +7,7 @@ import { fetchStoredLogoDataUrl } from "@/lib/logo";
 import { createClient } from "@/lib/supabase/client";
 
 type UserRole =
+  | "super_admin"
   | "provider_readonly"
   | "billing_staff"
   | "practice_manager"
@@ -31,8 +32,74 @@ const primaryNavItems: NavItem[] = [
 
 const navGroups: NavGroup[] = [
   {
+    label: "AI Reception",
+    roles: ["super_admin"],
+    items: [
+      {
+        href: "/ai-reception/workbench",
+        label: "AI Workbench",
+        description: "Start to finish AI workflows",
+      },
+      {
+        href: "/ai-reception/inbox",
+        label: "AI Inbox",
+        description: "Manage correspondence and referrals",
+      },
+      {
+        href: "/ai-reception/approval-queue",
+        label: "Approval Queue",
+        description: "Review AI-classified referrals and correspondence",
+      },
+      {
+        href: "/ai-reception/upload",
+        label: "Upload Correspondence",
+        description: "Upload referrals, letters, x-rays and documents",
+      },
+      {
+        href: "/ai-reception/response-templates",
+        label: "Response Templates",
+        description: "Manage approved AI email response templates",
+      },
+      {
+      href: "/ai/brain",
+        label: "AI Brain",
+        description: "AI Brain",
+  },
+  {
+      href: "/ai/feedback",
+        label: "AI Feedback",
+        description: "AI Feedback",
+  },
+  {
+      href: "/ai/insights",
+        label: "AI Insights",
+        description: "AI Insights",
+  },
+  {
+      href: "/ai/learning-rules",
+        label: "AI Learning Rules",
+        description: "AI Learning Rules",
+  },
+  {
+      href: "/ai/examples",
+        label: "AI Examples",
+        description: "Upload existing email correspondance to train the AI brain",
+  },
+  {
+      href: "/ai/examples/new",
+        label: "AI New Examples",
+        description: "Upload existing email correspondance to train the AI brain",
+  },
+      {
+  href: "/ai-reception/manual-email",
+  label: "Manual Email",
+  description: "Paste emails for AI processing",
+}
+    ],
+  },
+  {
     label: "Service Fees",
-    roles: ["admin"],
+    roles: ["admin", "super_admin"],
     items: [
       {
         href: "/billing",
@@ -48,7 +115,13 @@ const navGroups: NavGroup[] = [
   },
   {
     label: "Billing",
-    roles: ["billing_staff", "practice_manager", "admin", "provider_readonly"],
+    roles: [
+      "billing_staff",
+      "practice_manager",
+      "admin",
+      "super_admin",
+      "provider_readonly",
+    ],
     items: [
       {
         href: "/patient-entries",
@@ -69,7 +142,7 @@ const navGroups: NavGroup[] = [
   },
   {
     label: "Practice Manager",
-    roles: ["practice_manager", "admin"],
+    roles: ["practice_manager", "admin", "super_admin"],
     items: [
       {
         href: "/practice-manager/kpis",
@@ -84,8 +157,7 @@ const navGroups: NavGroup[] = [
       {
         href: "/practice-manager/benchmark-analysis",
         label: "Benchmark Analysis",
-        description:
-          "Review benchmark percentages with category trend charts, status colours, and benchmark advice popups.",
+        description: "Review benchmark percentages with category trend charts.",
       },
       {
         href: "/practice-manager/tasks",
@@ -96,7 +168,7 @@ const navGroups: NavGroup[] = [
   },
   {
     label: "Provider",
-    roles: ["provider_readonly", "practice_manager", "admin"],
+    roles: ["provider_readonly", "practice_manager", "admin", "super_admin"],
     items: [
       {
         href: "/provider",
@@ -107,12 +179,12 @@ const navGroups: NavGroup[] = [
   },
   {
     label: "Admin",
-    roles: ["admin"],
+    roles: ["admin", "super_admin"],
     items: [
       {
         href: "/admin",
         label: "Admin",
-        description: "Admin settings and configuration including add users and providers",
+        description: "Admin settings and configuration",
       },
       {
         href: "/admin/reports",
@@ -124,13 +196,13 @@ const navGroups: NavGroup[] = [
         label: "Referrals",
         description: "Analyse metrics of referrals received",
       },
-        {
+      {
         href: "/benchmark/referrer-performance",
         label: "Top Referrers",
         description: "Analysis of top referrer metrics",
       },
       {
-        href: "/benchmark/referrer-opportunities",
+        href: "/benchmark/referral-opportunities",
         label: "Referrer Opportunities",
         description: "Analysis of non referring clinics",
       },
@@ -142,8 +214,7 @@ const navGroups: NavGroup[] = [
       {
         href: "/admin/provider-imports",
         label: "Imports and Syncs",
-        description:
-          "Import and sync Praktika reports - new patients, appointments, provider performance, FTAs and cancellations",
+        description: "Import and sync Praktika reports",
       },
       {
         href: "/benchmark/expense-reports",
@@ -155,7 +226,6 @@ const navGroups: NavGroup[] = [
         label: "Edit Benchmarks",
         description: "Edit benchmarks for KPI categories",
       },
-
     ],
   },
 ];
@@ -280,7 +350,7 @@ function MobileNavItem({
 export default function TopNav() {
   const pathname = usePathname();
   const router = useRouter();
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
 
   const [logo, setLogo] = useState<string | null>(null);
   const [role, setRole] = useState<UserRole | null>(null);
@@ -309,19 +379,10 @@ export default function TopNav() {
         return;
       }
 
-      const metadataRole =
-        user.user_metadata?.role || user.app_metadata?.role || null;
-
-      if (metadataRole) {
-        setRole(metadataRole as UserRole);
-        setLoadingRole(false);
-        return;
-      }
-
       const { data } = await supabase
-        .from("profiles")
+        .from("user_roles")
         .select("role")
-        .eq("id", user.id)
+        .eq("user_id", user.id)
         .single();
 
       setRole((data?.role as UserRole) || null);
@@ -499,12 +560,6 @@ export default function TopNav() {
                     </div>
                   );
                 })}
-
-              {!loadingRole && visibleMobileItems.length === 1 && (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  No role-based modules are available for this account.
-                </div>
-              )}
 
               <button
                 type="button"

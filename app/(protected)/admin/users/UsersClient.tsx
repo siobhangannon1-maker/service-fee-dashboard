@@ -7,6 +7,7 @@ import { writeAuditLog } from "@/lib/audit";
 
 type Role =
   | "admin"
+  | "super_admin"
   | "practice_manager"
   | "billing_staff"
   | "provider_readonly";
@@ -530,6 +531,7 @@ export default function UsersClient() {
                   }))
                 }
               >
+                <option value="super_admin">super_admin</option>
                 <option value="admin">admin</option>
                 <option value="practice_manager">practice_manager</option>
                 <option value="billing_staff">billing_staff</option>
@@ -634,6 +636,7 @@ export default function UsersClient() {
                           updateRole(row.user_id, e.target.value as Role)
                         }
                       >
+                        <option value="super_admin">super_admin</option>
                         <option value="admin">admin</option>
                         <option value="practice_manager">
                           practice_manager

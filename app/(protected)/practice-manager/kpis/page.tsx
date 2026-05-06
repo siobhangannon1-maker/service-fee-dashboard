@@ -714,7 +714,7 @@ function getSelectedPeriodOption(params: {
 export default async function PracticeManagerKpisPage({
   searchParams,
 }: PageProps) {
-  await requireRole(["admin", "practice_manager"]);
+  await requireRole(["admin", "practice_manager", "super_admin"]);
   const resolvedSearchParams = await searchParams;
 
   const defaultMonthKey = getDefaultMonthKey();

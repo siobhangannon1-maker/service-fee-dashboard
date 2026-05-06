@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 
 export type AppRole =
   | "admin"
+  | "super_admin"
   | "practice_manager"
   | "billing_staff"
   | "provider_readonly";

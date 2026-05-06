@@ -663,7 +663,7 @@ async function buildTrendRows(params: {
 export default async function StaffWagesOvertimeAnalysisPage({
   searchParams,
 }: PageProps) {
-  await requireRole(["admin", "practice_manager"]);
+  await requireRole(["admin", "practice_manager", "super_admin"]);
 
   const resolvedSearchParams = await searchParams;
   const requestedView = resolvedSearchParams?.view ?? "fortnight";

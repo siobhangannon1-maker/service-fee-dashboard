@@ -1,42 +1,42 @@
 import { NextResponse } from "next/server";
-import { xeroFetch } from "@/lib/xero";
+import { getXeroAccessToken } from "@/lib/xero";
+
+function parseDate(value: string) {
+  const match = value?.match(/\/Date\((\d+)\)\//);
+  if (match) return new Date(Number(match[1])).toISOString().slice(0, 10);
+  return value?.slice(0, 10);
+}
 
 export async function GET() {
   try {
-    const accountsData = await xeroFetch("/Accounts");
+    const token = await getXeroAccessToken();
 
-    const accounts = (accountsData?.Accounts || [])
-      .map((account: any) => ({
-        code: account.Code,
-        name: account.Name,
-        type: account.Type,
-        status: account.Status,
-      }))
-      .filter((account: any) => {
-        const text = `${account.code} ${account.name}`.toLowerCase();
-
-        return (
-          text.includes("440") ||
-          text.includes("labour") ||
-          text.includes("labor") ||
-          text.includes("hire")
-        );
-      });
-
-    const reportData = await xeroFetch(
-      "/Reports/ProfitAndLoss?fromDate=2026-04-01&toDate=2026-04-30"
+    const res = await fetch(
+      "https://api.xero.com/api.xro/2.0/Invoices?where=Type==\"ACCPAY\"",
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+      }
     );
+
+    const data = await res.json();
+
+    const accountSet = new Set<string>();
+
+    for (const bill of data?.Invoices || []) {
+      for (const line of bill.LineItems || []) {
+        if (line.AccountCode) {
+          accountSet.add(String(line.AccountCode));
+        }
+      }
+    }
 
     return NextResponse.json({
-      matchingAccounts: accounts,
-      profitAndLossPreview: reportData,
+      accounts: Array.from(accountSet).sort(),
     });
-  } catch (error: any) {
-    return NextResponse.json(
-      {
-        error: error.message,
-      },
-      { status: 500 }
-    );
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
