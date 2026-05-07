@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import AuditTrailPanel from "@/components/ai/AuditTrailPanel";
 import ConfirmPatientMatchButton from "@/components/ai/ConfirmPatientMatchButton";
 import RunPatientMatchButton from "@/components/ai/RunPatientMatchButton";
 
@@ -497,7 +498,9 @@ export default function WorkbenchClient({
 
   async function checkOutlookSent(item: InboxItem) {
     if (!item.outlook_conversation_id) {
-      setMessage("No Outlook conversation ID found. Create an Outlook draft first.");
+      setMessage(
+        "No Outlook conversation ID found. Create an Outlook draft first."
+      );
       return;
     }
 
@@ -875,7 +878,8 @@ export default function WorkbenchClient({
                     ) : null}
                     {selectedItem.sent_at ? (
                       <div suppressHydrationWarning>
-                        Sent at: {formatDateTime(selectedItem.sent_at, hasMounted)}
+                        Sent at:{" "}
+                        {formatDateTime(selectedItem.sent_at, hasMounted)}
                       </div>
                     ) : null}
                   </div>
@@ -1213,6 +1217,8 @@ export default function WorkbenchClient({
                   </p>
                 )}
               </div>
+
+              <AuditTrailPanel inboxItemId={selectedItem.id} />
             </>
           )}
         </section>

@@ -6,19 +6,27 @@ import {
   outlookSharedMailbox,
 } from "@/lib/microsoft/graph";
 
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+function isAuthorized(req: Request) {
+  const authHeader = req.headers.get("authorization");
+
+  const allowedSecrets = [
+    process.env.AI_WORKBENCH_CRON_SECRET,
+    process.env.CRON_SECRET,
+  ].filter(Boolean);
+
+  if (allowedSecrets.length === 0) {
+    return false;
+  }
+
+  return allowedSecrets.some((secret) => authHeader === `Bearer ${secret}`);
+}
+
 export async function GET(req: Request) {
   try {
-    const authHeader = req.headers.get("authorization");
-    const expectedToken = process.env.AI_WORKBENCH_CRON_SECRET;
-
-    if (!expectedToken) {
-      return NextResponse.json(
-        { error: "Missing AI_WORKBENCH_CRON_SECRET" },
-        { status: 500 }
-      );
-    }
-
-    if (authHeader !== `Bearer ${expectedToken}`) {
+    if (!isAuthorized(req)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

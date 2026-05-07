@@ -3,6 +3,13 @@ import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
+type AppRole =
+  | "admin"
+  | "super_admin"
+  | "practice_manager"
+  | "billing_staff"
+  | "provider_readonly";
+
 export async function GET() {
   try {
     const cookieStore = await cookies();
@@ -39,7 +46,13 @@ export async function GET() {
       .eq("user_id", user.id)
       .single();
 
-    if (roleError || !roleRow || roleRow.role !== "admin") {
+    const currentUserRole = roleRow?.role as AppRole | undefined;
+
+    if (
+      roleError ||
+      !currentUserRole ||
+      !["admin", "super_admin"].includes(currentUserRole)
+    ) {
       return NextResponse.json(
         { error: "Only admins can view users." },
         { status: 403 }
@@ -48,7 +61,13 @@ export async function GET() {
 
     const supabaseAdmin = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
+      }
     );
 
     const { data: authUsers, error: usersError } =
@@ -63,9 +82,13 @@ export async function GET() {
 
     const userIds = authUsers.users.map((u) => u.id);
 
+    if (userIds.length === 0) {
+      return NextResponse.json({ users: [] });
+    }
+
     const { data: profiles, error: profilesError } = await supabaseAdmin
       .from("profiles")
-      .select("id, full_name")
+      .select("id, email, phone, full_name, phone_verified, invited_by_sms")
       .in("id", userIds);
 
     if (profilesError) {
@@ -87,29 +110,59 @@ export async function GET() {
       );
     }
 
-    const profilesById = new Map<string, string | null>(
-      (profiles || []).map((profile) => [profile.id, profile.full_name])
+    const profilesById = new Map<
+      string,
+      {
+        email: string | null;
+        phone: string | null;
+        full_name: string | null;
+        phone_verified: boolean;
+        invited_by_sms: boolean;
+      }
+    >(
+      (profiles || []).map((profile) => [
+        profile.id,
+        {
+          email: profile.email ?? null,
+          phone: profile.phone ?? null,
+          full_name: profile.full_name ?? null,
+          phone_verified: profile.phone_verified ?? false,
+          invited_by_sms: profile.invited_by_sms ?? false,
+        },
+      ])
     );
 
     const statusById = new Map<string, boolean>(
       (statuses || []).map((status) => [status.user_id, status.is_active])
     );
 
-    const users = authUsers.users.map((authUser) => ({
-      user_id: authUser.id,
-      email: authUser.email ?? null,
-      full_name: profilesById.get(authUser.id) ?? null,
-      is_active: statusById.get(authUser.id) ?? true,
-    }));
+    const users = authUsers.users.map((authUser) => {
+      const profile = profilesById.get(authUser.id);
+
+      return {
+        user_id: authUser.id,
+        email: profile?.email ?? authUser.email ?? null,
+        phone: profile?.phone ?? authUser.phone ?? null,
+        full_name:
+          profile?.full_name ??
+          (authUser.user_metadata?.full_name as string | undefined) ??
+          null,
+        phone_verified:
+          profile?.phone_verified ??
+          Boolean(authUser.phone_confirmed_at),
+        invited_by_sms:
+          profile?.invited_by_sms ??
+          Boolean(authUser.user_metadata?.invited_by_sms),
+        is_active: statusById.get(authUser.id) ?? true,
+      };
+    });
 
     return NextResponse.json({ users });
   } catch (error) {
     return NextResponse.json(
       {
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to load users.",
+          error instanceof Error ? error.message : "Failed to load users.",
       },
       { status: 500 }
     );

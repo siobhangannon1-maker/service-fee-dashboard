@@ -12,10 +12,13 @@ type Role =
   | "billing_staff"
   | "provider_readonly";
 
+type InviteMethod = "email" | "sms";
+
 type UserRow = {
   user_id: string;
   role: Role;
   email?: string | null;
+  phone?: string | null;
   full_name?: string | null;
   original_full_name?: string | null;
   is_active: boolean;
@@ -25,13 +28,17 @@ type UserRow = {
 };
 
 type InviteForm = {
+  invite_method: InviteMethod;
   email: string;
+  phone: string;
   full_name: string;
   role: Role;
 };
 
 const emptyInviteForm: InviteForm = {
+  invite_method: "email",
   email: "",
+  phone: "",
   full_name: "",
   role: "billing_staff",
 };
@@ -76,6 +83,7 @@ export default function UsersClient() {
         users?: Array<{
           user_id: string;
           email?: string | null;
+          phone?: string | null;
           full_name?: string | null;
           is_active?: boolean;
         }>;
@@ -96,6 +104,7 @@ export default function UsersClient() {
         string,
         {
           email?: string | null;
+          phone?: string | null;
           full_name?: string | null;
           is_active?: boolean;
         }
@@ -104,6 +113,7 @@ export default function UsersClient() {
       for (const user of result.users || []) {
         usersById.set(user.user_id, {
           email: user.email ?? null,
+          phone: user.phone ?? null,
           full_name: user.full_name ?? null,
           is_active: user.is_active ?? true,
         });
@@ -116,6 +126,7 @@ export default function UsersClient() {
           user_id: row.user_id,
           role: row.role,
           email: matchedUser?.email ?? null,
+          phone: matchedUser?.phone ?? null,
           full_name: matchedUser?.full_name ?? null,
           original_full_name: matchedUser?.full_name ?? null,
           is_active: matchedUser?.is_active ?? true,
@@ -131,6 +142,7 @@ export default function UsersClient() {
         roleRows.map((row) => ({
           ...row,
           email: null,
+          phone: null,
           full_name: null,
           original_full_name: null,
           is_active: true,
@@ -192,9 +204,7 @@ export default function UsersClient() {
     }
 
     setRows((prev) =>
-      prev.map((r) =>
-        r.user_id === userId ? { ...r, savingName: true } : r
-      )
+      prev.map((r) => (r.user_id === userId ? { ...r, savingName: true } : r))
     );
 
     try {
@@ -326,9 +336,9 @@ export default function UsersClient() {
   async function resendInvite(userId: string) {
     const row = rows.find((r) => r.user_id === userId);
 
-    if (!row?.email) {
+    if (!row?.email && !row?.phone) {
       setTone("error");
-      setMessage("This user does not have an email address.");
+      setMessage("This user does not have an email address or phone number.");
       return;
     }
 
@@ -339,13 +349,17 @@ export default function UsersClient() {
     );
 
     try {
+      const inviteMethod: InviteMethod = row.phone ? "sms" : "email";
+
       const response = await fetch("/api/admin/resend-invite", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          email: row.email,
+          invite_method: inviteMethod,
+          email: row.email ?? "",
+          phone: row.phone ?? "",
           full_name: row.full_name ?? "",
           role: row.role,
         }),
@@ -369,13 +383,19 @@ export default function UsersClient() {
         entityType: "user_invite",
         entityId: userId,
         metadata: {
-          email: row.email,
+          invite_method: inviteMethod,
+          email: row.email ?? null,
+          phone: row.phone ?? null,
           role: row.role,
         },
       });
 
       setTone("success");
-      setMessage("Invite email sent again.");
+      setMessage(
+        inviteMethod === "sms"
+          ? "SMS invite sent again."
+          : "Invite email sent again."
+      );
     } catch (err) {
       setTone("error");
       setMessage(err instanceof Error ? err.message : "Failed to resend invite.");
@@ -392,12 +412,20 @@ export default function UsersClient() {
     e.preventDefault();
     setMessage("");
 
+    const inviteMethod = inviteForm.invite_method;
     const email = inviteForm.email.trim().toLowerCase();
+    const phone = inviteForm.phone.trim();
     const fullName = inviteForm.full_name.trim();
 
-    if (!email) {
+    if (inviteMethod === "email" && !email) {
       setTone("error");
       setMessage("Please enter an email address.");
+      return;
+    }
+
+    if (inviteMethod === "sms" && !phone) {
+      setTone("error");
+      setMessage("Please enter a mobile number.");
       return;
     }
 
@@ -410,7 +438,9 @@ export default function UsersClient() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          invite_method: inviteMethod,
           email,
+          phone,
           full_name: fullName,
           role: inviteForm.role,
         }),
@@ -429,8 +459,24 @@ export default function UsersClient() {
         throw new Error(result.error || "Failed to invite user.");
       }
 
+      await writeAuditLog({
+        action: "user_invited",
+        entityType: "user_invite",
+        metadata: {
+          invite_method: inviteMethod,
+          email: email || null,
+          phone: phone || null,
+          full_name: fullName || null,
+          role: inviteForm.role,
+        },
+      });
+
       setTone("success");
-      setMessage("User invited successfully.");
+      setMessage(
+        inviteMethod === "sms"
+          ? "User invited successfully by SMS."
+          : "User invited successfully by email."
+      );
       setInviteForm(emptyInviteForm);
       await loadRoles();
     } catch (err) {
@@ -451,12 +497,14 @@ export default function UsersClient() {
     return rows.filter((row) => {
       const name = row.full_name?.toLowerCase() ?? "";
       const email = row.email?.toLowerCase() ?? "";
+      const phone = row.phone?.toLowerCase() ?? "";
       const role = row.role.toLowerCase();
       const status = row.is_active ? "active" : "inactive";
 
       return (
         name.includes(term) ||
         email.includes(term) ||
+        phone.includes(term) ||
         role.includes(term) ||
         status.includes(term)
       );
@@ -480,13 +528,31 @@ export default function UsersClient() {
         <div className="mt-6 rounded-3xl border bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Invite New User</h2>
           <p className="mt-1 text-sm text-slate-600">
-            Send an invitation email and assign a role at the same time.
+            Send an email invite or SMS invite and assign a role at the same
+            time.
           </p>
 
           <form
             onSubmit={inviteUser}
             className="mt-4 grid gap-4 md:grid-cols-2"
           >
+            <div>
+              <label className="mb-1 block text-sm">Invite method</label>
+              <select
+                className="w-full rounded-2xl border px-3 py-2"
+                value={inviteForm.invite_method}
+                onChange={(e) =>
+                  setInviteForm((prev) => ({
+                    ...prev,
+                    invite_method: e.target.value as InviteMethod,
+                  }))
+                }
+              >
+                <option value="email">Email invite</option>
+                <option value="sms">SMS invite</option>
+              </select>
+            </div>
+
             <div>
               <label className="mb-1 block text-sm">Full name</label>
               <input
@@ -503,21 +569,43 @@ export default function UsersClient() {
               />
             </div>
 
-            <div>
-              <label className="mb-1 block text-sm">Email address</label>
-              <input
-                type="email"
-                className="w-full rounded-2xl border px-3 py-2"
-                placeholder="e.g. jane@example.com"
-                value={inviteForm.email}
-                onChange={(e) =>
-                  setInviteForm((prev) => ({
-                    ...prev,
-                    email: e.target.value,
-                  }))
-                }
-              />
-            </div>
+            {inviteForm.invite_method === "email" ? (
+              <div>
+                <label className="mb-1 block text-sm">Email address</label>
+                <input
+                  type="email"
+                  className="w-full rounded-2xl border px-3 py-2"
+                  placeholder="e.g. jane@example.com"
+                  value={inviteForm.email}
+                  onChange={(e) =>
+                    setInviteForm((prev) => ({
+                      ...prev,
+                      email: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="mb-1 block text-sm">Mobile phone</label>
+                <input
+                  type="tel"
+                  className="w-full rounded-2xl border px-3 py-2"
+                  placeholder="e.g. 0412 345 678"
+                  value={inviteForm.phone}
+                  onChange={(e) =>
+                    setInviteForm((prev) => ({
+                      ...prev,
+                      phone: e.target.value,
+                    }))
+                  }
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Australian numbers like 0412 345 678 will be converted to +61
+                  format by the API.
+                </p>
+              </div>
+            )}
 
             <div>
               <label className="mb-1 block text-sm">Role</label>
@@ -545,7 +633,11 @@ export default function UsersClient() {
                 disabled={inviting}
                 className="rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
               >
-                {inviting ? "Sending Invite..." : "Invite User"}
+                {inviting
+                  ? "Sending Invite..."
+                  : inviteForm.invite_method === "sms"
+                  ? "Send SMS Invite"
+                  : "Send Email Invite"}
               </button>
             </div>
           </form>
@@ -556,7 +648,7 @@ export default function UsersClient() {
             <div>
               <h2 className="text-xl font-semibold">Existing Users</h2>
               <p className="mt-1 text-sm text-slate-600">
-                Search by full name, email, role, or status.
+                Search by full name, email, phone, role, or status.
               </p>
             </div>
 
@@ -565,7 +657,7 @@ export default function UsersClient() {
               <input
                 type="text"
                 className="w-full rounded-2xl border px-3 py-2"
-                placeholder="Search name, email, role, or status"
+                placeholder="Search name, email, phone, role, or status"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -606,6 +698,11 @@ export default function UsersClient() {
                       <div className="mt-3 text-sm text-slate-600">
                         {row.email || "No email found"}
                       </div>
+
+                      <div className="mt-1 text-sm text-slate-600">
+                        {row.phone || "No phone found"}
+                      </div>
+
                       <div className="mt-1 break-all text-xs text-slate-500">
                         User ID: {row.user_id}
                       </div>
@@ -676,7 +773,7 @@ export default function UsersClient() {
                     <div className="flex items-end">
                       <button
                         type="button"
-                        disabled={row.resendingInvite || !row.email}
+                        disabled={row.resendingInvite || (!row.email && !row.phone)}
                         onClick={() => resendInvite(row.user_id)}
                         className="w-full rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
                       >
