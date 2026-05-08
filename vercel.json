@@ -9,17 +9,10 @@
       "schedule": "0 0 * * *"
     },
     {
-      "path": "/api/ai/brain/auto-import-outlook-inbox",
-      "schedule": "0 0 * * *"
-    },
-    {
       "path": "/api/ai/brain/auto-run-pending-ocr",
       "schedule": "0 0 * * *"
-    },
-    {
-      "path": "/api/ai/brain/auto-check-outlook-sent",
-      "schedule": "0 0 * * *"
     }
+
   ]
 }
   
