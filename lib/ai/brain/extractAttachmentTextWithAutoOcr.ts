@@ -1,4 +1,4 @@
-import pdf from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 import { createWorker } from "tesseract.js";
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -81,8 +81,14 @@ async function downloadAttachmentBuffer(attachment: ImportedAttachment) {
 }
 
 async function extractPdfText(buffer: Buffer) {
-  const parsed = await pdf(buffer);
-  return normaliseText(parsed.text || "");
+  const parser = new PDFParse({ data: buffer });
+
+  try {
+    const result = await parser.getText();
+    return normaliseText(result.text || "");
+  } finally {
+    await parser.destroy();
+  }
 }
 
 async function runTesseractOnImageBuffer(buffer: Buffer) {
