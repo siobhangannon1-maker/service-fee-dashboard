@@ -11,6 +11,7 @@ const protectedPaths = [
   "/practice-manager",
   "/material-costs",
   "/benchmarks",
+  "/ai-reception",
 ];
 
 const authPaths = ["/login"];
