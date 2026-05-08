@@ -2,7 +2,24 @@
   "crons": [
     {
       "path": "/api/ai/brain/auto-check-outlook-sent",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/ai/brain/auto-import-outlook-inbox",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/ai/brain/auto-import-outlook-inbox",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/ai/brain/auto-run-pending-ocr",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/ai/brain/auto-check-outlook-sent",
       "schedule": "*/10 * * * *"
     }
   ]
 }
+  

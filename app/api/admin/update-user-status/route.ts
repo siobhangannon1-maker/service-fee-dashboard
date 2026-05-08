@@ -39,7 +39,11 @@ export async function POST(request: Request) {
       .eq("user_id", user.id)
       .single();
 
-    if (roleError || !roleRow || roleRow.role !== "admin") {
+    if (
+  roleError ||
+  !roleRow ||
+  !["admin", "super_admin"].includes(roleRow.role)
+) {
       return NextResponse.json(
         { error: "Only admins can update user status." },
         { status: 403 }

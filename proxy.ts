@@ -1,7 +1,18 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
-const protectedPaths = ["/billing", "/billing-details", "/patient-entries", "/providers"];
+const protectedPaths = [
+  "/billing",
+  "/billing-details",
+  "/patient-entries",
+  "/providers",
+  "/financials",
+  "/admin",
+  "/practice-manager",
+  "/material-costs",
+  "/benchmarks",
+];
+
 const authPaths = ["/login"];
 
 export async function proxy(request: NextRequest) {
@@ -32,7 +43,10 @@ export async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const pathname = request.nextUrl.pathname;
-  const isProtected = protectedPaths.some((path) => pathname.startsWith(path));
+
+  const isProtected =
+    pathname === "/" || protectedPaths.some((path) => pathname.startsWith(path));
+
   const isAuthPage = authPaths.some((path) => pathname.startsWith(path));
 
   if (isProtected && !user) {
@@ -59,5 +73,11 @@ export const config = {
     "/billing-details/:path*",
     "/patient-entries/:path*",
     "/providers/:path*",
+    "/financials/:path*",
+    "/admin/:path*",
+    "/practice-manager/:path*",
+    "/material-costs/:path*",
+    "/benchmarks/:path*",
+    "/ai-reception/:path*",
   ],
 };

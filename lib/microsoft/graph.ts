@@ -31,6 +31,36 @@ export type OutlookSentMessageResult = {
   sentDateTime?: string | null;
 };
 
+export type OutlookInboxMessage = {
+  id: string;
+  subject?: string | null;
+  bodyPreview?: string | null;
+  receivedDateTime?: string | null;
+  conversationId?: string | null;
+  webLink?: string | null;
+  from?: {
+    emailAddress?: {
+      name?: string | null;
+      address?: string | null;
+    };
+  } | null;
+  body?: {
+    contentType?: string | null;
+    content?: string | null;
+  } | null;
+  hasAttachments?: boolean | null;
+};
+
+export type OutlookAttachment = {
+  id: string;
+  name?: string | null;
+  contentType?: string | null;
+  size?: number | null;
+  isInline?: boolean | null;
+  contentBytes?: string | null;
+  "@odata.type"?: string;
+};
+
 async function getGraphAccessToken() {
   const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
 
@@ -191,62 +221,85 @@ export async function findSentMessageByConversationId({
   conversationId: string;
 }): Promise<OutlookSentMessageResult | null> {
   const encodedMailbox = encodeURIComponent(mailbox);
-  const escapedConversationId = conversationId.replaceAll("'", "''");
 
   const path =
     `/users/${encodedMailbox}/mailFolders/SentItems/messages` +
-    `?$top=10` +
+    `?$top=25` +
     `&$select=id,subject,webLink,conversationId,sentDateTime` +
-    `&$orderby=sentDateTime desc` +
-    `&$filter=conversationId eq '${encodeURIComponent(escapedConversationId)}'`;
+    `&$orderby=sentDateTime desc`;
 
-  try {
-    const result = await graphFetch(path, {
-      method: "GET",
-    });
+  const result = await graphFetch(path, { method: "GET" });
+  const messages = result?.value || [];
 
-    const messages = result?.value || [];
+  const match = messages.find(
+    (message: any) => message.conversationId === conversationId
+  );
 
-    if (!messages.length) {
-      return null;
-    }
+  if (!match) return null;
 
-    const message = messages[0];
+  return {
+    id: match.id,
+    subject: match.subject,
+    webLink: match.webLink,
+    conversationId: match.conversationId,
+    sentDateTime: match.sentDateTime,
+  };
+}
 
-    return {
-      id: message.id,
-      subject: message.subject,
-      webLink: message.webLink,
-      conversationId: message.conversationId,
-      sentDateTime: message.sentDateTime,
-    };
-  } catch {
-    const fallbackPath =
-      `/users/${encodedMailbox}/mailFolders/SentItems/messages` +
-      `?$top=25` +
-      `&$select=id,subject,webLink,conversationId,sentDateTime` +
-      `&$orderby=sentDateTime desc`;
+export async function listRecentInboxMessages({
+  mailbox = outlookSharedMailbox,
+  limit = 10,
+}: {
+  mailbox?: string;
+  limit?: number;
+}): Promise<OutlookInboxMessage[]> {
+  const safeLimit = Math.min(Math.max(limit, 1), 25);
+  const encodedMailbox = encodeURIComponent(mailbox);
 
-    const result = await graphFetch(fallbackPath, {
-      method: "GET",
-    });
+  const path =
+    `/users/${encodedMailbox}/mailFolders/Inbox/messages` +
+    `?$top=${safeLimit}` +
+    `&$select=id,subject,bodyPreview,receivedDateTime,conversationId,webLink,from,body,hasAttachments` +
+    `&$orderby=receivedDateTime desc`;
 
-    const messages = result?.value || [];
+  const result = await graphFetch(path, { method: "GET" });
 
-    const match = messages.find(
-      (message: any) => message.conversationId === conversationId
-    );
+  return result?.value || [];
+}
 
-    if (!match) {
-      return null;
-    }
+export async function listMessageAttachments({
+  mailbox = outlookSharedMailbox,
+  messageId,
+}: {
+  mailbox?: string;
+  messageId: string;
+}): Promise<OutlookAttachment[]> {
+  const encodedMailbox = encodeURIComponent(mailbox);
+  const encodedMessageId = encodeURIComponent(messageId);
 
-    return {
-      id: match.id,
-      subject: match.subject,
-      webLink: match.webLink,
-      conversationId: match.conversationId,
-      sentDateTime: match.sentDateTime,
-    };
-  }
+  const result = await graphFetch(
+    `/users/${encodedMailbox}/messages/${encodedMessageId}/attachments?$top=20`,
+    { method: "GET" }
+  );
+
+  return result?.value || [];
+}
+
+export async function getMessageAttachment({
+  mailbox = outlookSharedMailbox,
+  messageId,
+  attachmentId,
+}: {
+  mailbox?: string;
+  messageId: string;
+  attachmentId: string;
+}): Promise<OutlookAttachment> {
+  const encodedMailbox = encodeURIComponent(mailbox);
+  const encodedMessageId = encodeURIComponent(messageId);
+  const encodedAttachmentId = encodeURIComponent(attachmentId);
+
+  return graphFetch(
+    `/users/${encodedMailbox}/messages/${encodedMessageId}/attachments/${encodedAttachmentId}`,
+    { method: "GET" }
+  );
 }

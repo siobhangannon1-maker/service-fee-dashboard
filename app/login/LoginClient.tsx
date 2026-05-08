@@ -24,6 +24,9 @@ export default function LoginClient() {
   const [otpSent, setOtpSent] = useState(false);
 
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"default" | "error">(
+    "default"
+  );
   const [loading, setLoading] = useState(false);
 
   const next = searchParams.get("next") || "/";
@@ -33,21 +36,20 @@ export default function LoginClient() {
   }, []);
 
   function normaliseAustralianPhone(input: string) {
-    const raw = input.trim().replace(/\s+/g, "");
+    const raw = String(input || "").trim();
 
     if (!raw) return "";
 
-    if (raw.startsWith("+")) return raw;
+    const cleaned = raw.replace(/[^\d+]/g, "");
 
-    if (raw.startsWith("04")) {
-      return `+61${raw.slice(1)}`;
+    if (cleaned.startsWith("+61")) return cleaned;
+    if (cleaned.startsWith("61")) return `+${cleaned}`;
+    if (cleaned.startsWith("04")) return `+61${cleaned.slice(1)}`;
+    if (cleaned.startsWith("4") && cleaned.length === 9) {
+      return `+61${cleaned}`;
     }
 
-    if (raw.startsWith("4") && raw.length === 9) {
-      return `+61${raw}`;
-    }
-
-    return raw;
+    return cleaned;
   }
 
   async function finishLogin() {
@@ -59,6 +61,7 @@ export default function LoginClient() {
     const rawText = await response.text();
 
     let result: { is_active?: boolean; error?: string } = {};
+
     try {
       result = rawText ? JSON.parse(rawText) : {};
     } catch {
@@ -71,10 +74,13 @@ export default function LoginClient() {
 
     if (!result.is_active) {
       await supabase.auth.signOut();
+
+      setMessageTone("error");
       setMessage(
         "Your account has been deactivated. Please contact accounts@focusoms.com.au."
       );
       setLoading(false);
+
       router.replace("/account-inactive");
       router.refresh();
       return;
@@ -87,6 +93,7 @@ export default function LoginClient() {
   async function handleEmailLogin(e: FormEvent) {
     e.preventDefault();
     setMessage("");
+    setMessageTone("default");
     setLoading(true);
 
     const { error } = await supabase.auth.signInWithPassword({
@@ -95,6 +102,7 @@ export default function LoginClient() {
     });
 
     if (error) {
+      setMessageTone("error");
       setMessage(error.message);
       setLoading(false);
       return;
@@ -104,6 +112,8 @@ export default function LoginClient() {
       await finishLogin();
     } catch (err) {
       await supabase.auth.signOut();
+
+      setMessageTone("error");
       setMessage(
         err instanceof Error ? err.message : "Failed to complete sign in."
       );
@@ -114,35 +124,85 @@ export default function LoginClient() {
   async function sendSmsCode(e: FormEvent) {
     e.preventDefault();
     setMessage("");
+    setMessageTone("default");
     setLoading(true);
 
-    const cleanPhone = normaliseAustralianPhone(phone);
+    try {
+      const cleanPhone = normaliseAustralianPhone(phone);
 
-    if (!cleanPhone) {
-      setMessage("Please enter your mobile number.");
+      if (!cleanPhone) {
+        setMessageTone("error");
+        setMessage("Please enter your mobile number.");
+        setLoading(false);
+        return;
+      }
+
+      const lookupResponse = await fetch("/api/auth/check-phone-user", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          phone: cleanPhone,
+        }),
+      });
+
+      const lookupText = await lookupResponse.text();
+
+      let lookupResult: {
+        exists?: boolean;
+        error?: string;
+      } = {};
+
+      try {
+        lookupResult = lookupText ? JSON.parse(lookupText) : {};
+      } catch {
+        throw new Error("Invalid server response.");
+      }
+
+      if (!lookupResponse.ok) {
+        throw new Error(lookupResult.error || "Failed to verify user.");
+      }
+
+      if (!lookupResult.exists) {
+        setMessageTone("error");
+        setMessage(
+          "No account exists for this mobile number. Please contact your administrator."
+        );
+        setLoading(false);
+        return;
+      }
+
+      const { error } = await supabase.auth.signInWithOtp({
+        phone: cleanPhone,
+        options: {
+          shouldCreateUser: true,
+        },
+      });
+
+      if (error) {
+        setMessageTone("error");
+        setMessage(error.message);
+        setLoading(false);
+        return;
+      }
+
+      setPhone(cleanPhone);
+      setOtpSent(true);
+      setMessageTone("default");
+      setMessage("SMS code sent. Enter the code to continue.");
       setLoading(false);
-      return;
-    }
-
-    const { error } = await supabase.auth.signInWithOtp({
-      phone: cleanPhone,
-    });
-
-    if (error) {
-      setMessage(error.message);
+    } catch (err) {
+      setMessageTone("error");
+      setMessage(err instanceof Error ? err.message : "Failed to send SMS code.");
       setLoading(false);
-      return;
     }
-
-    setPhone(cleanPhone);
-    setOtpSent(true);
-    setMessage("SMS code sent. Enter the code to continue.");
-    setLoading(false);
   }
 
   async function verifySmsCode(e: FormEvent) {
     e.preventDefault();
     setMessage("");
+    setMessageTone("default");
     setLoading(true);
 
     const cleanPhone = normaliseAustralianPhone(phone);
@@ -154,15 +214,36 @@ export default function LoginClient() {
     });
 
     if (error) {
+      setMessageTone("error");
       setMessage(error.message);
       setLoading(false);
       return;
     }
 
     try {
+      const linkResponse = await fetch("/api/auth/link-phone-session", {
+        method: "POST",
+      });
+
+      const linkText = await linkResponse.text();
+
+      let linkResult: { error?: string; success?: boolean } = {};
+
+      try {
+        linkResult = linkText ? JSON.parse(linkText) : {};
+      } catch {
+        throw new Error("Server returned non-JSON response while linking phone.");
+      }
+
+      if (!linkResponse.ok) {
+        throw new Error(linkResult.error || "Failed to link phone login.");
+      }
+
       await finishLogin();
     } catch (err) {
       await supabase.auth.signOut();
+
+      setMessageTone("error");
       setMessage(
         err instanceof Error ? err.message : "Failed to complete sign in."
       );
@@ -214,11 +295,53 @@ export default function LoginClient() {
                 </p>
               </div>
             </div>
+
+            <div className="grid gap-4 text-sm text-slate-300 sm:grid-cols-3">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="font-medium text-white">Monthly billing</div>
+                <div className="mt-1">Service fee calculation and locking</div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="font-medium text-white">
+                  Provider statements
+                </div>
+                <div className="mt-1">Export and email draft statements</div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="font-medium text-white">Admin controls</div>
+                <div className="mt-1">
+                  Roles, materials, and financial insights
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
         <div className="flex items-center justify-center px-6 py-10 sm:px-8 lg:px-12">
           <div className="w-full max-w-md">
+            <div className="mb-8 flex items-center gap-4 lg:hidden">
+              <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+                {logo ? (
+                  <img
+                    src={logo}
+                    alt="Focus logo"
+                    className="h-10 w-10 object-contain"
+                  />
+                ) : (
+                  <div className="h-8 w-8 rounded-xl bg-slate-100" />
+                )}
+              </div>
+
+              <div>
+                <div className="text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+                  Focus Dental Specialists
+                </div>
+                <div className="text-xl font-semibold tracking-tight text-slate-900">
+                  Service Fee Dashboard
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-[28px] border border-slate-200 bg-white p-8 shadow-xl shadow-slate-200/60">
               <div>
                 <div className="text-sm font-medium uppercase tracking-[0.18em] text-sky-700">
@@ -228,7 +351,8 @@ export default function LoginClient() {
                   Sign in to continue
                 </h2>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                  Use email/password or sign in with a mobile SMS code.
+                  Access your billing dashboard, statements, provider records,
+                  and admin tools securely.
                 </p>
               </div>
 
@@ -238,25 +362,28 @@ export default function LoginClient() {
                   onClick={() => {
                     setMode("email");
                     setMessage("");
+                    setMessageTone("default");
                   }}
-                  className={`rounded-xl px-3 py-2 text-sm font-medium ${
+                  className={`rounded-xl px-3 py-2 text-sm font-medium transition ${
                     mode === "email"
                       ? "bg-white text-slate-900 shadow-sm"
-                      : "text-slate-600"
+                      : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   Email
                 </button>
+
                 <button
                   type="button"
                   onClick={() => {
                     setMode("sms");
                     setMessage("");
+                    setMessageTone("default");
                   }}
-                  className={`rounded-xl px-3 py-2 text-sm font-medium ${
+                  className={`rounded-xl px-3 py-2 text-sm font-medium transition ${
                     mode === "sms"
                       ? "bg-white text-slate-900 shadow-sm"
-                      : "text-slate-600"
+                      : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   SMS
@@ -296,7 +423,13 @@ export default function LoginClient() {
                   </div>
 
                   {message && (
-                    <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    <div
+                      className={`rounded-2xl border px-4 py-3 text-sm ${
+                        messageTone === "error"
+                          ? "border-red-200 bg-red-50 text-red-700"
+                          : "border-slate-200 bg-slate-50 text-slate-700"
+                      }`}
+                    >
                       {message}
                     </div>
                   )}
@@ -309,12 +442,14 @@ export default function LoginClient() {
                     {loading ? "Signing in..." : "Sign in"}
                   </button>
 
-                  <Link
-                    href="/reset-password"
-                    className="text-sm font-medium text-blue-700 hover:text-blue-800"
-                  >
-                    Forgot password?
-                  </Link>
+                  <div className="mt-4">
+                    <Link
+                      href="/reset-password"
+                      className="text-sm font-medium text-blue-700 hover:text-blue-800"
+                    >
+                      Forgot password?
+                    </Link>
+                  </div>
                 </form>
               ) : (
                 <form
@@ -359,7 +494,13 @@ export default function LoginClient() {
                   )}
 
                   {message && (
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                    <div
+                      className={`rounded-2xl border px-4 py-3 text-sm ${
+                        messageTone === "error"
+                          ? "border-red-200 bg-red-50 text-red-700"
+                          : "border-slate-200 bg-slate-50 text-slate-700"
+                      }`}
+                    >
                       {message}
                     </div>
                   )}
@@ -384,8 +525,9 @@ export default function LoginClient() {
                         setOtpSent(false);
                         setOtpCode("");
                         setMessage("");
+                        setMessageTone("default");
                       }}
-                      className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700"
+                      className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
                     >
                       Change phone number
                     </button>

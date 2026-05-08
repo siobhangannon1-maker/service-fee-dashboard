@@ -80,7 +80,11 @@ export async function GET() {
       );
     }
 
-    const userIds = authUsers.users.map((u) => u.id);
+    const visibleAuthUsers = authUsers.users.filter((authUser) => {
+      return !authUser.user_metadata?.hidden_sms_login_user;
+    });
+
+    const userIds = visibleAuthUsers.map((u) => u.id);
 
     if (userIds.length === 0) {
       return NextResponse.json({ users: [] });
@@ -110,33 +114,15 @@ export async function GET() {
       );
     }
 
-    const profilesById = new Map<
-      string,
-      {
-        email: string | null;
-        phone: string | null;
-        full_name: string | null;
-        phone_verified: boolean;
-        invited_by_sms: boolean;
-      }
-    >(
-      (profiles || []).map((profile) => [
-        profile.id,
-        {
-          email: profile.email ?? null,
-          phone: profile.phone ?? null,
-          full_name: profile.full_name ?? null,
-          phone_verified: profile.phone_verified ?? false,
-          invited_by_sms: profile.invited_by_sms ?? false,
-        },
-      ])
+    const profilesById = new Map(
+      (profiles || []).map((profile) => [profile.id, profile])
     );
 
     const statusById = new Map<string, boolean>(
       (statuses || []).map((status) => [status.user_id, status.is_active])
     );
 
-    const users = authUsers.users.map((authUser) => {
+    const users = visibleAuthUsers.map((authUser) => {
       const profile = profilesById.get(authUser.id);
 
       return {
@@ -148,8 +134,7 @@ export async function GET() {
           (authUser.user_metadata?.full_name as string | undefined) ??
           null,
         phone_verified:
-          profile?.phone_verified ??
-          Boolean(authUser.phone_confirmed_at),
+          profile?.phone_verified ?? Boolean(authUser.phone_confirmed_at),
         invited_by_sms:
           profile?.invited_by_sms ??
           Boolean(authUser.user_metadata?.invited_by_sms),

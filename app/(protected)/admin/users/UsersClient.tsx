@@ -19,10 +19,12 @@ type UserRow = {
   role: Role;
   email?: string | null;
   phone?: string | null;
+  original_phone?: string | null;
   full_name?: string | null;
   original_full_name?: string | null;
   is_active: boolean;
   savingName?: boolean;
+  savingPhone?: boolean;
   savingStatus?: boolean;
   resendingInvite?: boolean;
 };
@@ -127,10 +129,12 @@ export default function UsersClient() {
           role: row.role,
           email: matchedUser?.email ?? null,
           phone: matchedUser?.phone ?? null,
+          original_phone: matchedUser?.phone ?? null,
           full_name: matchedUser?.full_name ?? null,
           original_full_name: matchedUser?.full_name ?? null,
           is_active: matchedUser?.is_active ?? true,
           savingName: false,
+          savingPhone: false,
           savingStatus: false,
           resendingInvite: false,
         };
@@ -143,10 +147,12 @@ export default function UsersClient() {
           ...row,
           email: null,
           phone: null,
+          original_phone: null,
           full_name: null,
           original_full_name: null,
           is_active: true,
           savingName: false,
+          savingPhone: false,
           savingStatus: false,
           resendingInvite: false,
         }))
@@ -165,6 +171,91 @@ export default function UsersClient() {
     loadRoles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function updatePhone(userId: string) {
+    const row = rows.find((r) => r.user_id === userId);
+    const phone = row?.phone?.trim() || "";
+
+    if (!phone) {
+      setTone("error");
+      setMessage("Please enter a phone number before saving.");
+      return;
+    }
+
+    if (phone === row?.original_phone) {
+      return;
+    }
+
+    setRows((prev) =>
+      prev.map((r) =>
+        r.user_id === userId ? { ...r, savingPhone: true } : r
+      )
+    );
+
+    try {
+      const response = await fetch("/api/admin/update-user-phone", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          phone,
+        }),
+      });
+
+      const rawText = await response.text();
+
+      let result: { error?: string; success?: boolean; phone?: string } = {};
+      try {
+        result = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        throw new Error("Server returned non-JSON response.");
+      }
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to update phone number.");
+      }
+
+      await writeAuditLog({
+        action: "phone_updated",
+        entityType: "profile",
+        entityId: userId,
+        metadata: {
+          phone: result.phone ?? phone,
+        },
+      });
+
+      setTone("success");
+      setMessage("Phone number updated. This user can now use SMS login.");
+
+      setRows((prev) =>
+        prev.map((r) =>
+          r.user_id === userId
+            ? {
+                ...r,
+                phone: result.phone ?? phone,
+                original_phone: result.phone ?? phone,
+                savingPhone: false,
+              }
+            : r
+        )
+      );
+
+      await loadRoles();
+    } catch (err) {
+      setRows((prev) =>
+        prev.map((r) =>
+          r.user_id === userId ? { ...r, savingPhone: false } : r
+        )
+      );
+
+      setTone("error");
+      setMessage(
+        err instanceof Error ? err.message : "Failed to update phone number."
+      );
+    }
+  }
 
   async function updateRole(userId: string, role: Role) {
     const { error } = await supabase
@@ -239,18 +330,6 @@ export default function UsersClient() {
         metadata: { full_name: fullName },
       });
 
-      setRows((prev) =>
-        prev.map((r) =>
-          r.user_id === userId
-            ? {
-                ...r,
-                original_full_name: fullName,
-                savingName: false,
-              }
-            : r
-        )
-      );
-
       setTone("success");
       setMessage("Name updated successfully.");
       await loadRoles();
@@ -305,20 +384,14 @@ export default function UsersClient() {
         metadata: { is_active: isActive },
       });
 
-      setRows((prev) =>
-        prev.map((r) =>
-          r.user_id === userId
-            ? { ...r, is_active: isActive, savingStatus: false }
-            : r
-        )
-      );
-
       setTone("success");
       setMessage(
         isActive
           ? "User reactivated successfully."
           : "User deactivated successfully."
       );
+
+      await loadRoles();
     } catch (err) {
       setRows((prev) =>
         prev.map((r) =>
@@ -477,6 +550,7 @@ export default function UsersClient() {
           ? "User invited successfully by SMS."
           : "User invited successfully by email."
       );
+
       setInviteForm(emptyInviteForm);
       await loadRoles();
     } catch (err) {
@@ -490,9 +564,7 @@ export default function UsersClient() {
   const filteredRows = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
 
-    if (!term) {
-      return rows;
-    }
+    if (!term) return rows;
 
     return rows.filter((row) => {
       const name = row.full_name?.toLowerCase() ?? "";
@@ -600,10 +672,6 @@ export default function UsersClient() {
                     }))
                   }
                 />
-                <p className="mt-1 text-xs text-slate-500">
-                  Australian numbers like 0412 345 678 will be converted to +61
-                  format by the API.
-                </p>
               </div>
             )}
 
@@ -699,11 +767,33 @@ export default function UsersClient() {
                         {row.email || "No email found"}
                       </div>
 
-                      <div className="mt-1 text-sm text-slate-600">
-                        {row.phone || "No phone found"}
+                      <label className="mt-3 mb-1 block text-xs text-slate-500">
+                        Mobile phone
+                      </label>
+                      <input
+                        type="tel"
+                        className="w-full rounded-2xl border px-3 py-2"
+                        value={row.phone ?? ""}
+                        placeholder="e.g. 0412 345 678"
+                        onChange={(e) =>
+                          setRows((prev) =>
+                            prev.map((r) =>
+                              r.user_id === row.user_id
+                                ? { ...r, phone: e.target.value }
+                                : r
+                            )
+                          )
+                        }
+                        onBlur={() => updatePhone(row.user_id)}
+                      />
+
+                      <div className="mt-1 text-xs text-slate-500">
+                        {row.savingPhone
+                          ? "Saving phone..."
+                          : "Used for SMS login."}
                       </div>
 
-                      <div className="mt-1 break-all text-xs text-slate-500">
+                      <div className="mt-2 break-all text-xs text-slate-500">
                         User ID: {row.user_id}
                       </div>
                     </div>
@@ -772,13 +862,17 @@ export default function UsersClient() {
 
                     <div className="flex items-end">
                       <button
-                        type="button"
-                        disabled={row.resendingInvite || (!row.email && !row.phone)}
-                        onClick={() => resendInvite(row.user_id)}
-                        className="w-full rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        {row.resendingInvite ? "Sending..." : "Resend Invite"}
-                      </button>
+  type="button"
+  disabled={row.resendingInvite || (!row.email && !row.phone)}
+  onClick={() => resendInvite(row.user_id)}
+  className="w-full rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
+>
+  {row.resendingInvite
+    ? "Sending..."
+    : row.phone
+    ? "Resend SMS Invite"
+    : "Resend Email Invite"}
+</button>
                     </div>
                   </div>
                 </div>

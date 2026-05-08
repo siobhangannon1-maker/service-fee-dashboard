@@ -1,8 +1,5 @@
-"use client";
-
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { requireUser } from "@/lib/auth";
 
 const primaryActions = [
   {
@@ -133,37 +130,21 @@ function Card({
   );
 }
 
-export default function DashboardPage() {
-  const [displayName, setDisplayName] = useState("there");
-  const [role, setRole] = useState("User");
+export default async function DashboardPage() {
+  const { supabase, user } = await requireUser();
 
-  useEffect(() => {
-    async function loadProfile() {
-      const supabase = createClient();
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("full_name, role")
+    .eq("id", user.id)
+    .maybeSingle();
 
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+  const displayName =
+    profile?.full_name?.split(" ")[0] ||
+    user.email?.split("@")[0] ||
+    "there";
 
-      if (!user) return;
-
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("full_name, role")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      const name =
-        profile?.full_name?.split(" ")[0] ||
-        user.email?.split("@")[0] ||
-        "there";
-
-      setDisplayName(name);
-      setRole(formatRole(profile?.role || "User"));
-    }
-
-    loadProfile();
-  }, []);
+  const role = formatRole(profile?.role || "User");
 
   return (
     <main className="min-h-screen bg-slate-50">

@@ -17,7 +17,7 @@ export default async function PracticeManagerLayout({
 }: {
   children: ReactNode;
 }) {
-  await requireRole(["admin", "practice_manager"]);
+  await requireRole(["admin", "practice_manager", "super_admin"]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-100">

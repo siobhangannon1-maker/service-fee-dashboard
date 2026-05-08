@@ -35,317 +35,70 @@ const navGroups: NavGroup[] = [
     label: "AI Reception",
     roles: ["super_admin"],
     items: [
-      {
-        href: "/ai-reception/workbench",
-        label: "AI Workbench",
-        description: "Start to finish AI workflows",
-      },
-      {
-        href: "/ai-reception/inbox",
-        label: "AI Inbox",
-        description: "Manage correspondence and referrals",
-      },
-      {
-        href: "/ai-reception/approval-queue",
-        label: "Approval Queue",
-        description: "Review AI-classified referrals and correspondence",
-      },
-      {
-        href: "/ai-reception/upload",
-        label: "Upload Correspondence",
-        description: "Upload referrals, letters, x-rays and documents",
-      },
-      {
-        href: "/ai-reception/response-templates",
-        label: "Response Templates",
-        description: "Manage approved AI email response templates",
-      },
-      {
-      href: "/ai/brain",
-        label: "AI Brain",
-        description: "AI Brain",
-  },
-  {
-      href: "/ai/feedback",
-        label: "AI Feedback",
-        description: "AI Feedback",
-  },
-  {
-      href: "/ai/insights",
-        label: "AI Insights",
-        description: "AI Insights",
-  },
-  {
-      href: "/ai/learning-rules",
-        label: "AI Learning Rules",
-        description: "AI Learning Rules",
-  },
-  {
-      href: "/ai/examples",
-        label: "AI Examples",
-        description: "Upload existing email correspondance to train the AI brain",
-  },
-  {
-      href: "/ai/examples/new",
-        label: "AI New Examples",
-        description: "Upload existing email correspondance to train the AI brain",
-  },
-      {
-  href: "/ai-reception/manual-email",
-  label: "Manual Email",
-  description: "Paste emails for AI processing",
-}
+      { href: "/ai-reception/workbench", label: "AI Workbench", description: "Start to finish AI workflows" },
+      { href: "/ai-reception/inbox", label: "AI Inbox", description: "Manage correspondence and referrals" },
+      { href: "/ai-reception/approval-queue", label: "Approval Queue", description: "Review AI-classified referrals and correspondence" },
+      { href: "/ai-reception/upload", label: "Upload Correspondence", description: "Upload referrals, letters, x-rays and documents" },
+      { href: "/ai-reception/response-templates", label: "Response Templates", description: "Manage approved AI email response templates" },
+      { href: "/ai/brain", label: "AI Brain", description: "AI Brain" },
+      { href: "/ai/feedback", label: "AI Feedback", description: "AI Feedback" },
+      { href: "/ai/insights", label: "AI Insights", description: "AI Insights" },
+      { href: "/ai/learning-rules", label: "AI Learning Rules", description: "AI Learning Rules" },
+      { href: "/ai/examples", label: "AI Examples", description: "Upload existing email correspondence to train the AI brain" },
+      { href: "/ai/examples/new", label: "AI New Examples", description: "Upload existing email correspondence to train the AI brain" },
+      { href: "/ai-reception/manual-email", label: "Manual Email", description: "Paste emails for AI processing" },
     ],
   },
   {
     label: "Service Fees",
     roles: ["admin", "super_admin"],
     items: [
-      {
-        href: "/billing",
-        label: "Service Fees",
-        description: "Generate and Export Service Fees",
-      },
-      {
-        href: "/imports/upload",
-        label: "Import Production Reports",
-        description: "Upload and Sync Praktika Production Reports",
-      },
+      { href: "/billing", label: "Service Fees", description: "Generate and Export Service Fees" },
+      { href: "/imports/upload", label: "Import Production Reports", description: "Upload and Sync Praktika Production Reports" },
     ],
   },
   {
     label: "Billing",
-    roles: [
-      "billing_staff",
-      "practice_manager",
-      "admin",
-      "super_admin",
-      "provider_readonly",
-    ],
+    roles: ["billing_staff", "practice_manager", "admin", "super_admin", "provider_readonly"],
     items: [
-      {
-        href: "/patient-entries",
-        label: "Consumables & Incorrect Payments",
-        description: "Enter Consumables / Incorrect Payments",
-      },
-      {
-        href: "/billing-details",
-        label: "Merchant Fees",
-        description: "Enter Merchant Fees",
-      },
-      {
-        href: "/material-costs",
-        label: "Edit Materials Costs",
-        description: "Update Implant & Materials Costs",
-      },
+      { href: "/patient-entries", label: "Consumables & Incorrect Payments", description: "Enter Consumables / Incorrect Payments" },
+      { href: "/billing-details", label: "Merchant Fees", description: "Enter Merchant Fees" },
+      { href: "/material-costs", label: "Edit Materials Costs", description: "Update Implant & Materials Costs" },
     ],
   },
   {
     label: "Practice Manager",
     roles: ["practice_manager", "admin", "super_admin"],
     items: [
-      {
-        href: "/practice-manager/kpis",
-        label: "KPIs Scorecard",
-        description: "Benchmarks, staffing and new patient metrics",
-      },
-      {
-        href: "/practice-manager/staff-wages-overtime-analysis",
-        label: "Staff Wages",
-        description: "Analysis of staff wages and overtime",
-      },
-      {
-        href: "/practice-manager/benchmark-analysis",
-        label: "Benchmark Analysis",
-        description: "Review benchmark percentages with category trend charts.",
-      },
-      {
-        href: "/practice-manager/tasks",
-        label: "Tasks",
-        description: "Review automatically generated tasks",
-      },
+      { href: "/practice-manager/kpis", label: "KPIs Scorecard", description: "Benchmarks, staffing and new patient metrics" },
+      { href: "/practice-manager/staff-wages-overtime-analysis", label: "Staff Wages", description: "Analysis of staff wages and overtime" },
+      { href: "/practice-manager/benchmark-analysis", label: "Benchmark Analysis", description: "Review benchmark percentages with category trend charts." },
+      { href: "/practice-manager/tasks", label: "Tasks", description: "Review automatically generated tasks" },
     ],
   },
   {
     label: "Provider",
     roles: ["provider_readonly", "practice_manager", "admin", "super_admin"],
     items: [
-      {
-        href: "/provider",
-        label: "Provider",
-        description: "Individual Provider Metrics",
-      },
+      { href: "/provider", label: "Provider", description: "Individual Provider Metrics" },
     ],
   },
   {
     label: "Admin",
     roles: ["admin", "super_admin"],
     items: [
-      {
-        href: "/admin",
-        label: "Admin",
-        description: "Admin settings and configuration",
-      },
-      {
-        href: "/admin/reports",
-        label: "Service Fee Reports",
-        description: "Centralised reporting of service fees",
-      },
-      {
-        href: "/benchmark/referrals",
-        label: "Referrals",
-        description: "Analyse metrics of referrals received",
-      },
-      {
-        href: "/benchmark/referrer-performance",
-        label: "Top Referrers",
-        description: "Analysis of top referrer metrics",
-      },
-      {
-        href: "/benchmark/referral-opportunities",
-        label: "Referrer Opportunities",
-        description: "Analysis of non referring clinics",
-      },
-      {
-        href: "/admin/provider-dashboard",
-        label: "Provider Dashboard",
-        description: "Analysis of provider clinical and financial metrics",
-      },
-      {
-        href: "/admin/provider-imports",
-        label: "Imports and Syncs",
-        description: "Import and sync Praktika reports",
-      },
-      {
-        href: "/benchmark/expense-reports",
-        label: "Expense Reports",
-        description: "Analysis of practice benchmarks",
-      },
-      {
-        href: "/benchmarks/edit",
-        label: "Edit Benchmarks",
-        description: "Edit benchmarks for KPI categories",
-      },
+      { href: "/admin", label: "Admin", description: "Admin settings and configuration" },
+      { href: "/admin/reports", label: "Service Fee Reports", description: "Centralised reporting of service fees" },
+      { href: "/benchmark/referrals", label: "Referrals", description: "Analyse metrics of referrals received" },
+      { href: "/benchmark/referrer-performance", label: "Top Referrers", description: "Analysis of top referrer metrics" },
+      { href: "/benchmark/referral-opportunities", label: "Referrer Opportunities", description: "Analysis of non referring clinics" },
+      { href: "/admin/provider-dashboard", label: "Provider Dashboard", description: "Analysis of provider clinical and financial metrics" },
+      { href: "/admin/provider-imports", label: "Imports and Syncs", description: "Import and sync Praktika reports" },
+      { href: "/benchmark/expense-reports", label: "Expense Reports", description: "Analysis of practice benchmarks" },
+      { href: "/benchmarks/edit", label: "Edit Benchmarks", description: "Edit benchmarks for KPI categories" },
     ],
   },
 ];
-
-function DesktopNavItem({
-  href,
-  label,
-  description,
-  active,
-}: NavItem & { active: boolean }) {
-  return (
-    <div className="group relative">
-      <Link
-        href={href}
-        className={`inline-flex whitespace-nowrap rounded-xl px-3 py-2 text-xs font-medium transition xl:px-4 xl:py-2.5 xl:text-sm ${
-          active
-            ? "bg-slate-900 text-white shadow-sm"
-            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-        }`}
-      >
-        {label}
-      </Link>
-
-      <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 w-max max-w-xs -translate-x-1/2 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
-        {description}
-      </div>
-    </div>
-  );
-}
-
-function DesktopDropdown({
-  group,
-  open,
-  onToggle,
-  onClose,
-  isActive,
-}: {
-  group: NavGroup;
-  open: boolean;
-  onToggle: () => void;
-  onClose: () => void;
-  isActive: (href: string) => boolean;
-}) {
-  const groupIsActive = group.items.some((item) => isActive(item.href));
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={onToggle}
-        className={`inline-flex items-center gap-2 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-medium transition xl:px-4 xl:py-2.5 xl:text-sm ${
-          groupIsActive
-            ? "bg-slate-900 text-white shadow-sm"
-            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-        }`}
-      >
-        {group.label}
-        <span className="text-xs">▾</span>
-      </button>
-
-      {open && (
-        <div className="absolute left-1/2 top-full z-50 mt-2 w-80 -translate-x-1/2 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
-          {group.items.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={onClose}
-              className={`block rounded-xl px-4 py-3 transition ${
-                isActive(item.href)
-                  ? "bg-slate-900 text-white"
-                  : "text-slate-700 hover:bg-slate-100"
-              }`}
-            >
-              <div className="text-sm font-semibold">{item.label}</div>
-              <div
-                className={`mt-1 text-xs leading-5 ${
-                  isActive(item.href) ? "text-slate-200" : "text-slate-500"
-                }`}
-              >
-                {item.description}
-              </div>
-            </Link>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MobileNavItem({
-  href,
-  label,
-  description,
-  active,
-  onClick,
-}: NavItem & {
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <Link
-      href={href}
-      onClick={onClick}
-      className={`block rounded-2xl border px-4 py-3 transition ${
-        active
-          ? "border-slate-900 bg-slate-900 text-white"
-          : "border-slate-200 bg-white text-slate-900 hover:bg-slate-50"
-      }`}
-    >
-      <div className="text-sm font-semibold">{label}</div>
-      <div
-        className={`mt-1 text-xs leading-5 ${
-          active ? "text-slate-200" : "text-slate-500"
-        }`}
-      >
-        {description}
-      </div>
-    </Link>
-  );
-}
 
 export default function TopNav() {
   const pathname = usePathname();
@@ -356,9 +109,7 @@ export default function TopNav() {
   const [role, setRole] = useState<UserRole | null>(null);
   const [loadingRole, setLoadingRole] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [openDesktopDropdown, setOpenDesktopDropdown] = useState<string | null>(
-    null
-  );
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [openMobileGroup, setOpenMobileGroup] = useState<string | null>(null);
 
   useEffect(() => {
@@ -371,21 +122,28 @@ export default function TopNav() {
 
       const {
         data: { user },
+        error: userError,
       } = await supabase.auth.getUser();
 
-      if (!user) {
+      if (userError || !user) {
         setRole(null);
         setLoadingRole(false);
         return;
       }
 
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("user_roles")
         .select("role")
         .eq("user_id", user.id)
-        .single();
+        .maybeSingle();
 
-      setRole((data?.role as UserRole) || null);
+      if (error) {
+        console.error("TopNav role lookup failed:", error);
+        setRole(null);
+      } else {
+        setRole((data?.role as UserRole) ?? null);
+      }
+
       setLoadingRole(false);
     }
 
@@ -394,13 +152,13 @@ export default function TopNav() {
 
   useEffect(() => {
     setMobileMenuOpen(false);
-    setOpenDesktopDropdown(null);
+    setOpenDropdown(null);
     setOpenMobileGroup(null);
   }, [pathname]);
 
   function isActive(href: string) {
     if (href === "/") return pathname === "/";
-    return pathname.startsWith(href);
+    return pathname === href || pathname.startsWith(`${href}/`);
   }
 
   const visibleNavGroups = useMemo(() => {
@@ -417,80 +175,98 @@ export default function TopNav() {
       .filter((group) => group.items.length > 0);
   }, [role]);
 
-  const visibleMobileItems = useMemo(() => {
-    return [...primaryNavItems, ...visibleNavGroups.flatMap((g) => g.items)];
-  }, [visibleNavGroups]);
-
   async function handleLogout() {
     await supabase.auth.signOut();
-    setMobileMenuOpen(false);
-    setOpenDesktopDropdown(null);
-    setOpenMobileGroup(null);
     router.push("/login");
     router.refresh();
   }
 
   return (
-    <header className="sticky top-0 z-[9999] border-b border-slate-300 bg-white shadow-md">
+    <header className="sticky top-0 z-[9999] border-b border-slate-200 bg-white shadow-md">
       <div className="w-full px-3 sm:px-5 xl:px-6">
         <div className="flex min-h-[76px] items-center justify-between gap-3 py-3 sm:min-h-[88px]">
-          <Link
-            href="/"
-            className="flex min-w-0 shrink items-center gap-3 pr-2 sm:gap-4 sm:pr-4"
-          >
-            <div className="flex shrink-0 items-center justify-center">
-              {logo ? (
-                <img
-                  src={logo}
-                  alt="Practice logo"
-                  className="h-12 w-auto object-contain sm:h-16 lg:h-20"
-                />
-              ) : (
-                <div className="h-12 w-12 rounded-full bg-slate-100 sm:h-16 sm:w-16 lg:h-20 lg:w-20" />
-              )}
-            </div>
+          <Link href="/" className="flex min-w-0 shrink-0 items-center gap-3 pr-2 sm:gap-4">
+            {logo ? (
+              <img src={logo} alt="Practice logo" className="h-12 w-auto object-contain sm:h-16 lg:h-20" />
+            ) : (
+              <div className="h-12 w-12 rounded-full bg-slate-100 sm:h-16 sm:w-16 lg:h-20 lg:w-20" />
+            )}
 
             <div className="min-w-0">
               <div className="truncate text-base font-semibold tracking-tight text-slate-900 sm:text-xl">
                 Focus Dental Specialists
               </div>
-              <div className="hidden text-sm text-slate-500 sm:block">
-                Dashboard
-              </div>
+              <div className="hidden text-sm text-slate-500 sm:block">Dashboard</div>
             </div>
           </Link>
 
-          <div className="hidden min-w-0 flex-1 items-center justify-end gap-2 md:flex xl:gap-3">
-            <nav className="relative flex min-w-0 flex-wrap items-center justify-end gap-1 rounded-2xl border border-slate-200/80 bg-white/80 p-2 shadow-[0_6px_18px_rgba(15,23,42,0.05)] backdrop-blur xl:gap-2">
+          <div className="hidden min-w-0 flex-1 items-center justify-end gap-2 lg:flex">
+            <nav className="flex min-w-0 flex-wrap items-center justify-end gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
               {primaryNavItems.map((item) => (
-                <DesktopNavItem
+                <Link
                   key={item.href}
-                  {...item}
-                  active={isActive(item.href)}
-                />
+                  href={item.href}
+                  className={`rounded-xl px-3 py-2 text-sm font-medium transition ${
+                    isActive(item.href)
+                      ? "bg-slate-900 text-white"
+                      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                  }`}
+                >
+                  {item.label}
+                </Link>
               ))}
 
               {!loadingRole &&
-                visibleNavGroups.map((group) => (
-                  <DesktopDropdown
-                    key={group.label}
-                    group={group}
-                    open={openDesktopDropdown === group.label}
-                    onToggle={() =>
-                      setOpenDesktopDropdown((current) =>
-                        current === group.label ? null : group.label
-                      )
-                    }
-                    onClose={() => setOpenDesktopDropdown(null)}
-                    isActive={isActive}
-                  />
-                ))}
+                visibleNavGroups.map((group) => {
+                  const active = group.items.some((item) => isActive(item.href));
+
+                  return (
+                    <div key={group.label} className="relative">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOpenDropdown((current) =>
+                            current === group.label ? null : group.label
+                          )
+                        }
+                        className={`rounded-xl px-3 py-2 text-sm font-medium transition ${
+                          active
+                            ? "bg-slate-900 text-white"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        {group.label} ▾
+                      </button>
+
+                      {openDropdown === group.label && (
+                        <div className="absolute right-0 top-full z-[10000] mt-2 w-80 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+                          {group.items.map((item) => (
+                            <Link
+                              key={item.href}
+                              href={item.href}
+                              className={`block rounded-xl px-4 py-3 transition ${
+                                isActive(item.href)
+                                  ? "bg-slate-900 text-white"
+                                  : "text-slate-700 hover:bg-slate-100"
+                              }`}
+                            >
+                              <div className="text-sm font-semibold">{item.label}</div>
+                              <div className={`mt-1 text-xs leading-5 ${isActive(item.href) ? "text-slate-200" : "text-slate-500"}`}>
+                                {item.description}
+                              </div>
+                            </Link>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
             </nav>
 
             <button
               type="button"
               onClick={handleLogout}
-              className="shrink-0 rounded-2xl bg-slate-800 px-3 py-2 text-xs font-medium text-white shadow-[0_6px_18px_rgba(15,23,42,0.25)] transition hover:bg-slate-900 xl:px-4 xl:py-2.5 xl:text-sm"
+              className="shrink-0 rounded-2xl bg-slate-800 px-4 py-2.5 text-sm font-medium text-white shadow-md transition hover:bg-slate-900"
             >
               Log out
             </button>
@@ -498,40 +274,37 @@ export default function TopNav() {
 
           <button
             type="button"
-            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
-            aria-expanded={mobileMenuOpen}
             onClick={() => setMobileMenuOpen((prev) => !prev)}
-            className="inline-flex shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 md:hidden"
+            className="inline-flex shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm lg:hidden"
           >
             {mobileMenuOpen ? "Close" : "Menu"}
           </button>
         </div>
 
         {mobileMenuOpen && (
-          <div className="max-h-[calc(100vh-88px)] overflow-y-auto border-t border-slate-200 py-4 md:hidden">
+          <div className="max-h-[calc(100vh-88px)] overflow-y-auto border-t border-slate-200 py-4 lg:hidden">
             <nav className="grid gap-3">
               {primaryNavItems.map((item) => (
-                <MobileNavItem
+                <Link
                   key={item.href}
-                  {...item}
-                  active={isActive(item.href)}
-                  onClick={() => setMobileMenuOpen(false)}
-                />
+                  href={item.href}
+                  className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${
+                    isActive(item.href)
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-slate-200 bg-white text-slate-900"
+                  }`}
+                >
+                  {item.label}
+                </Link>
               ))}
 
               {!loadingRole &&
                 visibleNavGroups.map((group) => {
-                  const groupIsActive = group.items.some((item) =>
-                    isActive(item.href)
-                  );
-                  const isOpen =
-                    openMobileGroup === group.label || groupIsActive;
+                  const groupIsActive = group.items.some((item) => isActive(item.href));
+                  const isOpen = openMobileGroup === group.label || groupIsActive;
 
                   return (
-                    <div
-                      key={group.label}
-                      className="rounded-2xl border border-slate-200 bg-slate-50 p-2"
-                    >
+                    <div key={group.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-2">
                       <button
                         type="button"
                         onClick={() =>
@@ -542,18 +315,26 @@ export default function TopNav() {
                         className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-semibold text-slate-900"
                       >
                         <span>{group.label}</span>
-                        <span className="text-xs">{isOpen ? "▲" : "▼"}</span>
+                        <span>{isOpen ? "▲" : "▼"}</span>
                       </button>
 
                       {isOpen && (
                         <div className="mt-2 grid gap-2">
                           {group.items.map((item) => (
-                            <MobileNavItem
+                            <Link
                               key={item.href}
-                              {...item}
-                              active={isActive(item.href)}
-                              onClick={() => setMobileMenuOpen(false)}
-                            />
+                              href={item.href}
+                              className={`rounded-2xl border px-4 py-3 ${
+                                isActive(item.href)
+                                  ? "border-slate-900 bg-slate-900 text-white"
+                                  : "border-slate-200 bg-white text-slate-900"
+                              }`}
+                            >
+                              <div className="text-sm font-semibold">{item.label}</div>
+                              <div className={`mt-1 text-xs ${isActive(item.href) ? "text-slate-200" : "text-slate-500"}`}>
+                                {item.description}
+                              </div>
+                            </Link>
                           ))}
                         </div>
                       )}
@@ -564,7 +345,7 @@ export default function TopNav() {
               <button
                 type="button"
                 onClick={handleLogout}
-                className="mt-2 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
+                className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white"
               >
                 Log out
               </button>
