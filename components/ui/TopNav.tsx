@@ -26,6 +26,16 @@ type NavGroup = {
   items: NavItem[];
 };
 
+type DropdownPosition = {
+  label: string;
+  left: number;
+  top: number;
+};
+
+const primaryNavItems: NavItem[] = [
+  { href: "/", label: "Home", description: "Home" },
+];
+
 const navGroups: NavGroup[] = [
   {
     label: "AI Reception",
@@ -115,8 +125,9 @@ export default function TopNav() {
   const [logo, setLogo] = useState<string | null>(null);
   const [roles, setRoles] = useState<UserRole[]>([]);
   const [loadingRole, setLoadingRole] = useState(true);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [openMobileGroup, setOpenMobileGroup] = useState<string | null>(null);
+  const [openDropdown, setOpenDropdown] = useState<DropdownPosition | null>(null);
+
+  const isLoginPage = pathname === "/login" || pathname.startsWith("/login/");
 
   useEffect(() => {
     fetchStoredLogoDataUrl().then(setLogo);
@@ -159,13 +170,26 @@ export default function TopNav() {
       setLoadingRole(false);
     }
 
-    loadRoles();
-  }, [supabase]);
+    if (!isLoginPage) loadRoles();
+  }, [supabase, isLoginPage]);
 
   useEffect(() => {
-    setMenuOpen(false);
-    setOpenMobileGroup(null);
+    setOpenDropdown(null);
   }, [pathname]);
+
+  useEffect(() => {
+    function closeDropdown() {
+      setOpenDropdown(null);
+    }
+
+    window.addEventListener("resize", closeDropdown);
+    window.addEventListener("scroll", closeDropdown, true);
+
+    return () => {
+      window.removeEventListener("resize", closeDropdown);
+      window.removeEventListener("scroll", closeDropdown, true);
+    };
+  }, []);
 
   function hasRole(allowedRoles: UserRole[]) {
     return roles.some((role) => allowedRoles.includes(role));
@@ -190,149 +214,149 @@ export default function TopNav() {
       .filter((group) => group.items.length > 0);
   }, [roles]);
 
+  const selectedGroup = openDropdown
+    ? visibleNavGroups.find((group) => group.label === openDropdown.label)
+    : null;
+
+  function toggleDropdown(groupLabel: string, button: HTMLButtonElement) {
+    if (openDropdown?.label === groupLabel) {
+      setOpenDropdown(null);
+      return;
+    }
+
+    const rect = button.getBoundingClientRect();
+
+    setOpenDropdown({
+      label: groupLabel,
+      left: rect.left + rect.width / 2,
+      top: rect.bottom + 12,
+    });
+  }
+
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push("/login");
     router.refresh();
   }
 
+  if (isLoginPage) return null;
+
   return (
-    <header className="sticky top-0 z-[9999] border-b border-slate-200 bg-white shadow-md">
-      <div className="w-full px-3 sm:px-5 xl:px-6">
-        <div className="flex min-h-[72px] items-center justify-between gap-3 py-3">
-          <Link href="/" className="flex min-w-0 items-center gap-3">
-            {logo ? (
-              <img
-                src={logo}
-                alt="Practice logo"
-                className="h-11 w-auto shrink-0 object-contain sm:h-14"
-              />
-            ) : (
-              <div className="h-11 w-11 shrink-0 rounded-full bg-slate-100 sm:h-14 sm:w-14" />
-            )}
+    <>
+      <header className="sticky top-0 z-[9999] border-b border-slate-200/80 bg-white/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/80">
+        <div className="w-full px-5 py-4">
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-4">
+            <Link href="/" className="flex shrink-0 items-center gap-4">
+              {logo ? (
+                <img
+                  src={logo}
+                  alt="Practice logo"
+                  className="h-14 w-auto object-contain"
+                />
+              ) : (
+                <div className="h-14 w-14 rounded-full bg-slate-100" />
+              )}
 
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold tracking-tight text-slate-900 sm:text-lg">
-                Focus Dental Specialists
+              <div>
+                <div className="whitespace-nowrap text-[24px] font-bold tracking-[-0.03em] text-slate-950">
+                  Focus Dental Specialists
+                </div>
+                <div className="text-[15px] font-medium text-slate-500">
+                  Dashboard
+                </div>
               </div>
-              <div className="hidden text-xs text-slate-500 sm:block">
-                Dashboard
-              </div>
-            </div>
-          </Link>
-
-          <div className="relative flex shrink-0 items-center gap-2">
-            <Link
-              href="/"
-              className={`hidden rounded-xl px-3 py-2 text-sm font-medium transition sm:inline-flex ${
-                isActive("/")
-                  ? "bg-slate-900 text-white"
-                  : "text-slate-700 hover:bg-slate-100"
-              }`}
-            >
-              Home
             </Link>
 
-            <button
-              type="button"
-              onClick={() => setMenuOpen((prev) => !prev)}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-50"
-            >
-              {menuOpen ? "Close" : "Menu"} ▾
-            </button>
+            <nav className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              {primaryNavItems.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`shrink-0 rounded-2xl px-5 py-2.5 text-[15px] font-medium tracking-tight transition-all duration-200 ${
+                    isActive(item.href)
+                      ? "bg-[#0F172A] text-white shadow-sm"
+                      : "text-slate-700 hover:bg-slate-50 hover:text-slate-950"
+                  }`}
+                >
+                  {item.label}
+                </Link>
+              ))}
+
+              {!loadingRole &&
+                visibleNavGroups.map((group) => {
+                  const active = group.items.some((item) => isActive(item.href));
+                  const isOpen = openDropdown?.label === group.label;
+
+                  return (
+                    <button
+                      key={group.label}
+                      type="button"
+                      onClick={(event) =>
+                        toggleDropdown(group.label, event.currentTarget)
+                      }
+                      className={`shrink-0 rounded-2xl px-5 py-2.5 text-[15px] font-medium tracking-tight transition-all duration-200 ${
+                        active || isOpen
+                          ? "bg-[#0F172A] text-white shadow-sm"
+                          : "text-slate-700 hover:bg-slate-50 hover:text-slate-950"
+                      }`}
+                    >
+                      {group.label}
+                    </button>
+                  );
+                })}
+            </nav>
 
             <button
               type="button"
               onClick={handleLogout}
-              className="hidden rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 sm:inline-flex"
+              className="shrink-0 rounded-2xl bg-[#0F172A] px-5 py-2.5 text-[15px] font-semibold tracking-tight text-white shadow-sm transition-all duration-200 hover:scale-[1.02] hover:bg-slate-800"
             >
               Log out
             </button>
           </div>
         </div>
+      </header>
 
-        {menuOpen && (
-          <div className="absolute left-0 right-0 top-full z-[10000] max-h-[calc(100vh-90px)] overflow-y-auto border-t border-slate-200 bg-white px-3 py-4 shadow-xl sm:px-5 xl:px-6">
-            <div className="mx-auto grid w-full max-w-7xl gap-4 lg:grid-cols-3 xl:grid-cols-4">
+      {openDropdown && selectedGroup && (
+        <div
+          className="fixed z-[10000] max-h-[70vh] w-[460px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-3xl border border-slate-200 bg-white p-3 shadow-[0_20px_60px_rgba(15,23,42,0.14)]"
+          style={{
+            left: Math.min(
+              Math.max(openDropdown.left, 240),
+              typeof window !== "undefined" ? window.innerWidth - 240 : openDropdown.left,
+            ),
+            top: openDropdown.top,
+            transform: "translateX(-50%)",
+          }}
+        >
+          <div className="relative grid gap-1">
+            {selectedGroup.items.map((item) => (
               <Link
-                href="/"
-                className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${
-                  isActive("/")
-                    ? "border-slate-900 bg-slate-900 text-white"
-                    : "border-slate-200 bg-white text-slate-900 hover:bg-slate-50"
+                key={item.href}
+                href={item.href}
+                className={`group block rounded-2xl px-4 py-3.5 transition-all duration-200 ${
+                  isActive(item.href)
+                    ? "bg-[#0F172A] text-white shadow-sm"
+                    : "bg-white text-slate-800 hover:bg-slate-50"
                 }`}
               >
-                Home
+                <div className="text-[15px] font-semibold tracking-tight">
+                  {item.label}
+                </div>
+                <div
+                  className={`mt-1 text-sm leading-5 ${
+                    isActive(item.href)
+                      ? "text-slate-200"
+                      : "text-slate-500 group-hover:text-slate-600"
+                  }`}
+                >
+                  {item.description}
+                </div>
               </Link>
-
-              {!loadingRole &&
-                visibleNavGroups.map((group) => {
-                  const groupIsActive = group.items.some((item) =>
-                    isActive(item.href),
-                  );
-                  const isOpen = openMobileGroup === group.label || groupIsActive;
-
-                  return (
-                    <div
-                      key={group.label}
-                      className="rounded-2xl border border-slate-200 bg-slate-50 p-2"
-                    >
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setOpenMobileGroup((current) =>
-                            current === group.label ? null : group.label,
-                          )
-                        }
-                        className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-semibold text-slate-900"
-                      >
-                        <span>{group.label}</span>
-                        <span>{isOpen ? "▲" : "▼"}</span>
-                      </button>
-
-                      {isOpen && (
-                        <div className="mt-2 grid gap-2">
-                          {group.items.map((item) => (
-                            <Link
-                              key={item.href}
-                              href={item.href}
-                              className={`rounded-2xl border px-4 py-3 ${
-                                isActive(item.href)
-                                  ? "border-slate-900 bg-slate-900 text-white"
-                                  : "border-slate-200 bg-white text-slate-900 hover:bg-slate-50"
-                              }`}
-                            >
-                              <div className="text-sm font-semibold">
-                                {item.label}
-                              </div>
-                              <div
-                                className={`mt-1 text-xs leading-5 ${
-                                  isActive(item.href)
-                                    ? "text-slate-200"
-                                    : "text-slate-500"
-                                }`}
-                              >
-                                {item.description}
-                              </div>
-                            </Link>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white sm:hidden"
-              >
-                Log out
-              </button>
-            </div>
+            ))}
           </div>
-        )}
-      </div>
-    </header>
+        </div>
+      )}
+    </>
   );
 }
