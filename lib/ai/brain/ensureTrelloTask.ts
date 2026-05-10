@@ -1,4 +1,4 @@
-import { routeSpecialistForInboxItem } from "@/lib/ai/brain/specialistRouting";
+import { routeClinicianForInboxItem } from "@/lib/ai/brain/clinicianRouting";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   addCommentToTrelloCard,
@@ -632,10 +632,30 @@ export async function ensureTrelloTaskForInboxItem({
   const decision = latestDecisionFromItem(item);
   const caseId = getLatestCaseId(item);
 
-  const routing = await routeSpecialistForInboxItem({
-    inboxItemId,
-    persist: true,
-  });
+ const clinicianRouting = await routeClinicianForInboxItem({
+  inboxItemId,
+  persist: true,
+});
+
+const routing = {
+  routing_key: clinicianRouting.workflow_kind,
+  display_name:
+    clinicianRouting.clinician_name ||
+    clinicianRouting.workflow_kind ||
+    "AI Reception routing",
+  trello_board_id:
+    clinicianRouting.trello_board_id || item.trello_board_id || null,
+  trello_list_id:
+    clinicianRouting.trello_list_id || item.trello_list_id || null,
+  confidence: clinicianRouting.confidence || 0,
+  urgency:
+    clinicianRouting.workflow_kind === "urgent_clinical"
+      ? "urgent"
+      : "normal",
+  reason: clinicianRouting.reason,
+  clinician_key: clinicianRouting.clinician_key,
+  clinician_name: clinicianRouting.clinician_name,
+};
 
   const eligibility = shouldAutoCreateTrelloTask({
     item,
@@ -745,7 +765,7 @@ export async function ensureTrelloTaskForInboxItem({
       trello_card_id: card.id,
       trello_card_url: card.shortUrl || card.url || null,
       trello_card_created_at: new Date().toISOString(),
-      trello_board_id: routing.trello_board_id || item.trello_board_id || null,
+      trello_board_id: routing.trello_board_id || null,
       trello_list_id: listId,
       specialist_routing_status: "trello_task_created",
       trello_auto_task_status: "created",
@@ -785,7 +805,7 @@ export async function ensureTrelloTaskForInboxItem({
     new_values: {
       trello_card_id: card.id,
       trello_card_url: card.shortUrl || card.url || null,
-      recommended_specialist: routing.routing_key,
+      recommended_specialist: routing.clinician_name || routing.routing_key,
       trello_list_id: listId,
     },
     metadata: {

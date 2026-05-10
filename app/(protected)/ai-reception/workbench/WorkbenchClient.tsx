@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client"; 
+import { createClient } from "@/lib/supabase/client";
 
 type Attachment = {
   name?: string | null;
@@ -86,6 +86,34 @@ type InboxItem = {
   latest_decision?: any;
   ai_patient_match_candidates?: any[];
   ai_email_drafts?: any[];
+  event_chain_status?: string | null;
+  automation_pipeline_status?: string | null;
+
+  // Provider / Trello routing fields
+  assigned_clinician_key?: string | null;
+  assigned_clinician_name?: string | null;
+  clinician_routing_reason?: string | null;
+  clinician_routing_confidence?: number | null;
+  trello_board_id?: string | null;
+  trello_list_id?: string | null;
+  trello_card_id?: string | null;
+  trello_card_url?: string | null;
+  trello_auto_task_status?: string | null;
+  trello_auto_task_reason?: string | null;
+  trello_auto_task_error?: string | null;
+
+  // Praktika patient matching fields
+  extracted_patient_first_name?: string | null;
+  extracted_patient_last_name?: string | null;
+  extracted_patient_dob?: string | null;
+  extracted_patient_mobile?: string | null;
+  extracted_patient_email?: string | null;
+  praktika_patient_id?: string | null;
+  praktika_patient_number?: string | null;
+  praktika_match_status?: string | null;
+  praktika_match_confidence?: number | null;
+  praktika_match_reason?: string | null;
+  praktika_matched_at?: string | null;
 };
 
 type Props = {
@@ -101,6 +129,8 @@ type QueueFilter =
   | "patient_match"
   | "clinical"
   | "archived";
+
+type QueueSortMode = "urgency" | "newest";
 
 type WorkflowReason = {
   key: string;
@@ -168,7 +198,7 @@ function getLatestDecision(item: InboxItem) {
 
   const cases = Array.isArray(item.ai_cases) ? item.ai_cases : [];
   const decisions = cases.flatMap((aiCase: any) =>
-    Array.isArray(aiCase?.ai_decisions) ? aiCase.ai_decisions : []
+    Array.isArray(aiCase?.ai_decisions) ? aiCase.ai_decisions : [],
   );
 
   const latestDecisionRow =
@@ -177,7 +207,7 @@ function getLatestDecision(item: InboxItem) {
       .sort(
         (a: any, b: any) =>
           new Date(b.created_at || 0).getTime() -
-          new Date(a.created_at || 0).getTime()
+          new Date(a.created_at || 0).getTime(),
       )[0] || null;
 
   return latestDecisionRow?.decision || null;
@@ -247,7 +277,8 @@ function missingInfoReasons(item: InboxItem): WorkflowReason[] {
       reasons.push({
         key: "missing_dob",
         label: "Missing DOB",
-        description: "Patient date of birth is needed before the file can be matched safely.",
+        description:
+          "Patient date of birth is needed before the file can be matched safely.",
         tone: "rose",
         action: "Ask the sender to confirm the patient's DOB.",
       });
@@ -263,7 +294,8 @@ function missingInfoReasons(item: InboxItem): WorkflowReason[] {
       reasons.push({
         key: "missing_referral_reason",
         label: "Missing referral reason",
-        description: "The correspondence does not clearly state what the patient is being referred for.",
+        description:
+          "The correspondence does not clearly state what the patient is being referred for.",
         tone: "rose",
         action: "Ask the sender to confirm the reason for referral.",
       });
@@ -280,7 +312,8 @@ function missingInfoReasons(item: InboxItem): WorkflowReason[] {
       reasons.push({
         key: "missing_radiograph",
         label: "Radiograph missing",
-        description: "The referral appears to need an image or radiograph that was not available.",
+        description:
+          "The referral appears to need an image or radiograph that was not available.",
         tone: "amber",
         action: "Ask the sender to provide the missing radiograph/image.",
       });
@@ -302,10 +335,7 @@ function missingInfoReasons(item: InboxItem): WorkflowReason[] {
       continue;
     }
 
-    if (
-      value.includes("patient name") ||
-      value.includes("name")
-    ) {
+    if (value.includes("patient name") || value.includes("name")) {
       reasons.push({
         key: "missing_patient_name",
         label: "Missing patient name",
@@ -325,7 +355,8 @@ function missingInfoReasons(item: InboxItem): WorkflowReason[] {
       reasons.push({
         key: "missing_referrer",
         label: "Missing referrer details",
-        description: "Referring practitioner or practice details are incomplete.",
+        description:
+          "Referring practitioner or practice details are incomplete.",
         tone: "amber",
         action: "Confirm the referring provider details.",
       });
@@ -355,32 +386,14 @@ function patientMatchReason(item: InboxItem): WorkflowReason | null {
     return {
       key: "patient_match_suggested",
       label: "Confirm patient match",
-      description: "AI found a possible patient match that needs staff confirmation.",
+      description:
+        "AI found a possible patient match that needs staff confirmation.",
       tone: "purple",
       action: "Review the suggested patient match before proceeding.",
     };
   }
 
-  if (
-    status === "no_match_found" &&
-    item.patient_name &&
-    item.patient_dob &&
-    item.category === "new_referral"
-  ) {
-    return {
-      key: "new_patient_file_needed",
-      label: "New patient likely",
-      description: "No existing patient match was found for this referral.",
-      tone: "purple",
-      action: "Create or prepare a new patient file if appropriate.",
-    };
-  }
-
-  if (
-    !status ||
-    status === "not_checked" ||
-    status === "pending"
-  ) {
+  if (!status || status === "not_checked" || status === "pending") {
     return {
       key: "patient_match_pending",
       label: "Patient match pending",
@@ -414,7 +427,10 @@ function clinicalReason(item: InboxItem): WorkflowReason | null {
 function processingReason(item: InboxItem): WorkflowReason | null {
   if (!isProcessing(item)) return null;
 
-  if (item.attachment_needs_ocr || item.attachment_extraction_status === "ocr_needed") {
+  if (
+    item.attachment_needs_ocr ||
+    item.attachment_extraction_status === "ocr_needed"
+  ) {
     return {
       key: "processing_ocr",
       label: "OCR processing",
@@ -498,7 +514,10 @@ function getWorkflowReasons(item: InboxItem): WorkflowReason[] {
   if (notSafe) reasons.push(notSafe);
 
   const match = patientMatchReason(item);
-  if (match && !["auto_confirmed", "confirmed"].includes(item.match_status || "")) {
+  if (
+    match &&
+    !["auto_confirmed", "confirmed"].includes(item.match_status || "")
+  ) {
     reasons.push(match);
   }
 
@@ -542,9 +561,17 @@ function getWorkflowState(item: InboxItem) {
 
   let priority = 6;
   if (primary.key.startsWith("processing")) priority = 1;
-  else if (primary.key === "clinical_review" || primary.key === "not_safe_to_draft") priority = 2;
+  else if (
+    primary.key === "clinical_review" ||
+    primary.key === "not_safe_to_draft"
+  )
+    priority = 2;
   else if (primary.key.startsWith("missing")) priority = 3;
-  else if (primary.key.includes("patient_match") || primary.key === "new_patient_file_needed") priority = 4;
+  else if (
+    primary.key.includes("patient_match") ||
+    primary.key === "new_patient_file_needed"
+  )
+    priority = 4;
   else if (primary.key === "ready_to_send") priority = 5;
   else if (primary.key === "draft_ready") priority = 6;
   else if (primary.key === "sent") priority = 8;
@@ -572,22 +599,27 @@ function getWorkflowState(item: InboxItem) {
   };
 }
 
-function sortItems(items: InboxItem[]) {
-  return items
-    .slice()
-    .sort((a, b) => {
-      const stateA = getWorkflowState(a);
-      const stateB = getWorkflowState(b);
-
-      if (stateA.priority !== stateB.priority) {
-        return stateA.priority - stateB.priority;
-      }
-
+function sortItems(items: InboxItem[], mode: QueueSortMode = "urgency") {
+  return items.slice().sort((a, b) => {
+    if (mode === "newest") {
       return (
         new Date(b.created_at || b.received_at || 0).getTime() -
         new Date(a.created_at || a.received_at || 0).getTime()
       );
-    });
+    }
+
+    const stateA = getWorkflowState(a);
+    const stateB = getWorkflowState(b);
+
+    if (stateA.priority !== stateB.priority) {
+      return stateA.priority - stateB.priority;
+    }
+
+    return (
+      new Date(b.created_at || b.received_at || 0).getTime() -
+      new Date(a.created_at || a.received_at || 0).getTime()
+    );
+  });
 }
 
 function formatFileSize(size?: number | null) {
@@ -692,19 +724,58 @@ function primaryDisplayName(item: InboxItem) {
   );
 }
 
+function praktikaMatchStatusLabel(status?: string | null) {
+  switch (status) {
+    case "matched_existing":
+      return "Matched existing patient";
+    case "possible_match":
+      return "Possible patient match";
+    case "no_match":
+      return "No match found";
+    case "insufficient_information":
+      return "Insufficient information";
+    default:
+      return "Not checked yet";
+  }
+}
+
+function praktikaMatchTone(status?: string | null) {
+  switch (status) {
+    case "matched_existing":
+      return "green";
+    case "possible_match":
+      return "amber";
+    case "no_match":
+      return "purple";
+    case "insufficient_information":
+      return "rose";
+    default:
+      return "slate";
+  }
+}
+
 function filterItems(items: InboxItem[], filter: QueueFilter) {
   if (filter === "all") return items;
 
   return items.filter((item) => {
     const state = getWorkflowState(item);
 
-    if (filter === "ready") return state.key === "ready_to_send" || state.key === "draft_ready";
+    if (filter === "ready")
+      return state.key === "ready_to_send" || state.key === "draft_ready";
     if (filter === "needs_review")
-      return !["ready_to_send", "draft_ready", "sent", "archived"].includes(state.key);
+      return !["ready_to_send", "draft_ready", "sent", "archived"].includes(
+        state.key,
+      );
     if (filter === "processing") return state.key.startsWith("processing");
-    if (filter === "missing_info") return state.key.startsWith("missing") || state.key === "not_safe_to_draft";
+    if (filter === "missing_info")
+      return (
+        state.key.startsWith("missing") || state.key === "not_safe_to_draft"
+      );
     if (filter === "patient_match")
-      return state.key.includes("patient_match") || state.key === "new_patient_file_needed";
+      return (
+        state.key.includes("patient_match") ||
+        state.key === "new_patient_file_needed"
+      );
     if (filter === "clinical") return state.key === "clinical_review";
     if (filter === "archived") return state.key === "archived";
 
@@ -715,9 +786,10 @@ function filterItems(items: InboxItem[], filter: QueueFilter) {
 export default function WorkbenchClient({ initialItems }: Props) {
   const [items, setItems] = useState<InboxItem[]>(initialItems || []);
   const [selectedId, setSelectedId] = useState<string | null>(
-    initialItems?.[0]?.id || null
+    initialItems?.[0]?.id || null,
   );
   const [filter, setFilter] = useState<QueueFilter>("all");
+  const [sortMode, setSortMode] = useState<QueueSortMode>("urgency");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -727,53 +799,60 @@ export default function WorkbenchClient({ initialItems }: Props) {
   const [localDraftBody, setLocalDraftBody] = useState("");
 
   useEffect(() => {
-const supabase = createClient();
+    const supabase = createClient();
 
-  const channel = supabase
-    .channel("ai-inbox-items-workbench")
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
-        schema: "public",
-        table: "ai_inbox_items",
-      },
-      (payload) => {
-        const newRow = payload.new as InboxItem | null;
-        const oldRow = payload.old as InboxItem | null;
+    const channel = supabase
+      .channel("ai-inbox-items-workbench")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "ai_inbox_items",
+        },
+        (payload) => {
+          const newRow = payload.new as InboxItem | null;
+          const oldRow = payload.old as InboxItem | null;
 
-        setItems((current) => {
-          if (payload.eventType === "DELETE" && oldRow?.id) {
-            return current.filter((item) => item.id !== oldRow.id);
-          }
+          setItems((current) => {
+            if (payload.eventType === "DELETE" && oldRow?.id) {
+              return current.filter((item) => item.id !== oldRow.id);
+            }
 
-          if (!newRow?.id) return current;
+            if (!newRow?.id) return current;
 
-          const exists = current.some((item) => item.id === newRow.id);
+            const exists = current.some((item) => item.id === newRow.id);
 
-          if (exists) {
-            return current.map((item) =>
-              item.id === newRow.id ? { ...item, ...newRow } : item
-            );
-          }
+            if (exists) {
+              return current.map((item) =>
+                item.id === newRow.id ? { ...item, ...newRow } : item,
+              );
+            }
 
-          return [newRow, ...current];
-        });
-      }
-    )
-    .subscribe();
+            return [newRow, ...current];
+          });
+        },
+      )
+      .subscribe();
 
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}, []);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
-  const sortedItems = useMemo(() => sortItems(items), [items]);
+  const sortedItems = useMemo(
+    () => sortItems(items, sortMode),
+    [items, sortMode],
+  );
 
   const selectedItem =
-    sortedItems.find((item) => item.id === selectedId) || sortedItems[0] || null;
+    sortedItems.find((item) => item.id === selectedId) ||
+    sortedItems[0] ||
+    null;
 
-  const selectedDecision = selectedItem ? getLatestDecision(selectedItem) : null;
+  const selectedDecision = selectedItem
+    ? getLatestDecision(selectedItem)
+    : null;
   const selectedAttachments = selectedItem ? getAttachments(selectedItem) : [];
 
   const selectedState = selectedItem
@@ -802,7 +881,7 @@ const supabase = createClient();
 
   const visibleItems = useMemo(
     () => filterItems(sortedItems, filter),
-    [sortedItems, filter]
+    [sortedItems, filter],
   );
 
   const counts = useMemo(() => {
@@ -813,27 +892,28 @@ const supabase = createClient();
       needsReview: active.filter(
         (item) =>
           !["ready_to_send", "draft_ready", "sent", "archived"].includes(
-            getWorkflowState(item).key
-          )
+            getWorkflowState(item).key,
+          ),
       ).length,
       ready: active.filter((item) =>
-        ["ready_to_send", "draft_ready"].includes(getWorkflowState(item).key)
+        ["ready_to_send", "draft_ready"].includes(getWorkflowState(item).key),
       ).length,
       processing: active.filter((item) =>
-        getWorkflowState(item).key.startsWith("processing")
+        getWorkflowState(item).key.startsWith("processing"),
       ).length,
       missing: active.filter(
         (item) =>
           getWorkflowState(item).key.startsWith("missing") ||
-          getWorkflowState(item).key === "not_safe_to_draft"
+          getWorkflowState(item).key === "not_safe_to_draft",
       ).length,
       patientMatch: active.filter(
         (item) =>
           getWorkflowState(item).key.includes("patient_match") ||
-          getWorkflowState(item).key === "new_patient_file_needed"
+          getWorkflowState(item).key === "new_patient_file_needed",
       ).length,
-      clinical: active.filter((item) => getWorkflowState(item).key === "clinical_review")
-        .length,
+      clinical: active.filter(
+        (item) => getWorkflowState(item).key === "clinical_review",
+      ).length,
       archived: items.filter((item) => item.archived_at).length,
     };
   }, [items]);
@@ -843,16 +923,93 @@ const supabase = createClient();
 
     setItems((current) =>
       current.map((item) =>
-        item.id === selectedItem.id ? { ...item, ...updated } : item
-      )
+        item.id === selectedItem.id ? { ...item, ...updated } : item,
+      ),
     );
   }
+
+  // WorkbenchClient.tsx patch
+  // This fixes new imported rows not appearing until manual refresh.
+  // Add these helpers INSIDE WorkbenchClient, near replaceItem/updateSelectedItem.
+
+  function mergeItemsById(nextItems: InboxItem[]) {
+    setItems((current) => {
+      const byId = new Map<string, InboxItem>();
+
+      for (const item of current) {
+        byId.set(item.id, item);
+      }
+
+      for (const item of nextItems) {
+        const existing = byId.get(item.id);
+        byId.set(item.id, existing ? { ...existing, ...item } : item);
+      }
+
+      return Array.from(byId.values()).sort(
+        (a, b) =>
+          new Date(b.created_at || b.received_at || 0).getTime() -
+          new Date(a.created_at || a.received_at || 0).getTime(),
+      );
+    });
+  }
+
+  async function refreshWorkbenchItems({ silent = true } = {}) {
+    try {
+      const response = await fetch("/api/ai/brain/workbench-items?limit=75", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Could not refresh Workbench items.");
+      }
+
+      if (Array.isArray(result.items)) {
+        mergeItemsById(result.items);
+      }
+    } catch (error) {
+      if (!silent) {
+        setMessage(
+          error instanceof Error
+            ? error.message
+            : "Could not refresh Workbench items.",
+        );
+      }
+    }
+  }
+
+  // Optional polling only while processing items exist.
+  // Add this useEffect after your realtime useEffect.
+
+  useEffect(() => {
+    const hasProcessingItems = items.some(
+      (item) =>
+        item.event_chain_status === "queued" ||
+        item.event_chain_status === "running" ||
+        item.automation_pipeline_status === "queued" ||
+        item.automation_pipeline_status === "running" ||
+        item.automation_pipeline_status === "ocr_in_progress" ||
+        item.attachment_extraction_status === "processing_attachments" ||
+        item.attachment_extraction_status === "ocr_needed" ||
+        item.attachment_extraction_status === "ocr_partially_completed",
+    );
+
+    if (!hasProcessingItems) return;
+
+    const interval = window.setInterval(() => {
+      refreshWorkbenchItems({ silent: true });
+    }, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [items]);
 
   function replaceItem(updatedItem: InboxItem) {
     setItems((current) =>
       current.map((item) =>
-        item.id === updatedItem.id ? { ...item, ...updatedItem } : item
-      )
+        item.id === updatedItem.id ? { ...item, ...updatedItem } : item,
+      ),
     );
   }
 
@@ -891,7 +1048,7 @@ const supabase = createClient();
       window.open(result.url, "_blank", "noopener,noreferrer");
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "Could not open attachment."
+        error instanceof Error ? error.message : "Could not open attachment.",
       );
     } finally {
       setBusy(null);
@@ -935,7 +1092,9 @@ const supabase = createClient();
       setMessage("Outlook draft created.");
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "Could not create Outlook draft."
+        error instanceof Error
+          ? error.message
+          : "Could not create Outlook draft.",
       );
     } finally {
       setBusy(null);
@@ -975,7 +1134,9 @@ const supabase = createClient();
       setLocalDraftBody("");
       setMessage("AI Brain re-analysed this item.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not generate draft.");
+      setMessage(
+        error instanceof Error ? error.message : "Could not generate draft.",
+      );
     } finally {
       setBusy(null);
     }
@@ -1019,7 +1180,9 @@ const supabase = createClient();
 
       setMessage("Draft saved.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not save draft.");
+      setMessage(
+        error instanceof Error ? error.message : "Could not save draft.",
+      );
     } finally {
       setBusy(null);
     }
@@ -1059,7 +1222,9 @@ const supabase = createClient();
 
       setMessage("Marked as no reply needed.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not mark no reply.");
+      setMessage(
+        error instanceof Error ? error.message : "Could not mark no reply.",
+      );
     } finally {
       setBusy(null);
     }
@@ -1100,7 +1265,9 @@ const supabase = createClient();
 
       setMessage("Item archived.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not archive item.");
+      setMessage(
+        error instanceof Error ? error.message : "Could not archive item.",
+      );
     } finally {
       setBusy(null);
     }
@@ -1120,8 +1287,7 @@ const supabase = createClient();
         },
         body: JSON.stringify({
           inboxItemId: selectedItem.id,
-          reason:
-            "Marked for clinical review from the AI Reception Workbench.",
+          reason: "Marked for clinical review from the AI Reception Workbench.",
         }),
       });
 
@@ -1141,7 +1307,7 @@ const supabase = createClient();
       setMessage(
         error instanceof Error
           ? error.message
-          : "Could not mark for clinical review."
+          : "Could not mark for clinical review.",
       );
     } finally {
       setBusy(null);
@@ -1205,11 +1371,11 @@ const supabase = createClient();
       setMessage(
         result.processed
           ? `Processed OCR for ${result.attachment_name || "one attachment"}.`
-          : result.message || "No pending OCR attachments found."
+          : result.message || "No pending OCR attachments found.",
       );
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "Pending OCR worker failed."
+        error instanceof Error ? error.message : "Pending OCR worker failed.",
       );
     } finally {
       setBusy(null);
@@ -1247,36 +1413,212 @@ const supabase = createClient();
       setMessage(result.message || "Sent status checked.");
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "Could not check sent status."
+        error instanceof Error ? error.message : "Could not check sent status.",
       );
     } finally {
       setBusy(null);
     }
   }
 
-  async function importOutlookInbox() {
+  async function createManualTrelloTask() {
+    if (!selectedItem) return;
+
     try {
       setMessage("");
-      setBusy("import");
+      setBusy("create-trello-task");
 
-      const response = await fetch("/api/ai/brain/import-outlook-inbox", {
+      const response = await fetch("/api/ai/brain/create-trello-task", {
         method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          inboxItemId: selectedItem.id,
+          force: true,
+          reason: "Created manually from AI Reception Workbench.",
+        }),
       });
 
       const result = await response.json();
 
       if (!response.ok) {
-        setMessage(result.error || "Could not import Outlook inbox.");
-        return;
+        throw new Error(result.error || "Could not create Trello task.");
+      }
+
+      if (result.item) {
+        replaceItem(result.item);
+      } else {
+        updateSelectedItem({
+          trello_card_id: result.trello_card_id || null,
+          trello_card_url: result.trello_card_url || null,
+          trello_auto_task_status: result.skipped ? "skipped" : "created",
+          trello_auto_task_reason:
+            result.reason || result.message || "Manual Trello task action completed.",
+          trello_auto_task_error: null,
+        });
       }
 
       setMessage(
-        `Import completed. Imported ${result.imported_count ?? result.imported ?? 0} item(s). Refresh to view.`
+        result.skipped
+          ? result.reason || "Trello task was skipped."
+          : "Trello task created.",
       );
+
+      await refreshWorkbenchItems({ silent: true });
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "Could not import Outlook inbox."
+        error instanceof Error ? error.message : "Could not create Trello task.",
       );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function matchPraktikaPatient() {
+    if (!selectedItem) return;
+
+    try {
+      setMessage("");
+      setBusy("match-praktika-patient");
+
+      const response = await fetch("/api/ai/brain/praktika/match-patient", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          inboxItemId: selectedItem.id,
+        }),
+      });
+
+      const text = await response.text();
+
+      let parsed: any = null;
+
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `Praktika patient match did not return JSON. Status ${response.status}. Response starts with: ${text.slice(
+            0,
+            200,
+          )}`,
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(parsed.error || "Could not match Praktika patient.");
+      }
+
+      const result = parsed.result || {};
+      const extracted = result.extracted || {};
+      const bestMatch = result.bestMatch || null;
+
+      updateSelectedItem({
+        extracted_patient_first_name: extracted.firstName || null,
+        extracted_patient_last_name: extracted.lastName || null,
+        extracted_patient_dob: extracted.dob || null,
+        extracted_patient_mobile: extracted.mobile || null,
+        extracted_patient_email: extracted.email || null,
+        praktika_patient_id: bestMatch?.id ? String(bestMatch.id) : null,
+        praktika_patient_number: bestMatch?.patientNumber
+          ? String(bestMatch.patientNumber)
+          : null,
+        praktika_match_status: result.status || null,
+        praktika_match_confidence:
+          typeof result.confidence === "number" ? result.confidence : null,
+        praktika_match_reason: result.reason || null,
+        praktika_matched_at: new Date().toISOString(),
+      });
+
+      setMessage(
+        result.status === "matched_existing"
+          ? `Matched Praktika patient ${bestMatch?.id || ""}.`
+          : result.reason || "Praktika patient match completed.",
+      );
+
+      await refreshWorkbenchItems({ silent: true });
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not match Praktika patient.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // WorkbenchClient.tsx patch
+  //
+  // Find your existing import Outlook handler. It may be called something like:
+  // - importOutlookInbox
+  // - handleImportOutlookInbox
+  // - handleImportEmails
+  //
+  // Replace the fetch body with this pattern:
+
+  // Replace your handleImportOutlookInbox function with this version.
+
+  async function handleImportOutlookInbox() {
+    setBusy("import-outlook");
+    setMessage("Importing Outlook emails…");
+
+    try {
+      const response = await fetch("/api/ai/brain/import-outlook-inbox", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          limit: 10,
+          runEventChainInline: false,
+          kickBackground: true,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Import failed.");
+      }
+
+      if (result.imported_count > 0) {
+        setMessage(
+          `Imported ${result.imported_count} email(s). Processing is starting in the background…`,
+        );
+
+        const kickResponse = await fetch(
+          "/api/ai/brain/kick-background-processing",
+          {
+            method: "POST",
+          },
+        );
+
+        const kickResult = await kickResponse.json().catch(() => ({}));
+
+        if (!kickResponse.ok) {
+          setMessage(
+            `Imported ${result.imported_count} email(s), but background processing did not start: ${
+              kickResult.error || "Unknown error"
+            }`,
+          );
+          return;
+        }
+
+        setMessage(
+          `Imported ${result.imported_count} email(s). Background OCR/AI/Trello processing is running.`,
+        );
+        await refreshWorkbenchItems({ silent: true });
+
+        window.setTimeout(() => {
+          refreshWorkbenchItems({ silent: true });
+        }, 2000);
+      } else {
+        setMessage("No new Outlook emails found.");
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Import failed.");
     } finally {
       setBusy(null);
     }
@@ -1343,8 +1685,8 @@ const supabase = createClient();
 
             <button
               type="button"
-              onClick={importOutlookInbox}
-              disabled={busy === "import"}
+              onClick={handleImportOutlookInbox}
+              disabled={busy === "import-outlook"}
               className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
             >
               Import Outlook inbox
@@ -1376,6 +1718,13 @@ const supabase = createClient();
             >
               Check sent
             </button>
+
+            <a
+              href="/ai-reception/provider-trello-settings"
+              className="rounded-full border border-purple-200 bg-purple-50 px-4 py-2 text-sm font-medium text-purple-700 hover:bg-purple-100"
+            >
+              Provider Trello settings
+            </a>
           </div>
         </section>
       ) : null}
@@ -1475,6 +1824,36 @@ const supabase = createClient();
             </button>
           </div>
 
+          <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+            <span className="px-1 py-1.5 text-xs font-medium text-slate-500">
+              Sort:
+            </span>
+
+            <button
+              type="button"
+              onClick={() => setSortMode("urgency")}
+              className={`rounded-full px-3 py-1.5 text-xs font-medium ${
+                sortMode === "urgency"
+                  ? "bg-slate-950 text-white"
+                  : "border border-slate-200 bg-white text-slate-600"
+              }`}
+            >
+              Urgency order
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSortMode("newest")}
+              className={`rounded-full px-3 py-1.5 text-xs font-medium ${
+                sortMode === "newest"
+                  ? "bg-slate-950 text-white"
+                  : "border border-slate-200 bg-white text-slate-600"
+              }`}
+            >
+              Newest first
+            </button>
+          </div>
+
           <div className="mt-4 max-h-[calc(100vh-250px)] space-y-3 overflow-y-auto pr-1">
             {visibleItems.map((item) => {
               const state = getWorkflowState(item);
@@ -1488,7 +1867,7 @@ const supabase = createClient();
                   onClick={() => selectItem(item)}
                   className={`w-full rounded-2xl border p-4 text-left transition hover:shadow-sm ${toneClasses(
                     state.tone,
-                    selected
+                    selected,
                   )}`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -1508,7 +1887,7 @@ const supabase = createClient();
                     <span
                       className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${badgeClasses(
                         state.tone,
-                        selected
+                        selected,
                       )}`}
                     >
                       {state.badge}
@@ -1540,11 +1919,15 @@ const supabase = createClient();
 
                 <div className="mt-4 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
                   <p>
-                    <span className="font-medium text-slate-800">Workflow:</span>{" "}
+                    <span className="font-medium text-slate-800">
+                      Workflow:
+                    </span>{" "}
                     {selectedState.label}
                   </p>
                   <p>
-                    <span className="font-medium text-slate-800">Category:</span>{" "}
+                    <span className="font-medium text-slate-800">
+                      Category:
+                    </span>{" "}
                     {selectedItem.category || "Unknown"}
                   </p>
                   <p>
@@ -1556,7 +1939,9 @@ const supabase = createClient();
                     {selectedItem.patient_dob || "Not detected yet"}
                   </p>
                   <p>
-                    <span className="font-medium text-slate-800">Reply to:</span>{" "}
+                    <span className="font-medium text-slate-800">
+                      Reply to:
+                    </span>{" "}
                     {selectedItem.sender_email || "Unknown"}
                   </p>
                   <p>
@@ -1570,7 +1955,7 @@ const supabase = createClient();
 
               <div
                 className={`rounded-2xl border px-4 py-3 text-sm ${toneClasses(
-                  selectedState.tone
+                  selectedState.tone,
                 )}`}
               >
                 <p className="font-semibold">{selectedState.label}</p>
@@ -1586,7 +1971,7 @@ const supabase = createClient();
                   <div
                     key={reason.key}
                     className={`rounded-2xl border p-4 text-sm ${toneClasses(
-                      reason.tone
+                      reason.tone,
                     )}`}
                   >
                     <p className="font-semibold">{reason.label}</p>
@@ -1600,12 +1985,185 @@ const supabase = createClient();
                 ))}
               </div>
             ) : null}
+
+            <div className="mt-5 rounded-2xl border border-purple-200 bg-purple-50 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm font-bold text-purple-950">
+                    Provider / Trello routing
+                  </p>
+                  <p className="mt-1 text-xs text-purple-800">
+                    This is set by your clinician routing brain after workflow classification.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {selectedItem.trello_card_url ? (
+                    <a
+                      href={selectedItem.trello_card_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded-full border border-purple-300 bg-white px-4 py-2 text-xs font-medium text-purple-800 hover:bg-purple-100"
+                    >
+                      Open Trello card
+                    </a>
+                  ) : null}
+
+                  <button
+                    type="button"
+                    onClick={createManualTrelloTask}
+                    disabled={
+                      busy === "create-trello-task" ||
+                      Boolean(selectedItem.trello_card_id)
+                    }
+                    className="rounded-full border border-purple-300 bg-purple-700 px-4 py-2 text-xs font-medium text-white hover:bg-purple-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {busy === "create-trello-task"
+                      ? "Creating..."
+                      : selectedItem.trello_card_id
+                      ? "Trello created"
+                      : "Create Trello task"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 text-sm text-purple-900 sm:grid-cols-2">
+                <p>
+                  <span className="font-medium">Provider:</span>{" "}
+                  {selectedItem.assigned_clinician_name || "Not routed yet"}
+                </p>
+
+                <p>
+                  <span className="font-medium">Confidence:</span>{" "}
+                  {typeof selectedItem.clinician_routing_confidence === "number"
+                    ? `${Math.round(
+                        selectedItem.clinician_routing_confidence * 100,
+                      )}%`
+                    : "Unknown"}
+                </p>
+
+                <p>
+                  <span className="font-medium">Trello board:</span>{" "}
+                  {selectedItem.trello_board_id || "Not set"}
+                </p>
+
+                <p>
+                  <span className="font-medium">Trello list:</span>{" "}
+                  {selectedItem.trello_list_id || "Not set"}
+                </p>
+
+                <p>
+                  <span className="font-medium">Trello task:</span>{" "}
+                  {selectedItem.trello_auto_task_status ||
+                    (selectedItem.trello_card_id ? "Created" : "Not created yet")}
+                </p>
+              </div>
+
+              {selectedItem.clinician_routing_reason ? (
+                <p className="mt-3 text-xs leading-5 text-purple-800">
+                  {selectedItem.clinician_routing_reason}
+                </p>
+              ) : (
+                <p className="mt-3 text-xs leading-5 text-purple-800">
+                  No routing result yet. Re-analyse or wait for background processing to finish.
+                </p>
+              )}
+
+              {selectedItem.trello_auto_task_reason ? (
+                <p className="mt-2 text-xs leading-5 text-purple-800">
+                  Trello note: {selectedItem.trello_auto_task_reason}
+                </p>
+              ) : null}
+
+              {selectedItem.trello_auto_task_error ? (
+                <p className="mt-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                  Trello error: {selectedItem.trello_auto_task_error}
+                </p>
+              ) : null}
+            </div>
+
+            <div
+              className={`mt-5 rounded-2xl border p-4 ${toneClasses(
+                praktikaMatchTone(selectedItem.praktika_match_status),
+              )}`}
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm font-bold">Praktika patient match</p>
+                  <p className="mt-1 text-xs opacity-80">
+                    Uses AI-extracted patient details and your read-only Praktika patient search.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={matchPraktikaPatient}
+                  disabled={busy === "match-praktika-patient"}
+                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy === "match-praktika-patient"
+                    ? "Matching..."
+                    : "Match Praktika patient"}
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                <p>
+                  <span className="font-medium">Status:</span>{" "}
+                  {praktikaMatchStatusLabel(selectedItem.praktika_match_status)}
+                </p>
+
+                <p>
+                  <span className="font-medium">Confidence:</span>{" "}
+                  {typeof selectedItem.praktika_match_confidence === "number"
+                    ? `${Math.round(selectedItem.praktika_match_confidence * 100)}%`
+                    : "Not checked"}
+                </p>
+
+                <p>
+                  <span className="font-medium">Praktika patient ID:</span>{" "}
+                  {selectedItem.praktika_patient_id || "Not matched"}
+                </p>
+
+                <p>
+                  <span className="font-medium">Patient number:</span>{" "}
+                  {selectedItem.praktika_patient_number || "Not matched"}
+                </p>
+
+                <p>
+                  <span className="font-medium">Extracted patient:</span>{" "}
+                  {[
+                    selectedItem.extracted_patient_first_name,
+                    selectedItem.extracted_patient_last_name,
+                  ]
+                    .filter(Boolean)
+                    .join(" ") || "Not extracted yet"}
+                </p>
+
+                <p>
+                  <span className="font-medium">Extracted DOB:</span>{" "}
+                  {selectedItem.extracted_patient_dob || "Not extracted yet"}
+                </p>
+              </div>
+
+              {selectedItem.praktika_match_reason ? (
+                <p className="mt-3 text-xs leading-5 opacity-80">
+                  {selectedItem.praktika_match_reason}
+                </p>
+              ) : (
+                <p className="mt-3 text-xs leading-5 opacity-80">
+                  Run patient matching when the item has enough text/OCR to identify the patient.
+                </p>
+              )}
+            </div>
           </div>
 
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-base font-bold text-slate-900">Attachments</h3>
+                <h3 className="text-base font-bold text-slate-900">
+                  Attachments
+                </h3>
                 <p className="text-sm text-slate-500">
                   Open documents and images from the Outlook email.
                 </p>
@@ -1663,7 +2221,9 @@ const supabase = createClient();
                           <button
                             type="button"
                             onClick={() => openAttachment(attachment)}
-                            disabled={busy === `open-${attachment.storage_path}`}
+                            disabled={
+                              busy === `open-${attachment.storage_path}`
+                            }
                             className="rounded-full border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
                           >
                             Open
@@ -1676,7 +2236,9 @@ const supabase = createClient();
                             <button
                               type="button"
                               onClick={() => runManualOcr(attachment)}
-                              disabled={busy === `ocr-${attachment.storage_path}`}
+                              disabled={
+                                busy === `ocr-${attachment.storage_path}`
+                              }
                               className="rounded-full border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
                             >
                               Run OCR
@@ -1743,7 +2305,9 @@ const supabase = createClient();
               </p>
               <p>
                 <span className="font-medium">Confidence:</span>{" "}
-                {selectedDecision?.confidence ?? selectedItem.confidence ?? "Unknown"}
+                {selectedDecision?.confidence ??
+                  selectedItem.confidence ??
+                  "Unknown"}
               </p>
               <p>
                 <span className="font-medium">Safe to auto-draft:</span>{" "}
@@ -1751,7 +2315,8 @@ const supabase = createClient();
               </p>
               <p>
                 <span className="font-medium">Why:</span>{" "}
-                {selectedDecision?.explanation || "No AI explanation available."}
+                {selectedDecision?.explanation ||
+                  "No AI explanation available."}
               </p>
             </div>
 
@@ -1774,7 +2339,9 @@ const supabase = createClient();
               onClick={() => setShowExtractedText((current) => !current)}
               className="text-sm font-medium text-slate-700 hover:text-slate-950"
             >
-              {showExtractedText ? "Hide extracted text" : "Show extracted text"}
+              {showExtractedText
+                ? "Hide extracted text"
+                : "Show extracted text"}
             </button>
 
             {showExtractedText ? (
@@ -1805,7 +2372,7 @@ const supabase = createClient();
                     workflowState: selectedState,
                   },
                   null,
-                  2
+                  2,
                 )}
               </pre>
             ) : null}
@@ -1843,7 +2410,7 @@ const supabase = createClient();
                       selectedItem.source_email_url ||
                       "",
                     "_blank",
-                    "noopener,noreferrer"
+                    "noopener,noreferrer",
                   )
                 }
                 className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700 hover:bg-emerald-100"
@@ -1851,6 +2418,44 @@ const supabase = createClient();
                 Open Outlook
               </button>
             ) : null}
+
+            {selectedItem.trello_card_url ? (
+              <button
+                type="button"
+                onClick={() =>
+                  window.open(
+                    selectedItem.trello_card_url || "",
+                    "_blank",
+                    "noopener,noreferrer",
+                  )
+                }
+                className="w-full rounded-2xl border border-purple-200 bg-purple-50 px-4 py-3 text-sm font-medium text-purple-700 hover:bg-purple-100"
+              >
+                Open Trello card
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={createManualTrelloTask}
+                disabled={busy === "create-trello-task"}
+                className="w-full rounded-2xl border border-purple-200 bg-purple-600 px-4 py-3 text-sm font-bold text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {busy === "create-trello-task"
+                  ? "Creating Trello task..."
+                  : "Create Trello task"}
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={matchPraktikaPatient}
+              disabled={busy === "match-praktika-patient"}
+              className="w-full rounded-2xl border border-blue-200 bg-blue-600 px-4 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy === "match-praktika-patient"
+                ? "Matching Praktika patient..."
+                : "Match Praktika patient"}
+            </button>
 
             <div className="grid grid-cols-2 gap-3">
               <button

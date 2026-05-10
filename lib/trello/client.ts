@@ -141,35 +141,106 @@ export async function addCommentToTrelloCard({
   return JSON.parse(responseText);
 }
 
-export async function getTrelloBoardLists(boardId?: string) {
-  const config = getTrelloConfig();
-  const targetBoardId = boardId || config.boardId;
+export async function getTrelloBoardLists() {
+  const apiKey = process.env.TRELLO_API_KEY;
+  const token = process.env.TRELLO_TOKEN;
 
-  if (!targetBoardId) {
-    throw new Error("Missing TRELLO_BOARD_ID.");
+  const boardIds = [
+    ...(process.env.TRELLO_BOARD_IDS || "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean),
+    ...(process.env.TRELLO_BOARD_ID ? [process.env.TRELLO_BOARD_ID] : []),
+  ];
+
+  const uniqueBoardIds = Array.from(new Set(boardIds));
+
+  if (!apiKey) {
+    throw new Error("Missing TRELLO_API_KEY.");
   }
 
-  const params = new URLSearchParams({
-    key: config.key,
-    token: config.token,
-    fields: "name,id",
-  });
+  if (!token) {
+    throw new Error("Missing TRELLO_TOKEN.");
+  }
 
-  const response = await fetch(
-    `https://api.trello.com/1/boards/${targetBoardId}/lists?${params.toString()}`,
-    {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
+  if (uniqueBoardIds.length === 0) {
+    throw new Error("Missing TRELLO_BOARD_ID or TRELLO_BOARD_IDS.");
+  }
+
+  const allLists: any[] = [];
+
+  for (const boardId of uniqueBoardIds) {
+    const boardResponse = await fetch(
+      `https://api.trello.com/1/boards/${boardId}?key=${apiKey}&token=${token}&fields=id,name,url,closed`,
+      {
+        method: "GET",
+        cache: "no-store",
       },
+    );
+
+    const boardText = await boardResponse.text();
+
+    let board: any = null;
+
+    try {
+      board = JSON.parse(boardText);
+    } catch {
+      throw new Error(
+        `Trello board ${boardId} did not return JSON: ${boardText.slice(
+          0,
+          200,
+        )}`,
+      );
     }
-  );
 
-  const text = await response.text();
+    if (!boardResponse.ok) {
+      throw new Error(board?.message || `Could not fetch board ${boardId}.`);
+    }
 
-  if (!response.ok) {
-    throw new Error(`Trello lists fetch failed: ${response.status} ${text}`);
+    const listsResponse = await fetch(
+      `https://api.trello.com/1/boards/${boardId}/lists?key=${apiKey}&token=${token}&fields=id,name,idBoard,closed`,
+      {
+        method: "GET",
+        cache: "no-store",
+      },
+    );
+
+    const listsText = await listsResponse.text();
+
+    let lists: any[] = [];
+
+    try {
+      lists = JSON.parse(listsText);
+    } catch {
+      throw new Error(
+        `Trello lists for board ${boardId} did not return JSON: ${listsText.slice(
+          0,
+          200,
+        )}`,
+      );
+    }
+
+    if (!listsResponse.ok) {
+      throw new Error(
+        Array.isArray(lists)
+          ? `Could not fetch lists for board ${boardId}.`
+          : (lists as any)?.message || `Could not fetch lists for ${boardId}.`,
+      );
+    }
+
+    for (const list of lists) {
+      if (list.closed === true) continue;
+
+      allLists.push({
+        id: list.id,
+        name: list.name,
+        idBoard: list.idBoard,
+        board_id: board.id,
+        board_name: board.name,
+        board_url: board.url,
+      });
+    }
   }
 
-  return JSON.parse(text);
+  return allLists;
 }

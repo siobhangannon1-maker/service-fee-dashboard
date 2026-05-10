@@ -37,6 +37,7 @@ const navGroups: NavGroup[] = [
     items: [
       { href: "/ai-reception/workbench", label: "AI Workbench", description: "Start to finish AI workflows" },
       { href: "/ai-reception/inbox", label: "AI Inbox", description: "Manage correspondence and referrals" },
+      { href: "/ai-reception/provider-trello-settings", label: "Provider Trello Settings", description: "Manage provider trello boards and lists" },
       { href: "/ai-reception/approval-queue", label: "Approval Queue", description: "Review AI-classified referrals and correspondence" },
       { href: "/ai-reception/upload", label: "Upload Correspondence", description: "Upload referrals, letters, x-rays and documents" },
       { href: "/ai-reception/response-templates", label: "Response Templates", description: "Manage approved AI email response templates" },

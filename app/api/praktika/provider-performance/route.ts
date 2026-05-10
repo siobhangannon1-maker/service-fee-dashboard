@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -15,12 +16,11 @@ export async function POST(request: NextRequest) {
   try {
     const { fromDate, toDate } = await request.json();
 
-    const praktikaCookie = process.env.PRAKTIKA_COOKIE;
     const practiceId = process.env.PRAKTIKA_PRACTICE_ID;
 
-    if (!praktikaCookie || !practiceId) {
+    if (!practiceId) {
       return NextResponse.json(
-        { error: "Missing PRAKTIKA_COOKIE or PRAKTIKA_PRACTICE_ID" },
+        { error: "Missing PRAKTIKA_PRACTICE_ID" },
         { status: 500 }
       );
     }
@@ -33,51 +33,10 @@ export async function POST(request: NextRequest) {
     formData.append("sToDate", toDate);
     formData.append("sWorkingHoursMethod", "dumb");
 
-    const response = await fetch(
-      "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php",
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/x-www-form-urlencoded",
-          Cookie: praktikaCookie,
-          Origin: "https://praktika.praktika.net.au",
-          Referer:
-            "https://praktika.praktika.net.au/v2/reports/provider-performance",
-        },
-        body: formData.toString(),
-        cache: "no-store",
-      }
+    const data = await fetchPraktikaJson(
+      formData,
+      "https://praktika.praktika.net.au/v2/reports/provider-performance"
     );
-
-    const responseText = await response.text();
-
-    let data: any;
-
-    try {
-      data = JSON.parse(responseText);
-    } catch {
-      return NextResponse.json(
-        {
-          error: "Praktika did not return JSON. Your cookie may have expired.",
-          status: response.status,
-          responsePreview: responseText.slice(0, 500),
-        },
-        { status: 502 }
-      );
-    }
-
-    if (!Array.isArray(data)) {
-      return NextResponse.json(
-        {
-          error: "Praktika did not return an array. Your cookie may have expired.",
-          status: response.status,
-          returnedType: typeof data,
-          returnedData: data,
-        },
-        { status: 502 }
-      );
-    }
 
     const rows = data.map((row: any) => ({
       report_date: fromDate,
@@ -131,10 +90,10 @@ export async function POST(request: NextRequest) {
       rowsInserted: rows.length,
       data: rows,
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error(err);
     return NextResponse.json(
-      { error: "Failed to sync Provider Performance" },
+      { error: err?.message || "Failed to sync Provider Performance" },
       { status: 500 }
     );
   }

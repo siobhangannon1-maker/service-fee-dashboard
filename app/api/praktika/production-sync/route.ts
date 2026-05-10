@@ -6,7 +6,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
 const PRAKTIKA_ENDPOINT =
-  "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php";
+  "https://praktika.praktika.net.au/php/json/";
 
 function getClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;

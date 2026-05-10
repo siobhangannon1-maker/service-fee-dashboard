@@ -96,6 +96,7 @@ function isImageFile({
 
 async function extractPdfText(buffer: Buffer) {
   try {
+    // Prefer unpdf because it works better with Next/serverless than pdf-parse.
     const { extractText, getDocumentProxy } = await import("unpdf");
 
     const pdf = await getDocumentProxy(new Uint8Array(buffer));
@@ -376,14 +377,53 @@ function getAttachmentExtractionStatus({
   return "no_extractable_text";
 }
 
+/**
+ * Fire-and-forget local background trigger.
+ *
+ * This intentionally does NOT await the processing route.
+ * The Workbench should show the imported row quickly, then realtime updates
+ * should show OCR/AI/Trello progress as the background worker finishes.
+ */
+function kickBackgroundProcessing(req: Request) {
+  const url = new URL(req.url);
+  const origin = url.origin;
+
+  const secret = process.env.CRON_SECRET;
+  const targetUrl = secret
+    ? `${origin}/api/ai/brain/process-recent-imports?secret=${encodeURIComponent(
+        secret
+      )}&scan=25&process=2`
+    : `${origin}/api/ai/brain/process-recent-imports?scan=25&process=2`;
+
+  fetch(targetUrl, {
+    method: "POST",
+    cache: "no-store",
+  }).catch((error) => {
+    console.warn("Background processing trigger failed:", error);
+  });
+}
+
 export async function POST(req: Request) {
   try {
     const { user } = await requireRole(["super_admin"]);
 
     const body = await req.json().catch(() => ({}));
     const limit = Number(body?.limit || 10);
-    const runEventChain = body?.runEventChain !== false;
-    const maxEventChainItems = Number(body?.maxEventChainItems || 3);
+
+    /**
+     * Important behaviour change:
+     *
+     * Default = fast import only.
+     * The import button returns quickly after emails/attachments are saved.
+     * Full AI processing runs via background/fallback worker.
+     *
+     * Set runEventChainInline=true only for debugging a single item.
+     */
+    const runEventChainInline = body?.runEventChainInline === true;
+    const kickBackground =
+      typeof body?.kickBackground === "boolean" ? body.kickBackground : true;
+
+    const maxEventChainItems = Number(body?.maxEventChainItems || 1);
 
     const messages = await listRecentInboxMessages({
       mailbox: outlookSharedMailbox,
@@ -391,7 +431,8 @@ export async function POST(req: Request) {
     });
 
     const results: any[] = [];
-    let eventChainCount = 0;
+    let inlineEventChainCount = 0;
+    let importedCount = 0;
 
     for (const message of messages) {
       const { data: existing } = await supabaseAdmin
@@ -438,7 +479,7 @@ export async function POST(req: Request) {
 
           status: "uploaded",
           category: "unknown",
-          email_status: "drafted",
+          email_status: "processing",
           draft_status: "not_started",
 
           attachment_extraction_status: message.hasAttachments
@@ -450,6 +491,9 @@ export async function POST(req: Request) {
           outlook_message_id: message.id,
           outlook_conversation_id: message.conversationId || null,
           outlook_web_link: message.webLink || null,
+
+          event_chain_status: "queued",
+          automation_pipeline_status: "queued",
         })
         .select()
         .single();
@@ -463,6 +507,8 @@ export async function POST(req: Request) {
 
         continue;
       }
+
+      importedCount += 1;
 
       const {
         importedAttachments,
@@ -500,40 +546,43 @@ export async function POST(req: Request) {
             imported_attachment_count: importedAttachments.length,
             imported_attachments: importedAttachments,
             attachment_import_diagnostics: attachmentImportDiagnostics,
-            event_chain_enabled: runEventChain,
+            event_chain_mode: runEventChainInline
+              ? "inline_debug"
+              : "background",
+            background_processing_requested: kickBackground,
           },
           attachment_extraction_status: attachmentExtractionStatus,
           attachment_needs_ocr: anyAttachmentNeedsOcr,
         })
         .eq("id", inserted.id);
 
-      let pipelineResult: any = null;
+      let inlinePipelineResult: any = null;
 
-      if (runEventChain && eventChainCount < maxEventChainItems) {
-        pipelineResult = await processImportedInboxItem({
+      if (runEventChainInline && inlineEventChainCount < maxEventChainItems) {
+        inlinePipelineResult = await processImportedInboxItem({
           inboxItemId: inserted.id,
-          source: "import_outlook_inbox",
+          source: "import_outlook_inbox_inline_debug",
         });
 
-        eventChainCount += 1;
+        inlineEventChainCount += 1;
       }
 
       await supabaseAdmin.from("ai_workbench_audit_events").insert({
         inbox_item_id: inserted.id,
         actor_id: user.id,
-        event_type: pipelineResult
-          ? "outlook_imported_event_chain_started"
-          : "outlook_imported",
-        event_summary: pipelineResult
-          ? "Outlook email was imported, attachments were saved, and the automation pipeline was triggered."
-          : "Outlook email was imported and attachments were saved.",
+        event_type: runEventChainInline
+          ? "outlook_imported_inline_event_chain"
+          : "outlook_imported_background_queued",
+        event_summary: runEventChainInline
+          ? "Outlook email was imported and processed inline."
+          : "Outlook email was imported and queued for background processing.",
         metadata: {
           attachment_count: importedAttachments.length,
           attachment_needs_ocr: anyAttachmentNeedsOcr,
           attachment_extraction_status: attachmentExtractionStatus,
-          event_chain_enabled: runEventChain,
-          event_chain_ran: Boolean(pipelineResult),
-          pipeline_result: pipelineResult,
+          event_chain_mode: runEventChainInline ? "inline_debug" : "background",
+          background_processing_requested: kickBackground,
+          inline_pipeline_result: inlinePipelineResult,
         },
       });
 
@@ -545,22 +594,33 @@ export async function POST(req: Request) {
         attachments_imported: importedAttachments.length,
         attachment_needs_ocr: anyAttachmentNeedsOcr,
         attachment_extraction_status: attachmentExtractionStatus,
-        event_chain_ran: Boolean(pipelineResult),
-        event_chain_result: pipelineResult,
-        trello_card_url:
-          pipelineResult?.pipelineResult?.details?.trelloResult
-            ?.trello_card_url ||
-          pipelineResult?.pipelineResult?.details?.trelloResult
-            ?.item?.trello_card_url ||
-          null,
+        event_chain_status: runEventChainInline ? "inline_started" : "queued",
+        automation_pipeline_status: runEventChainInline
+          ? "inline_started"
+          : "queued",
+        inline_event_chain_ran: Boolean(inlinePipelineResult),
+        inline_event_chain_result: inlinePipelineResult,
       });
+    }
+
+    if (kickBackground && importedCount > 0 && !runEventChainInline) {
+      kickBackgroundProcessing(req);
     }
 
     return NextResponse.json({
       success: true,
+      mode: runEventChainInline
+        ? "inline_event_chain_debug"
+        : "fast_import_background_processing",
       checked: messages.length,
-      imported_count: results.filter((result) => result.imported).length,
-      event_chain_count: eventChainCount,
+      imported_count: importedCount,
+      inline_event_chain_count: inlineEventChainCount,
+      background_processing_requested:
+        kickBackground && importedCount > 0 && !runEventChainInline,
+      message:
+        importedCount > 0
+          ? "Emails imported quickly. Background processing has been requested; realtime updates should show progress."
+          : "No new emails imported.",
       results,
     });
   } catch (error: any) {

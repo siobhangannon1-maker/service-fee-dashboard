@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { requireRole } from "@/lib/auth";
-import { ensureTrelloTaskForInboxItem } from "@/lib/ai/brain/ensureTrelloTask";
+import { matchPraktikaPatientForInboxItem } from "@/lib/ai/brain/praktikaPatientMatch";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -12,35 +12,25 @@ export async function POST(request: Request) {
     await requireRole(["super_admin"]);
 
     const body = await request.json();
-
     const inboxItemId = body.inboxItemId as string | undefined;
-    const reason =
-      (body.reason as string | undefined) ||
-      "Created manually from AI Reception Workbench.";
-    const force = typeof body.force === "boolean" ? body.force : true;
 
     if (!inboxItemId) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "Missing inboxItemId.",
-        },
+        { success: false, error: "Missing inboxItemId." },
         { status: 400 },
       );
     }
 
-    const result = await ensureTrelloTaskForInboxItem({
+    const result = await matchPraktikaPatientForInboxItem({
       inboxItemId,
-      reason,
-      force,
     });
 
     return NextResponse.json({
-      ...result,
       success: true,
+      result,
     });
   } catch (error) {
-    console.error("Create Trello task route error:", error);
+    console.error("Praktika match patient error:", error);
 
     return NextResponse.json(
       {
@@ -48,7 +38,7 @@ export async function POST(request: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Failed to create Trello task.",
+            : "Failed to match Praktika patient.",
       },
       { status: 500 },
     );

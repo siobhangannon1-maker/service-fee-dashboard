@@ -1,12 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
-import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-
-const PRAKTIKA_ENDPOINT =
-  "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php";
+import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
 
 function getClient() {
   return createClient(
@@ -35,7 +29,6 @@ function parseDate(value: unknown): string | null {
 
 function sanitizeRawJson(row: any) {
   const blockedKeys = ["patient", "name", "email", "phone", "address"];
-
   const cleaned: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(row)) {
@@ -51,66 +44,16 @@ function sanitizeRawJson(row: any) {
   return cleaned;
 }
 
-function loadPraktikaCookieFromEnvFile(): string {
-  const envPath = path.join(process.cwd(), ".env.local");
-  const parsed = dotenv.parse(fs.readFileSync(envPath));
-  const cookie = parsed.PRAKTIKA_COOKIE;
-
-  process.env.PRAKTIKA_COOKIE = cookie;
-  return cookie;
-}
-
-function refreshPraktikaCookieLocally() {
-  execFileSync("npm", ["run", "refresh:praktika-cookie"], {
-    stdio: "inherit",
-  });
-
-  return loadPraktikaCookieFromEnvFile();
-}
-
-async function fetchPraktikaJson(params: URLSearchParams) {
-  async function makeRequest(cookie: string) {
-    const res = await fetch(PRAKTIKA_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Cookie: cookie,
-        Origin: "https://praktika.praktika.net.au",
-        Referer: "https://praktika.praktika.net.au/v2/reports/new-patients",
-      },
-      body: params.toString(),
-    });
-
-    const text = await res.text();
-
-    try {
-      const data = JSON.parse(text);
-      if (Array.isArray(data)) return data;
-
-      console.log("Praktika non-array:", data);
-      return null;
-    } catch {
-      console.log("Non-JSON:", text.slice(0, 300));
-      return null;
-    }
-  }
-
-  const first = await makeRequest(process.env.PRAKTIKA_COOKIE!);
-  if (first) return first;
-
-  const refreshed = refreshPraktikaCookieLocally();
-  const second = await makeRequest(refreshed);
-  if (second) return second;
-
-  throw new Error("Praktika session expired (MFA required)");
-}
-
 export async function POST(req: Request) {
   try {
     const { fromDate, toDate } = await req.json();
 
     const supabase = getClient();
-    const practiceId = process.env.PRAKTIKA_PRACTICE_ID!;
+    const practiceId = process.env.PRAKTIKA_PRACTICE_ID;
+
+    if (!practiceId) {
+      throw new Error("Missing PRAKTIKA_PRACTICE_ID.");
+    }
 
     const params = new URLSearchParams();
     params.append("sReportName", "newPatients");
@@ -120,13 +63,13 @@ export async function POST(req: Request) {
     params.append("sFromDate", fromDate);
     params.append("sToDate", toDate);
 
-    const data = await fetchPraktikaJson(params);
-
-    console.log("NEW PATIENTS SAMPLE:", data[0]);
+    const data = await fetchPraktikaJson(
+      params,
+      "https://praktika.praktika.net.au/v2/reports/new-patients"
+    );
 
     const importBatchId = crypto.randomUUID();
 
-    // clear existing rows for this period
     await supabase
       .from("provider_new_patients_raw")
       .delete()
@@ -135,12 +78,7 @@ export async function POST(req: Request) {
 
     const rows = data.map((row: any) => {
       const joinedDate = parseDate(row.dtDateJoined) || fromDate;
-
-      // ✅ CRITICAL FIX: ONLY use FIRST PROVIDER
-      const firstProviderSeen = normalizeWhitespace(
-        row.vchFirstProviderSeenName
-      );
-
+      const firstProviderSeen = normalizeWhitespace(row.vchFirstProviderSeenName);
       const hasFirstProvider = firstProviderSeen.length > 0;
 
       return {
@@ -148,16 +86,13 @@ export async function POST(req: Request) {
         import_batch_id: importBatchId,
         joined_date: joinedDate,
 
-        // KPI FIELD (this drives your %)
         provider_name_raw: hasFirstProvider ? firstProviderSeen : null,
-
         provider_name_normalized: hasFirstProvider
           ? normalizeProviderNameCompact(firstProviderSeen)
           : null,
 
-        provider_id: null, // optional later
+        provider_id: null,
 
-        // appointment info (not used for booking KPI)
         first_appointment_raw: row.dtFirstAppointment || null,
         has_first_appointment: hasFirstProvider,
 
@@ -185,9 +120,6 @@ export async function POST(req: Request) {
     });
   } catch (err: any) {
     console.error(err);
-    return NextResponse.json(
-      { error: err.message },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

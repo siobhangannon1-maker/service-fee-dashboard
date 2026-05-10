@@ -1,11 +1,8 @@
 "use server";
 
-import fs from "node:fs";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { getAppointmentCategory } from "@/lib/appointmentCategories";
 
@@ -13,9 +10,6 @@ type ActionState = {
   ok: boolean;
   message: string;
 };
-
-const PRAKTIKA_ENDPOINT =
-  "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php";
 
 function getClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -27,44 +21,14 @@ function getClient() {
   return createClient(supabaseUrl, serviceRoleKey);
 }
 
-function getPraktikaAuth() {
-  const praktikaCookie = process.env.PRAKTIKA_COOKIE;
+function getPracticeId() {
   const practiceId = process.env.PRAKTIKA_PRACTICE_ID;
 
-  if (!praktikaCookie) throw new Error("Missing PRAKTIKA_COOKIE");
-  if (!practiceId) throw new Error("Missing PRAKTIKA_PRACTICE_ID");
-
-  return { praktikaCookie, practiceId };
-}
-
-function loadPraktikaCookieFromEnvFile(): string {
-  const envPath = path.join(process.cwd(), ".env.local");
-
-  if (!fs.existsSync(envPath)) {
-    throw new Error("Missing .env.local file.");
+  if (!practiceId) {
+    throw new Error("Missing PRAKTIKA_PRACTICE_ID");
   }
 
-  const parsed = dotenv.parse(fs.readFileSync(envPath));
-  const cookie = parsed.PRAKTIKA_COOKIE;
-
-  if (!cookie) {
-    throw new Error("PRAKTIKA_COOKIE was not found in .env.local.");
-  }
-
-  process.env.PRAKTIKA_COOKIE = cookie;
-
-  return cookie;
-}
-
-function refreshPraktikaCookieLocally() {
-  console.log("Refreshing Praktika cookie...");
-
-  execFileSync("npm", ["run", "refresh:praktika-cookie"], {
-    stdio: "inherit",
-    cwd: process.cwd(),
-  });
-
-  return loadPraktikaCookieFromEnvFile();
+  return practiceId;
 }
 
 function normalizeWhitespace(value: string | null | undefined): string {
@@ -186,62 +150,6 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   return chunks;
 }
 
-async function fetchPraktikaJson(params: URLSearchParams, referer: string) {
-  async function makeRequest(cookie: string) {
-    const response = await fetch(PRAKTIKA_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/x-www-form-urlencoded",
-        Cookie: cookie,
-        Origin: "https://praktika.praktika.net.au",
-        Referer: referer,
-      },
-      body: params.toString(),
-      cache: "no-store",
-    });
-
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-
-      if (Array.isArray(data)) {
-        return data as any[];
-      }
-
-      console.log("Praktika non-array response:", data);
-      return null;
-    } catch {
-      console.log("Praktika non-JSON response preview:", text.slice(0, 500));
-      return null;
-    }
-  }
-
-  const initialCookie = process.env.PRAKTIKA_COOKIE;
-
-  if (!initialCookie) {
-    throw new Error("Missing PRAKTIKA_COOKIE.");
-  }
-
-  const firstAttempt = await makeRequest(initialCookie);
-
-  if (firstAttempt) {
-    return firstAttempt;
-  }
-
-  const refreshedCookie = refreshPraktikaCookieLocally();
-  const secondAttempt = await makeRequest(refreshedCookie);
-
-  if (secondAttempt) {
-    return secondAttempt;
-  }
-
-  throw new Error(
-    "Praktika still did not return a report array after refreshing the cookie. MFA may be required."
-  );
-}
-
 async function loadProviderLookup(sourceTypes: string[]) {
   const supabase = getClient();
 
@@ -328,7 +236,7 @@ export async function syncPraktikaProviderPerformance(
 ): Promise<ActionState> {
   try {
     const supabase = getClient();
-    const { practiceId } = getPraktikaAuth();
+    const practiceId = getPracticeId();
     const { fromDate, toDate } = getRequiredDateRange(formData);
     const rangeKey = getImportLinkKey(fromDate, toDate);
 
@@ -423,7 +331,7 @@ export async function syncPraktikaAppointments(
 ): Promise<ActionState> {
   try {
     const supabase = getClient();
-    const { practiceId } = getPraktikaAuth();
+    const practiceId = getPracticeId();
     const { fromDate, toDate } = getRequiredDateRange(formData);
     const rangeKey = getImportLinkKey(fromDate, toDate);
 
@@ -550,7 +458,7 @@ export async function syncPraktikaCancellationsFtas(
 ): Promise<ActionState> {
   try {
     const supabase = getClient();
-    const { practiceId } = getPraktikaAuth();
+    const practiceId = getPracticeId();
     const { fromDate, toDate } = getRequiredDateRange(formData);
     const rangeKey = getImportLinkKey(fromDate, toDate);
 

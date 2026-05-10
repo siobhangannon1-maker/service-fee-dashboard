@@ -672,6 +672,196 @@ export async function autoMatchPatient({
   };
 }
 
+function getDecisionCategory({ item, decision }: { item: any; decision: any }) {
+  return String(decision?.category || item?.category || "unknown").trim() || "unknown";
+}
+
+function getDraftTemplateCategories(category: string, decision: any) {
+  const value = normalise(category);
+  const intent = normalise(decision?.operational_intent);
+  const documentType = normalise(decision?.document_type);
+
+  if (
+    value.includes("new referral") ||
+    value.includes("referral") ||
+    intent.includes("new referral") ||
+    intent.includes("referral")
+  ) {
+    return ["referral_received", "new_referral", "all"];
+  }
+
+  if (
+    value.includes("existing patient correspondence") ||
+    intent.includes("general correspondence") ||
+    intent.includes("records request")
+  ) {
+    return [
+      "existing_patient_correspondence_received",
+      "existing_patient_correspondence",
+      "all",
+    ];
+  }
+
+  if (value.includes("appointment") || intent.includes("appointment")) {
+    return ["appointment_availability", "appointment_request", "all"];
+  }
+
+  if (value.includes("billing") || intent.includes("billing")) {
+    return ["invoice_request", "billing", "all"];
+  }
+
+  if (value.includes("post op") || intent.includes("post op")) {
+    return ["post_op_concern", "post_op", "all"];
+  }
+
+  if (
+    value.includes("clinical question") ||
+    intent.includes("clinical review") ||
+    documentType.includes("clinical")
+  ) {
+    return ["procedure_question", "clinical_question", "all"];
+  }
+
+  return [category, "all"];
+}
+
+function determineDraftPolicy({
+  item,
+  decision,
+}: {
+  item: any;
+  decision: any;
+}) {
+  const category = getDecisionCategory({ item, decision });
+  const normalisedCategory = normalise(category);
+  const normalisedIntent = normalise(decision?.operational_intent);
+  const praktikaMatched =
+    item?.praktika_match_status === "matched_existing" &&
+    Boolean(item?.praktika_patient_id);
+
+  const isReferral =
+    normalisedCategory.includes("new referral") ||
+    normalisedCategory.includes("referral") ||
+    normalisedIntent.includes("new referral") ||
+    normalisedIntent.includes("referral");
+
+  const isExistingPatientCorrespondence =
+    normalisedCategory.includes("existing patient correspondence") ||
+    normalisedIntent.includes("general correspondence") ||
+    normalisedIntent.includes("records request") ||
+    praktikaMatched;
+
+  if (isReferral) {
+    return {
+      shouldDraft: true,
+      mandatory: true,
+      purpose: "acknowledge_referral_received",
+      templateCategories: ["referral_received", "new_referral", "all"],
+      reason:
+        "Practice policy: referrals should always receive a receipt acknowledgement draft.",
+    };
+  }
+
+  if (isExistingPatientCorrespondence) {
+    return {
+      shouldDraft: true,
+      mandatory: true,
+      purpose: "acknowledge_existing_patient_correspondence",
+      templateCategories: [
+        "existing_patient_correspondence_received",
+        "existing_patient_correspondence",
+        "all",
+      ],
+      reason:
+        "Practice policy: correspondence for an existing patient should receive a receipt acknowledgement draft.",
+    };
+  }
+
+  if (decision?.requires_clinical_review) {
+    return {
+      shouldDraft: false,
+      mandatory: false,
+      purpose: "clinical_review_required_no_auto_draft",
+      templateCategories: getDraftTemplateCategories(category, decision),
+      reason:
+        "Clinical review is required and this item is not covered by a mandatory acknowledgement policy.",
+    };
+  }
+
+  if (decision?.safe_to_auto_draft === false) {
+    return {
+      shouldDraft: false,
+      mandatory: false,
+      purpose: "not_safe_to_auto_draft",
+      templateCategories: getDraftTemplateCategories(category, decision),
+      reason: "AI Brain marked this item as not safe to auto-draft.",
+    };
+  }
+
+  return {
+    shouldDraft: true,
+    mandatory: false,
+    purpose: "standard_reception_reply",
+    templateCategories: getDraftTemplateCategories(category, decision),
+    reason: "Standard safe reception draft generation.",
+  };
+}
+
+
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function escapePostgrestValue(value: string) {
+  return String(value).replace(/"/g, '\\"');
+}
+
+function buildCategoryOrFilter(categories: string[]) {
+  const cleaned = uniqueStrings(categories);
+
+  if (cleaned.length === 0) {
+    return "category.eq.all,category.is.null";
+  }
+
+  const categoryFilter = cleaned
+    .map((category) => `category.eq."${escapePostgrestValue(category)}"`)
+    .join(",");
+
+  return `${categoryFilter},category.is.null`;
+}
+
+function formatResponseTemplates(templates: any[]) {
+  if (!templates || templates.length === 0) {
+    return "No active response templates found for this category.";
+  }
+
+  return templates
+    .map(
+      (template, index) => `
+Template ${index + 1}: ${template.title || "Untitled template"}
+Category: ${template.category || "unknown"}
+Subject template:
+${template.subject_template || ""}
+
+Body template:
+${template.body_template || ""}
+
+Tone notes:
+${template.tone_notes || ""}
+
+Avoid notes:
+${template.avoid_notes || ""}
+`.trim()
+    )
+    .join("\n\n---\n\n");
+}
+
 export async function generateOrUpdateDraft({
   inboxItemId,
 }: {
@@ -711,8 +901,10 @@ export async function generateOrUpdateDraft({
       )[0] || null;
 
   const decision = latestDecision?.decision || {};
+  const category = getDecisionCategory({ item, decision });
+  const draftPolicy = determineDraftPolicy({ item, decision });
 
-  if (decision.requires_clinical_review) {
+  if (!draftPolicy.shouldDraft) {
     await supabaseAdmin
       .from("ai_inbox_items")
       .update({
@@ -722,78 +914,144 @@ export async function generateOrUpdateDraft({
 
     return {
       skipped: true,
-      reason: "clinical_review_required",
+      reason: draftPolicy.purpose,
+      policy_reason: draftPolicy.reason,
     };
   }
 
-  if (decision.missing_information?.length) {
-    return {
-      skipped: true,
-      reason: "missing_information",
-      missing_information: decision.missing_information,
-    };
-  }
+  const missingInformation = Array.isArray(decision.missing_information)
+    ? decision.missing_information.filter(Boolean)
+    : [];
 
-  if (decision.safe_to_auto_draft === false) {
-    return {
-      skipped: true,
-      reason: "not_safe_to_auto_draft",
-    };
-  }
+  const templateCategories = Array.from(
+    new Set([...(draftPolicy.templateCategories || []), category, "all"])
+  ).filter(Boolean);
+
+  const categoryFilter = buildCategoryOrFilter(templateCategories);
 
   const { data: rules } = await supabaseAdmin
     .from("ai_learning_rules")
     .select("*")
     .eq("is_active", true)
-    .limit(20);
+    .or(categoryFilter)
+    .order("priority", { ascending: true })
+    .order("created_at", { ascending: false })
+    .limit(30);
 
   const { data: examples } = await supabaseAdmin
     .from("ai_approved_examples")
     .select("*")
     .eq("is_active", true)
-    .limit(5);
+    .or(categoryFilter)
+    .order("created_at", { ascending: false })
+    .limit(8);
 
-  const rulesText = rules?.map((r) => `- ${r.rule}`).join("\n") || "";
+  const { data: templates } = await supabaseAdmin
+    .from("ai_response_templates")
+    .select("*")
+    .eq("is_active", true)
+    .in("category", templateCategories)
+    .order("created_at", { ascending: false })
+    .limit(8);
+
+  const rulesText =
+    rules && rules.length > 0
+      ? rules
+          .map((r, index) =>
+            `
+Rule ${index + 1}
+Title: ${r.title || "Rule"}
+Type: ${r.rule_type || "general"}
+Priority: ${r.priority ?? 100}
+Instruction:
+${r.rule}
+`.trim()
+          )
+          .join("\n\n---\n\n")
+      : "No active learning rules found for this category.";
 
   const examplesText =
-    examples
-      ?.map(
-        (e) => `
+    examples && examples.length > 0
+      ? examples
+          .map(
+            (e, index) => `
+Example ${index + 1}: ${e.title || "Untitled example"}
+Category: ${e.category || "all"}
+
 Incoming example:
-${e.incoming_message}
+${e.incoming_message || ""}
 
 Approved reply subject:
 ${e.approved_reply_subject || ""}
 
 Approved reply body:
-${e.approved_reply_body}
+${e.approved_reply_body || ""}
 
 Tone notes:
 ${e.tone_notes || ""}
 
-Avoid:
+Avoid notes:
 ${e.avoid_notes || ""}
-`
-      )
-      .join("\n\n") || "";
+`.trim()
+          )
+          .join("\n\n---\n\n")
+      : "No active approved examples found for this category.";
+
+  const templatesText = formatResponseTemplates(templates || []);
+
+  const primaryTemplate =
+    templates && templates.length > 0 ? templates[0] : null;
+
+  const primaryTemplateText = primaryTemplate
+    ? `
+Primary template title:
+${primaryTemplate.title || "Untitled template"}
+
+Primary subject template:
+${primaryTemplate.subject_template || ""}
+
+Primary body template:
+${primaryTemplate.body_template || ""}
+
+Primary tone notes:
+${primaryTemplate.tone_notes || ""}
+
+Primary avoid notes:
+${primaryTemplate.avoid_notes || ""}
+`.trim()
+    : "No primary response template selected.";
 
   const prompt = `
 You are a receptionist at Focus Dental Specialists.
 
-Draft a professional, warm, concise email reply.
+Draft a professional, warm, concise email reply for staff review.
 
-Important rules:
+Mandatory draft policy:
+- Policy purpose: ${draftPolicy.purpose}
+- Policy reason: ${draftPolicy.reason}
+- Mandatory acknowledgement: ${draftPolicy.mandatory ? "yes" : "no"}
+
+Important safety rules:
 - Use Australian English.
 - Do not give clinical advice.
 - Do not diagnose.
-- Do not invent fees, appointment times, treatment plans, or clinical opinions.
+- Do not interpret test results or imaging findings.
+- Do not invent fees, appointment times, availability, treatment plans, acceptance of referral, or clinician opinions.
+- Do not say a clinician has reviewed something unless explicitly confirmed in the data.
 - If staff need to review something, say the team will review and respond.
+- If clinical review is required, write only a neutral acknowledgement and do not address the clinical issue.
+- If information is missing, acknowledge receipt and politely request the missing information.
 - Do not say the email was written by AI.
 - Do not include an email signature. Outlook will add the signature separately.
-- Do not output unresolved placeholders like {{clinic_name}}.
+- Do not output unresolved placeholders like {{clinic_name}}, [Patient Name], or [Dr Name].
 
-Learning rules:
+MANDATORY PRACTICE LEARNING RULES:
+Follow safety rules first, then workflow rules, then reply logic, then tone and formatting rules.
+
 ${rulesText}
+
+PRIMARY RESPONSE TEMPLATE:
+Use this as the default structure when relevant. Apply safety rules and learning rules over the template if they conflict.\n\n${primaryTemplateText}\n\nApproved response templates:\n${templatesText}
 
 Approved examples:
 ${examplesText}
@@ -805,11 +1063,14 @@ Context:
 Sender name: ${item.sender_name || "Unknown"}
 Sender email: ${item.sender_email || "Unknown"}
 Email subject: ${item.email_subject || item.subject || item.file_name || "No subject"}
-Category: ${item.category || "unknown"}
+Category: ${category}
 Patient name: ${item.patient_name || "Unknown"}
 Patient DOB: ${item.patient_dob || "Unknown"}
+Praktika match status: ${item.praktika_match_status || "unknown"}
+Praktika patient ID: ${item.praktika_patient_id || "unknown"}
 Summary: ${item.summary || ""}
 Suggested action: ${item.suggested_action || ""}
+Missing information: ${missingInformation.length ? missingInformation.join(", ") : "none"}
 
 Correspondence:
 ${item.raw_text || item.body || item.email_body || item.extracted_text || ""}
@@ -817,7 +1078,11 @@ ${item.raw_text || item.body || item.email_body || item.extracted_text || ""}
 Return JSON only:
 {
   "subject": "",
-  "body": ""
+  "body": "",
+  "safety_notes": [],
+  "used_template_titles": [],
+  "used_learning_rule_titles": [],
+  "used_example_titles": []
 }
 `;
 
@@ -836,12 +1101,13 @@ Return JSON only:
     parsed.subject ||
     `Re: ${item.email_subject || item.subject || "Correspondence"}`;
 
-  const body = parsed.body || "";
+  const body = String(parsed.body || "").trim();
 
   if (!body) {
     return {
       skipped: true,
       reason: "empty_draft_body",
+      policy_reason: draftPolicy.reason,
     };
   }
 
@@ -864,8 +1130,24 @@ Return JSON only:
     guidance: {
       auto_generated: true,
       reanalysed: true,
-      used_learning_rules: rules?.map((r) => r.title) || [],
-      used_examples: examples?.map((e) => e.title) || [],
+      category,
+      draft_policy: draftPolicy,
+      missing_information: missingInformation,
+      used_learning_rules:
+        parsed.used_learning_rule_titles ||
+        rules?.map((r) => `${r.title || "Untitled rule"} (${r.rule_type || "general"}, priority ${r.priority ?? 100})`) ||
+        [],
+      used_examples: parsed.used_example_titles || examples?.map((e) => e.title) || [],
+      used_templates: parsed.used_template_titles || templates?.map((t) => t.title) || [],
+      primary_template: primaryTemplate?.title || null,
+      learning_rules_count: rules?.length || 0,
+      approved_examples_count: examples?.length || 0,
+      response_templates_count: templates?.length || 0,
+      active_rule_ids: rules?.map((r) => r.id) || [],
+      active_rule_types: Array.from(
+        new Set(rules?.map((r) => r.rule_type || "general") || [])
+      ),
+      safety_notes: parsed.safety_notes || [],
       decision_summary: decision,
     },
   };
@@ -907,6 +1189,7 @@ Return JSON only:
   return {
     skipped: false,
     draft,
+    draftPolicy,
   };
 }
 

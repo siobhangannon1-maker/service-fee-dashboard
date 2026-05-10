@@ -1,4 +1,6 @@
 import { ensureTrelloTaskForInboxItem } from "@/lib/ai/brain/ensureTrelloTask";
+import { classifyOperationalWorkflow } from "@/lib/ai/brain/operationalWorkflow";
+import { matchPraktikaPatientForInboxItem } from "@/lib/ai/brain/praktikaPatientMatch";
 import { reanalyseInboxItem } from "@/lib/ai/brain/reanalyseInboxItem";
 import {
   ImportedAttachment,
@@ -8,9 +10,10 @@ import {
   runAttachmentOcr,
 } from "@/lib/ai/brain/runAttachmentOcr";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { ensureReceptionFollowUpTaskForInboxItem } from "@/lib/ai/brain/receptionFollowUpTask";
 
 const MIN_USEFUL_PDF_TEXT_LENGTH = Number(
-  process.env.MIN_USEFUL_PDF_TEXT_LENGTH || 80
+  process.env.MIN_USEFUL_PDF_TEXT_LENGTH || 80,
 );
 
 type PipelineResult = {
@@ -21,6 +24,7 @@ type PipelineResult = {
     | "pdf_parsed"
     | "ocr_started"
     | "ocr_completed"
+    | "patient_matched"
     | "reanalysed"
     | "trello_created_or_skipped"
     | "completed";
@@ -72,7 +76,7 @@ function buildAttachmentTextBlock({
   method: string;
 }) {
   return `\n\n--- Attachment Text (${method}): ${getFileName(
-    attachment
+    attachment,
   )} ---\n\n${text}`;
 }
 
@@ -89,7 +93,7 @@ function removePreviousAttachmentBlock({
 
   const regex = new RegExp(
     `\\n*--- Attachment Text \\([^)]*\\): ${escapedName} ---\\n\\n[\\s\\S]*?(?=\\n\\n--- Attachment Text \\([^)]*\\):|\\n\\n--- OCR Attachment:|$)`,
-    "g"
+    "g",
   );
 
   return text.replace(regex, "").trim();
@@ -120,13 +124,15 @@ async function downloadAttachmentBuffer(attachment: ImportedAttachment) {
 
 async function extractPdfText(buffer: Buffer) {
   try {
-    const pdfParseModule = await import("pdf-parse");
-    const pdfParse =
-      (pdfParseModule as any).default || (pdfParseModule as any);
+    const { extractText, getDocumentProxy } = await import("unpdf");
 
-    const parsed = await pdfParse(buffer);
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
 
-    return normaliseText(parsed?.text || "");
+    const result = await extractText(pdf, {
+      mergePages: true,
+    });
+
+    return normaliseText(result.text || "");
   } catch (error) {
     console.warn("PDF text parsing failed:", error);
     return "";
@@ -143,7 +149,7 @@ function updateImportedAttachment({
   updatedAttachment: ImportedAttachment;
 }) {
   return importedAttachments.map((attachment) =>
-    attachment.storage_path === storagePath ? updatedAttachment : attachment
+    attachment.storage_path === storagePath ? updatedAttachment : attachment,
   );
 }
 
@@ -187,7 +193,7 @@ async function parsePdfAttachmentsBeforeOcr(inboxItemId: string) {
   const { data: item, error } = await supabaseAdmin
     .from("ai_inbox_items")
     .select(
-      "id, attachment_debug, attachment_needs_ocr, attachment_extraction_status, extracted_text, raw_text, body"
+      "id, attachment_debug, attachment_needs_ocr, attachment_extraction_status, extracted_text, raw_text, body",
     )
     .eq("id", inboxItemId)
     .single();
@@ -269,15 +275,15 @@ async function parsePdfAttachmentsBeforeOcr(inboxItemId: string) {
         const block = buildAttachmentTextBlock({
           attachment,
           text: extractedText,
-          method: "pdf-parse",
+          method: "pdf-text-parse",
         });
 
         existingExtractedText = normaliseText(
-          [existingExtractedText, block].filter(Boolean).join("\n\n")
+          [existingExtractedText, block].filter(Boolean).join("\n\n"),
         );
 
         existingRawText = normaliseText(
-          [existingRawText, block].filter(Boolean).join("\n\n")
+          [existingRawText, block].filter(Boolean).join("\n\n"),
         );
 
         parsedCount += 1;
@@ -331,7 +337,7 @@ async function parsePdfAttachmentsBeforeOcr(inboxItemId: string) {
       attachment.needs_ocr === true ||
       attachment.ocr_status === "needed" ||
       attachment.ocr_status === "failed" ||
-      attachment.ocr_status === "failed_unreadable"
+      attachment.ocr_status === "failed_unreadable",
   );
 
   const updatedAttachmentDebug = {
@@ -391,7 +397,7 @@ async function getFirstPendingOcrAttachment(inboxItemId: string) {
       (attachment) =>
         attachment.storage_path &&
         isOcrSupportedAttachment(attachment) &&
-        attachmentNeedsOcr(attachment)
+        attachmentNeedsOcr(attachment),
     ) || null
   );
 }
@@ -399,6 +405,87 @@ async function getFirstPendingOcrAttachment(inboxItemId: string) {
 async function hasPendingOcrAttachments(inboxItemId: string) {
   const pending = await getFirstPendingOcrAttachment(inboxItemId);
   return Boolean(pending);
+}
+
+function shouldGenerateDraftForWorkflow(workflow: any) {
+  if (workflow?.workflow_kind === "radiology_review") return false;
+  if (workflow?.workflow_kind === "pathology_review") return false;
+  if (workflow?.workflow_kind === "urgent_clinical") return false;
+
+  if (workflow?.modifiers?.should_generate_reply_draft === false) {
+    return false;
+  }
+
+  return true;
+}
+
+async function clearDraftForNoReplyWorkflow({
+  inboxItemId,
+  workflow,
+}: {
+  inboxItemId: string;
+  workflow: any;
+}) {
+  await supabaseAdmin
+    .from("ai_inbox_items")
+    .update({
+      draft_status: "not_required",
+      email_status: "no_reply_needed",
+      draft_reply_subject: null,
+      draft_reply_body: null,
+      suggested_action:
+        workflow?.workflow_kind === "pathology_review"
+          ? "Pathology result detected. Create/review Trello task and file result; no email reply is required."
+          : workflow?.workflow_kind === "radiology_review"
+            ? "Radiology result detected. Create/review Trello task and file result; no email reply is required."
+            : workflow?.workflow_kind === "urgent_clinical"
+              ? "Urgent clinical item detected. Create/review Trello task; no automatic email reply is required."
+              : undefined,
+    })
+    .eq("id", inboxItemId);
+
+  await supabaseAdmin
+    .from("ai_email_drafts")
+    .update({
+      status: "not_required",
+    })
+    .eq("inbox_item_id", inboxItemId);
+}
+
+async function runPraktikaPatientMatchSafely(inboxItemId: string) {
+  try {
+    await markPipelineStatus({
+      inboxItemId,
+      status: "patient_matching",
+    });
+
+    return await matchPraktikaPatientForInboxItem({
+      inboxItemId,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Praktika patient matching failed.";
+
+    console.warn("Praktika patient matching failed:", message);
+
+    await supabaseAdmin
+      .from("ai_inbox_items")
+      .update({
+        praktika_match_status: "match_failed",
+        praktika_match_reason: message,
+        praktika_matched_at: new Date().toISOString(),
+      })
+      .eq("id", inboxItemId);
+
+    return {
+      status: "match_failed",
+      confidence: 0,
+      reason: message,
+      extracted: null,
+      bestMatch: null,
+      matches: [],
+    };
+  }
 }
 
 export async function processInboxItemPipeline({
@@ -422,42 +509,71 @@ export async function processInboxItemPipeline({
       const ocrResult = await runAttachmentOcr({
         inboxItemId,
         storagePath: pendingOcrAttachment.storage_path,
-        reanalyseAfterOcr: true,
+        reanalyseAfterOcr: false,
       });
 
       const stillHasPendingOcr = await hasPendingOcrAttachments(inboxItemId);
 
+      if (stillHasPendingOcr) {
+        await markPipelineStatus({
+          inboxItemId,
+          status: "ocr_in_progress",
+        });
+
+        return {
+          success: true,
+          inboxItemId,
+          stage: ocrResult.successful ? "ocr_completed" : "ocr_started",
+          message: "One attachment OCR completed. More OCR attachments remain.",
+          details: {
+            parseResult,
+            ocrResult,
+            stillHasPendingOcr,
+          },
+          item: ocrResult.item,
+        };
+      }
+
       await markPipelineStatus({
         inboxItemId,
-        status: stillHasPendingOcr ? "ocr_in_progress" : "ocr_completed",
+        status: "ocr_completed",
       });
-
-      return {
-        success: true,
-        inboxItemId,
-        stage: ocrResult.successful ? "ocr_completed" : "ocr_started",
-        message: stillHasPendingOcr
-          ? "One attachment OCR completed. More OCR attachments remain."
-          : "OCR completed for the final pending attachment.",
-        details: {
-          parseResult,
-          ocrResult,
-          stillHasPendingOcr,
-        },
-        item: ocrResult.item,
-      };
     }
+
+    const patientMatchResult = await runPraktikaPatientMatchSafely(inboxItemId);
+
+    const workflow = await classifyOperationalWorkflow({
+      inboxItemId,
+      persist: true,
+    });
+
+    const receptionTaskResult = await ensureReceptionFollowUpTaskForInboxItem({
+  inboxItemId,
+});
+
+    const shouldGenerateReplyDraft = shouldGenerateDraftForWorkflow(workflow);
 
     const reanalysisResult = await reanalyseInboxItem({
       inboxItemId,
       source: "automation_pipeline",
-      regenerateDraft: true,
+      regenerateDraft: shouldGenerateReplyDraft,
     });
+
+    if (!shouldGenerateReplyDraft) {
+      await clearDraftForNoReplyWorkflow({
+        inboxItemId,
+        workflow,
+      });
+    }
 
     const trelloResult = await ensureTrelloTaskForInboxItem({
       inboxItemId,
       reason: "Automatically processed after PDF parse/OCR pipeline.",
-      force: forceTrello,
+      force:
+        forceTrello ||
+        workflow.workflow_kind === "radiology_review" ||
+        workflow.workflow_kind === "pathology_review" ||
+        workflow.workflow_kind === "urgent_clinical",
     });
 
     await markPipelineStatus({
@@ -470,9 +586,13 @@ export async function processInboxItemPipeline({
       inboxItemId,
       stage: "completed",
       message:
-        "PDF parsing/OCR fallback, AI reanalysis, routing and Trello automation completed.",
+        "PDF parsing/OCR fallback, Praktika patient matching, workflow classification, AI reanalysis, routing and Trello automation completed.",
       details: {
         parseResult,
+        patientMatchResult,
+        workflow,
+        receptionTaskResult,
+        shouldGenerateReplyDraft,
         reanalysisResult,
         trelloResult,
       },

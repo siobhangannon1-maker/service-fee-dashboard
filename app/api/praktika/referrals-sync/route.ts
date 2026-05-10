@@ -1,13 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
-import dotenv from "dotenv";
 import { createClient as createSupabaseAdmin } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-
-const PRAKTIKA_ENDPOINT =
-  "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php";
+import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
 
 function getAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -48,78 +42,6 @@ function pickFirst(row: any, keys: string[]) {
 
 function isValidIsoDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
-
-function loadPraktikaCookieFromEnvFile(): string {
-  const envPath = path.join(process.cwd(), ".env.local");
-
-  if (!fs.existsSync(envPath)) {
-    throw new Error("Missing .env.local file.");
-  }
-
-  const parsed = dotenv.parse(fs.readFileSync(envPath));
-  const cookie = parsed.PRAKTIKA_COOKIE;
-
-  if (!cookie) {
-    throw new Error("PRAKTIKA_COOKIE was not found in .env.local.");
-  }
-
-  process.env.PRAKTIKA_COOKIE = cookie;
-  return cookie;
-}
-
-function refreshPraktikaCookieLocally() {
-  execFileSync("npm", ["run", "refresh:praktika-cookie"], {
-    stdio: "inherit",
-    cwd: process.cwd(),
-  });
-
-  return loadPraktikaCookieFromEnvFile();
-}
-
-async function fetchPraktikaJson(params: URLSearchParams) {
-  async function makeRequest(cookie: string) {
-    const response = await fetch(PRAKTIKA_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/x-www-form-urlencoded",
-        Cookie: cookie,
-        Origin: "https://praktika.praktika.net.au",
-        Referer: "https://praktika.praktika.net.au/v2/reports/referrals",
-      },
-      body: params.toString(),
-      cache: "no-store",
-    });
-
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-
-      if (Array.isArray(data)) return data;
-
-      console.log("REFERRALS NON-ARRAY RESPONSE:", data);
-      return null;
-    } catch {
-      console.log("REFERRALS NON-JSON RESPONSE:", text.slice(0, 500));
-      return null;
-    }
-  }
-
-  const firstCookie = process.env.PRAKTIKA_COOKIE;
-  if (!firstCookie) throw new Error("Missing PRAKTIKA_COOKIE.");
-
-  const firstAttempt = await makeRequest(firstCookie);
-  if (firstAttempt) return firstAttempt;
-
-  const refreshedCookie = refreshPraktikaCookieLocally();
-  const secondAttempt = await makeRequest(refreshedCookie);
-  if (secondAttempt) return secondAttempt;
-
-  throw new Error(
-    "Praktika did not return referral rows after refreshing the cookie. MFA may be required."
-  );
 }
 
 async function geocodeAddress(row: {
@@ -246,10 +168,10 @@ export async function POST(request: Request) {
     params.append("sToDate", toDate);
     params.append("sMode", "CLINIC");
 
-    const data = await fetchPraktikaJson(params);
-
-    console.log("REFERRALS SAMPLE:", data[0] ?? null);
-    console.log("REFERRALS KEYS:", data[0] ? Object.keys(data[0]) : []);
+    const data = await fetchPraktikaJson(
+      params,
+      "https://praktika.praktika.net.au/v2/reports/referrals"
+    );
 
     const fileName = `Praktika Referrals ${fromDate} to ${toDate}`;
 

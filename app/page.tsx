@@ -1,5 +1,8 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
+import PageLayout from "@/components/ui/PageLayout";
+
+export const dynamic = "force-dynamic";
 
 const primaryActions = [
   {
@@ -147,7 +150,11 @@ export default async function DashboardPage() {
   const role = formatRole(profile?.role || "User");
 
   return (
-    <main className="min-h-screen bg-slate-50">
+    <PageLayout
+      eyebrow="Dashboard"
+      title="Focus Dental Specialists"
+      description="Manage billing, reporting, provider records, and practice operations from one central workspace."
+    >
       <div className="mx-auto max-w-7xl px-6 py-8">
         <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
           <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-8 py-10">
@@ -241,6 +248,6 @@ export default async function DashboardPage() {
           ))}
         </section>
       </div>
-    </main>
+    </PageLayout>
   );
 }

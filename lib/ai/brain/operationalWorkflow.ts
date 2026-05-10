@@ -30,6 +30,7 @@ export type WorkflowClassification = {
     unusual_or_complex?: boolean;
     missing_information?: boolean;
     should_auto_create_trello?: boolean;
+    should_generate_reply_draft?: boolean;
   };
 };
 
@@ -105,84 +106,273 @@ function containsAny(text: string, words: string[]) {
   return words.some((word) => text.includes(normalise(word)));
 }
 
+function isStrongRadiologyText(text: string) {
+  const radiologyWords = [
+    "radiology",
+    "radiologist",
+    "radiological",
+    "radiograph",
+    "radiographic",
+    "radiographic findings",
+    "imaging",
+    "imaging report",
+    "diagnostic imaging",
+    "medical imaging",
+    "scan report",
+    "mri",
+    "mri report",
+    "magnetic resonance",
+    "magnetic resonance imaging",
+    "tmj mri",
+    "temporomandibular joint mri",
+    "temporomandibular joint imaging",
+    "ct report",
+    "ct scan",
+    "dentascan",
+    "ct dentascan",
+    "cbct",
+    "cone beam",
+    "cone beam ct",
+    "opg",
+    "xray",
+    "x ray",
+    "x-ray",
+    "iomr",
+    "ultrasound report",
+  ];
+
+  if (containsAny(text, radiologyWords)) return true;
+
+  const reportClues = [
+    "clinical details",
+    "clinical history",
+    "findings",
+    "conclusion",
+    "impression",
+    "reported by",
+    "report status",
+    "examination",
+  ];
+
+  const imagingClues = [
+    "mri",
+    "ct",
+    "cbct",
+    "opg",
+    "dentascan",
+    "scan",
+    "temporomandibular",
+    "tmj",
+    "mandible",
+    "maxilla",
+  ];
+
+  return containsAny(text, reportClues) && containsAny(text, imagingClues);
+}
+
+function isStrongPathologyText(text: string) {
+  const pathologyWords = [
+    "pathology",
+    "pathologist",
+    "qml pathology",
+    "histopathology",
+    "histology",
+    "oral pathology",
+    "surgical pathology",
+    "anatomical pathology",
+    "cytology",
+    "biopsy",
+    "incisional biopsy",
+    "excisional biopsy",
+    "punch biopsy",
+    "specimen",
+    "specimens",
+    "specimen type",
+    "specimen received",
+    "date received",
+    "date collected",
+    "laboratory report",
+    "lab report",
+    "final diagnosis",
+    "diagnosis",
+    "clinical diagnosis",
+    "gross description",
+    "macroscopic examination",
+    "macroscopic description",
+    "microscopic examination",
+    "microscopic description",
+    "microscopy",
+    "macroscopy",
+    "immunohistochemistry",
+    "dysplasia",
+    "malignancy",
+    "carcinoma",
+    "squamous cell carcinoma",
+    "basal cell carcinoma",
+    "mucocele",
+    "odontogenic",
+    "keratocyst",
+    "dentigerous cyst",
+    "periapical granuloma",
+    "periapical cyst",
+    "focal fibrous hyperplasia",
+    "irritation fibroma",
+  ];
+
+  if (containsAny(text, pathologyWords)) return true;
+
+  const reportClues = [
+    "clinical notes",
+    "clinical history",
+    "specimen",
+    "diagnosis",
+    "microscopy",
+    "macroscopy",
+    "reported by",
+    "authorised by",
+    "validated by",
+    "final report",
+    "accession",
+  ];
+
+  const pathologyClues = [
+    "biopsy",
+    "histology",
+    "pathologist",
+    "dysplasia",
+    "malignancy",
+    "carcinoma",
+    "cyst",
+    "lesion",
+    "fibroma",
+    "hyperplasia",
+  ];
+
+  return containsAny(text, reportClues) && containsAny(text, pathologyClues);
+}
+
 export function deterministicWorkflowClassification(item: any): WorkflowClassification {
   const text = normalise(getWorkflowSourceText(item));
 
-  const radiologyWords = [
-    "radiology", "radiograph", "radiographic", "xray", "x ray", "x-ray",
-    "opg", "cbct", "cone beam", "ct dentascan", "iomr", "imaging",
-    "scan report", "radiology report", "radiographic findings"
-  ];
-
-  const pathologyWords = [
-    "pathology", "histopathology", "histology", "biopsy", "specimen",
-    "pathologist", "microscopy", "macroscopy", "lab report"
-  ];
-
   const urgentWords = [
-    "urgent", "same day", "asap", "facial swelling", "airway",
-    "difficulty breathing", "difficulty swallowing", "uncontrolled bleeding",
-    "severe pain", "fever", "spreading infection", "rapidly worsening", "trauma"
+    "urgent",
+    "same day",
+    "asap",
+    "facial swelling",
+    "airway",
+    "difficulty breathing",
+    "difficulty swallowing",
+    "uncontrolled bleeding",
+    "severe pain",
+    "fever",
+    "spreading infection",
+    "rapidly worsening",
+    "trauma",
   ];
 
   const marketingWords = [
-    "unsubscribe", "marketing", "promotional", "newsletter", "microsoft 365",
-    "productivity tools", "privacy statement"
+    "unsubscribe",
+    "marketing",
+    "promotional",
+    "newsletter",
+    "microsoft 365",
+    "productivity tools",
+    "privacy statement",
   ];
 
   const existingPatientWords = [
-    "existing patient", "current patient", "records request", "records transfer",
-    "correspondence", "letter regarding", "regarding patient", "clinical update",
-    "follow up", "review of"
+    "existing patient",
+    "current patient",
+    "records request",
+    "records transfer",
+    "correspondence",
+    "letter regarding",
+    "regarding patient",
+    "clinical update",
+    "follow up",
+    "review of",
   ];
 
   const referralWords = ["referral", "refer", "referred", "please see", "new patient"];
 
   const abnormalWords = [
-    "finding", "findings", "lesion", "cyst", "infection", "resorption",
-    "bone loss", "pathosis", "periapical", "impacted", "fracture"
+    "finding",
+    "findings",
+    "lesion",
+    "cyst",
+    "infection",
+    "resorption",
+    "bone loss",
+    "pathosis",
+    "periapical",
+    "impacted",
+    "fracture",
+    "closed lock",
+    "disc displacement",
+    "joint effusion",
+    "degenerative change",
+    "arthritis",
+    "arthropathy",
+    "dysplasia",
+    "malignancy",
+    "carcinoma",
   ];
 
   const complexWords = [
-    "unusual", "complex", "complication", "persistent infection", "failed",
-    "failure", "revision", "second opinion"
+    "unusual",
+    "complex",
+    "complication",
+    "persistent infection",
+    "failed",
+    "failure",
+    "revision",
+    "second opinion",
+    "closed lock",
+    "tmj",
+    "dysplasia",
+    "malignancy",
+    "carcinoma",
   ];
 
   const urgent = containsAny(text, urgentWords);
   const clinicalFindings = containsAny(text, abnormalWords);
   const unusualOrComplex = containsAny(text, complexWords);
 
-  // Document/workflow type wins before generic clinical review.
-  if (containsAny(text, radiologyWords)) {
+  // Hard priority 1: pathology reports/results.
+  // This must run before generic referral/general correspondence detection.
+  if (isStrongPathologyText(text)) {
     return {
-      workflow_kind: "radiology_review",
-      document_type: "radiology_report_or_imaging_correspondence",
-      confidence: 0.9,
+      workflow_kind: "pathology_review",
+      document_type: "pathology_or_histopathology_report",
+      confidence: 0.97,
       reason:
-        "Radiology/imaging report wording was detected. Clinical findings inside a radiology report should remain routed as radiology_review.",
+        "Pathology/histopathology report wording was detected. This overrides generic referral/general correspondence wording; clinical findings remain modifiers.",
       modifiers: {
         urgent,
         abnormal_findings: clinicalFindings,
         clinical_findings_present: clinicalFindings,
         unusual_or_complex: unusualOrComplex,
         should_auto_create_trello: true,
+        should_generate_reply_draft: false,
       },
     };
   }
 
-  if (containsAny(text, pathologyWords)) {
+  // Hard priority 2: radiology/imaging reports/results.
+  if (isStrongRadiologyText(text)) {
     return {
-      workflow_kind: "pathology_review",
-      document_type: "pathology_or_histopathology_report",
-      confidence: 0.9,
+      workflow_kind: "radiology_review",
+      document_type: "radiology_or_imaging_report",
+      confidence: 0.96,
       reason:
-        "Pathology/histopathology report wording was detected. Clinical findings inside a pathology report should remain routed as pathology_review.",
+        "Radiology/imaging report wording was detected. This overrides generic referral/general correspondence wording; clinical findings remain modifiers.",
       modifiers: {
         urgent,
         abnormal_findings: clinicalFindings,
         clinical_findings_present: clinicalFindings,
         unusual_or_complex: unusualOrComplex,
         should_auto_create_trello: true,
+        should_generate_reply_draft: false,
       },
     };
   }
@@ -200,6 +390,7 @@ export function deterministicWorkflowClassification(item: any): WorkflowClassifi
         clinical_findings_present: clinicalFindings,
         unusual_or_complex: unusualOrComplex,
         should_auto_create_trello: true,
+        should_generate_reply_draft: false,
       },
     };
   }
@@ -212,6 +403,7 @@ export function deterministicWorkflowClassification(item: any): WorkflowClassifi
       reason: "Marketing/promotional/system email wording was detected.",
       modifiers: {
         should_auto_create_trello: false,
+        should_generate_reply_draft: false,
       },
     };
   }
@@ -227,6 +419,7 @@ export function deterministicWorkflowClassification(item: any): WorkflowClassifi
         clinical_findings_present: clinicalFindings,
         unusual_or_complex: unusualOrComplex,
         should_auto_create_trello: true,
+        should_generate_reply_draft: false,
       },
     };
   }
@@ -236,13 +429,14 @@ export function deterministicWorkflowClassification(item: any): WorkflowClassifi
       workflow_kind: "new_referral",
       document_type: "new_referral",
       confidence: 0.75,
-      reason: "New referral wording was detected.",
+      reason: "New referral wording was detected and no radiology/pathology report override matched.",
       modifiers: {
         routine_referral: !unusualOrComplex && !clinicalFindings,
         abnormal_findings: clinicalFindings,
         clinical_findings_present: clinicalFindings,
         unusual_or_complex: unusualOrComplex,
         should_auto_create_trello: unusualOrComplex || clinicalFindings,
+        should_generate_reply_draft: true,
       },
     };
   }
@@ -256,6 +450,7 @@ export function deterministicWorkflowClassification(item: any): WorkflowClassifi
       clinical_findings_present: clinicalFindings,
       unusual_or_complex: unusualOrComplex,
       should_auto_create_trello: false,
+      should_generate_reply_draft: false,
     },
   };
 }
@@ -322,18 +517,20 @@ Return ONLY JSON:
     "routine_referral": false,
     "unusual_or_complex": false,
     "missing_information": false,
-    "should_auto_create_trello": false
+    "should_auto_create_trello": false,
+    "should_generate_reply_draft": false
   }
 }
 
 Critical hierarchy:
 1. Document/workflow type is primary.
-2. A radiology report remains radiology_review even if it contains clinical findings.
-3. A pathology report remains pathology_review even if it contains clinical findings.
-4. Clinical findings are modifiers, not a reason to override radiology/pathology workflow.
-5. Urgent clinical only wins when there is true urgency such as airway/swallowing issues, facial swelling, fever, uncontrolled bleeding, severe pain, same-day/asap request, trauma, or rapidly worsening infection.
-6. Routine new referrals should usually NOT auto-create Trello.
+2. Histopathology, pathology, biopsy, specimen, microscopic description, macroscopic description, final diagnosis, surgical pathology, oral pathology, laboratory report, or lab report = pathology_review.
+3. MRI, CT, CBCT, OPG, x-ray, scan, imaging report, radiology report, or diagnostic imaging report = radiology_review.
+4. Pathology/radiology reports remain their report workflow even if they contain clinical findings, abnormal findings, treatment implications, sender fax text, or the word referral.
+5. Clinical findings are modifiers, not a reason to override pathology/radiology workflow.
+6. Do not generate email reply drafts for pathology or radiology result faxes/reports.
 7. Radiology, pathology, urgent items, and existing patient correspondence should auto-create Trello.
+8. Routine new referrals should usually NOT auto-create Trello.
 `,
         },
         {
@@ -360,24 +557,42 @@ ${sourceText.slice(0, 12000)}
   }
 
   const aiWorkflowKind = coerceWorkflowKind(aiResult?.workflow_kind);
-  const workflowKind = aiWorkflowKind || deterministic.workflow_kind;
+
+  // Hard lock: if deterministic rules identify a report workflow, AI cannot downgrade it.
+  const deterministicIsHardReport =
+    deterministic.workflow_kind === "radiology_review" ||
+    deterministic.workflow_kind === "pathology_review";
+
+  const workflowKind = deterministicIsHardReport
+    ? deterministic.workflow_kind
+    : aiWorkflowKind || deterministic.workflow_kind;
 
   const result: WorkflowClassification = {
     workflow_kind: workflowKind,
-    document_type: aiResult?.document_type || deterministic.document_type,
-    confidence:
-      typeof aiResult?.confidence === "number"
-        ? Math.max(0, Math.min(aiResult.confidence, 0.99))
-        : deterministic.confidence,
-    reason: aiResult?.reason || deterministic.reason,
+    document_type: deterministicIsHardReport
+      ? deterministic.document_type
+      : aiResult?.document_type || deterministic.document_type,
+    confidence: deterministicIsHardReport
+      ? deterministic.confidence
+      : typeof aiResult?.confidence === "number"
+      ? Math.max(0, Math.min(aiResult.confidence, 0.99))
+      : deterministic.confidence,
+    reason: deterministicIsHardReport
+      ? `${deterministic.reason} AI result was not allowed to override this hard report classification.`
+      : aiResult?.reason || deterministic.reason,
     modifiers: {
       ...deterministic.modifiers,
-      ...(aiResult?.modifiers || {}),
+      ...(deterministicIsHardReport ? {} : aiResult?.modifiers || {}),
     },
   };
 
-  if (result.workflow_kind === "radiology_review" || result.workflow_kind === "pathology_review") {
+  if (
+    result.workflow_kind === "radiology_review" ||
+    result.workflow_kind === "pathology_review" ||
+    result.workflow_kind === "urgent_clinical"
+  ) {
     result.modifiers.should_auto_create_trello = true;
+    result.modifiers.should_generate_reply_draft = false;
   }
 
   if (persist) {
