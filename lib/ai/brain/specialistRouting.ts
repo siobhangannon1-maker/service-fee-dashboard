@@ -16,6 +16,17 @@ export type SpecialistRoutingResult = {
   clinician_name?: string | null;
 };
 
+type WorkflowWithOptionalConfidence = {
+  workflow_kind: string;
+  reason?: string;
+  confidence?: number;
+  modifiers?: {
+    should_auto_create_trello?: boolean;
+    urgent?: boolean;
+    abnormal_findings?: boolean;
+  } | null;
+};
+
 function displayNameForWorkflow(workflowKind: string) {
   if (workflowKind === "urgent_clinical") return "Urgent Clinical";
   if (workflowKind === "radiology_review") return "Radiology Results";
@@ -33,7 +44,7 @@ function routingKeyForWorkflow(workflowKind: string) {
   return "general_clinical";
 }
 
-function shouldCreateTrelloForWorkflow(workflow: any) {
+function shouldCreateTrelloForWorkflow(workflow: WorkflowWithOptionalConfidence) {
   if (workflow.workflow_kind === "radiology_review") return true;
   if (workflow.workflow_kind === "pathology_review") return true;
   if (workflow.workflow_kind === "urgent_clinical") return true;
@@ -49,7 +60,9 @@ function shouldCreateTrelloForWorkflow(workflow: any) {
   return false;
 }
 
-function urgencyForWorkflow(workflow: any): "low" | "medium" | "high" {
+function urgencyForWorkflow(
+  workflow: WorkflowWithOptionalConfidence
+): "low" | "medium" | "high" {
   if (workflow.workflow_kind === "urgent_clinical") return "high";
   if (workflow.modifiers?.urgent === true) return "high";
   if (workflow.modifiers?.abnormal_findings === true) return "medium";
@@ -79,11 +92,10 @@ export async function routeSpecialistForInboxItem({
   inboxItemId: string;
   persist?: boolean;
 }): Promise<SpecialistRoutingResult> {
-  const workflow = await classifyOperationalWorkflow({
-    inboxItemId,
-    persist,
-  });
-
+const workflow = (await classifyOperationalWorkflow({
+  inboxItemId,
+  persist,
+})) as unknown as WorkflowWithOptionalConfidence;
   const clinician = await routeClinicianForInboxItem({
     inboxItemId,
     persist,
@@ -103,8 +115,8 @@ export async function routeSpecialistForInboxItem({
   const result: SpecialistRoutingResult = {
     routing_key: routingKey,
     display_name: displayNameForWorkflow(workflow.workflow_kind),
-    confidence: workflow.confidence,
-    reason: workflow.reason,
+    confidence: workflow.confidence ?? 0,
+    reason: workflow.reason ?? "No routing reason provided.",
     should_create_trello_task: shouldCreateTrelloForWorkflow(workflow),
     urgency: urgencyForWorkflow(workflow),
     trello_board_id: clinician.trello_board_id,

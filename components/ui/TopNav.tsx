@@ -101,13 +101,23 @@ const navGroups: NavGroup[] = [
   },
 ];
 
+function isUserRole(value: unknown): value is UserRole {
+  return (
+    value === "super_admin" ||
+    value === "provider_readonly" ||
+    value === "billing_staff" ||
+    value === "practice_manager" ||
+    value === "admin"
+  );
+}
+
 export default function TopNav() {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
 
   const [logo, setLogo] = useState<string | null>(null);
-  const [role, setRole] = useState<UserRole | null>(null);
+  const [roles, setRoles] = useState<UserRole[]>([]);
   const [loadingRole, setLoadingRole] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
@@ -118,7 +128,7 @@ export default function TopNav() {
   }, []);
 
   useEffect(() => {
-    async function loadRole() {
+    async function loadRoles() {
       setLoadingRole(true);
 
       const {
@@ -127,28 +137,38 @@ export default function TopNav() {
       } = await supabase.auth.getUser();
 
       if (userError || !user) {
-        setRole(null);
+        setRoles([]);
         setLoadingRole(false);
         return;
+      }
+
+      const loadedRoles: UserRole[] = [];
+
+      const metadataRole = user.user_metadata?.role || user.app_metadata?.role;
+      if (isUserRole(metadataRole)) {
+        loadedRoles.push(metadataRole);
       }
 
       const { data, error } = await supabase
         .from("user_roles")
         .select("role")
-        .eq("user_id", user.id)
-        .maybeSingle();
+        .eq("user_id", user.id);
 
       if (error) {
         console.error("TopNav role lookup failed:", error);
-        setRole(null);
       } else {
-        setRole((data?.role as UserRole) ?? null);
+        for (const row of data ?? []) {
+          if (isUserRole(row.role)) {
+            loadedRoles.push(row.role);
+          }
+        }
       }
 
+      setRoles(Array.from(new Set(loadedRoles)));
       setLoadingRole(false);
     }
 
-    loadRole();
+    loadRoles();
   }, [supabase]);
 
   useEffect(() => {
@@ -157,24 +177,28 @@ export default function TopNav() {
     setOpenMobileGroup(null);
   }, [pathname]);
 
+  function hasRole(allowedRoles: UserRole[]) {
+    return roles.some((role) => allowedRoles.includes(role));
+  }
+
   function isActive(href: string) {
     if (href === "/") return pathname === "/";
     return pathname === href || pathname.startsWith(`${href}/`);
   }
 
   const visibleNavGroups = useMemo(() => {
-    if (!role) return [];
+    if (roles.length === 0) return [];
 
     return navGroups
-      .filter((group) => group.roles.includes(role))
+      .filter((group) => hasRole(group.roles))
       .map((group) => ({
         ...group,
         items: group.items.filter(
-          (item) => !item.roles || item.roles.includes(role)
+          (item) => !item.roles || hasRole(item.roles),
         ),
       }))
       .filter((group) => group.items.length > 0);
-  }, [role]);
+  }, [roles]);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -186,9 +210,16 @@ export default function TopNav() {
     <header className="sticky top-0 z-[9999] border-b border-slate-200 bg-white shadow-md">
       <div className="w-full px-3 sm:px-5 xl:px-6">
         <div className="flex min-h-[76px] items-center justify-between gap-3 py-3 sm:min-h-[88px]">
-          <Link href="/" className="flex min-w-0 shrink-0 items-center gap-3 pr-2 sm:gap-4">
+          <Link
+            href="/"
+            className="flex min-w-0 shrink-0 items-center gap-3 pr-2 sm:gap-4"
+          >
             {logo ? (
-              <img src={logo} alt="Practice logo" className="h-12 w-auto object-contain sm:h-16 lg:h-20" />
+              <img
+                src={logo}
+                alt="Practice logo"
+                className="h-12 w-auto object-contain sm:h-16 lg:h-20"
+              />
             ) : (
               <div className="h-12 w-12 rounded-full bg-slate-100 sm:h-16 sm:w-16 lg:h-20 lg:w-20" />
             )}
@@ -197,12 +228,14 @@ export default function TopNav() {
               <div className="truncate text-base font-semibold tracking-tight text-slate-900 sm:text-xl">
                 Focus Dental Specialists
               </div>
-              <div className="hidden text-sm text-slate-500 sm:block">Dashboard</div>
+              <div className="hidden text-sm text-slate-500 sm:block">
+                Dashboard
+              </div>
             </div>
           </Link>
 
           <div className="hidden min-w-0 flex-1 items-center justify-end gap-2 lg:flex">
-            <nav className="flex min-w-0 flex-wrap items-center justify-end gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+            <nav className="flex max-w-full min-w-0 flex-wrap items-center justify-end gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
               {primaryNavItems.map((item) => (
                 <Link
                   key={item.href}
@@ -219,7 +252,9 @@ export default function TopNav() {
 
               {!loadingRole &&
                 visibleNavGroups.map((group) => {
-                  const active = group.items.some((item) => isActive(item.href));
+                  const active = group.items.some((item) =>
+                    isActive(item.href),
+                  );
 
                   return (
                     <div key={group.label} className="relative">
@@ -227,7 +262,7 @@ export default function TopNav() {
                         type="button"
                         onClick={() =>
                           setOpenDropdown((current) =>
-                            current === group.label ? null : group.label
+                            current === group.label ? null : group.label,
                           )
                         }
                         className={`rounded-xl px-3 py-2 text-sm font-medium transition ${
@@ -240,7 +275,7 @@ export default function TopNav() {
                       </button>
 
                       {openDropdown === group.label && (
-                        <div className="absolute right-0 top-full z-[10000] mt-2 w-80 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+                        <div className="absolute right-0 top-full z-[10000] mt-2 max-h-[70vh] w-80 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
                           {group.items.map((item) => (
                             <Link
                               key={item.href}
@@ -251,8 +286,16 @@ export default function TopNav() {
                                   : "text-slate-700 hover:bg-slate-100"
                               }`}
                             >
-                              <div className="text-sm font-semibold">{item.label}</div>
-                              <div className={`mt-1 text-xs leading-5 ${isActive(item.href) ? "text-slate-200" : "text-slate-500"}`}>
+                              <div className="text-sm font-semibold">
+                                {item.label}
+                              </div>
+                              <div
+                                className={`mt-1 text-xs leading-5 ${
+                                  isActive(item.href)
+                                    ? "text-slate-200"
+                                    : "text-slate-500"
+                                }`}
+                              >
                                 {item.description}
                               </div>
                             </Link>
@@ -301,16 +344,21 @@ export default function TopNav() {
 
               {!loadingRole &&
                 visibleNavGroups.map((group) => {
-                  const groupIsActive = group.items.some((item) => isActive(item.href));
+                  const groupIsActive = group.items.some((item) =>
+                    isActive(item.href),
+                  );
                   const isOpen = openMobileGroup === group.label || groupIsActive;
 
                   return (
-                    <div key={group.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-2">
+                    <div
+                      key={group.label}
+                      className="rounded-2xl border border-slate-200 bg-slate-50 p-2"
+                    >
                       <button
                         type="button"
                         onClick={() =>
                           setOpenMobileGroup((current) =>
-                            current === group.label ? null : group.label
+                            current === group.label ? null : group.label,
                           )
                         }
                         className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-semibold text-slate-900"
@@ -331,8 +379,16 @@ export default function TopNav() {
                                   : "border-slate-200 bg-white text-slate-900"
                               }`}
                             >
-                              <div className="text-sm font-semibold">{item.label}</div>
-                              <div className={`mt-1 text-xs ${isActive(item.href) ? "text-slate-200" : "text-slate-500"}`}>
+                              <div className="text-sm font-semibold">
+                                {item.label}
+                              </div>
+                              <div
+                                className={`mt-1 text-xs ${
+                                  isActive(item.href)
+                                    ? "text-slate-200"
+                                    : "text-slate-500"
+                                }`}
+                              >
                                 {item.description}
                               </div>
                             </Link>

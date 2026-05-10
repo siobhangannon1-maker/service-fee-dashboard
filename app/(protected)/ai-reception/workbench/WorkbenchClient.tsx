@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -955,7 +956,7 @@ export default function WorkbenchClient({ initialItems }: Props) {
 
   async function refreshWorkbenchItems({ silent = true } = {}) {
     try {
-      const response = await fetch("/api/ai/brain/workbench-items?limit=75", {
+      const response = await fetch("/api/ai/workbench/items?limit=75", {
         method: "GET",
         cache: "no-store",
       });
@@ -1182,6 +1183,92 @@ export default function WorkbenchClient({ initialItems }: Props) {
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : "Could not save draft.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveReview() {
+    if (!selectedItem) return;
+
+    try {
+      setMessage("");
+      setBusy("save-review");
+
+      const response = await fetch("/api/ai/brain/save-review", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          inboxItemId: selectedItem.id,
+
+          patient_name: selectedItem.patient_name || null,
+          patient_dob: selectedItem.patient_dob || null,
+          category: selectedItem.category || null,
+          summary: selectedItem.summary || null,
+          suggested_action: selectedItem.suggested_action || null,
+          reception_notes: selectedItem.reception_notes || null,
+          final_decision: "reviewed_and_approved",
+          email_status: "reviewed",
+
+          // Send these names so the save-review route can compare the
+          // original AI draft with the final receptionist-reviewed draft.
+          final_subject: draftSubject,
+          final_body: draftBody,
+          draft_reply_subject: draftSubject,
+          draft_reply_body: draftBody,
+          subject: draftSubject,
+          body: draftBody,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        setMessage(result.error || "Could not save review.");
+        return;
+      }
+
+      if (result.item) {
+        replaceItem(result.item);
+      } else {
+        updateSelectedItem({
+          draft_reply_subject: draftSubject,
+          draft_reply_body: draftBody,
+          draft_status: "drafted",
+          email_status: "reviewed",
+          reviewed_at: new Date().toISOString(),
+        });
+      }
+
+      const learning = result.learning;
+      const learningParts = [];
+
+      if (learning?.feedback_saved) learningParts.push("feedback saved");
+      if (learning?.approved_example_created) {
+        learningParts.push("approved example created");
+      }
+      if (learning?.template_created) learningParts.push("template created");
+      if (learning?.learning_rule_created) learningParts.push("rule created");
+      if (learning?.training_queue_created) {
+        learningParts.push("training queue updated");
+      }
+
+      setLocalDraftSubject("");
+      setLocalDraftBody("");
+
+      setMessage(
+        learningParts.length > 0
+          ? `Review saved and AI learning updated: ${learningParts.join(", ")}.`
+          : "Review saved. No additional learning items were created.",
+      );
+
+      await refreshWorkbenchItems({ silent: true });
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not save review.",
       );
     } finally {
       setBusy(null);
@@ -1635,9 +1722,42 @@ export default function WorkbenchClient({ initialItems }: Props) {
   if (!selectedItem) {
     return (
       <main className="min-h-screen bg-slate-50 p-6 text-slate-900">
-        <h1 className="text-2xl font-bold">AI Reception Workbench</h1>
-        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-6">
-          No inbox items found.
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">AI Reception Workbench</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              No active inbox items are currently visible.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href="/ai/workbench/archived"
+              className="rounded-full border border-slate-200 bg-white px-5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Archived inbox
+            </Link>
+
+            <button
+              type="button"
+              onClick={handleImportOutlookInbox}
+              disabled={busy === "import-outlook"}
+              className="rounded-full border border-slate-200 bg-slate-900 px-5 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              {busy === "import-outlook" ? "Importing..." : "Import Outlook inbox"}
+            </button>
+          </div>
+        </div>
+
+        {message ? (
+          <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            {message}
+          </div>
+        ) : null}
+
+        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-600">
+          No inbox items found. If you recently archived everything, open the
+          archived inbox. If you are importing new mail, use Import Outlook inbox.
         </div>
       </main>
     );
@@ -1655,6 +1775,13 @@ export default function WorkbenchClient({ initialItems }: Props) {
             completion.
           </p>
         </div>
+        
+        <Link
+  href="/ai/workbench/archived"
+  className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+>
+  Archived inbox
+</Link>
 
         <button
           type="button"
@@ -2401,6 +2528,31 @@ export default function WorkbenchClient({ initialItems }: Props) {
               Create Outlook draft
             </button>
 
+            <button
+              type="button"
+              onClick={saveReview}
+              disabled={
+                busy === "save-review" ||
+                !draftBody ||
+                selectedState.key.startsWith("processing")
+              }
+              className="w-full rounded-2xl bg-slate-950 px-4 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {busy === "save-review"
+                ? "Saving review..."
+                : "Save Review + Train AI"}
+            </button>
+
+            <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3 text-xs leading-5 text-blue-900">
+              <p className="font-semibold">Learning workflow</p>
+              <p className="mt-1">
+                Use <span className="font-medium">Save</span> for temporary draft edits.
+                Use <span className="font-medium">Save Review + Train AI</span> when
+                the draft has been reviewed and should update AI feedback, approved
+                examples and the training queue.
+              </p>
+            </div>
+
             {selectedItem.outlook_web_link || selectedItem.source_email_url ? (
               <button
                 type="button"
@@ -2509,7 +2661,7 @@ export default function WorkbenchClient({ initialItems }: Props) {
                   disabled={busy === "save-draft"}
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
                 >
-                  Save
+                  Save draft only
                 </button>
 
                 <button

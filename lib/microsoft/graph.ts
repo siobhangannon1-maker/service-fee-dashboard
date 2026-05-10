@@ -31,6 +31,14 @@ export type OutlookSentMessageResult = {
   sentDateTime?: string | null;
 };
 
+export type OutlookArchivedMessageResult = {
+  id: string;
+  subject?: string | null;
+  webLink?: string | null;
+  conversationId?: string | null;
+  parentFolderId?: string | null;
+};
+
 export type OutlookInboxMessage = {
   id: string;
   subject?: string | null;
@@ -84,7 +92,7 @@ async function getGraphAccessToken() {
     throw new Error(
       json.error_description ||
         json.error ||
-        "Failed to get Microsoft Graph token"
+        "Failed to get Microsoft Graph token",
     );
   }
 
@@ -105,13 +113,27 @@ async function graphFetch(path: string, init: RequestInit = {}) {
   });
 
   const text = await response.text();
-  const json = text ? JSON.parse(text) : null;
+
+  let json: any = null;
+
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(
+        `Microsoft Graph returned non-JSON response: ${response.status} ${text.slice(
+          0,
+          300,
+        )}`,
+      );
+    }
+  }
 
   if (!response.ok) {
     throw new Error(
       json?.error?.message ||
         json?.error_description ||
-        `Microsoft Graph request failed: ${response.status}`
+        `Microsoft Graph request failed: ${response.status}`,
     );
   }
 
@@ -168,7 +190,7 @@ export async function createOutlookDraftMessage({
           },
         ],
       }),
-    }
+    },
   );
 
   return {
@@ -190,7 +212,7 @@ export async function createOutlookReplyDraft({
 }): Promise<OutlookDraftResult> {
   const draft = await graphFetch(
     `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(
-      sourceMessageId
+      sourceMessageId,
     )}/createReply`,
     {
       method: "POST",
@@ -202,7 +224,7 @@ export async function createOutlookReplyDraft({
           },
         },
       }),
-    }
+    },
   );
 
   return {
@@ -232,7 +254,7 @@ export async function findSentMessageByConversationId({
   const messages = result?.value || [];
 
   const match = messages.find(
-    (message: any) => message.conversationId === conversationId
+    (message: any) => message.conversationId === conversationId,
   );
 
   if (!match) return null;
@@ -279,7 +301,7 @@ export async function listMessageAttachments({
 
   const result = await graphFetch(
     `/users/${encodedMailbox}/messages/${encodedMessageId}/attachments?$top=20`,
-    { method: "GET" }
+    { method: "GET" },
   );
 
   return result?.value || [];
@@ -300,6 +322,39 @@ export async function getMessageAttachment({
 
   return graphFetch(
     `/users/${encodedMailbox}/messages/${encodedMessageId}/attachments/${encodedAttachmentId}`,
-    { method: "GET" }
+    { method: "GET" },
   );
+}
+
+export async function archiveOutlookMessage({
+  mailbox = outlookSharedMailbox,
+  messageId,
+}: {
+  mailbox?: string;
+  messageId: string;
+}): Promise<OutlookArchivedMessageResult> {
+  const encodedMailbox = encodeURIComponent(mailbox);
+  const encodedMessageId = encodeURIComponent(messageId);
+
+  /*
+    Microsoft Graph "move" moves the message out of Inbox.
+    destinationId can be a well-known folder name such as "archive".
+  */
+  const movedMessage = await graphFetch(
+    `/users/${encodedMailbox}/messages/${encodedMessageId}/move`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        destinationId: "archive",
+      }),
+    },
+  );
+
+  return {
+    id: movedMessage.id,
+    subject: movedMessage.subject,
+    webLink: movedMessage.webLink,
+    conversationId: movedMessage.conversationId,
+    parentFolderId: movedMessage.parentFolderId,
+  };
 }

@@ -41,7 +41,40 @@ function normalisePhone(value: string | null | undefined) {
   return String(value || "").replace(/\D+/g, "");
 }
 
-function makeTextFilter(field: string, value: string, type: "startsWith" | "contains") {
+function normaliseDob(value: string | null | undefined) {
+  const raw = String(value || "").trim();
+
+  if (!raw) return "";
+
+  // ISO: 1961-07-24 -> 24/07/1961
+  const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (iso) {
+    return `${iso[3].padStart(2, "0")}/${iso[2].padStart(2, "0")}/${iso[1]}`;
+  }
+
+  // AU: 24/07/61 or 24/07/1961 -> 24/07/1961
+  const au = raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+  if (au) {
+    const day = au[1].padStart(2, "0");
+    const month = au[2].padStart(2, "0");
+    let year = au[3];
+
+    if (year.length === 2) {
+      const numericYear = Number(year);
+      year = numericYear <= 29 ? `20${year}` : `19${year}`;
+    }
+
+    return `${day}/${month}/${year}`;
+  }
+
+  return raw.replace(/-/g, "/");
+}
+
+function makeTextFilter(
+  field: string,
+  value: string,
+  type: "startsWith" | "contains",
+) {
   return {
     [field]: {
       filterType: "upperText",
@@ -52,11 +85,17 @@ function makeTextFilter(field: string, value: string, type: "startsWith" | "cont
 }
 
 function buildSearchAttempts(input: PraktikaPatientSearchInput) {
-  const attempts: Array<{ label: string; filterModel: Record<string, any> }> = [];
+  const attempts: Array<{ label: string; filterModel: Record<string, any> }> =
+    [];
 
   const firstName = input.firstName?.trim();
   const lastName = input.lastName?.trim();
   const mobile = normalisePhone(input.mobile);
+
+  /*
+    Praktika grid search is filter based. We deliberately search broadly and
+    score locally so DOB format differences do not prevent a match.
+  */
 
   if (lastName) {
     attempts.push({
@@ -82,6 +121,16 @@ function buildSearchAttempts(input: PraktikaPatientSearchInput) {
     });
   }
 
+  if (firstName && lastName) {
+    attempts.push({
+      label: "firstName + lastName contains",
+      filterModel: {
+        ...makeTextFilter("firstName", firstName, "contains"),
+        ...makeTextFilter("lastName", lastName, "contains"),
+      },
+    });
+  }
+
   if (mobile) {
     attempts.push({
       label: "mobile contains",
@@ -92,6 +141,20 @@ function buildSearchAttempts(input: PraktikaPatientSearchInput) {
       attempts.push({
         label: "mobile without country code contains",
         filterModel: makeTextFilter("mobile", `0${mobile.slice(2)}`, "contains"),
+      });
+    }
+
+    if (mobile.startsWith("0") && mobile.length > 1) {
+      attempts.push({
+        label: "mobile country code contains",
+        filterModel: makeTextFilter("mobile", `61${mobile.slice(1)}`, "contains"),
+      });
+    }
+
+    if (mobile.length >= 8) {
+      attempts.push({
+        label: "mobile last 8 contains",
+        filterModel: makeTextFilter("mobile", mobile.slice(-8), "contains"),
       });
     }
   }
@@ -112,44 +175,56 @@ function scorePatientMatch(patient: any, input: PraktikaPatientSearchInput) {
 
   const inputFirst = normaliseText(input.firstName);
   const inputLast = normaliseText(input.lastName);
-  const inputDob = String(input.dob || "").trim();
+  const inputDob = normaliseDob(input.dob);
   const inputMobile = normalisePhone(input.mobile);
 
   const patientFirst = normaliseText(patient.firstName);
   const patientLast = normaliseText(patient.lastName);
   const patientPreferred = normaliseText(patient.preferredName);
-  const patientDob = String(patient.dob || "").trim();
-  const patientMobile = normalisePhone(patient.mobile);
+  const patientDob = normaliseDob(patient.dob);
+  const patientMobile = normalisePhone(patient.mobile || patient.homePhone);
 
   if (inputFirst && patientFirst && inputFirst === patientFirst) {
-    score += 0.2;
+    score += 0.25;
     reasons.push("first name matched");
   } else if (inputFirst && patientPreferred && inputFirst === patientPreferred) {
-    score += 0.2;
+    score += 0.25;
     reasons.push("preferred name matched");
   } else if (
     inputFirst &&
     patientFirst &&
     (patientFirst.includes(inputFirst) || inputFirst.includes(patientFirst))
   ) {
-    score += 0.1;
+    score += 0.12;
     reasons.push("first name partial match");
   }
 
   if (inputLast && patientLast && inputLast === patientLast) {
-    score += 0.3;
+    score += 0.35;
     reasons.push("last name matched");
   } else if (
     inputLast &&
     patientLast &&
     (patientLast.includes(inputLast) || inputLast.includes(patientLast))
   ) {
-    score += 0.15;
+    score += 0.18;
     reasons.push("last name partial match");
   }
 
+  if (
+    inputFirst &&
+    inputLast &&
+    patientFirst &&
+    patientLast &&
+    inputFirst === patientFirst &&
+    inputLast === patientLast
+  ) {
+    score += 0.15;
+    reasons.push("exact full name matched");
+  }
+
   if (inputDob && patientDob && inputDob === patientDob) {
-    score += 0.35;
+    score += 0.45;
     reasons.push("DOB matched");
   }
 
@@ -159,6 +234,8 @@ function scorePatientMatch(patient: any, input: PraktikaPatientSearchInput) {
   } else if (
     inputMobile &&
     patientMobile &&
+    inputMobile.length >= 8 &&
+    patientMobile.length >= 8 &&
     (patientMobile.endsWith(inputMobile.slice(-8)) ||
       inputMobile.endsWith(patientMobile.slice(-8)))
   ) {
@@ -258,7 +335,7 @@ async function searchOnce(input: PraktikaPatientSearchInput) {
 }
 
 export async function searchPraktikaPatients(
-  input: PraktikaPatientSearchInput
+  input: PraktikaPatientSearchInput,
 ): Promise<PraktikaPatientSearchResult[]> {
   if (
     !input.firstName?.trim() &&

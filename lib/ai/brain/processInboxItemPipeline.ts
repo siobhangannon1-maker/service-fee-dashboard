@@ -1,5 +1,6 @@
 import { ensureTrelloTaskForInboxItem } from "@/lib/ai/brain/ensureTrelloTask";
 import { classifyOperationalWorkflow } from "@/lib/ai/brain/operationalWorkflow";
+import { routeClinicianForInboxItem } from "@/lib/ai/brain/clinicianRouting";
 import { matchPraktikaPatientForInboxItem } from "@/lib/ai/brain/praktikaPatientMatch";
 import { reanalyseInboxItem } from "@/lib/ai/brain/reanalyseInboxItem";
 import {
@@ -416,6 +417,10 @@ function shouldGenerateDraftForWorkflow(workflow: any) {
     return false;
   }
 
+  if (workflow?.workflow_modifiers?.should_generate_reply_draft === false) {
+    return false;
+  }
+
   return true;
 }
 
@@ -488,6 +493,60 @@ async function runPraktikaPatientMatchSafely(inboxItemId: string) {
   }
 }
 
+async function ensureTrelloTaskNonBlocking({
+  inboxItemId,
+  workflow,
+  forceTrello,
+}: {
+  inboxItemId: string;
+  workflow: any;
+  forceTrello: boolean;
+}) {
+  try {
+    return await ensureTrelloTaskForInboxItem({
+      inboxItemId,
+      reason: "Automatically processed after PDF parse/OCR pipeline.",
+      force:
+        forceTrello ||
+        workflow.workflow_kind === "radiology_review" ||
+        workflow.workflow_kind === "pathology_review" ||
+        workflow.workflow_kind === "urgent_clinical" ||
+        workflow.workflow_kind === "existing_patient_correspondence",
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unknown Trello automation error.";
+
+    console.error("Non-blocking Trello automation error:", message);
+
+    await supabaseAdmin
+      .from("ai_inbox_items")
+      .update({
+        trello_auto_task_status: "failed",
+        trello_auto_task_error: message,
+        automation_pipeline_error: null,
+      })
+      .eq("id", inboxItemId);
+
+    await supabaseAdmin.from("ai_workbench_audit_events").insert({
+      inbox_item_id: inboxItemId,
+      event_type: "trello_non_blocking_failure",
+      event_label: "Trello automation failed but pipeline continued",
+      details: {
+        error: message,
+        workflow_kind: workflow?.workflow_kind || null,
+      },
+    });
+
+    return {
+      skipped: true,
+      non_blocking_error: true,
+      error: message,
+      item: null,
+    };
+  }
+}
+
 export async function processInboxItemPipeline({
   inboxItemId,
   forceTrello = false,
@@ -547,9 +606,70 @@ export async function processInboxItemPipeline({
       persist: true,
     });
 
-    const receptionTaskResult = await ensureReceptionFollowUpTaskForInboxItem({
-  inboxItemId,
-});
+    /*
+      Important ordering:
+      Clinician routing must run BEFORE draft generation.
+
+      reanalyseInboxItem reads assigned_clinician_name from ai_inbox_items
+      to decide who the acknowledgement reply should say the correspondence
+      will be passed on to.
+
+      If this runs after reanalyseInboxItem, the draft can only say
+      "the relevant clinician" or may accidentally use the external
+      letter addressee.
+    */
+    let clinicianRoutingResult: any = null;
+
+    try {
+      clinicianRoutingResult = await routeClinicianForInboxItem({
+        inboxItemId,
+        persist: true,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Clinician routing failed.";
+
+      console.warn("Clinician routing failed but pipeline continued:", message);
+
+      clinicianRoutingResult = {
+        skipped: true,
+        non_blocking_error: true,
+        error: message,
+      };
+
+      await supabaseAdmin.from("ai_workbench_audit_events").insert({
+        inbox_item_id: inboxItemId,
+        event_type: "clinician_routing_non_blocking_failure",
+        event_label: "Clinician routing failed but pipeline continued",
+        details: {
+          error: message,
+          workflow_kind: workflow?.workflow_kind || null,
+        },
+      });
+    }
+
+    let receptionTaskResult: any = null;
+
+    try {
+      receptionTaskResult = await ensureReceptionFollowUpTaskForInboxItem({
+        inboxItemId,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Reception follow-up task failed.";
+
+      console.warn("Reception follow-up task failed but pipeline continued:", message);
+
+      receptionTaskResult = {
+        skipped: true,
+        non_blocking_error: true,
+        error: message,
+      };
+    }
 
     const shouldGenerateReplyDraft = shouldGenerateDraftForWorkflow(workflow);
 
@@ -566,14 +686,10 @@ export async function processInboxItemPipeline({
       });
     }
 
-    const trelloResult = await ensureTrelloTaskForInboxItem({
+    const trelloResult = await ensureTrelloTaskNonBlocking({
       inboxItemId,
-      reason: "Automatically processed after PDF parse/OCR pipeline.",
-      force:
-        forceTrello ||
-        workflow.workflow_kind === "radiology_review" ||
-        workflow.workflow_kind === "pathology_review" ||
-        workflow.workflow_kind === "urgent_clinical",
+      workflow,
+      forceTrello,
     });
 
     await markPipelineStatus({
@@ -581,22 +697,29 @@ export async function processInboxItemPipeline({
       status: "completed",
     });
 
+    const { data: refreshedItem } = await supabaseAdmin
+      .from("ai_inbox_items")
+      .select("*")
+      .eq("id", inboxItemId)
+      .single();
+
     return {
       success: true,
       inboxItemId,
       stage: "completed",
       message:
-        "PDF parsing/OCR fallback, Praktika patient matching, workflow classification, AI reanalysis, routing and Trello automation completed.",
+        "PDF parsing/OCR fallback, Praktika patient matching, workflow classification, AI reanalysis and non-blocking automations completed.",
       details: {
         parseResult,
         patientMatchResult,
         workflow,
+        clinicianRoutingResult,
         receptionTaskResult,
         shouldGenerateReplyDraft,
         reanalysisResult,
         trelloResult,
       },
-      item: trelloResult.item || reanalysisResult.item,
+      item: refreshedItem || trelloResult?.item || reanalysisResult.item,
     };
   } catch (error) {
     const errorMessage =

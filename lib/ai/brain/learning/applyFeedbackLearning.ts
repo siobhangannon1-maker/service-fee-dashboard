@@ -1,4 +1,9 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  approvalScoreFromSeverity,
+  calculateEditSeverity,
+  maybeCreateTrainingQueueItem,
+} from "@/lib/ai/brain/training/trainingQueue";
 
 type ApplyFeedbackLearningParams = {
   inboxItemId: string;
@@ -91,6 +96,13 @@ export async function applyFeedbackLearning({
     finalBody,
   });
 
+  const editSeverity = calculateEditSeverity({
+    originalBody,
+    finalBody,
+  });
+
+  const approvalScore = approvalScoreFromSeverity(editSeverity);
+
   const { data: inboxItem } = await supabaseAdmin
     .from("ai_inbox_items")
     .select("*")
@@ -110,15 +122,19 @@ export async function applyFeedbackLearning({
 
   const result = {
     feedback_saved: false,
+    feedback_id: null as string | null,
     approved_example_created: false,
     template_created: false,
     learning_rule_created: false,
+    training_queue_created: false,
     changed: comparison.changed,
     subject_changed: comparison.subjectChanged,
     body_changed: comparison.bodyChanged,
+    edit_severity: editSeverity,
+    approval_score: approvalScore,
   };
 
-  const { error: feedbackError } = await supabaseAdmin
+  const { data: feedbackRow, error: feedbackError } = await supabaseAdmin
     .from("ai_feedback")
     .insert({
       inbox_item_id: inboxItemId,
@@ -134,13 +150,19 @@ export async function applyFeedbackLearning({
         ? "receptionist_edited"
         : "approved_without_changes",
 
+      approval_score: approvalScore,
+      edit_severity: editSeverity,
+      learning_status: "captured",
       notes: notes || null,
-    });
+    })
+    .select()
+    .single();
 
   if (feedbackError) {
     console.warn("AI feedback save failed:", feedbackError.message);
   } else {
     result.feedback_saved = true;
+    result.feedback_id = feedbackRow?.id || null;
   }
 
   if (hasMeaningfulText(finalBody, 40) && inboxItem) {
@@ -156,22 +178,16 @@ export async function applyFeedbackLearning({
           `Approved example ${new Date().toISOString()}`,
 
         category: finalCategory,
-
         incoming_message: incomingMessage || "No source message saved.",
-
         approved_reply_subject: finalSubject || null,
         approved_reply_body: finalBody || "",
-
         tone_notes: comparison.changed
           ? "Learned from receptionist-edited approved response."
           : "Approved without changes from Workbench review.",
-
         avoid_notes: null,
-
         source: comparison.changed
           ? "workbench_feedback_edited"
           : "workbench_feedback_approved",
-
         is_active: true,
       });
 
@@ -225,6 +241,18 @@ export async function applyFeedbackLearning({
       result.learning_rule_created = true;
     }
   }
+
+  const trainingResult = await maybeCreateTrainingQueueItem({
+    inboxItemId,
+    feedbackId: result.feedback_id,
+    caseId: aiCase?.id || null,
+    category: finalCategory,
+    originalBody,
+    finalBody,
+    notes,
+  });
+
+  result.training_queue_created = Boolean(trainingResult.created);
 
   return result;
 }

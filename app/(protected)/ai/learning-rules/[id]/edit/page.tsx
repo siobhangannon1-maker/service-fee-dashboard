@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 const categories = [
   "all",
   "new_referral",
+  "classification",
   "existing_patient_correspondence",
   "radiology_review",
   "pathology_review",
