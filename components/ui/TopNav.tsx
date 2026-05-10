@@ -26,10 +26,6 @@ type NavGroup = {
   items: NavItem[];
 };
 
-const primaryNavItems: NavItem[] = [
-  { href: "/", label: "Home", description: "Home" },
-];
-
 const navGroups: NavGroup[] = [
   {
     label: "AI Reception",
@@ -119,8 +115,7 @@ export default function TopNav() {
   const [logo, setLogo] = useState<string | null>(null);
   const [roles, setRoles] = useState<UserRole[]>([]);
   const [loadingRole, setLoadingRole] = useState(true);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [openMobileGroup, setOpenMobileGroup] = useState<string | null>(null);
 
   useEffect(() => {
@@ -145,9 +140,7 @@ export default function TopNav() {
       const loadedRoles: UserRole[] = [];
 
       const metadataRole = user.user_metadata?.role || user.app_metadata?.role;
-      if (isUserRole(metadataRole)) {
-        loadedRoles.push(metadataRole);
-      }
+      if (isUserRole(metadataRole)) loadedRoles.push(metadataRole);
 
       const { data, error } = await supabase
         .from("user_roles")
@@ -158,9 +151,7 @@ export default function TopNav() {
         console.error("TopNav role lookup failed:", error);
       } else {
         for (const row of data ?? []) {
-          if (isUserRole(row.role)) {
-            loadedRoles.push(row.role);
-          }
+          if (isUserRole(row.role)) loadedRoles.push(row.role);
         }
       }
 
@@ -172,8 +163,7 @@ export default function TopNav() {
   }, [supabase]);
 
   useEffect(() => {
-    setMobileMenuOpen(false);
-    setOpenDropdown(null);
+    setMenuOpen(false);
     setOpenMobileGroup(null);
   }, [pathname]);
 
@@ -209,138 +199,71 @@ export default function TopNav() {
   return (
     <header className="sticky top-0 z-[9999] border-b border-slate-200 bg-white shadow-md">
       <div className="w-full px-3 sm:px-5 xl:px-6">
-        <div className="flex min-h-[76px] items-center justify-between gap-3 py-3 sm:min-h-[88px]">
-          <Link
-            href="/"
-            className="flex min-w-0 shrink-0 items-center gap-3 pr-2 sm:gap-4"
-          >
+        <div className="flex min-h-[72px] items-center justify-between gap-3 py-3">
+          <Link href="/" className="flex min-w-0 items-center gap-3">
             {logo ? (
               <img
                 src={logo}
                 alt="Practice logo"
-                className="h-12 w-auto object-contain sm:h-16 lg:h-20"
+                className="h-11 w-auto shrink-0 object-contain sm:h-14"
               />
             ) : (
-              <div className="h-12 w-12 rounded-full bg-slate-100 sm:h-16 sm:w-16 lg:h-20 lg:w-20" />
+              <div className="h-11 w-11 shrink-0 rounded-full bg-slate-100 sm:h-14 sm:w-14" />
             )}
 
             <div className="min-w-0">
-              <div className="truncate text-base font-semibold tracking-tight text-slate-900 sm:text-xl">
+              <div className="truncate text-sm font-semibold tracking-tight text-slate-900 sm:text-lg">
                 Focus Dental Specialists
               </div>
-              <div className="hidden text-sm text-slate-500 sm:block">
+              <div className="hidden text-xs text-slate-500 sm:block">
                 Dashboard
               </div>
             </div>
           </Link>
 
-          <div className="hidden min-w-0 flex-1 items-center justify-end gap-2 lg:flex">
-            <nav className="flex max-w-full min-w-0 flex-wrap items-center justify-end gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
-              {primaryNavItems.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`rounded-xl px-3 py-2 text-sm font-medium transition ${
-                    isActive(item.href)
-                      ? "bg-slate-900 text-white"
-                      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                  }`}
-                >
-                  {item.label}
-                </Link>
-              ))}
+          <div className="relative flex shrink-0 items-center gap-2">
+            <Link
+              href="/"
+              className={`hidden rounded-xl px-3 py-2 text-sm font-medium transition sm:inline-flex ${
+                isActive("/")
+                  ? "bg-slate-900 text-white"
+                  : "text-slate-700 hover:bg-slate-100"
+              }`}
+            >
+              Home
+            </Link>
 
-              {!loadingRole &&
-                visibleNavGroups.map((group) => {
-                  const active = group.items.some((item) =>
-                    isActive(item.href),
-                  );
-
-                  return (
-                    <div key={group.label} className="relative">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setOpenDropdown((current) =>
-                            current === group.label ? null : group.label,
-                          )
-                        }
-                        className={`rounded-xl px-3 py-2 text-sm font-medium transition ${
-                          active
-                            ? "bg-slate-900 text-white"
-                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                        }`}
-                      >
-                        {group.label} ▾
-                      </button>
-
-                      {openDropdown === group.label && (
-                        <div className="absolute right-0 top-full z-[10000] mt-2 max-h-[70vh] w-80 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
-                          {group.items.map((item) => (
-                            <Link
-                              key={item.href}
-                              href={item.href}
-                              className={`block rounded-xl px-4 py-3 transition ${
-                                isActive(item.href)
-                                  ? "bg-slate-900 text-white"
-                                  : "text-slate-700 hover:bg-slate-100"
-                              }`}
-                            >
-                              <div className="text-sm font-semibold">
-                                {item.label}
-                              </div>
-                              <div
-                                className={`mt-1 text-xs leading-5 ${
-                                  isActive(item.href)
-                                    ? "text-slate-200"
-                                    : "text-slate-500"
-                                }`}
-                              >
-                                {item.description}
-                              </div>
-                            </Link>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-            </nav>
+            <button
+              type="button"
+              onClick={() => setMenuOpen((prev) => !prev)}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-50"
+            >
+              {menuOpen ? "Close" : "Menu"} ▾
+            </button>
 
             <button
               type="button"
               onClick={handleLogout}
-              className="shrink-0 rounded-2xl bg-slate-800 px-4 py-2.5 text-sm font-medium text-white shadow-md transition hover:bg-slate-900"
+              className="hidden rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 sm:inline-flex"
             >
               Log out
             </button>
           </div>
-
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen((prev) => !prev)}
-            className="inline-flex shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm lg:hidden"
-          >
-            {mobileMenuOpen ? "Close" : "Menu"}
-          </button>
         </div>
 
-        {mobileMenuOpen && (
-          <div className="max-h-[calc(100vh-88px)] overflow-y-auto border-t border-slate-200 py-4 lg:hidden">
-            <nav className="grid gap-3">
-              {primaryNavItems.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${
-                    isActive(item.href)
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-900"
-                  }`}
-                >
-                  {item.label}
-                </Link>
-              ))}
+        {menuOpen && (
+          <div className="absolute left-0 right-0 top-full z-[10000] max-h-[calc(100vh-90px)] overflow-y-auto border-t border-slate-200 bg-white px-3 py-4 shadow-xl sm:px-5 xl:px-6">
+            <div className="mx-auto grid w-full max-w-7xl gap-4 lg:grid-cols-3 xl:grid-cols-4">
+              <Link
+                href="/"
+                className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${
+                  isActive("/")
+                    ? "border-slate-900 bg-slate-900 text-white"
+                    : "border-slate-200 bg-white text-slate-900 hover:bg-slate-50"
+                }`}
+              >
+                Home
+              </Link>
 
               {!loadingRole &&
                 visibleNavGroups.map((group) => {
@@ -376,14 +299,14 @@ export default function TopNav() {
                               className={`rounded-2xl border px-4 py-3 ${
                                 isActive(item.href)
                                   ? "border-slate-900 bg-slate-900 text-white"
-                                  : "border-slate-200 bg-white text-slate-900"
+                                  : "border-slate-200 bg-white text-slate-900 hover:bg-slate-50"
                               }`}
                             >
                               <div className="text-sm font-semibold">
                                 {item.label}
                               </div>
                               <div
-                                className={`mt-1 text-xs ${
+                                className={`mt-1 text-xs leading-5 ${
                                   isActive(item.href)
                                     ? "text-slate-200"
                                     : "text-slate-500"
@@ -402,11 +325,11 @@ export default function TopNav() {
               <button
                 type="button"
                 onClick={handleLogout}
-                className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white"
+                className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white sm:hidden"
               >
                 Log out
               </button>
-            </nav>
+            </div>
           </div>
         )}
       </div>
