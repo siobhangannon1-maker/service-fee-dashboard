@@ -67,6 +67,53 @@ export async function POST() {
       }
     );
 
+    // CASE 1:
+    // This is a direct SMS-auth user with its own profile.
+    const { data: ownProfile, error: ownProfileError } = await supabaseAdmin
+      .from("profiles")
+      .select("id, email, full_name, phone")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (ownProfileError) {
+      return NextResponse.json(
+        { error: ownProfileError.message },
+        { status: 500 }
+      );
+    }
+
+    if (ownProfile?.phone === phone) {
+      const { data: ownRole, error: ownRoleError } = await supabaseAdmin
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (ownRoleError || !ownRole) {
+        return NextResponse.json(
+          { error: "This SMS user does not have an assigned role." },
+          { status: 403 }
+        );
+      }
+
+      await supabaseAdmin.auth.admin.updateUserById(user.id, {
+        user_metadata: {
+          ...user.user_metadata,
+          full_name: ownProfile.full_name ?? "",
+          invited_by_sms: true,
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        mode: "direct_sms_user",
+        user_id: user.id,
+      });
+    }
+
+    // CASE 2:
+    // This is a newly-created phone auth user that should link back
+    // to an existing email user profile with the same phone number.
     const { data: originalProfile, error: profileError } = await supabaseAdmin
       .from("profiles")
       .select("id, email, full_name, phone")
@@ -80,7 +127,7 @@ export async function POST() {
 
     if (!originalProfile) {
       return NextResponse.json(
-        { error: "This mobile number is not linked to an invited user." },
+        { error: "No user with this phone number." },
         { status: 403 }
       );
     }
@@ -108,6 +155,7 @@ export async function POST() {
 
     await supabaseAdmin.auth.admin.updateUserById(user.id, {
       user_metadata: {
+        ...user.user_metadata,
         full_name: originalProfile.full_name ?? "",
         linked_email_user_id: originalProfile.id,
         linked_email: originalProfile.email ?? null,
@@ -152,6 +200,7 @@ export async function POST() {
 
     return NextResponse.json({
       success: true,
+      mode: "linked_sms_user",
       linked_email_user_id: originalProfile.id,
     });
   } catch (error) {
@@ -159,8 +208,7 @@ export async function POST() {
       {
         error:
           error instanceof Error
-            ? error.message
-            : "Failed to link phone session.",
+            ? error.message : "Failed to link phone session.",
       },
       { status: 500 }
     );
