@@ -101,7 +101,7 @@ const navGroups: NavGroup[] = [
       { href: "/benchmark/referral-opportunities", label: "Referrer Opportunities", description: "Analysis of non referring clinics" },
       { href: "/admin/provider-dashboard", label: "Provider Dashboard", description: "Analysis of provider clinical and financial metrics" },
       { href: "/admin/provider-imports", label: "Imports and Syncs", description: "Import and sync Praktika reports" },
-      { href: "/benchmarks/expense-reports", label: "Expense Reports", description: "Analysis of practice benchmarks" },
+      { href: "/benchmark/expense-reports", label: "Expense Reports", description: "Analysis of practice benchmarks" },
       { href: "/benchmarks/edit", label: "Edit Benchmarks", description: "Edit benchmarks for KPI categories" },
     ],
   },
