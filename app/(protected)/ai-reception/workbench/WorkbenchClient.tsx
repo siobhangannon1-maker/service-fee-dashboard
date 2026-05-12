@@ -1,8 +1,17 @@
 "use client";
 
-import Link from "next/link";
+import PraktikaReferrerMatchPanel from "@/components/ai/PraktikaReferrerMatchPanel";
+import ArchiveCompletedReferralButton from "@/components/ai/ArchiveCompletedReferralButton";
+import PraktikaReferralWorkflowSection from "@/components/ai/PraktikaReferralWorkflowSection";
+import BulkArchiveInboxItemsButton from "@/components/ai/BulkArchiveInboxItemsButton";
+import InboxItemAuditTrail from "@/components/ai/InboxItemAuditTrail";
+import ClassificationV2Button from "@/components/ai/ClassificationV2Button";
+import FileInboxItemToPraktikaButton from "@/components/ai/FileInboxItemToPraktikaButton";
+import AutomationPreviewCard from "@/components/ai/AutomationPreviewCard";
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import BulkSafeAutomationButton from "@/components/ai/BulkSafeAutomationButton";
+import CreateNewPraktikaPatientFromInboxButton from "@/components/ai/CreateNewPraktikaPatientFromInboxButton";
 
 type Attachment = {
   name?: string | null;
@@ -114,7 +123,15 @@ type InboxItem = {
   praktika_match_status?: string | null;
   praktika_match_confidence?: number | null;
   praktika_match_reason?: string | null;
+  praktika_match_candidates?: any[] | null;
+  praktika_match_confirmed_at?: string | null;
   praktika_matched_at?: string | null;
+
+  // Praktika assisted filing fields
+  praktika_filing_status?: string | null;
+  praktika_filed_at?: string | null;
+  praktika_filing_error?: string | null;
+  praktika_filing_result?: any;
 };
 
 type Props = {
@@ -140,6 +157,433 @@ type WorkflowReason = {
   tone: "green" | "amber" | "rose" | "red" | "blue" | "purple" | "slate";
   action: string;
 };
+
+type PraktikaSessionState = {
+  status: "idle" | "running" | "mfa_required" | "success" | "error";
+  message: string;
+  currentUrl?: string;
+  updatedAt?: string;
+};
+
+function praktikaSessionStatusLabel(status: PraktikaSessionState["status"]) {
+  switch (status) {
+    case "success":
+      return "Connected";
+    case "mfa_required":
+      return "MFA required";
+    case "running":
+      return "Refreshing session";
+    case "error":
+      return "Connection failed";
+    case "idle":
+    default:
+      return "Checking";
+  }
+}
+
+type PraktikaMatchCandidate = {
+  id?: string | number | null;
+  patientNumber?: string | number | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  dob?: string | null;
+  mobile?: string | null;
+  email?: string | null;
+  matchScore?: number | null;
+  matchReason?: string | null;
+};
+
+function getPraktikaCandidateName(candidate: PraktikaMatchCandidate) {
+  return (
+    [candidate.firstName, candidate.lastName]
+      .filter(Boolean)
+      .join(" ")
+      .trim() || "Unnamed patient"
+  );
+}
+
+function getPraktikaCandidateId(candidate: PraktikaMatchCandidate) {
+  return candidate.id === null || candidate.id === undefined
+    ? ""
+    : String(candidate.id);
+}
+
+function getPraktikaCandidateScore(candidate: PraktikaMatchCandidate) {
+  return typeof candidate.matchScore === "number"
+    ? `${Math.round(candidate.matchScore * 100)}%`
+    : "Not scored";
+}
+
+function PraktikaMatchCandidatesPanel({
+  inboxItemId,
+  candidates,
+  selectedPatientId,
+  onConfirmed,
+}: {
+  inboxItemId: string;
+  candidates?: PraktikaMatchCandidate[] | null;
+  selectedPatientId?: string | null;
+  onConfirmed: (item: InboxItem) => void;
+}) {
+  const [busyPatientId, setBusyPatientId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+
+  const safeCandidates = Array.isArray(candidates) ? candidates : [];
+
+  if (safeCandidates.length === 0) {
+    return null;
+  }
+
+  async function confirmCandidate(candidate: PraktikaMatchCandidate) {
+    const patientId = getPraktikaCandidateId(candidate);
+
+    if (!patientId) return;
+
+    setBusyPatientId(patientId);
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/ai/brain/praktika/confirm-match", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          inboxItemId,
+          patientId,
+          patientNumber: candidate.patientNumber || null,
+          candidate,
+        }),
+      });
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          result?.error || "Could not confirm Praktika patient match.",
+        );
+      }
+
+      if (result?.item) {
+        onConfirmed(result.item);
+      }
+
+      setMessage("Praktika patient match confirmed.");
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not confirm Praktika patient match.",
+      );
+    } finally {
+      setBusyPatientId(null);
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-2xl border border-purple-200 bg-purple-50 p-4 text-purple-950">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-bold">Possible Praktika matches</p>
+          <p className="mt-1 text-xs text-purple-800">
+            If more than one patient could be correct, confirm the right one
+            before filing attachments.
+          </p>
+        </div>
+
+        <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-purple-700">
+          {safeCandidates.length} option{safeCandidates.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      <div className="mt-3 space-y-3">
+        {safeCandidates.slice(0, 6).map((candidate, index) => {
+          const patientId = getPraktikaCandidateId(candidate);
+          const isSelected = Boolean(
+            patientId &&
+            selectedPatientId &&
+            patientId === String(selectedPatientId),
+          );
+
+          return (
+            <div
+              key={`${patientId || "candidate"}-${index}`}
+              className={`rounded-2xl border p-3 ${
+                isSelected
+                  ? "border-emerald-300 bg-emerald-50"
+                  : "border-purple-100 bg-white"
+              }`}
+            >
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-950">
+                    {getPraktikaCandidateName(candidate)}
+                  </p>
+
+                  <div className="mt-1 grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
+                    <span>Patient ID: {patientId || "-"}</span>
+                    <span>Patient #: {candidate.patientNumber || "-"}</span>
+                    <span>DOB: {candidate.dob || "-"}</span>
+                    <span>Mobile: {candidate.mobile || "-"}</span>
+                    <span>Score: {getPraktikaCandidateScore(candidate)}</span>
+                  </div>
+
+                  {candidate.matchReason ? (
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      {candidate.matchReason}
+                    </p>
+                  ) : null}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => confirmCandidate(candidate)}
+                  disabled={
+                    !patientId || busyPatientId === patientId || isSelected
+                  }
+                  className={`rounded-xl px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${
+                    isSelected
+                      ? "bg-emerald-600 text-white"
+                      : "bg-purple-700 text-white hover:bg-purple-800"
+                  }`}
+                >
+                  {isSelected
+                    ? "Selected"
+                    : busyPatientId === patientId
+                      ? "Confirming..."
+                      : "Use this patient"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {message ? (
+        <p className="mt-3 text-xs font-medium text-purple-900">{message}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function PraktikaWorkbenchPanel({
+  selectedItem,
+  selectedAttachmentsCount,
+  busy,
+  onMatchPraktikaPatient,
+  onRefreshWorkbenchItems,
+}: {
+  selectedItem: InboxItem | null;
+  selectedAttachmentsCount: number;
+  busy: string | null;
+  onMatchPraktikaPatient: () => Promise<void>;
+  onRefreshWorkbenchItems: () => Promise<void>;
+}) {
+  const [state, setState] = useState<PraktikaSessionState>({
+    status: "idle",
+    message: "Checking Praktika session...",
+  });
+  const [code, setCode] = useState("");
+  const [sessionBusy, setSessionBusy] = useState(false);
+
+  async function loadStatus() {
+    try {
+      const response = await fetch("/api/praktika/session/status", {
+        cache: "no-store",
+      });
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(result?.error || "Could not check Praktika session.");
+      }
+
+      setState({
+        status: result?.status || "idle",
+        message: result?.message || "Praktika session status checked.",
+        currentUrl: result?.currentUrl || undefined,
+        updatedAt: result?.updatedAt || new Date().toISOString(),
+      });
+    } catch (error) {
+      setState({
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not check Praktika session.",
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  useEffect(() => {
+    loadStatus();
+
+    const timer = window.setInterval(() => {
+      loadStatus();
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  async function refreshSession() {
+    setSessionBusy(true);
+
+    try {
+      setState((current) => ({
+        ...current,
+        status: "running",
+        message: "Refreshing Praktika session...",
+        updatedAt: new Date().toISOString(),
+      }));
+
+      await fetch("/api/praktika/session/refresh", {
+        method: "POST",
+      });
+
+      await loadStatus();
+    } finally {
+      setSessionBusy(false);
+    }
+  }
+
+  async function submitCode() {
+    if (!code.trim()) return;
+
+    setSessionBusy(true);
+
+    try {
+      await fetch("/api/praktika/session/mfa-code", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ code: code.trim() }),
+      });
+
+      setCode("");
+      await loadStatus();
+    } finally {
+      setSessionBusy(false);
+    }
+  }
+
+  const tone =
+    state.status === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+      : state.status === "mfa_required"
+        ? "border-amber-200 bg-amber-50 text-amber-900"
+        : state.status === "error"
+          ? "border-red-200 bg-red-50 text-red-900"
+          : "border-slate-200 bg-white text-slate-900";
+
+  return (
+    <section className={`mx-5 mt-4 rounded-3xl border p-4 shadow-sm ${tone}`}>
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] opacity-75">
+            Praktika sync panel
+          </div>
+
+          <h2 className="mt-1 text-base font-bold">
+            Session status: {praktikaSessionStatusLabel(state.status)}
+          </h2>
+
+          <p className="mt-1 max-w-3xl text-sm opacity-85">{state.message}</p>
+
+          {state.updatedAt ? (
+            <p className="mt-1 text-xs opacity-70">
+              Last checked: {formatDate(state.updatedAt)}
+            </p>
+          ) : null}
+
+          <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+            <div className="rounded-2xl border border-current/10 bg-white/50 p-3">
+              <div className="font-semibold">Selected patient</div>
+              <div className="mt-1 opacity-80">
+                {selectedItem?.praktika_patient_id
+                  ? `Praktika ID ${selectedItem.praktika_patient_id}`
+                  : "No Praktika patient selected"}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-current/10 bg-white/50 p-3">
+              <div className="font-semibold">Attachments</div>
+              <div className="mt-1 opacity-80">
+                {selectedAttachmentsCount} attachment
+                {selectedAttachmentsCount === 1 ? "" : "s"} detected
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-current/10 bg-white/50 p-3">
+              <div className="font-semibold">Filing status</div>
+              <div className="mt-1 opacity-80">
+                {selectedItem?.praktika_filing_status || "Not filed yet"}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2 xl:justify-end">
+          <button
+            type="button"
+            onClick={refreshSession}
+            disabled={sessionBusy || state.status === "running"}
+            className="rounded-full bg-slate-950 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {state.status === "running" || sessionBusy
+              ? "Refreshing..."
+              : "Refresh Praktika session"}
+          </button>
+
+          <button
+            type="button"
+            onClick={onMatchPraktikaPatient}
+            disabled={!selectedItem || busy === "match-praktika-patient"}
+            className="rounded-full border border-purple-200 bg-purple-50 px-4 py-2 text-sm font-medium text-purple-800 hover:bg-purple-100 disabled:opacity-50"
+          >
+            {busy === "match-praktika-patient"
+              ? "Matching..."
+              : "Match selected patient"}
+          </button>
+
+          <button
+            type="button"
+            onClick={onRefreshWorkbenchItems}
+            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Refresh Workbench
+          </button>
+        </div>
+      </div>
+
+      {state.status === "mfa_required" ? (
+        <div className="mt-4 rounded-2xl border border-amber-300 bg-white/80 p-3">
+          <label className="block">
+            <div className="mb-1 text-xs font-semibold text-amber-900">
+              Email MFA code
+            </div>
+            <input
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              placeholder="Enter code from email"
+              className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-4 focus:ring-amber-100"
+            />
+          </label>
+
+          <button
+            type="button"
+            onClick={submitCode}
+            disabled={sessionBusy || !code.trim()}
+            className="mt-3 rounded-xl bg-amber-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            Use this code
+          </button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
 
 function parseJsonMaybe(value: any) {
   if (!value) return value;
@@ -729,6 +1173,8 @@ function praktikaMatchStatusLabel(status?: string | null) {
   switch (status) {
     case "matched_existing":
       return "Matched existing patient";
+    case "confirmed_manual":
+      return "Confirmed by staff";
     case "possible_match":
       return "Possible patient match";
     case "no_match":
@@ -743,6 +1189,7 @@ function praktikaMatchStatusLabel(status?: string | null) {
 function praktikaMatchTone(status?: string | null) {
   switch (status) {
     case "matched_existing":
+    case "confirmed_manual":
       return "green";
     case "possible_match":
       return "amber";
@@ -755,35 +1202,78 @@ function praktikaMatchTone(status?: string | null) {
   }
 }
 
-function filterItems(items: InboxItem[], filter: QueueFilter) {
-  if (filter === "all") return items;
+function getInboxItemSearchText(item: InboxItem) {
+  return [
+    item.patient_name,
+    item.extracted_patient_first_name,
+    item.extracted_patient_last_name,
+    item.extracted_patient_dob,
+    item.praktika_patient_id,
+    item.praktika_patient_number,
+    item.file_name,
+    item.email_subject,
+    item.subject,
+    item.sender_name,
+    item.sender_email,
+    item.summary,
+    item.suggested_action,
+    item.archive_reason,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
 
-  return items.filter((item) => {
+function filterItems(
+  items: InboxItem[],
+  filter: QueueFilter,
+  archivedSearch = "",
+) {
+  const search = archivedSearch.trim().toLowerCase();
+
+  if (filter === "archived") {
+    const archivedItems = items.filter((item) => Boolean(item.archived_at));
+
+    if (!search) return archivedItems;
+
+    return archivedItems.filter((item) =>
+      getInboxItemSearchText(item).includes(search),
+    );
+  }
+
+  const activeItems = items.filter((item) => !item.archived_at);
+
+  if (filter === "all") return activeItems;
+
+  return activeItems.filter((item) => {
     const state = getWorkflowState(item);
 
     if (filter === "ready")
       return state.key === "ready_to_send" || state.key === "draft_ready";
+
     if (filter === "needs_review")
       return !["ready_to_send", "draft_ready", "sent", "archived"].includes(
         state.key,
       );
+
     if (filter === "processing") return state.key.startsWith("processing");
+
     if (filter === "missing_info")
       return (
         state.key.startsWith("missing") || state.key === "not_safe_to_draft"
       );
+
     if (filter === "patient_match")
       return (
         state.key.includes("patient_match") ||
         state.key === "new_patient_file_needed"
       );
+
     if (filter === "clinical") return state.key === "clinical_review";
-    if (filter === "archived") return state.key === "archived";
 
     return true;
   });
 }
-
 export default function WorkbenchClient({ initialItems }: Props) {
   const [items, setItems] = useState<InboxItem[]>(initialItems || []);
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -791,13 +1281,18 @@ export default function WorkbenchClient({ initialItems }: Props) {
   );
   const [filter, setFilter] = useState<QueueFilter>("all");
   const [sortMode, setSortMode] = useState<QueueSortMode>("urgency");
+  const [archivedSearch, setArchivedSearch] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showAudit, setShowAudit] = useState(false);
+  const [showAuditTrail, setShowAuditTrail] = useState(false);
   const [showExtractedText, setShowExtractedText] = useState(false);
   const [localDraftSubject, setLocalDraftSubject] = useState("");
   const [localDraftBody, setLocalDraftBody] = useState("");
+  const [selectedInboxItemIds, setSelectedInboxItemIds] = useState<string[]>(
+    [],
+  );
 
   useEffect(() => {
     const supabase = createClient();
@@ -881,8 +1376,8 @@ export default function WorkbenchClient({ initialItems }: Props) {
     "";
 
   const visibleItems = useMemo(
-    () => filterItems(sortedItems, filter),
-    [sortedItems, filter],
+    () => filterItems(sortedItems, filter, archivedSearch),
+    [sortedItems, filter, archivedSearch],
   );
 
   const counts = useMemo(() => {
@@ -929,6 +1424,22 @@ export default function WorkbenchClient({ initialItems }: Props) {
     );
   }
 
+  function isInboxItemSelected(id: string) {
+    return selectedInboxItemIds.includes(id);
+  }
+
+  function toggleInboxItemSelected(id: string) {
+    setSelectedInboxItemIds((current) =>
+      current.includes(id)
+        ? current.filter((itemId) => itemId !== id)
+        : [...current, id],
+    );
+  }
+
+  function clearSelectedInboxItems() {
+    setSelectedInboxItemIds([]);
+  }
+
   // WorkbenchClient.tsx patch
   // This fixes new imported rows not appearing until manual refresh.
   // Add these helpers INSIDE WorkbenchClient, near replaceItem/updateSelectedItem.
@@ -956,10 +1467,13 @@ export default function WorkbenchClient({ initialItems }: Props) {
 
   async function refreshWorkbenchItems({ silent = true } = {}) {
     try {
-      const response = await fetch("/api/ai/workbench/items?limit=75", {
-        method: "GET",
-        cache: "no-store",
-      });
+      const response = await fetch(
+        "/api/ai/brain/workbench-items?limit=75&includeArchived=true",
+        {
+          method: "GET",
+          cache: "no-store",
+        },
+      );
 
       const result = await response.json();
 
@@ -1102,6 +1616,56 @@ export default function WorkbenchClient({ initialItems }: Props) {
     }
   }
 
+  async function sendOutlookDraft() {
+    if (!selectedItem) return;
+
+    const confirmed = window.confirm(
+      "Send this Outlook draft now? This will send the email from the shared mailbox.",
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setMessage("");
+      setBusy("send-outlook-draft");
+
+      const response = await fetch("/api/ai/brain/send-outlook-draft", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          inboxItemId: selectedItem.id,
+        }),
+      });
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(result?.error || "Could not send Outlook draft.");
+      }
+
+      if (result?.item) {
+        replaceItem(result.item);
+      } else {
+        updateSelectedItem({
+          email_status: "sent",
+          sent_at: new Date().toISOString(),
+          sent_detected_at: new Date().toISOString(),
+          sent_detection_method: "manual_send_button",
+        });
+      }
+
+      setMessage("Outlook draft sent.");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not send Outlook draft.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function generateDraft() {
     if (!selectedItem) return;
 
@@ -1190,90 +1754,88 @@ export default function WorkbenchClient({ initialItems }: Props) {
   }
 
   async function saveReview() {
-    if (!selectedItem) return;
+  if (!selectedItem) return;
 
-    try {
-      setMessage("");
-      setBusy("save-review");
+  try {
+    setMessage("");
+    setBusy("save-review");
 
-      const response = await fetch("/api/ai/brain/save-review", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          inboxItemId: selectedItem.id,
+    const response = await fetch("/api/ai/brain/save-review", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+      body: JSON.stringify({
+        inboxItemId: selectedItem.id,
 
-          patient_name: selectedItem.patient_name || null,
-          patient_dob: selectedItem.patient_dob || null,
-          category: selectedItem.category || null,
-          summary: selectedItem.summary || null,
-          suggested_action: selectedItem.suggested_action || null,
-          reception_notes: selectedItem.reception_notes || null,
-          final_decision: "reviewed_and_approved",
-          email_status: "reviewed",
+        patient_name: selectedItem.patient_name || null,
+        patient_dob: selectedItem.patient_dob || null,
+        category: selectedItem.category || null,
+        summary: selectedItem.summary || null,
+        suggested_action: selectedItem.suggested_action || null,
+        reception_notes: selectedItem.reception_notes || null,
 
-          // Send these names so the save-review route can compare the
-          // original AI draft with the final receptionist-reviewed draft.
-          final_subject: draftSubject,
-          final_body: draftBody,
-          draft_reply_subject: draftSubject,
-          draft_reply_body: draftBody,
-          subject: draftSubject,
-          body: draftBody,
-        }),
-      });
+        final_decision: "reviewed_and_approved",
+        email_status: "reviewed",
 
-      const result = await response.json();
+        final_subject: draftSubject,
+        final_body: draftBody,
+        draft_reply_subject: draftSubject,
+        draft_reply_body: draftBody,
+        subject: draftSubject,
+        body: draftBody,
+      }),
+    });
 
-      if (!response.ok) {
-        setMessage(result.error || "Could not save review.");
-        return;
-      }
+    const result = await response.json().catch(() => null);
 
-      if (result.item) {
-        replaceItem(result.item);
-      } else {
-        updateSelectedItem({
-          draft_reply_subject: draftSubject,
-          draft_reply_body: draftBody,
-          draft_status: "drafted",
-          email_status: "reviewed",
-          reviewed_at: new Date().toISOString(),
-        });
-      }
-
-      const learning = result.learning;
-      const learningParts = [];
-
-      if (learning?.feedback_saved) learningParts.push("feedback saved");
-      if (learning?.approved_example_created) {
-        learningParts.push("approved example created");
-      }
-      if (learning?.template_created) learningParts.push("template created");
-      if (learning?.learning_rule_created) learningParts.push("rule created");
-      if (learning?.training_queue_created) {
-        learningParts.push("training queue updated");
-      }
-
-      setLocalDraftSubject("");
-      setLocalDraftBody("");
-
-      setMessage(
-        learningParts.length > 0
-          ? `Review saved and AI learning updated: ${learningParts.join(", ")}.`
-          : "Review saved. No additional learning items were created.",
-      );
-
-      await refreshWorkbenchItems({ silent: true });
-    } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "Could not save review.",
-      );
-    } finally {
-      setBusy(null);
+    if (!response.ok || !result?.success) {
+      setMessage(result?.error || "Could not save review.");
+      return;
     }
+
+    if (result.item) {
+      replaceItem(result.item);
+    } else {
+      updateSelectedItem({
+        draft_reply_subject: draftSubject,
+        draft_reply_body: draftBody,
+        draft_status: "drafted",
+        email_status: "reviewed",
+        reviewed_at: new Date().toISOString(),
+      });
+    }
+
+    const learning = result.learning;
+    const learningParts: string[] = [];
+
+    if (learning?.feedback_saved) learningParts.push("feedback saved");
+    if (learning?.approved_example_created) {
+      learningParts.push("approved example created");
+    }
+    if (learning?.template_created) learningParts.push("template created");
+    if (learning?.learning_rule_created) learningParts.push("rule created");
+    if (learning?.training_queue_created) {
+      learningParts.push("training queue updated");
+    }
+
+    setLocalDraftSubject("");
+    setLocalDraftBody("");
+
+    setMessage(
+      learningParts.length
+        ? `Review saved and AI learning updated: ${learningParts.join(", ")}.`
+        : "Review saved.",
+    );
+  } catch (error) {
+    setMessage(
+      error instanceof Error ? error.message : "Could not save review.",
+    );
+  } finally {
+    setBusy(null);
   }
+}
 
   async function markNoReply() {
     if (!selectedItem) return;
@@ -1324,13 +1886,13 @@ export default function WorkbenchClient({ initialItems }: Props) {
       setMessage("");
       setBusy("archive");
 
-      const response = await fetch("/api/ai/brain/archive-item", {
+      const response = await fetch("/api/ai/workbench/archive-bulk", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          inboxItemId: selectedItem.id,
+          inboxItemIds: [selectedItem.id],
           reason: "Archived from staff Workbench",
         }),
       });
@@ -1342,15 +1904,17 @@ export default function WorkbenchClient({ initialItems }: Props) {
         return;
       }
 
-      if (result.item) {
-        replaceItem(result.item);
+      if (Array.isArray(result.items) && result.items.length > 0) {
+        replaceItem(result.items[0]);
       } else {
         updateSelectedItem({
           archived_at: new Date().toISOString(),
+          status: "archived",
         });
       }
 
-      setMessage("Item archived.");
+      await refreshWorkbenchItems({ silent: true });
+      setMessage(result.message || "Item archived in Workbench and Outlook.");
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : "Could not archive item.",
@@ -1540,7 +2104,9 @@ export default function WorkbenchClient({ initialItems }: Props) {
           trello_card_url: result.trello_card_url || null,
           trello_auto_task_status: result.skipped ? "skipped" : "created",
           trello_auto_task_reason:
-            result.reason || result.message || "Manual Trello task action completed.",
+            result.reason ||
+            result.message ||
+            "Manual Trello task action completed.",
           trello_auto_task_error: null,
         });
       }
@@ -1554,7 +2120,9 @@ export default function WorkbenchClient({ initialItems }: Props) {
       await refreshWorkbenchItems({ silent: true });
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "Could not create Trello task.",
+        error instanceof Error
+          ? error.message
+          : "Could not create Trello task.",
       );
     } finally {
       setBusy(null);
@@ -1600,6 +2168,7 @@ export default function WorkbenchClient({ initialItems }: Props) {
       const result = parsed.result || {};
       const extracted = result.extracted || {};
       const bestMatch = result.bestMatch || null;
+      const candidates = Array.isArray(result.matches) ? result.matches : [];
 
       updateSelectedItem({
         extracted_patient_first_name: extracted.firstName || null,
@@ -1615,6 +2184,7 @@ export default function WorkbenchClient({ initialItems }: Props) {
         praktika_match_confidence:
           typeof result.confidence === "number" ? result.confidence : null,
         praktika_match_reason: result.reason || null,
+        praktika_match_candidates: candidates,
         praktika_matched_at: new Date().toISOString(),
       });
 
@@ -1711,53 +2281,69 @@ export default function WorkbenchClient({ initialItems }: Props) {
     }
   }
 
+  async function searchArchivedItems() {
+    try {
+      setMessage("");
+      setBusy("search-archived");
+
+      const params = new URLSearchParams({
+        limit: "100",
+        includeArchived: "true",
+        status: "archived",
+      });
+
+      if (archivedSearch.trim()) {
+        params.set("q", archivedSearch.trim());
+      }
+
+      const response = await fetch(
+        `/api/ai/brain/workbench-items?${params.toString()}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        },
+      );
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(result?.error || "Could not search archived items.");
+      }
+
+      if (Array.isArray(result?.items)) {
+        mergeItemsById(result.items);
+      }
+
+      setFilter("archived");
+      setMessage(
+        `Archived search loaded ${Array.isArray(result?.items) ? result.items.length : 0} item(s).`,
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not search archived items.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function selectItem(item: InboxItem) {
     setSelectedId(item.id);
     setLocalDraftSubject("");
     setLocalDraftBody("");
     setShowExtractedText(false);
     setShowAudit(false);
+    setShowAuditTrail(false);
   }
 
   if (!selectedItem) {
     return (
       <main className="min-h-screen bg-slate-50 p-6 text-slate-900">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">AI Reception Workbench</h1>
-            <p className="mt-1 text-sm text-slate-500">
-              No active inbox items are currently visible.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <Link
-              href="/ai/workbench/archived"
-              className="rounded-full border border-slate-200 bg-white px-5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Archived inbox
-            </Link>
-
-            <button
-              type="button"
-              onClick={handleImportOutlookInbox}
-              disabled={busy === "import-outlook"}
-              className="rounded-full border border-slate-200 bg-slate-900 px-5 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-            >
-              {busy === "import-outlook" ? "Importing..." : "Import Outlook inbox"}
-            </button>
-          </div>
-        </div>
-
-        {message ? (
-          <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-            {message}
-          </div>
-        ) : null}
-
-        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-600">
-          No inbox items found. If you recently archived everything, open the
-          archived inbox. If you are importing new mail, use Import Outlook inbox.
+        <h1 className="text-2xl font-bold">AI Reception Workbench</h1>
+        <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-6">
+          No inbox items found.
         </div>
       </main>
     );
@@ -1775,13 +2361,6 @@ export default function WorkbenchClient({ initialItems }: Props) {
             completion.
           </p>
         </div>
-        
-        <Link
-  href="/ai/workbench/archived"
-  className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
->
-  Archived inbox
-</Link>
 
         <button
           type="button"
@@ -1797,6 +2376,17 @@ export default function WorkbenchClient({ initialItems }: Props) {
           {message}
         </div>
       ) : null}
+
+      <PraktikaWorkbenchPanel
+        selectedItem={selectedItem}
+        selectedAttachmentsCount={selectedAttachments.length}
+        busy={busy}
+        onMatchPraktikaPatient={matchPraktikaPatient}
+        onRefreshWorkbenchItems={async () => {
+          await refreshWorkbenchItems({ silent: false });
+          setMessage("Workbench refreshed.");
+        }}
+      />
 
       {showAdvanced ? (
         <section className="mx-5 mt-4 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -1837,6 +2427,14 @@ export default function WorkbenchClient({ initialItems }: Props) {
               Re-analyse item
             </button>
 
+            <ClassificationV2Button
+              inboxItemId={selectedItem.id}
+              onComplete={async () => {
+                await refreshWorkbenchItems({ silent: true });
+                setMessage("Classification V2 completed.");
+              }}
+            />
+
             <button
               type="button"
               onClick={checkSent}
@@ -1861,7 +2459,9 @@ export default function WorkbenchClient({ initialItems }: Props) {
           <div>
             <h2 className="text-base font-bold text-slate-900">Queue</h2>
             <p className="text-sm text-slate-500">
-              {counts.all} active item{counts.all === 1 ? "" : "s"}
+              {filter === "archived"
+                ? `${counts.archived} archived item${counts.archived === 1 ? "" : "s"}`
+                : `${counts.all} active item${counts.all === 1 ? "" : "s"}`}
             </p>
           </div>
 
@@ -1949,7 +2549,61 @@ export default function WorkbenchClient({ initialItems }: Props) {
             >
               Clinical {counts.clinical}
             </button>
+
+            <button
+              type="button"
+              onClick={() => setFilter("archived")}
+              className={`rounded-full px-3 py-1.5 text-xs font-medium ${
+                filter === "archived"
+                  ? "bg-slate-950 text-white"
+                  : "border border-amber-200 bg-amber-50 text-amber-800"
+              }`}
+            >
+              Archived {counts.archived}
+            </button>
           </div>
+
+          {filter === "archived" ? (
+            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
+              <label className="text-xs font-semibold text-amber-900">
+                Search archived items
+              </label>
+
+              <div className="mt-2 flex gap-2">
+                <input
+                  value={archivedSearch}
+                  onChange={(event) => setArchivedSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      searchArchivedItems();
+                    }
+                  }}
+                  placeholder="Search patient, sender, subject, patient number..."
+                  className="min-w-0 flex-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-4 focus:ring-amber-100"
+                />
+
+                <button
+                  type="button"
+                  onClick={searchArchivedItems}
+                  disabled={busy === "search-archived"}
+                  className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+                >
+                  {busy === "search-archived" ? "Searching..." : "Search"}
+                </button>
+              </div>
+
+              {archivedSearch ? (
+                <button
+                  type="button"
+                  onClick={() => setArchivedSearch("")}
+                  className="mt-2 text-xs font-medium text-amber-800 hover:text-amber-950"
+                >
+                  Clear archived search
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
             <span className="px-1 py-1.5 text-xs font-medium text-slate-500">
@@ -1981,6 +2635,45 @@ export default function WorkbenchClient({ initialItems }: Props) {
             </button>
           </div>
 
+<div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="text-xs text-slate-600">
+      {selectedInboxItemIds.length > 0
+        ? `${selectedInboxItemIds.length} selected`
+        : "Select multiple items to archive them in Workbench and Outlook."}
+    </div>
+
+    <div className="flex flex-wrap gap-2">
+      {selectedInboxItemIds.length > 0 ? (
+        <button
+          type="button"
+          onClick={clearSelectedInboxItems}
+          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+        >
+          Clear
+        </button>
+      ) : null}
+
+      <BulkArchiveInboxItemsButton
+        selectedIds={selectedInboxItemIds}
+        onArchived={async () => {
+          clearSelectedInboxItems();
+          await refreshWorkbenchItems({ silent: false });
+          setMessage("Selected items archived in Workbench and Outlook.");
+        }}
+      />
+    </div>
+  </div>
+</div>
+
+<div className="mt-3">
+  <BulkSafeAutomationButton
+    onComplete={async () => {
+      await refreshWorkbenchItems({ silent: true });
+      setMessage("Bulk safe automation completed.");
+    }}
+  />
+</div>
           <div className="mt-4 max-h-[calc(100vh-250px)] space-y-3 overflow-y-auto pr-1">
             {visibleItems.map((item) => {
               const state = getWorkflowState(item);
@@ -1988,49 +2681,64 @@ export default function WorkbenchClient({ initialItems }: Props) {
               const risk = getRisk(item);
 
               return (
-                <button
+                <div
                   key={item.id}
-                  type="button"
-                  onClick={() => selectItem(item)}
-                  className={`w-full rounded-2xl border p-4 text-left transition hover:shadow-sm ${toneClasses(
+                  className={`rounded-2xl border p-4 transition hover:shadow-sm ${toneClasses(
                     state.tone,
                     selected,
                   )}`}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-bold">
-                        {primaryDisplayName(item)}
-                      </p>
-                      <p
-                        className={`mt-1 text-xs ${
-                          selected ? "text-white/70" : "text-slate-500"
+                  <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={isInboxItemSelected(item.id)}
+                      onChange={() => toggleInboxItemSelected(item.id)}
+                      onClick={(event) => event.stopPropagation()}
+                      className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300"
+                      aria-label={`Select ${primaryDisplayName(item)}`}
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => selectItem(item)}
+                      className="min-w-0 flex-1 text-left"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-bold">
+                            {primaryDisplayName(item)}
+                          </p>
+                          <p
+                            className={`mt-1 text-xs ${
+                              selected ? "text-white/70" : "text-slate-500"
+                            }`}
+                          >
+                            {item.category || "uncategorised"}
+                          </p>
+                        </div>
+
+                        <span
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${badgeClasses(
+                            state.tone,
+                            selected,
+                          )}`}
+                        >
+                          {state.badge}
+                        </span>
+                      </div>
+
+                      <div
+                        className={`mt-3 space-y-1 text-xs ${
+                          selected ? "text-white/75" : "text-slate-500"
                         }`}
                       >
-                        {item.category || "uncategorised"}
-                      </p>
-                    </div>
-
-                    <span
-                      className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${badgeClasses(
-                        state.tone,
-                        selected,
-                      )}`}
-                    >
-                      {state.badge}
-                    </span>
+                        <p>Action: {state.reasons[0]?.action || "Review"}</p>
+                        <p>Risk: {risk}</p>
+                        <p>{formatDate(item.received_at || item.created_at)}</p>
+                      </div>
+                    </button>
                   </div>
-
-                  <div
-                    className={`mt-3 space-y-1 text-xs ${
-                      selected ? "text-white/75" : "text-slate-500"
-                    }`}
-                  >
-                    <p>Action: {state.reasons[0]?.action || "Review"}</p>
-                    <p>Risk: {risk}</p>
-                    <p>{formatDate(item.received_at || item.created_at)}</p>
-                  </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -2120,7 +2828,8 @@ export default function WorkbenchClient({ initialItems }: Props) {
                     Provider / Trello routing
                   </p>
                   <p className="mt-1 text-xs text-purple-800">
-                    This is set by your clinician routing brain after workflow classification.
+                    This is set by your clinician routing brain after workflow
+                    classification.
                   </p>
                 </div>
 
@@ -2148,8 +2857,8 @@ export default function WorkbenchClient({ initialItems }: Props) {
                     {busy === "create-trello-task"
                       ? "Creating..."
                       : selectedItem.trello_card_id
-                      ? "Trello created"
-                      : "Create Trello task"}
+                        ? "Trello created"
+                        : "Create Trello task"}
                   </button>
                 </div>
               </div>
@@ -2182,7 +2891,9 @@ export default function WorkbenchClient({ initialItems }: Props) {
                 <p>
                   <span className="font-medium">Trello task:</span>{" "}
                   {selectedItem.trello_auto_task_status ||
-                    (selectedItem.trello_card_id ? "Created" : "Not created yet")}
+                    (selectedItem.trello_card_id
+                      ? "Created"
+                      : "Not created yet")}
                 </p>
               </div>
 
@@ -2192,7 +2903,8 @@ export default function WorkbenchClient({ initialItems }: Props) {
                 </p>
               ) : (
                 <p className="mt-3 text-xs leading-5 text-purple-800">
-                  No routing result yet. Re-analyse or wait for background processing to finish.
+                  No routing result yet. Re-analyse or wait for background
+                  processing to finish.
                 </p>
               )}
 
@@ -2218,7 +2930,8 @@ export default function WorkbenchClient({ initialItems }: Props) {
                 <div>
                   <p className="text-sm font-bold">Praktika patient match</p>
                   <p className="mt-1 text-xs opacity-80">
-                    Uses AI-extracted patient details and your read-only Praktika patient search.
+                    Uses AI-extracted patient details and your read-only
+                    Praktika patient search.
                   </p>
                 </div>
 
@@ -2279,9 +2992,79 @@ export default function WorkbenchClient({ initialItems }: Props) {
                 </p>
               ) : (
                 <p className="mt-3 text-xs leading-5 opacity-80">
-                  Run patient matching when the item has enough text/OCR to identify the patient.
+                  Run patient matching when the item has enough text/OCR to
+                  identify the patient.
                 </p>
               )}
+
+              <PraktikaMatchCandidatesPanel
+                inboxItemId={selectedItem.id}
+                candidates={selectedItem.praktika_match_candidates}
+                selectedPatientId={selectedItem.praktika_patient_id}
+                onConfirmed={(item) => {
+                  replaceItem(item);
+                  setMessage("Praktika patient match confirmed.");
+                }}
+              />
+            </div>
+
+            {/* Create new Praktika patient */}
+<div className="mt-5">
+  <CreateNewPraktikaPatientFromInboxButton
+    inboxItem={selectedItem}
+    onCreated={async (item) => {
+      if (item) {
+        updateSelectedItem(item);
+      }
+
+      setMessage("New Praktika patient workflow completed.");
+
+      await refreshWorkbenchItems({ silent: true });
+    }}
+  />
+</div>
+
+<div className="mt-5">
+  <PraktikaReferralWorkflowSection
+    inboxItem={selectedItem}
+    onUpdated={async (item) => {
+      if (item) {
+        updateSelectedItem(item);
+      }
+
+      await refreshWorkbenchItems({ silent: true });
+      setMessage("Praktika referrer/referral workflow updated.");
+    }}
+  />
+</div>
+
+
+{/* File to Praktika */}
+<div className="mt-5">
+  <FileInboxItemToPraktikaButton
+    inboxItemId={selectedItem.id}
+    praktikaPatientId={
+      selectedItem.praktika_patient_id &&
+      ["matched_existing", "confirmed_manual"].includes(
+        selectedItem.praktika_match_status || "",
+      )
+        ? String(selectedItem.praktika_patient_id)
+        : null
+    }
+    filingStatus={selectedItem.praktika_filing_status}
+  />
+</div>
+
+            <div className="mt-5">
+              <AutomationPreviewCard
+                inboxItemId={selectedItem.id}
+                onExecuted={(item) => {
+                  if (item) {
+                    replaceItem(item);
+                  }
+                  setMessage("Safe automation execution completed.");
+                }}
+              />
             </div>
           </div>
 
@@ -2484,6 +3267,22 @@ export default function WorkbenchClient({ initialItems }: Props) {
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <button
               type="button"
+              onClick={() => setShowAuditTrail((current) => !current)}
+              className="text-sm font-medium text-slate-700 hover:text-slate-950"
+            >
+              {showAuditTrail ? "Hide audit trail" : "Show audit trail"}
+            </button>
+
+            {showAuditTrail ? (
+              <div className="mt-4">
+                <InboxItemAuditTrail inboxItemId={selectedItem.id} />
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <button
+              type="button"
               onClick={() => setShowAudit((current) => !current)}
               className="text-sm font-medium text-slate-700 hover:text-slate-950"
             >
@@ -2529,29 +3328,17 @@ export default function WorkbenchClient({ initialItems }: Props) {
             </button>
 
             <button
-              type="button"
-              onClick={saveReview}
-              disabled={
-                busy === "save-review" ||
-                !draftBody ||
-                selectedState.key.startsWith("processing")
-              }
-              className="w-full rounded-2xl bg-slate-950 px-4 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              {busy === "save-review"
-                ? "Saving review..."
-                : "Save Review + Train AI"}
-            </button>
-
-            <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3 text-xs leading-5 text-blue-900">
-              <p className="font-semibold">Learning workflow</p>
-              <p className="mt-1">
-                Use <span className="font-medium">Save</span> for temporary draft edits.
-                Use <span className="font-medium">Save Review + Train AI</span> when
-                the draft has been reviewed and should update AI feedback, approved
-                examples and the training queue.
-              </p>
-            </div>
+  type="button"
+  onClick={saveReview}
+  disabled={
+    busy === "save-review" ||
+    !draftBody ||
+    selectedState.key.startsWith("processing")
+  }
+  className="w-full rounded-2xl bg-slate-950 px-4 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+>
+  {busy === "save-review" ? "Saving review..." : "Save Review + Train AI"}
+</button>
 
             {selectedItem.outlook_web_link || selectedItem.source_email_url ? (
               <button
@@ -2568,6 +3355,24 @@ export default function WorkbenchClient({ initialItems }: Props) {
                 className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700 hover:bg-emerald-100"
               >
                 Open Outlook
+              </button>
+            ) : null}
+
+            {selectedItem.outlook_draft_id ? (
+              <button
+                type="button"
+                onClick={sendOutlookDraft}
+                disabled={
+                  busy === "send-outlook-draft" ||
+                  selectedItem.email_status === "sent"
+                }
+                className="w-full rounded-2xl border border-green-200 bg-green-600 px-4 py-3 text-sm font-bold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {selectedItem.email_status === "sent"
+                  ? "Email sent"
+                  : busy === "send-outlook-draft"
+                    ? "Sending..."
+                    : "Send from Outlook"}
               </button>
             ) : null}
 
@@ -2640,50 +3445,117 @@ export default function WorkbenchClient({ initialItems }: Props) {
           </div>
 
           {showAdvanced ? (
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-sm font-semibold text-slate-800">
-                Advanced draft tools
-              </p>
+            <div className="mt-5 space-y-4">
+              {/* Advanced draft tools */}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-semibold text-slate-800">
+                  Advanced draft tools
+                </p>
 
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={generateDraft}
-                  disabled={busy === "generate-draft"}
-                  className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  Generate
-                </button>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={generateDraft}
+                    disabled={busy === "generate-draft"}
+                    className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {busy === "generate-draft"
+                      ? "Re-analysing..."
+                      : "Re-analyse V2"}
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={saveDraft}
-                  disabled={busy === "save-draft"}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-                >
-                  Save draft only
-                </button>
+                  <button
+                    type="button"
+                    onClick={saveDraft}
+                    disabled={busy === "save-draft"}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    Save
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={() => navigator.clipboard.writeText(draftBody || "")}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
-                >
-                  Copy
-                </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      navigator.clipboard.writeText(draftBody || "")
+                    }
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    Copy
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={checkSent}
-                  disabled={busy === "check-sent"}
-                  className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
-                >
-                  Check sent
-                </button>
+                  <button
+                    type="button"
+                    onClick={checkSent}
+                    disabled={busy === "check-sent"}
+                    className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+                  >
+                    Check sent
+                  </button>
+                </div>
               </div>
+
+              {/* File to Praktika */}
+              <FileInboxItemToPraktikaButton
+                inboxItemId={selectedItem.id}
+                praktikaPatientId={
+                  selectedItem.praktika_patient_id &&
+                  ["matched_existing", "confirmed_manual"].includes(
+                    selectedItem.praktika_match_status || "",
+                  )
+                    ? selectedItem.praktika_patient_id
+                    : null
+                }
+                filingStatus={selectedItem.praktika_filing_status}
+              />
+
+              {/* Classification V2 */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">
+                      Classification V2
+                    </div>
+
+                    <p className="mt-1 text-xs text-slate-500">
+                      Run the newer AI classification pipeline.
+                    </p>
+                  </div>
+
+                  <ClassificationV2Button
+                    inboxItemId={selectedItem.id}
+                    onComplete={async () => {
+                      await refreshWorkbenchItems({ silent: true });
+                      setMessage("Classification V2 completed.");
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Audit trail */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <button
+                  type="button"
+                  onClick={() => setShowAuditTrail((current) => !current)}
+                  className="text-sm font-medium text-slate-700"
+                >
+                  {showAuditTrail ? "Hide audit trail" : "Show audit trail"}
+                </button>
+
+                {showAuditTrail ? (
+                  <div className="mt-4">
+                    <InboxItemAuditTrail inboxItemId={selectedItem.id} />
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Archived status */}
+              {selectedItem.archived_at ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  Archived on {formatDate(selectedItem.archived_at)}
+                </div>
+              ) : null}
             </div>
           ) : null}
-
           <div className="mt-5 space-y-4">
             <div>
               <label className="text-sm font-medium text-slate-700">

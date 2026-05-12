@@ -6,7 +6,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
 const PRAKTIKA_ENDPOINT =
-  "https://praktika.praktika.net.au/php/json/";
+  "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php";
 
 function getClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -293,12 +293,13 @@ export async function POST(request: Request) {
     const normalizedRows = data.map((row: any, index: number) => {
       const providerRaw = normalizeWhitespace(
         pickFirst(row, [
-          "vchProviderName",
-          "provider_name",
-          "provider",
-          "Provider",
-          "Provider Name",
-        ])
+  "vchProvider",
+  "vchProviderName",
+  "provider_name",
+  "provider",
+  "Provider",
+  "Provider Name",
+])
       );
 
       const providerId =
@@ -311,26 +312,33 @@ export async function POST(request: Request) {
 
       const itemNumber = toNullableText(
         pickFirst(row, [
-          "vchItemCode",
-          "vchProcedureCode",
-          "procedure_code",
-          "item_number",
-          "Item",
-          "Code",
-        ])
+  "vchCode",
+  "vchADACodeRef",
+  "vchItemCode",
+  "vchProcedureCode",
+  "procedure_code",
+  "item_number",
+  "Item",
+  "Code",
+])
       );
 
       const description = toNullableText(
         pickFirst(row, [
-          "vchItemDescription",
-          "vchProcedureDescription",
-          "description",
-          "Description",
-        ])
+  "vchCodeDescShort",
+  "vchGroupDesc",
+  "vchItemDescription",
+  "vchProcedureDescription",
+  "description",
+  "Description",
+])
       );
 
-      const productionAmount = toNumber(
+            const productionAmount = toNumber(
         pickFirst(row, [
+          "iTotalFee",
+          "iScheduledFee",
+          "iCost",
           "nActualFee",
           "nActualFees",
           "nFee",

@@ -1,7 +1,23 @@
-
 import { requireRole } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import Link from "next/link";
+
+function typeBadgeClass(ruleType: string | null) {
+  switch (ruleType) {
+    case "automation":
+      return "border-purple-200 bg-purple-50 text-purple-700";
+    case "safety":
+      return "border-red-200 bg-red-50 text-red-700";
+    case "workflow":
+      return "border-blue-200 bg-blue-50 text-blue-700";
+    default:
+      return "border-slate-200 bg-slate-50 text-slate-600";
+  }
+}
+
+function formatRuleType(ruleType: string | null) {
+  return (ruleType || "general").replace(/_/g, " ");
+}
 
 export default async function AILearningRulesPage() {
   await requireRole(["super_admin"]);
@@ -10,6 +26,8 @@ export default async function AILearningRulesPage() {
     .from("ai_learning_rules")
     .select("*")
     .order("is_active", { ascending: false })
+    .order("rule_type", { ascending: true })
+    .order("priority", { ascending: true })
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -24,6 +42,11 @@ export default async function AILearningRulesPage() {
     );
   }
 
+  const rules = data || [];
+  const automationCount = rules.filter(
+    (rule) => rule.rule_type === "automation" && rule.is_active,
+  ).length;
+
   return (
     <main className="space-y-6 p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -33,8 +56,17 @@ export default async function AILearningRulesPage() {
           </h1>
 
           <p className="mt-1 text-sm text-slate-600">
-            Editable practice policy and AI workflow logic.
+            Editable practice policy, AI workflow logic, and automation safety rules.
           </p>
+
+          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+            <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-slate-600">
+              {rules.length} total rules
+            </span>
+            <span className="rounded-full border border-purple-200 bg-purple-50 px-3 py-1 text-purple-700">
+              {automationCount} active automation rules
+            </span>
+          </div>
         </div>
 
         <Link
@@ -45,25 +77,43 @@ export default async function AILearningRulesPage() {
         </Link>
       </div>
 
-      {!data || data.length === 0 ? (
+      <section className="rounded-3xl border border-purple-200 bg-purple-50 p-5 text-sm text-purple-900">
+        <div className="font-semibold">Automation rules now live here</div>
+        <p className="mt-1 leading-6">
+          To control automation preview, create rules with <strong>Rule type = automation</strong>.
+          Keep risky actions as assisted or preview-only until tested.
+        </p>
+      </section>
+
+      {rules.length === 0 ? (
         <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-600 shadow-sm">
           No learning rules yet.
         </div>
       ) : (
         <div className="grid gap-4">
-          {data.map((rule) => (
+          {rules.map((rule) => (
             <section
               key={rule.id}
               className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"
             >
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <h2 className="font-semibold text-slate-900">
-                    {rule.title || "Untitled rule"}
-                  </h2>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-semibold text-slate-900">
+                      {rule.title || "Untitled rule"}
+                    </h2>
 
-                  <p className="mt-1 text-sm text-slate-500">
-                    Category: {rule.category || "all"} · Source: {rule.source || "manual"}
+                    <span
+                      className={`rounded-full border px-3 py-1 text-xs font-medium ${typeBadgeClass(
+                        rule.rule_type,
+                      )}`}
+                    >
+                      {formatRuleType(rule.rule_type)}
+                    </span>
+                  </div>
+
+                  <p className="mt-2 text-sm text-slate-500">
+                    Category: {rule.category || "all"} · Source: {rule.source || "manual"} · Priority: {rule.priority ?? 100}
                   </p>
                 </div>
 
@@ -85,10 +135,7 @@ export default async function AILearningRulesPage() {
                     Edit
                   </Link>
 
-                  <form
-                    action={`/api/ai/learning-rules/toggle`}
-                    method="POST"
-                  >
+                  <form action="/api/ai/learning-rules/toggle" method="POST">
                     <input type="hidden" name="id" value={rule.id} />
                     <input
                       type="hidden"
@@ -104,10 +151,7 @@ export default async function AILearningRulesPage() {
                     </button>
                   </form>
 
-                  <form
-                    action={`/api/ai/learning-rules/delete`}
-                    method="POST"
-                  >
+                  <form action="/api/ai/learning-rules/delete" method="POST">
                     <input type="hidden" name="id" value={rule.id} />
 
                     <button
@@ -130,7 +174,3 @@ export default async function AILearningRulesPage() {
     </main>
   );
 }
-
-
-
-

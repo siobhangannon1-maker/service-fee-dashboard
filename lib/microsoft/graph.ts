@@ -235,6 +235,29 @@ export async function createOutlookReplyDraft({
   };
 }
 
+export async function sendOutlookDraft({
+  mailbox = outlookSharedMailbox,
+  draftMessageId,
+}: {
+  mailbox?: string;
+  draftMessageId: string;
+}): Promise<{ ok: true; draftMessageId: string }> {
+  await graphFetch(
+    `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(
+      draftMessageId,
+    )}/send`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+
+  return {
+    ok: true,
+    draftMessageId,
+  };
+}
+
 export async function findSentMessageByConversationId({
   mailbox = outlookSharedMailbox,
   conversationId,
@@ -336,10 +359,6 @@ export async function archiveOutlookMessage({
   const encodedMailbox = encodeURIComponent(mailbox);
   const encodedMessageId = encodeURIComponent(messageId);
 
-  /*
-    Microsoft Graph "move" moves the message out of Inbox.
-    destinationId can be a well-known folder name such as "archive".
-  */
   const movedMessage = await graphFetch(
     `/users/${encodedMailbox}/messages/${encodedMessageId}/move`,
     {

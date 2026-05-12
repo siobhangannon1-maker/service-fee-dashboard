@@ -5,6 +5,12 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 
 const categories = [
   "all",
+  "automation",
+  "praktika_filing",
+  "archive",
+  "outlook",
+  "sms",
+  "patient_creation",
   "new_referral",
   "classification",
   "existing_patient_correspondence",
@@ -19,6 +25,7 @@ const categories = [
 ];
 
 const ruleTypes = [
+  "automation",
   "safety",
   "workflow",
   "reply_logic",
@@ -51,6 +58,7 @@ async function updateRule(formData: FormData) {
       rule_type: ruleType,
       priority,
       rule,
+      updated_at: new Date().toISOString(),
     })
     .eq("id", id);
 
@@ -88,9 +96,20 @@ export default async function EditLearningRulePage({
         </h1>
 
         <p className="mt-1 text-sm text-slate-600">
-          Update practice policy or AI behaviour logic.
+          Update practice policy, AI workflow logic, and automation safety rules.
         </p>
       </div>
+
+      <section className="rounded-3xl border border-purple-200 bg-purple-50 p-5 text-sm text-purple-900">
+        <div className="font-semibold">Automation rule tip</div>
+        <p className="mt-1 leading-6">
+          For automation preview and execution, choose{" "}
+          <strong>Rule type = automation</strong>. Use categories like{" "}
+          <strong>praktika_filing</strong>, <strong>archive</strong>,{" "}
+          <strong>outlook</strong>, <strong>sms</strong>, or{" "}
+          <strong>patient_creation</strong>.
+        </p>
+      </section>
 
       <form action={updateRule} className="space-y-5">
         <input type="hidden" name="id" value={rule.id} />
@@ -157,6 +176,10 @@ export default async function EditLearningRulePage({
                 defaultValue={rule.priority || 100}
                 className="mt-1 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-900"
               />
+
+              <p className="mt-1 text-xs text-slate-500">
+                Lower numbers are applied first. Use 10–30 for automation/safety.
+              </p>
             </label>
           </div>
 

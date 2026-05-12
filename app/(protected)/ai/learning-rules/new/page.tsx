@@ -5,6 +5,12 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 
 const categories = [
   "all",
+  "automation",
+  "praktika_filing",
+  "archive",
+  "outlook",
+  "sms",
+  "patient_creation",
   "new_referral",
   "classification",
   "existing_patient_correspondence",
@@ -19,6 +25,7 @@ const categories = [
 ];
 
 const ruleTypes = [
+  "automation",
   "safety",
   "workflow",
   "reply_logic",
@@ -26,6 +33,11 @@ const ruleTypes = [
   "formatting",
   "general",
 ];
+
+const automationTemplate = `WHEN: An inbox item has one exact Praktika patient match with 100% confidence, no duplicate candidates, attachments are present, OCR is complete, and no clinical review is required.
+ACTION: Automatically allow filing attachments to Praktika.
+MODE: automatic
+DO NOT: Auto-file if there are duplicate candidates, possible matches, missing OCR, no patient match, or clinical review is required.`;
 
 async function createLearningRule(formData: FormData) {
   "use server";
@@ -65,9 +77,18 @@ export default async function NewAILearningRulePage() {
           Add AI Learning Rule
         </h1>
         <p className="mt-1 text-sm text-slate-600">
-          Add practice policy, reply logic, tone guidance, or safety rules.
+          Add practice policy, reply logic, tone guidance, safety rules, or automation preview rules.
         </p>
       </div>
+
+      <section className="rounded-3xl border border-purple-200 bg-purple-50 p-5 text-sm text-purple-900">
+        <div className="font-semibold">Automation rule tip</div>
+        <p className="mt-1 leading-6">
+          For automation preview, choose <strong>Rule type = automation</strong>. Use words like
+          Praktika filing, Trello, Outlook draft, send Outlook, archive, Chekkit, SMS, or create new patient
+          so the preview engine can match the rule to the right action.
+        </p>
+      </section>
 
       <form action={createLearningRule} className="space-y-5">
         <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -80,7 +101,7 @@ export default async function NewAILearningRulePage() {
                 name="title"
                 required
                 className="mt-1 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-900"
-                placeholder="Always acknowledge referrals"
+                placeholder="Auto-file exact Praktika matches"
               />
             </label>
 
@@ -90,7 +111,7 @@ export default async function NewAILearningRulePage() {
               </span>
               <select
                 name="category"
-                defaultValue="all"
+                defaultValue="praktika_filing"
                 className="mt-1 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-900"
               >
                 {categories.map((category) => (
@@ -107,7 +128,7 @@ export default async function NewAILearningRulePage() {
               </span>
               <select
                 name="rule_type"
-                defaultValue="general"
+                defaultValue="automation"
                 className="mt-1 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-900"
               >
                 {ruleTypes.map((type) => (
@@ -125,11 +146,11 @@ export default async function NewAILearningRulePage() {
               <input
                 name="priority"
                 type="number"
-                defaultValue={100}
+                defaultValue={20}
                 className="mt-1 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-900"
               />
               <p className="mt-1 text-xs text-slate-500">
-                Lower numbers are applied first. Use 10 for safety.
+                Lower numbers are applied first. Use 10–30 for automation/safety.
               </p>
             </label>
           </div>
@@ -141,8 +162,8 @@ export default async function NewAILearningRulePage() {
             <textarea
               name="rule"
               required
-              className="mt-1 min-h-56 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm leading-6 outline-none focus:border-slate-900"
-              placeholder="WHEN: A new referral is received. ACTION: Always draft an acknowledgement reply. DO NOT: Promise fees, appointment availability, treatment, outcomes, or clinician review unless confirmed."
+              defaultValue={automationTemplate}
+              className="mt-1 min-h-64 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm leading-6 outline-none focus:border-slate-900"
             />
           </label>
         </div>

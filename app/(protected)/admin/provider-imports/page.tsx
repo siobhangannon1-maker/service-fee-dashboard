@@ -10,6 +10,7 @@ import { linkImportBatchMonth } from "./link-import-batch-month";
 import { unlinkImportBatchMonth } from "./unlink-import-batch-month";
 import RecalculateMonthButton from "./RecalculateMonthButton";
 import PraktikaSyncPanel from "./PraktikaSyncPanel";
+import PraktikaSessionPanel from "@/components/PraktikaSessionPanel";
 
 type BatchRow = Awaited<ReturnType<typeof getImportBatches>>[number];
 
@@ -163,11 +164,14 @@ export default async function ProviderImportsPage() {
       </section>
 
       <PageSection
-        title="Sync from Praktika"
-        description="Use this when you want to pull provider data directly from Praktika."
-      >
-        <PraktikaSyncPanel />
-      </PageSection>
+  title="Sync from Praktika"
+  description="Use this when you want to pull provider data directly from Praktika."
+>
+  <div className="space-y-4">
+    <PraktikaSessionPanel />
+    <PraktikaSyncPanel />
+  </div>
+</PageSection>
 
       <PageSection
         title="Upload CSV files"

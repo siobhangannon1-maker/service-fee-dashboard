@@ -39,6 +39,9 @@ export function ProviderMappingForm({ providers }: { providers: ProviderOption[]
             <option value="appointments_csv">appointments_csv</option>
             <option value="provider_performance_csv">provider_performance_csv</option>
             <option value="cancellations_csv">cancellations_csv</option>
+            <option value="praktika_completed_procedures">
+    praktika_completed_procedures
+  </option>
           </select>
         </div>
 

@@ -52,7 +52,7 @@ function getLatestDraft(item: any) {
       .sort(
         (a: any, b: any) =>
           new Date(b.created_at || 0).getTime() -
-          new Date(a.created_at || 0).getTime()
+          new Date(a.created_at || 0).getTime(),
       )[0] || null
   );
 }
@@ -69,7 +69,7 @@ function normaliseCaseWithLatestDecision(aiCase: any) {
     .sort(
       (a: any, b: any) =>
         new Date(b.created_at || 0).getTime() -
-        new Date(a.created_at || 0).getTime()
+        new Date(a.created_at || 0).getTime(),
     );
 
   const latestDecision = sortedDecisions[0] || null;
@@ -91,10 +91,12 @@ function getLatestCase(item: any) {
       .sort(
         (a: any, b: any) =>
           new Date(b?.updated_at || b?.created_at || 0).getTime() -
-          new Date(a?.updated_at || a?.created_at || 0).getTime()
+          new Date(a?.updated_at || a?.created_at || 0).getTime(),
       )[0] || null
   );
 }
+
+export const dynamic = "force-dynamic";
 
 export default async function AIReceptionWorkbenchPage() {
   await requireRole(["super_admin"]);
@@ -115,13 +117,8 @@ export default async function AIReceptionWorkbenchPage() {
         *
       )
     `)
-    .in("status", [
-      "uploaded",
-      "processing",
-      "classified",
-      "classification_failed",
-    ])
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(100);
 
   if (error) {
     return (

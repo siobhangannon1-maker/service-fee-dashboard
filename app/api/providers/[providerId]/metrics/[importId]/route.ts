@@ -1,5 +1,15 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
+
+function getSupabaseAdmin() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
+  if (!serviceRoleKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+
+  return createClient(supabaseUrl, serviceRoleKey);
+}
 
 export async function GET(
   request: Request,
@@ -13,8 +23,6 @@ export async function GET(
   try {
     const { providerId, importId } = await context.params;
 
-    console.log("API params:", { providerId, importId });
-
     if (!providerId || !importId) {
       return NextResponse.json(
         { error: "Missing providerId or importId" },
@@ -22,57 +30,50 @@ export async function GET(
       );
     }
 
-    const supabase = await createClient();
+    const supabase = getSupabaseAdmin();
 
-    const { data: summaryRows, error: summaryError } = await supabase
-      .from("provider_monthly_summaries")
-      .select("provider_id, import_id, gross_production, collections, service_fee_base")
-      .eq("provider_id", providerId)
-      .eq("import_id", importId);
-
-    console.log("Summary rows:", summaryRows);
-    console.log("Summary error:", summaryError);
-
-    if (summaryError) {
-      console.error("Summary query error:", summaryError);
-      return NextResponse.json(
-        { error: summaryError.message },
-        { status: 500 }
-      );
-    }
-
-    const summary = summaryRows?.[0] ?? null;
-
-    const { data: item949Rows, error: itemError } = await supabase
-      .from("provider_item_totals")
-      .select("provider_id, import_id, item_number, total_gross_production")
+    const { data: rows, error } = await supabase
+      .from("import_rows_normalized")
+      .select("gross_production, collections, item_number, is_excluded")
       .eq("provider_id", providerId)
       .eq("import_id", importId)
-      .eq("item_number", 949);
+      .eq("is_excluded", false);
 
-    console.log("Item 949 rows:", item949Rows);
-    console.log("Item 949 error:", itemError);
-
-    if (itemError) {
-      console.error("Item 949 query error:", itemError);
-      return NextResponse.json(
-        { error: itemError.message },
-        { status: 500 }
-      );
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const ivFacilityFees = (item949Rows || []).reduce(
-      (sum, row) => sum + Number(row.total_gross_production || 0),
+    const grossProductionRaw = (rows || []).reduce(
+      (sum, row) => sum + Number(row.gross_production || 0),
       0
     );
 
-    console.log("Calculated ivFacilityFees:", ivFacilityFees);
+    const collectionsRaw = (rows || []).reduce(
+      (sum, row) => sum + Number(row.collections || 0),
+      0
+    );
+
+    const ivFacilityFeesRaw = (rows || [])
+      .filter((row) => String(row.item_number || "").trim() === "949")
+      .reduce((sum, row) => sum + Number(row.gross_production || 0), 0);
+
+    const grossProduction = grossProductionRaw / 100;
+    const collections = collectionsRaw / 100;
+    const ivFacilityFees = ivFacilityFeesRaw / 100;
+    const serviceFeeBase = grossProduction - ivFacilityFees;
 
     return NextResponse.json({
-      grossProduction: Number(summary?.gross_production || 0),
-      collections: Number(summary?.collections || 0),
-      serviceFeeBase: Number(summary?.service_fee_base || 0),
+      grossProduction,
+      collections,
+      serviceFeeBase,
       ivFacilityFees,
+      debug: {
+        providerId,
+        importId,
+        rowCount: rows?.length || 0,
+        grossProductionRaw,
+        ivFacilityFeesRaw,
+      },
     });
   } catch (error: any) {
     console.error("Provider metrics API error:", error);

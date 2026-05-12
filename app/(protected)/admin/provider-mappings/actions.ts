@@ -27,7 +27,8 @@ function isValidSourceType(value: string): value is ProviderMappingSourceType {
   return (
     value === "appointments_csv" ||
     value === "provider_performance_csv" ||
-    value === "cancellations_csv"
+    value === "cancellations_csv" ||
+    value === "praktika_completed_procedures"
   );
 }
 

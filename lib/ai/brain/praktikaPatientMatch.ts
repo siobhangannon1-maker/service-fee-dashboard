@@ -17,12 +17,10 @@ type ExtractedPatient = {
   reason: string;
 };
 
+type PraktikaPatientMatch = Awaited<ReturnType<typeof searchPraktikaPatients>>[number];
+
 function clean(value: string | null | undefined) {
   return String(value || "").replace(/\s+/g, " ").trim();
-}
-
-function normalisePhone(value: string | null | undefined) {
-  return String(value || "").replace(/\D+/g, "");
 }
 
 function normaliseDobToIso(value: string | null | undefined) {
@@ -100,6 +98,20 @@ function splitPatientName(value: string | null | undefined) {
   };
 }
 
+function serialiseMatch(match: PraktikaPatientMatch) {
+  return {
+    id: match.id,
+    patientNumber: match.patientNumber,
+    firstName: match.firstName,
+    lastName: match.lastName,
+    dob: match.dob,
+    mobile: match.mobile,
+    email: (match as any).email || null,
+    matchScore: match.matchScore,
+    matchReason: match.matchReason,
+  };
+}
+
 async function extractPatientWithOpenAI(item: any): Promise<ExtractedPatient> {
   const text = getInboxText(item);
 
@@ -123,7 +135,7 @@ async function extractPatientWithOpenAI(item: any): Promise<ExtractedPatient> {
       {
         role: "system",
         content: `
-Extract the main patient identity from dental referral/correspondence text.
+Extract the MAIN PATIENT identity from dental referrals and specialist correspondence.
 
 Return JSON only:
 {
@@ -136,11 +148,35 @@ Return JSON only:
   "reason": string
 }
 
-Rules:
+CRITICAL PATIENT IDENTIFICATION RULES:
 - Do not invent details.
 - DOB should be YYYY-MM-DD if possible.
-- Choose the patient, not the referring doctor.
-- If multiple patients appear, choose the main patient.
+- Choose the patient, not the referring doctor, sender, specialist, or addressee.
+
+Priority order:
+1. A patient named in a "RE:", "Re:", "Patient:", or "Name:" line.
+2. A name directly beside DOB / D.O.B. / date of birth.
+3. An explicitly labelled patient.
+4. Only use referral sentence wording as a fallback.
+
+Important:
+- If a full name appears in the RE line or beside DOB, that is the patient.
+- Do NOT override a full RE-line patient name with a later phrase such as "I am referring [word/name]".
+- Later referral sentence subjects can be shorthand, dictation artefacts, or clinical wording.
+
+Example:
+Text: "RE: Fake Fake DOB: 03/03/2003 Phone: 0411111111 I am referring Test for extraction..."
+Correct patient:
+{
+  "firstName": "Fake",
+  "lastName": "Fake",
+  "dob": "2003-03-03",
+  "mobile": "0411111111"
+}
+Wrong patient:
+{
+  "firstName": "Test"
+}
 `,
       },
       { role: "user", content: text },
@@ -164,10 +200,6 @@ Rules:
 }
 
 async function extractPatient(item: any): Promise<ExtractedPatient> {
-  /*
-    Prefer deterministic fields already extracted by the pipeline.
-    This prevents OpenAI from later changing a correct DOB/name.
-  */
   const nameParts = splitPatientName(item.patient_name);
 
   const deterministic: ExtractedPatient = {
@@ -239,9 +271,12 @@ export async function matchPraktikaPatientForInboxItem({
         extracted_patient_dob: extracted.dob,
         extracted_patient_mobile: extracted.mobile,
         extracted_patient_email: extracted.email,
+        praktika_patient_id: null,
+        praktika_patient_number: null,
         praktika_match_status: result.status,
         praktika_match_confidence: result.confidence,
         praktika_match_reason: result.reason,
+        praktika_match_candidates: [],
         praktika_matched_at: new Date().toISOString(),
       })
       .eq("id", inboxItemId);
@@ -309,25 +344,25 @@ export async function matchPraktikaPatientForInboxItem({
     try {
       let attemptMatches: any[] = [];
 
-try {
-  attemptMatches = await searchPraktikaPatients(attempt.input);
-} catch (error) {
-  const message =
-    error instanceof Error ? error.message : "Praktika search failed.";
+      try {
+        attemptMatches = await searchPraktikaPatients(attempt.input);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Praktika search failed.";
 
-  await supabaseAdmin.from("ai_workbench_audit_events").insert({
-    inbox_item_id: inboxItemId,
-    event_type: "praktika_search_failed_non_blocking",
-    event_label: "Praktika search failed but import continued",
-    details: {
-      label: attempt.label,
-      input: attempt.input,
-      error: message,
-    },
-  });
+        await supabaseAdmin.from("ai_workbench_audit_events").insert({
+          inbox_item_id: inboxItemId,
+          event_type: "praktika_search_failed_non_blocking",
+          event_label: "Praktika search failed but import continued",
+          details: {
+            label: attempt.label,
+            input: attempt.input,
+            error: message,
+          },
+        });
 
-  continue;
-}
+        continue;
+      }
 
       attemptDebug.push({
         label: attempt.label,
@@ -357,42 +392,42 @@ try {
     }
   }
 
+  const serialisedMatches = matches.map(serialiseMatch);
   const bestMatch = matches[0] || null;
+  const confidentMatches = matches.filter(
+    (match) => Number(match.matchScore || 0) >= 0.8,
+  );
 
   let status = "no_match";
   let confidence = matches.length > 0 ? 0.3 : 0.1;
   let reason =
     matches.length > 0
-      ? "Praktika returned possible patients, but none scored high enough for a confident match."
+      ? "Praktika returned possible patients, but none scored high enough for a confident match. Staff review recommended."
       : "No matching Praktika patient found.";
 
-  if (bestMatch && bestMatch.matchScore >= 0.8) {
+  if (bestMatch && confidentMatches.length === 1) {
     status = "matched_existing";
     confidence = bestMatch.matchScore;
     reason = `Matched Praktika patient ${bestMatch.id}: ${bestMatch.matchReason}.`;
+  } else if (bestMatch && confidentMatches.length > 1) {
+    status = "possible_match";
+    confidence = bestMatch.matchScore;
+    reason = `Multiple high-confidence Praktika matches were found. Staff must confirm the correct patient before filing.`;
   } else if (bestMatch && bestMatch.matchScore >= 0.45) {
     status = "possible_match";
     confidence = bestMatch.matchScore;
     reason = `Possible Praktika match ${bestMatch.id}: ${bestMatch.matchReason}. Staff review recommended.`;
   }
 
+  const autoSelectedPatient = status === "matched_existing" ? bestMatch : null;
+
   const debug = {
     extracted,
     successfulAttempt,
     attemptDebug,
     matchCount: matches.length,
-    bestMatch: bestMatch
-      ? {
-          id: bestMatch.id,
-          patientNumber: bestMatch.patientNumber,
-          firstName: bestMatch.firstName,
-          lastName: bestMatch.lastName,
-          dob: bestMatch.dob,
-          mobile: bestMatch.mobile,
-          matchScore: bestMatch.matchScore,
-          matchReason: bestMatch.matchReason,
-        }
-      : null,
+    confidentMatchCount: confidentMatches.length,
+    bestMatch: bestMatch ? serialiseMatch(bestMatch) : null,
   };
 
   await supabaseAdmin
@@ -403,13 +438,14 @@ try {
       extracted_patient_dob: extracted.dob,
       extracted_patient_mobile: extracted.mobile,
       extracted_patient_email: extracted.email,
-      praktika_patient_id: bestMatch ? String(bestMatch.id) : null,
-      praktika_patient_number: bestMatch?.patientNumber
-        ? String(bestMatch.patientNumber)
+      praktika_patient_id: autoSelectedPatient ? String(autoSelectedPatient.id) : null,
+      praktika_patient_number: autoSelectedPatient?.patientNumber
+        ? String(autoSelectedPatient.patientNumber)
         : null,
       praktika_match_status: status,
       praktika_match_confidence: confidence,
       praktika_match_reason: reason,
+      praktika_match_candidates: serialisedMatches,
       praktika_matched_at: new Date().toISOString(),
     })
     .eq("id", inboxItemId);
@@ -426,8 +462,8 @@ try {
     confidence,
     reason,
     extracted,
-    bestMatch,
-    matches,
+    bestMatch: autoSelectedPatient,
+    matches: serialisedMatches,
     debug,
   };
 }

@@ -10,6 +10,34 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+function splitPatientNameForStorage(value: string | null | undefined) {
+  const cleaned = String(value || "")
+    .replace(/^(master|miss|mrs|ms|mr|dr|prof|mx)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned) {
+    return {
+      firstName: null,
+      lastName: null,
+    };
+  }
+
+  const parts = cleaned.split(" ").filter(Boolean);
+
+  if (parts.length === 1) {
+    return {
+      firstName: parts[0],
+      lastName: null,
+    };
+  }
+
+  return {
+    firstName: parts[0],
+    lastName: parts.slice(1).join(" "),
+  };
+}
+
 function normalise(value: string | null | undefined) {
   return String(value || "")
     .toLowerCase()
@@ -20,6 +48,23 @@ function normalise(value: string | null | undefined) {
 
 function normaliseEmail(value: string | null | undefined) {
   return String(value || "").toLowerCase().trim();
+}
+
+function extractPatientNameFromReLine(sourceText: string) {
+  const text = cleanSourceText(sourceText);
+
+  const patterns = [
+    /\bRE\s*:\s*(?:Master|Mr|Mrs|Ms|Miss|Mx)?\s*([A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+){1,3})\s+(?:DOB|D\.O\.B\.|Date\s*of\s*Birth)\b/i,
+    /\bPatient\s*:?\s*(?:Master|Mr|Mrs|Ms|Miss|Mx)?\s*([A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+){1,3})\s+(?:DOB|D\.O\.B\.|Date\s*of\s*Birth)\b/i,
+    /\bName\s*:?\s*(?:Master|Mr|Mrs|Ms|Miss|Mx)?\s*([A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+){1,3})\s+(?:DOB|D\.O\.B\.|Date\s*of\s*Birth)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+
+  return null;
 }
 
 function normaliseDobForMatching(value: string | null | undefined) {
@@ -627,6 +672,8 @@ function replacePassOnClinicianWithInternalClinician({
   return result;
 }
 
+
+
 function calculatePatientMatchScore({
   patient,
   targetName,
@@ -697,6 +744,7 @@ function calculatePatientMatchScore({
   };
 }
 
+
 export async function runAIBrainAnalysis({
   inboxItemId,
   source = "manual_reanalyse",
@@ -718,6 +766,8 @@ export async function runAIBrainAnalysis({
   }
 
   const sourceText = getBestSourceText(inboxItem);
+  const deterministicPatientName = getSafePatientNameFromItem(inboxItem, sourceText);
+  const deterministicPatientNameParts = splitPatientNameForStorage(deterministicPatientName);
 
   if (!sourceText) {
     return {
@@ -821,6 +871,13 @@ Known deterministic extracted identifiers:
 - Extracted email: ${deterministicEmail || "none found"}
 - Extracted phone: ${deterministicPhone || "none found"}
 
+HARD PATIENT NAME RULES:
+- Prioritise patient names in "RE:", "Re:", "Patient:", or "Name:" lines.
+- If a name appears directly beside DOB / D.O.B. / date of birth, treat that name as the patient.
+- Do NOT override the RE-line patient name with a later sentence such as "I am referring [word/name]".
+- Later referral sentence wording can be shorthand, a dictation artefact, or clinical wording.
+- Example: "RE: Fake Fake DOB: 03/03/2003 Phone: 0411111111 I am referring Test for extraction" means patient_name must be "Fake Fake", not "Test".
+
 HARD DOB RULES:
 - If Extracted DOB is not "none found", patient_dob MUST equal Extracted DOB.
 - If Extracted DOB is not "none found", missing_information MUST NOT include DOB, date of birth, or birth date.
@@ -888,7 +945,10 @@ ${sourceText}
 
   const finalCategory = decision.category || inboxItem.category || "unknown";
   const finalPatientName =
-    decision.patient_name || inboxItem.patient_name || null;
+    deterministicPatientName ||
+    decision.patient_name ||
+    inboxItem.patient_name ||
+    null;
 
   const finalPatientDob =
     formatIsoDobToAustralian(inboxItem.extracted_patient_dob) ||
@@ -906,6 +966,7 @@ ${sourceText}
 
   const finalDecision = {
     ...decision,
+    patient_name: finalPatientName,
     patient_dob: finalPatientDob,
     missing_information: finalMissingInformation,
     safe_to_auto_draft:
@@ -1011,6 +1072,12 @@ ${sourceText}
       category: finalCategory,
       patient_name: finalPatientName,
       patient_dob: finalPatientDob,
+      extracted_patient_first_name:
+        deterministicPatientNameParts.firstName || inboxItem.extracted_patient_first_name || null,
+      extracted_patient_last_name:
+        deterministicPatientNameParts.lastName || inboxItem.extracted_patient_last_name || null,
+      extracted_patient_dob:
+        formatIsoDobToAustralian(finalPatientDob) || finalPatientDob || inboxItem.extracted_patient_dob || null,
       summary: finalSummary,
       suggested_action: finalSuggestedAction,
     })
@@ -1461,6 +1528,25 @@ function getCorrespondencePartiesFromItem(item: any) {
   };
 }
 
+function getSafePatientNameFromItem(item: any, sourceText?: string) {
+  if (sourceText) {
+    const fromReLine = extractPatientNameFromReLine(sourceText);
+    if (fromReLine) return fromReLine;
+  }
+
+  const fromExtracted = [
+    item?.extracted_patient_first_name,
+    item?.extracted_patient_last_name,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
+  if (fromExtracted) return fromExtracted;
+
+  return String(item?.patient_name || "").trim() || null;
+}
+
 export async function generateOrUpdateDraft({
   inboxItemId,
 }: {
@@ -1511,9 +1597,23 @@ export async function generateOrUpdateDraft({
           new Date(a.created_at || 0).getTime()
       )[0] || null;
 
-  const decision = latestDecision?.decision || {};
-  const category = getDecisionCategory({ item, decision });
-  const draftPolicy = determineDraftPolicy({ item, decision });
+  const safePatientName = getSafePatientNameFromItem(
+  item,
+  item.raw_text || item.body || item.email_body || item.extracted_text || "",
+);
+
+const decision = {
+  ...(latestDecision?.decision || {}),
+  patient_name: safePatientName,
+};
+  const sourceTextForDraft = getBestSourceText(item);
+  const effectivePatientName = getSafePatientNameFromItem(item, sourceTextForDraft);
+  const effectiveDecision = {
+    ...decision,
+    patient_name: effectivePatientName || decision.patient_name || item.patient_name || null,
+  };
+  const category = getDecisionCategory({ item, decision: effectiveDecision });
+  const draftPolicy = determineDraftPolicy({ item, decision: effectiveDecision });
 
   if (!draftPolicy.shouldDraft) {
     await supabaseAdmin
@@ -1530,8 +1630,8 @@ export async function generateOrUpdateDraft({
     };
   }
 
-  const missingInformation = Array.isArray(decision.missing_information)
-    ? decision.missing_information.filter(Boolean)
+  const missingInformation = Array.isArray(effectiveDecision.missing_information)
+    ? effectiveDecision.missing_information.filter(Boolean)
     : [];
 
   const templateCategories = Array.from(
@@ -1685,7 +1785,7 @@ Approved examples:
 ${examplesText}
 
 AI Brain decision:
-${JSON.stringify(decision, null, 2)}
+${JSON.stringify(effectiveDecision, null, 2)}
 
 Context:
 Sender name: ${item.sender_name || "Unknown"}
@@ -1696,7 +1796,7 @@ Detected correspondence author/signatory: ${correspondenceParties.author.name ||
 Assigned internal Focus clinician for reply/routing: ${getInternalFocusClinicianForReply(item) || "Unknown"}
 Email subject: ${item.email_subject || item.subject || item.file_name || "No subject"}
 Category: ${category}
-Patient name: ${item.patient_name || "Unknown"}
+Patient name: ${effectivePatientName || "Unknown"}
 Patient DOB: ${item.patient_dob || "Unknown"}
 Praktika match status: ${item.praktika_match_status || "unknown"}
 Praktika patient ID: ${item.praktika_patient_id || "unknown"}
@@ -1789,7 +1889,7 @@ Return JSON only:
         new Set(rules?.map((r) => r.rule_type || "general") || [])
       ),
       safety_notes: parsed.safety_notes || [],
-      decision_summary: decision,
+      decision_summary: effectiveDecision,
       correspondence_parties: correspondenceParties,
       internal_focus_clinician_for_reply: getInternalFocusClinicianForReply(item),
     },

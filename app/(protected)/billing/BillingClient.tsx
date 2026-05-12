@@ -1,5 +1,6 @@
 "use client";
 
+import PraktikaSessionPanel from "@/components/PraktikaSessionPanel";
 import Link from "next/link";
 import {
   ensureCurrentBillingPeriod,
@@ -440,25 +441,17 @@ export default function BillingClient() {
         const record = records.find((r) => r.provider_id === provider.id);
         const importedMetrics = importMetricsByProvider[provider.id];
 
-        nextManualData[provider.id] = record
-          ? {
-              grossProduction: Number(
-                record.gross_production ?? importedMetrics?.grossProduction ?? 0
-              ),
-              adjustments: Number(record.adjustments || 0),
-              incorrectPayments: Number(record.incorrect_payments || 0),
-              ivFacilityFees: Number(
-                record.iv_facility_fees ?? importedMetrics?.ivFacilityFees ?? 0
-              ),
-              otherDeductions: Number(record.other_deductions || 0),
-            }
-          : {
-              grossProduction: Number(importedMetrics?.grossProduction || 0),
-              adjustments: 0,
-              incorrectPayments: 0,
-              ivFacilityFees: Number(importedMetrics?.ivFacilityFees || 0),
-              otherDeductions: 0,
-            };
+        nextManualData[provider.id] = {
+  grossProduction: Number(
+    importedMetrics?.grossProduction ?? record?.gross_production ?? 0
+  ),
+  adjustments: Number(record?.adjustments || 0),
+  incorrectPayments: Number(record?.incorrect_payments || 0),
+  ivFacilityFees: Number(
+    importedMetrics?.ivFacilityFees ?? record?.iv_facility_fees ?? 0
+  ),
+  otherDeductions: Number(record?.other_deductions || 0),
+};
 
         if (record?.id) {
           nextSavedRecords[provider.id] = record.id;
@@ -2034,6 +2027,8 @@ export default function BillingClient() {
             </div>
           </div>
         </section>
+
+                <PraktikaSessionPanel />
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-4">

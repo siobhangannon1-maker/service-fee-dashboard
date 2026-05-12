@@ -183,11 +183,9 @@ export default function TopNav() {
     }
 
     window.addEventListener("resize", closeDropdown);
-    window.addEventListener("scroll", closeDropdown, true);
 
     return () => {
       window.removeEventListener("resize", closeDropdown);
-      window.removeEventListener("scroll", closeDropdown, true);
     };
   }, []);
 
@@ -319,41 +317,51 @@ export default function TopNav() {
 
       {openDropdown && selectedGroup && (
         <div
-          className="fixed z-[10000] max-h-[70vh] w-[460px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-3xl border border-slate-200 bg-white p-3 shadow-[0_20px_60px_rgba(15,23,42,0.14)]"
+          className="fixed z-[10000] flex max-h-[calc(100vh-140px)] w-[460px] max-w-[calc(100vw-24px)] flex-col rounded-3xl border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.14)]"
           style={{
             left: Math.min(
               Math.max(openDropdown.left, 240),
-              typeof window !== "undefined" ? window.innerWidth - 240 : openDropdown.left,
+              typeof window !== "undefined"
+                ? window.innerWidth - 240
+                : openDropdown.left,
             ),
             top: openDropdown.top,
             transform: "translateX(-50%)",
           }}
         >
-          <div className="relative grid gap-1">
-            {selectedGroup.items.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`group block rounded-2xl px-4 py-3.5 transition-all duration-200 ${
-                  isActive(item.href)
-                    ? "bg-[#0F172A] text-white shadow-sm"
-                    : "bg-white text-slate-800 hover:bg-slate-50"
-                }`}
-              >
-                <div className="text-[15px] font-semibold tracking-tight">
-                  {item.label}
-                </div>
-                <div
-                  className={`mt-1 text-sm leading-5 ${
+          <div className="border-b border-slate-100 px-5 py-4">
+            <div className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">
+              {selectedGroup.label}
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+            <div className="grid gap-1">
+              {selectedGroup.items.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`group block rounded-2xl px-4 py-3.5 transition-all duration-200 ${
                     isActive(item.href)
-                      ? "text-slate-200"
-                      : "text-slate-500 group-hover:text-slate-600"
+                      ? "bg-[#0F172A] text-white shadow-sm"
+                      : "bg-white text-slate-800 hover:bg-slate-50"
                   }`}
                 >
-                  {item.description}
-                </div>
-              </Link>
-            ))}
+                  <div className="text-[15px] font-semibold tracking-tight">
+                    {item.label}
+                  </div>
+                  <div
+                    className={`mt-1 text-sm leading-5 ${
+                      isActive(item.href)
+                        ? "text-slate-200"
+                        : "text-slate-500 group-hover:text-slate-600"
+                    }`}
+                  >
+                    {item.description}
+                  </div>
+                </Link>
+              ))}
+            </div>
           </div>
         </div>
       )}
