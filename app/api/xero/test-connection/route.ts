@@ -21,8 +21,7 @@ async function runTestConnection() {
 
     syncRunId = syncRun.id;
 
-    const accessToken = await getXeroAccessToken();
-    const organisationResponse = await fetchXeroOrganisation(accessToken);
+    const organisationResponse = await fetchXeroOrganisation();
 
     const organisation = organisationResponse?.Organisations?.[0];
 

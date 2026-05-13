@@ -262,7 +262,7 @@ export async function xeroUploadInvoiceAttachment(
     {
       method: "PUT",
       headers,
-      body: fileBuffer,
+      body: new Uint8Array(fileBuffer),
       cache: "no-store",
     }
   );
