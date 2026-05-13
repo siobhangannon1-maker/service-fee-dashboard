@@ -106,22 +106,36 @@ export default async function PatientEntriesReviewPage() {
   }
 
   const [
-    { data: providers },
-    { data: billingPeriods },
+    { data: providers, error: providersError },
+    { data: billingPeriods, error: billingPeriodsError },
     { data: entries, error: entriesError },
   ] = await Promise.all([
-    supabaseAdmin.from("providers").select("id, name").order("name"),
+    supabaseAdmin
+      .from("providers")
+      .select("id, name")
+      .eq("is_active", true)
+      .order("name", { ascending: true }),
+
     supabaseAdmin
       .from("billing_periods")
       .select("id, label, status, month, year")
       .order("year", { ascending: false })
       .order("month", { ascending: false }),
+
     supabaseAdmin
       .from("patient_financial_entries")
       .select("*")
       .is("deleted_at", null)
       .order("entry_date", { ascending: false }),
   ]);
+
+  if (providersError) {
+    throw new Error(providersError.message);
+  }
+
+  if (billingPeriodsError) {
+    throw new Error(billingPeriodsError.message);
+  }
 
   if (entriesError) {
     throw new Error(entriesError.message);
