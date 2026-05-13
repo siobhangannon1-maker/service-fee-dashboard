@@ -140,6 +140,7 @@ export default function UploadAfterpayPage() {
     const { data: providerData, error: providerError } = await supabase
       .from("providers")
       .select("id, name")
+      .eq("is_active", true)
       .order("name");
 
     if (providerError) {

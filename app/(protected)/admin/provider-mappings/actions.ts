@@ -6,7 +6,8 @@ import { normalizeProviderName } from "@/lib/providers/normalize-provider-name";
 type ProviderMappingSourceType =
   | "appointments_csv"
   | "provider_performance_csv"
-  | "cancellations_csv";
+  | "cancellations_csv"
+  | "praktika_completed_procedures";
 
 function getServiceRoleSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;

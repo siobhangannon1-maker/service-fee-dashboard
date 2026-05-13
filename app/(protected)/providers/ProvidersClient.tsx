@@ -17,6 +17,7 @@ type Provider = {
   name: string;
   specialty: string;
   email: string | null;
+  xero_contact_id: string | null;
   service_fee_percent: number;
   service_fee_type: "flat" | "tiered";
   tier_config: Tier[] | null;
@@ -32,6 +33,7 @@ type NewProviderForm = {
   name: string;
   specialty: string;
   email: string;
+  xero_contact_id: string;
   service_fee_percent: number;
   service_fee_type: "flat" | "tiered";
   tier_config: Tier[] | null;
@@ -115,6 +117,7 @@ export default function ProvidersPage() {
     name: "",
     specialty: "",
     email: "",
+    xero_contact_id: "",
     service_fee_percent: 40,
     service_fee_type: "flat",
     tier_config: defaultTierConfig,
@@ -181,6 +184,9 @@ export default function ProvidersPage() {
       name: newProvider.name.trim(),
       specialty: newProvider.specialty.trim(),
       email: newProvider.email.trim() ? newProvider.email.trim() : null,
+      xero_contact_id: newProvider.xero_contact_id.trim()
+        ? newProvider.xero_contact_id.trim()
+        : null,
       service_fee_percent: newProvider.service_fee_percent,
       service_fee_type: newProvider.service_fee_type,
       tier_config:
@@ -207,6 +213,7 @@ export default function ProvidersPage() {
       name: "",
       specialty: "",
       email: "",
+      xero_contact_id: "",
       service_fee_percent: 40,
       service_fee_type: "flat",
       tier_config: defaultTierConfig,
@@ -226,6 +233,9 @@ export default function ProvidersPage() {
         name: provider.name,
         specialty: provider.specialty,
         email: provider.email?.trim() ? provider.email.trim() : null,
+        xero_contact_id: provider.xero_contact_id?.trim()
+          ? provider.xero_contact_id.trim()
+          : null,
         service_fee_percent: provider.service_fee_percent,
         service_fee_type: provider.service_fee_type,
         tier_config:
@@ -439,6 +449,23 @@ export default function ProvidersPage() {
             />
           </div>
 
+          <div className="md:col-span-2">
+            <FieldLabel>Xero contact ID</FieldLabel>
+            <TextInput
+              value={newProvider.xero_contact_id}
+              onChange={(e) =>
+                setNewProvider((prev) => ({
+                  ...prev,
+                  xero_contact_id: e.target.value,
+                }))
+              }
+              placeholder="Optional: paste the provider's Xero ContactID here"
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              Optional but recommended. If blank, invoices will match by provider name in Xero.
+            </p>
+          </div>
+
           <div>
             <FieldLabel>Service fee type</FieldLabel>
             <SelectInput
@@ -613,6 +640,22 @@ export default function ProvidersPage() {
                     />
                   </div>
 
+                  <div className="md:col-span-2">
+                    <FieldLabel>Xero contact ID</FieldLabel>
+                    <TextInput
+                      value={provider.xero_contact_id || ""}
+                      onChange={(e) =>
+                        updateProvider(provider.id, {
+                          xero_contact_id: e.target.value,
+                        })
+                      }
+                      placeholder="Optional: paste the provider's Xero ContactID here"
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      Optional but recommended. If blank, draft invoices will match by provider name in Xero.
+                    </p>
+                  </div>
+
                   <div>
                     <FieldLabel>Service fee type</FieldLabel>
                     <SelectInput
@@ -781,6 +824,9 @@ export default function ProvidersPage() {
                     </div>
                     <div className="text-sm text-slate-500">
                       {provider.email || "No email address"}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      Xero contact ID: {provider.xero_contact_id || "Not set"}
                     </div>
                     <div className="mt-2 text-xs text-slate-500">
                       Service fee type:{" "}

@@ -7,6 +7,13 @@ type XeroTokenResponse = {
   scope?: string;
 };
 
+type XeroFetchOptions = {
+  method?: "GET" | "POST" | "PUT" | "DELETE";
+  body?: any;
+  headers?: Record<string, string>;
+  rawBody?: boolean;
+};
+
 const xeroClientId = process.env.XERO_CLIENT_ID;
 const xeroClientSecret = process.env.XERO_CLIENT_SECRET;
 
@@ -23,6 +30,8 @@ const XERO_SCOPES = [
   "accounting.reports.read",
   "accounting.transactions.read",
   "accounting.transactions",
+  "accounting.contacts",
+  "accounting.attachments",
   "payroll.employees.read",
   "payroll.payruns.read",
   "payroll.payslip.read",
@@ -47,6 +56,30 @@ function withTimeout(ms: number) {
     signal: controller.signal,
     clear: () => clearTimeout(timeout),
   };
+}
+
+function parseMaybeJson(text: string, context: string) {
+  if (!text || !text.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function stringifyForError(value: any) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 export async function getXeroAccessToken(): Promise<string> {
@@ -78,36 +111,39 @@ export async function getXeroAccessToken(): Promise<string> {
     });
 
     const text = await response.text();
-
-    let data: any = null;
-
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text;
-    }
+    const data = parseMaybeJson(text, "Xero token response") as
+      | XeroTokenResponse
+      | string
+      | null;
 
     if (!response.ok) {
       throw new Error(
-        `Failed to get Xero access token: ${response.status} ${JSON.stringify(
+        `Failed to get Xero access token: ${response.status} ${stringifyForError(
           data
         )}`
       );
     }
 
-    const tokenData = data as XeroTokenResponse;
-
-    console.log("Xero token scopes:", tokenData.scope);
-console.log("Xero token type:", tokenData.token_type);
-console.log("Xero token expires in:", tokenData.expires_in);
-
-    if (!tokenData.access_token) {
-      throw new Error("Xero token response did not include access_token");
+    if (!data || typeof data === "string") {
+      throw new Error(
+        `Xero token response was not valid JSON. Status: ${response.status}. Body: ${text.slice(
+          0,
+          500
+        )}`
+      );
     }
 
-    cachedAccessToken = tokenData.access_token;
+    if (!data.access_token) {
+      throw new Error(
+        `Xero token response did not include access_token. Body: ${stringifyForError(
+          data
+        )}`
+      );
+    }
+
+    cachedAccessToken = data.access_token;
     cachedAccessTokenExpiresAt =
-      Date.now() + Number(tokenData.expires_in || 1800) * 1000;
+      Date.now() + Number(data.expires_in || 1800) * 1000;
 
     return cachedAccessToken;
   } finally {
@@ -115,31 +151,46 @@ console.log("Xero token expires in:", tokenData.expires_in);
   }
 }
 
-export async function xeroFetch(path: string, attempt = 1): Promise<any> {
+export async function xeroFetch(
+  path: string,
+  options: XeroFetchOptions = {},
+  attempt = 1
+): Promise<any> {
   const accessToken = await getXeroAccessToken();
-
   const timeout = withTimeout(30_000);
 
   try {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      ...(options.headers || {}),
+    };
+
+    if (process.env.XERO_TENANT_ID) {
+      headers["xero-tenant-id"] = process.env.XERO_TENANT_ID;
+    }
+
+    let requestBody: BodyInit | undefined;
+
+    if (options.body !== undefined) {
+      if (options.rawBody) {
+        requestBody = options.body as BodyInit;
+      } else {
+        headers["Content-Type"] = headers["Content-Type"] || "application/json";
+        requestBody = JSON.stringify(options.body);
+      }
+    }
+
     const response = await fetch(`https://api.xero.com/api.xro/2.0${path}`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: "application/json",
-      },
+      method: options.method || "GET",
+      headers,
+      body: requestBody,
       cache: "no-store",
       signal: timeout.signal,
     });
 
     const text = await response.text();
-
-    let data: any = null;
-
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text;
-    }
+    const data = parseMaybeJson(text, `Xero ${options.method || "GET"} ${path}`);
 
     if (response.status === 429) {
       if (attempt >= 3) {
@@ -157,12 +208,12 @@ export async function xeroFetch(path: string, attempt = 1): Promise<any> {
 
       await sleep(delayMs);
 
-      return xeroFetch(path, attempt + 1);
+      return xeroFetch(path, options, attempt + 1);
     }
 
     if (!response.ok) {
       throw new Error(
-        `Xero request failed: ${response.status} ${JSON.stringify(data)}`
+        `Xero request failed: ${response.status} ${stringifyForError(data)}`
       );
     }
 
@@ -172,34 +223,66 @@ export async function xeroFetch(path: string, attempt = 1): Promise<any> {
   }
 }
 
-export async function fetchXeroOrganisation(accessToken: string) {
-  const timeout = withTimeout(30_000);
-
-  try {
-    const response = await fetch(
-      "https://api.xero.com/api.xro/2.0/Organisation",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: "application/json",
-        },
-        cache: "no-store",
-        signal: timeout.signal,
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        `Failed to fetch Xero organisation: ${response.status} ${errorText}`
-      );
-    }
-
-    return response.json();
-  } finally {
-    timeout.clear();
+export async function xeroUploadInvoiceAttachment(
+  invoiceId: string,
+  fileName: string,
+  fileBuffer: Buffer,
+  mimeType = "application/pdf"
+): Promise<any> {
+  if (!invoiceId) {
+    throw new Error("Cannot upload Xero attachment because invoiceId is missing.");
   }
+
+  if (!fileName) {
+    throw new Error("Cannot upload Xero attachment because fileName is missing.");
+  }
+
+  if (!fileBuffer || fileBuffer.length === 0) {
+    throw new Error(
+      `Cannot upload Xero attachment "${fileName}" because the file buffer is empty.`
+    );
+  }
+
+  const accessToken = await getXeroAccessToken();
+
+  const safeFileName = encodeURIComponent(fileName);
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: "application/json",
+    "Content-Type": mimeType,
+  };
+
+  if (process.env.XERO_TENANT_ID) {
+    headers["xero-tenant-id"] = process.env.XERO_TENANT_ID;
+  }
+
+  const response = await fetch(
+    `https://api.xero.com/api.xro/2.0/Invoices/${invoiceId}/Attachments/${safeFileName}?IncludeOnline=false`,
+    {
+      method: "PUT",
+      headers,
+      body: fileBuffer,
+      cache: "no-store",
+    }
+  );
+
+  const text = await response.text();
+  const data = parseMaybeJson(text, "Xero attachment upload response");
+
+  if (!response.ok) {
+    throw new Error(
+      `Xero attachment upload failed: ${response.status} ${stringifyForError(
+        data
+      )}`
+    );
+  }
+
+  return data;
+}
+
+export async function fetchXeroOrganisation() {
+  return xeroFetch("/Organisation");
 }
 
 function getLastDayOfMonth(year: number, month: number) {
@@ -250,21 +333,25 @@ export async function fetchXeroProfitAndLossReport(
     const response = await fetch(url.toString(), {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${await getXeroAccessToken()}`,
         Accept: "application/json",
       },
       cache: "no-store",
       signal: timeout.signal,
     });
 
+    const text = await response.text();
+    const data = parseMaybeJson(text, "Xero Profit and Loss report response");
+
     if (!response.ok) {
-      const errorText = await response.text();
       throw new Error(
-        `Failed to fetch Xero Profit and Loss report: ${response.status} ${errorText}`
+        `Failed to fetch Xero Profit and Loss report: ${response.status} ${stringifyForError(
+          data
+        )}`
       );
     }
 
-    return response.json();
+    return data;
   } finally {
     timeout.clear();
   }

@@ -23,6 +23,7 @@ type Provider = {
   name: string;
   specialty: string;
   email?: string | null;
+  xero_contact_id?: string | null;
   service_fee_percent: number;
   service_fee_type: "flat" | "tiered";
   tier_config: { up_to: number | null; rate: number }[] | null;
@@ -170,6 +171,7 @@ export default function BillingClient() {
   const [savingAll, setSavingAll] = useState(false);
   const [loadingMetrics, setLoadingMetrics] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [creatingXeroInvoices, setCreatingXeroInvoices] = useState(false);
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmTitle, setConfirmTitle] = useState("Please confirm");
@@ -291,6 +293,7 @@ export default function BillingClient() {
       const { data: providerData, error: providerError } = await supabase
         .from("providers")
         .select("*")
+        .eq("is_active", true)
         .order("name");
 
       if (providerError) {
@@ -896,6 +899,39 @@ export default function BillingClient() {
     });
   }
 
+  function buildServiceFeeBreakdownLines(provider: Provider, feeBase: number) {
+    if (provider.service_fee_type === "tiered" && provider.tier_config?.length) {
+      let previousLimit = 0;
+
+      return provider.tier_config
+        .map((tier) => {
+          const tierEnd = tier.up_to ?? feeBase;
+          const tierAmount = Math.max(0, Math.min(feeBase, tierEnd) - previousLimit);
+          const tierFee = tierAmount * (tier.rate / 100);
+
+          const label =
+            tier.up_to === null
+              ? `${tier.rate}% service fee on balance net patient fees`
+              : `${tier.rate}% service fee on first $${tier.up_to.toLocaleString("en-AU")}`;
+
+          previousLimit = tier.up_to ?? previousLimit;
+
+          return {
+            label,
+            amount: tierFee,
+          };
+        })
+        .filter((line) => Number(line.amount || 0) !== 0);
+    }
+
+    return [
+      {
+        label: `${provider.service_fee_percent}% service fee on net patient fees`,
+        amount: feeBase * (provider.service_fee_percent / 100),
+      },
+    ].filter((line) => Number(line.amount || 0) !== 0);
+  }
+
   function getProviderCalculations(provider: Provider) {
     const manualInputs = manualBillingData[provider.id] || emptyManualInputs;
     const autoTotals = autoTotalsByProvider[provider.id] || {
@@ -1253,6 +1289,240 @@ export default function BillingClient() {
 
     showToast("Statement preview emailed.", "success");
   }
+
+
+  async function createXeroDraftInvoices() {
+    if (!selectedPeriodId) {
+      showToast("Please select a billing period first.", "error");
+      return;
+    }
+
+    const selectedPeriod = billingPeriods.find((p) => p.id === selectedPeriodId);
+
+    if (!selectedPeriod) {
+      showToast("Selected billing period not found.", "error");
+      return;
+    }
+
+    if (loadingMetrics) {
+      showToast("Imported values are still loading. Please wait.", "error");
+      return;
+    }
+
+    setCreatingXeroInvoices(true);
+    setMessage("");
+
+    try {
+      const invoiceDate = new Date().toISOString().slice(0, 10);
+
+      const dueDateObject = new Date();
+      dueDateObject.setDate(dueDateObject.getDate() + 7);
+      const dueDate = dueDateObject.toISOString().slice(0, 10);
+
+      const fromDate = `${selectedPeriod.year}-${String(
+        selectedPeriod.month
+      ).padStart(2, "0")}-01`;
+
+      const toDate = new Date(selectedPeriod.year, selectedPeriod.month, 0)
+        .toISOString()
+        .slice(0, 10);
+
+      const providerPayload = providers.map((provider) => {
+        const {
+          manualInputs,
+          autoTotals,
+          feeBase,
+          serviceFee,
+          gst,
+          totalFeesDue,
+        } = getProviderCalculations(provider);
+
+        const providerPatientEntries = entries.filter(
+          (entry) => entry.provider_id === provider.id
+        );
+
+        const providerDetailEntries = billingDetailEntries.filter(
+          (entry) => entry.provider_id === provider.id
+        );
+
+        const implantEntries = providerPatientEntries.filter(
+          (entry) => entry.category === "lab_implant_materials"
+        );
+
+        const paidToFocusEntries = providerPatientEntries.filter(
+          (entry) => entry.category === "fees_paid_to_focus"
+        );
+
+        const paidToThisProviderInErrorEntries = providerPatientEntries.filter(
+          (entry) =>
+            entry.category === "fees_paid_in_error" ||
+            entry.category === "paid_to_wrong_provider"
+        );
+
+        const paidToAnotherProviderEntries = entries.filter(
+          (entry) =>
+            entry.category === "paid_to_wrong_provider" &&
+            entry.related_provider_id === provider.id &&
+            entry.billing_period_id === selectedPeriodId
+        );
+
+        const hummEntries = providerDetailEntries.filter(
+          (entry) => entry.category === "humm_fee"
+        );
+
+        const afterpayEntries = providerDetailEntries.filter(
+          (entry) => entry.category === "afterpay_fee"
+        );
+
+        const labMaterialsGst = autoTotals.labImplantMaterials * 0.1;
+        const hummFeesGst = autoTotals.hummFees * 0.1;
+        const afterpayFeesGst = autoTotals.afterpayFees * 0.1;
+        const totalGst = gst + labMaterialsGst + hummFeesGst + afterpayFeesGst;
+
+        const feesAndCostsTotalIncGst =
+          totalFeesDue +
+          autoTotals.labImplantMaterials +
+          labMaterialsGst +
+          autoTotals.hummFees +
+          hummFeesGst +
+          autoTotals.afterpayFees +
+          afterpayFeesGst;
+
+        const finalTotalDueWithExpenseGst =
+          feesAndCostsTotalIncGst -
+          autoTotals.feesPaidToFocus +
+          autoTotals.feesOwed -
+          autoTotals.feesPaidInError +
+          manualInputs.ivFacilityFees;
+
+        return {
+          providerId: provider.id,
+          providerName: provider.name,
+          providerAbn: null,
+          xeroContactId: provider.xero_contact_id || null,
+
+          periodLabel: selectedPeriod.label,
+          grossProduction: manualInputs.grossProduction,
+          adjustments: manualInputs.adjustments,
+          otherDeductions: manualInputs.otherDeductions,
+          feeBase,
+
+          serviceFeeBreakdownLines: buildServiceFeeBreakdownLines(
+            provider,
+            feeBase
+          ),
+          serviceFeeExGst: serviceFee,
+          serviceFeeGst: gst,
+          serviceFeeIncGst: totalFeesDue,
+
+          labMaterialsExGst: autoTotals.labImplantMaterials,
+          labMaterialsGst,
+          hummFeesExGst: autoTotals.hummFees,
+          hummFeesGst,
+          afterpayFeesExGst: autoTotals.afterpayFees,
+          afterpayFeesGst,
+          ivFacilityFeesNoGst: manualInputs.ivFacilityFees,
+          totalGst,
+          feesAndCostsTotalIncGst,
+
+          patientFeesPaidToFocusNoGst: autoTotals.feesPaidToFocus,
+          patientFeesReceivedInErrorNoGst: autoTotals.feesPaidInError,
+          patientFeesPaidToAnotherProviderNoGst: autoTotals.feesOwed,
+          finalTotalDue: finalTotalDueWithExpenseGst,
+
+          implantEntries,
+          hummEntries,
+          afterpayEntries,
+          paidToFocusEntries,
+          paidToThisProviderInErrorEntries,
+          paidToAnotherProviderEntries,
+        };
+      });
+
+      if (providerPayload.length === 0) {
+        showToast("No providers are loaded for this billing period.", "error");
+        return;
+      }
+
+      const res = await fetch("/api/xero/create-service-fee-invoices", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          invoiceDate,
+          dueDate,
+          reference: selectedPeriod.label,
+          fromDate,
+          toDate,
+          logoDataUrl,
+          providers: providerPayload,
+        }),
+      });
+
+      const text = await res.text();
+
+let data: any = null;
+
+try {
+  data = text ? JSON.parse(text) : null;
+} catch {
+  throw new Error(`API response was not valid JSON: ${text.slice(0, 500)}`);
+}
+
+      if (!res.ok || !data?.success) {
+        console.error("Xero invoice API failed:", data);
+
+        throw new Error(
+          data?.error ||
+            data?.details ||
+            JSON.stringify(data) ||
+            "Failed to create Xero draft invoices."
+        );
+      }
+
+      await writeAuditLog({
+        action: "xero_draft_invoices_created",
+        entityType: "billing_period",
+        entityId: selectedPeriodId,
+        billingPeriodId: selectedPeriodId,
+        metadata: {
+          createdCount: data.createdCount,
+          reference: selectedPeriod.label,
+          attachmentResults: data.attachmentResults || [],
+        },
+      });
+
+      const attachmentResults = data.attachmentResults || data.attachments || [];
+      const statementAttachedCount = attachmentResults.filter(
+        (item: any) => item.statementAttached !== false
+      ).length;
+      const productionAttachedCount = attachmentResults.filter(
+        (item: any) => item.productionAttached
+      ).length;
+
+      showToast(
+        `Created ${data.createdCount} draft invoice${
+          data.createdCount === 1 ? "" : "s"
+        } in Xero. Attached ${statementAttachedCount} statement PDF${
+          statementAttachedCount === 1 ? "" : "s"
+        } and ${productionAttachedCount} Praktika production report${
+          productionAttachedCount === 1 ? "" : "s"
+        }.`,
+        "success"
+      );
+    } catch (error: any) {
+      showToast(
+        `Xero draft invoice creation failed: ${
+          error?.message || "Unknown error"
+        }`,
+        "error"
+      );
+    } finally {
+      setCreatingXeroInvoices(false);
+    }
+  }
+
 
   async function exportProviderStatements() {
     if (!selectedPeriodId) {
@@ -1852,7 +2122,8 @@ export default function BillingClient() {
     !selectedPeriodId ||
     activePeriodStatus === "locked" ||
     loadingMetrics ||
-    savingAll;
+    savingAll ||
+    creatingXeroInvoices;
 
   const selectedBillingPeriodLabel =
     billingPeriods.find((period) => period.id === selectedPeriodId)?.label ||
@@ -2015,6 +2286,27 @@ export default function BillingClient() {
               className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {savingAll ? "Saving All..." : "Save All"}
+            </button>
+
+
+
+            <button
+              onClick={() =>
+                openConfirm({
+                  title: "Create Xero draft invoices?",
+                  description:
+                    "This will create draft invoices in Xero for all providers in the selected billing month and attach each provider statement PDF. Your bookkeeper can review and approve them in Xero before anything is approved.",
+                  action: () => {
+                    createXeroDraftInvoices();
+                  },
+                })
+              }
+              disabled={actionsDisabled || creatingXeroInvoices}
+              className="rounded-2xl bg-pink-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-pink-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {creatingXeroInvoices
+                ? "Creating Xero Drafts + PDFs..."
+                : "Create Xero Draft Invoices + PDFs"}
             </button>
 
             <button
