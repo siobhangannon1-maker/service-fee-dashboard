@@ -88,6 +88,15 @@ const navGroups: NavGroup[] = [
     roles: ["provider_readonly", "practice_manager", "admin", "super_admin"],
     items: [
       { href: "/provider", label: "Provider", description: "Individual Provider Metrics" },
+      { href: "/report-writing/provider", label: "AI Letters", description: "Dictate or generate letters from clinical notes" },
+      { href: "/report-writing/provider/training", label: "AI Training", description: "Upload template examples and add rules for AI letter generation" },
+    ],
+  },
+  {
+    label: "Typist",
+    roles: ["provider_readonly", "practice_manager", "admin", "super_admin", "billing_staff"],
+    items: [
+      { href: "/report-writing/typist", label: "AI Letter Generation", description: "Generate, approve and edit provider's letters and upload to Praktika" },
     ],
   },
   {
@@ -103,6 +112,8 @@ const navGroups: NavGroup[] = [
       { href: "/admin/provider-imports", label: "Imports and Syncs", description: "Import and sync Praktika reports" },
       { href: "/benchmark/expense-reports", label: "Expense Reports", description: "Analysis of practice benchmarks" },
       { href: "/benchmarks/edit", label: "Edit Benchmarks", description: "Edit benchmarks for KPI categories" },
+      { href: "report-writing/admin/universal-rules", label: "AI Universal Rules", description: "Create and edit universal rules for AI letter writing" },
+      { href: "report-writing/admin/provider-examples", label: "AI Provider Examples", description: "Upload examples of letters for AI training" },
     ],
   },
 ];
