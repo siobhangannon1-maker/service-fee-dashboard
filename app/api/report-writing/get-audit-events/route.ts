@@ -8,7 +8,9 @@ const supabase = createClient(
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
-  const draftId = searchParams.get("draftId")
+
+  const draftId =
+    searchParams.get("draftId") || searchParams.get("reportDraftId")
 
   if (!draftId) {
     return NextResponse.json(

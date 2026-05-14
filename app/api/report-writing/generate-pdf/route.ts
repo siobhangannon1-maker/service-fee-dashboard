@@ -85,8 +85,8 @@ function getDearLine(referrerName: string | null | undefined) {
 function getImageAspect(aspect: string | null | undefined) {
   if (aspect === "square") return 1
   if (aspect === "portrait") return 3 / 4
-  if (aspect === "landscape") return 4 / 3
-  return 4 / 3
+  if (aspect === "landscape") return 16 / 9
+  return 16 / 9
 }
 
 function getAlignedX(params: {
@@ -151,7 +151,7 @@ async function embedStorageImage(
     })
   }
 
-  const normalisedJpegBytes = await pipeline
+  const jpegBytes = await pipeline
     .flatten({ background: "#ffffff" })
     .jpeg({
       quality: 78,
@@ -159,7 +159,7 @@ async function embedStorageImage(
     })
     .toBuffer()
 
-  return pdfDoc.embedJpg(normalisedJpegBytes)
+  return pdfDoc.embedJpg(jpegBytes)
 }
 
 export async function POST(req: Request) {
@@ -483,12 +483,15 @@ export async function POST(req: Request) {
               y = newPage()
             }
 
+            const captionWidth = boldFont.widthOfTextAtSize(captionLine, 9)
+            const captionX = x + frameWidth / 2 - captionWidth / 2
+
             page.drawText(captionLine, {
-              x,
+              x: captionX,
               y,
               size: 9,
-              font,
-              color: rgb(0.2, 0.2, 0.2),
+              font: boldFont,
+              color: rgb(0, 0, 0),
             })
 
             y -= 12
