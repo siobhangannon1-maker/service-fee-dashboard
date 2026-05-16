@@ -20,8 +20,29 @@ type PraktikaReferralRow = {
   totalOutgoing?: string
 }
 
+type ReferrerUpsertRow = {
+  praktika_referrer_key: string
+  name: string
+  practice_name: string | null
+  address: string | null
+  email: string | null
+  is_active: boolean
+  raw_json: PraktikaReferralRow
+  synced_at: string
+  updated_at: string
+}
+
 function cleanText(value: unknown): string {
   return String(value ?? "").trim()
+}
+
+function cleanEmail(value: unknown): string | null {
+  const email = cleanText(value).toLowerCase()
+
+  if (!email) return null
+  if (!email.includes("@")) return null
+
+  return email
 }
 
 function buildAddress(row: PraktikaReferralRow): string {
@@ -30,9 +51,7 @@ function buildAddress(row: PraktikaReferralRow): string {
   const state = cleanText(row.vchState)
   const postcode = cleanText(row.vchPostCode)
 
-  const suburbLine = [suburb, state, postcode]
-    .filter(Boolean)
-    .join(" ")
+  const suburbLine = [suburb, state, postcode].filter(Boolean).join(" ")
 
   return [street, suburbLine].filter(Boolean).join("\n")
 }
@@ -69,56 +88,47 @@ export async function POST(req: Request) {
       )
     }
 
-    const referrers = rows
-      .map((row) => {
-        const name = cleanText(row.vchProvider)
-        const practiceName = cleanText(row.vchClinic)
-        const address = buildAddress(row)
-        const email = cleanText(row.vchEmail)
-        const praktikaKey = buildPraktikaKey(row)
+    const now = new Date().toISOString()
 
-        if (!name || !praktikaKey) return null
+    const validReferrers: ReferrerUpsertRow[] = rows.flatMap((row) => {
+      const name = cleanText(row.vchProvider)
+      const practiceName = cleanText(row.vchClinic)
+      const address = buildAddress(row)
+      const email = cleanEmail(row.vchEmail)
+      const praktikaKey = buildPraktikaKey(row)
 
-        return {
+      if (!name || !praktikaKey) return []
+
+      return [
+        {
           praktika_referrer_key: praktikaKey,
           name,
           practice_name: practiceName || null,
           address: address || null,
-          email: email || null,
+          email,
           is_active: true,
           raw_json: row,
-          synced_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }
-      })
-      .filter(Boolean)
+          synced_at: now,
+          updated_at: now,
+        },
+      ]
+    })
 
-    if (referrers.length === 0) {
+    if (validReferrers.length === 0) {
       return NextResponse.json(
         {
           success: false,
-          error: "No valid referrers found.",
+          error: "No valid referrers found to sync.",
         },
         { status: 400 }
       )
     }
 
-    const validReferrers = referrers.filter(
-  (referrer): referrer is NonNullable<typeof referrer> => referrer !== null
-)
-
-if (validReferrers.length === 0) {
-  return NextResponse.json({
-    success: false,
-    error: "No valid referrers found to sync.",
-  })
-}
-
-const { error } = await supabase
-  .from("report_referrers")
-  .upsert(validReferrers, {
-    onConflict: "praktika_referrer_key",
-  })
+    const { error } = await supabase
+      .from("report_referrers")
+      .upsert(validReferrers, {
+        onConflict: "praktika_referrer_key",
+      })
 
     if (error) {
       return NextResponse.json(
@@ -132,8 +142,9 @@ const { error } = await supabase
 
     return NextResponse.json({
       success: true,
-      imported: referrers.length,
-      skipped: rows.length - referrers.length,
+      imported: validReferrers.length,
+      skipped: rows.length - validReferrers.length,
+      withEmail: validReferrers.filter((referrer) => referrer.email).length,
     })
   } catch (error) {
     console.error(error)

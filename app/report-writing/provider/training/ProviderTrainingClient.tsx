@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 const defaultCorrespondenceTypes = [
   { value: "consultation_report", label: "Consultation Report" },
@@ -41,6 +41,16 @@ type CorrespondenceType = {
   label: string
 }
 
+type LearnedEditExample = {
+  id: string
+  report_type: string
+  original_text: string
+  final_text: string
+  source: string | null
+  created_at: string
+  report_draft_id?: string | null
+}
+
 function deidentifyText(text: string) {
   return text
     .replace(/\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/g, "[DATE]")
@@ -56,6 +66,18 @@ function deidentifyText(text: string) {
     .replace(/\bDOB[:\s]*[^\n,]+/gi, "DOB: [DOB]")
 }
 
+function getReportTypeLabel(value: string, customTypes: CorrespondenceType[]) {
+  const builtIn = defaultCorrespondenceTypes.find((type) => type.value === value)
+  const custom = customTypes.find((type) => type.type_key === value)
+
+  return builtIn?.label || custom?.label || value.replace(/_/g, " ")
+}
+
+function truncateText(text: string, maxLength = 600) {
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, maxLength)}...`
+}
+
 export default function ProviderTrainingClient() {
   const [providerId, setProviderId] = useState("")
   const [providerName, setProviderName] = useState("")
@@ -64,6 +86,9 @@ export default function ProviderTrainingClient() {
   const [examples, setExamples] = useState<Example[]>([])
   const [terminology, setTerminology] = useState<Terminology[]>([])
   const [customTypes, setCustomTypes] = useState<CorrespondenceType[]>([])
+  const [learnedEditExamples, setLearnedEditExamples] = useState<
+    LearnedEditExample[]
+  >([])
 
   const [reportType, setReportType] = useState("consultation_report")
   const [newTypeLabel, setNewTypeLabel] = useState("")
@@ -74,10 +99,34 @@ export default function ProviderTrainingClient() {
   const [spokenText, setSpokenText] = useState("")
   const [preferredText, setPreferredText] = useState("")
 
+  const [learningFilter, setLearningFilter] = useState("all")
+  const [expandedLearningId, setExpandedLearningId] = useState<string | null>(
+    null
+  )
+
   const [loading, setLoading] = useState(false)
+
   const deidentifiedPreview = exampleText
     ? deidentifyText(exampleText)
     : "De-identified preview will appear here."
+
+  const filteredLearnedExamples = useMemo(() => {
+    if (learningFilter === "all") return learnedEditExamples
+
+    return learnedEditExamples.filter(
+      (example) => example.report_type === learningFilter
+    )
+  }, [learnedEditExamples, learningFilter])
+
+  const availableReportTypes = useMemo(() => {
+    return [
+      ...defaultCorrespondenceTypes,
+      ...customTypes.map((type) => ({
+        value: type.type_key,
+        label: type.label,
+      })),
+    ]
+  }, [customTypes])
 
   async function loadCurrentProvider() {
     const response = await fetch("/api/report-writing/current-provider")
@@ -102,10 +151,11 @@ export default function ProviderTrainingClient() {
     const data = await response.json()
 
     if (data.success) {
-      setRules(data.rules)
-      setExamples(data.examples)
-      setTerminology(data.terminology)
+      setRules(data.rules || [])
+      setExamples(data.examples || [])
+      setTerminology(data.terminology || [])
       setCustomTypes(data.correspondenceTypes || [])
+      setLearnedEditExamples(data.editExamples || [])
       setProviderName(data.provider?.name || "")
     }
   }
@@ -267,7 +317,7 @@ export default function ProviderTrainingClient() {
   }
 
   async function deleteItem(
-    type: "rule" | "example" | "terminology",
+    type: "rule" | "example" | "terminology" | "edit_example",
     id: string
   ) {
     const confirmed = confirm("Delete this training item?")
@@ -293,6 +343,56 @@ export default function ProviderTrainingClient() {
     }
 
     await loadTraining()
+  }
+
+  async function promoteLearningToRule(example: LearnedEditExample) {
+    const confirmed = confirm(
+      "Convert this learned edit into a permanent provider rule?"
+    )
+
+    if (!confirmed) return
+
+    const rule = [
+      `For ${getReportTypeLabel(
+        example.report_type,
+        customTypes
+      )}, follow this provider-approved wording pattern:`,
+      "",
+      "Avoid this AI wording:",
+      truncateText(example.original_text, 900),
+      "",
+      "Prefer this final approved wording/style:",
+      truncateText(example.final_text, 900),
+    ].join("\n")
+
+    setLoading(true)
+
+    try {
+      const response = await fetch("/api/report-writing/provider-training", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          providerId,
+          type: "rule",
+          reportType: example.report_type,
+          ruleText: rule,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!data.success) {
+        alert(data.error || "Failed to promote learning example.")
+        return
+      }
+
+      alert("Learning example promoted to a permanent rule.")
+      await loadTraining()
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function handleTextFileUpload(file: File) {
@@ -325,8 +425,10 @@ export default function ProviderTrainingClient() {
       </div>
 
       <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
-        These rules and examples are only used for this provider. Examples are
-        de-identified before saving, but you should still check the preview.
+        These rules, examples, terminology preferences, and learned edits are
+        only used for this provider. Example correspondence should be
+        de-identified before saving. Learned edits are created automatically
+        when typists or providers approve edited AI letters.
       </div>
 
       <section className="rounded-2xl border bg-white p-5">
@@ -338,14 +440,8 @@ export default function ProviderTrainingClient() {
             value={reportType}
             onChange={(e) => setReportType(e.target.value)}
           >
-            {defaultCorrespondenceTypes.map((type) => (
+            {availableReportTypes.map((type) => (
               <option key={type.value} value={type.value}>
-                {type.label}
-              </option>
-            ))}
-
-            {customTypes.map((type) => (
-              <option key={type.type_key} value={type.type_key}>
                 {type.label}
               </option>
             ))}
@@ -471,17 +567,149 @@ export default function ProviderTrainingClient() {
         </section>
       </div>
 
+      <section className="rounded-2xl border bg-white p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold">Auto-learned Edit Examples</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              These are created when edited AI letters are approved. They are
+              automatically used in future AI drafts for this provider.
+            </p>
+          </div>
+
+          <select
+            className="rounded-xl border p-3 text-sm"
+            value={learningFilter}
+            onChange={(e) => setLearningFilter(e.target.value)}
+          >
+            <option value="all">All report types</option>
+            {availableReportTypes.map((type) => (
+              <option key={type.value} value={type.value}>
+                {type.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="mt-5 space-y-4">
+          {filteredLearnedExamples.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-300 p-5 text-sm text-slate-500">
+              No learned edit examples yet. They will appear here after an
+              edited AI-generated letter is approved.
+            </div>
+          ) : null}
+
+          {filteredLearnedExamples.map((example) => {
+            const expanded = expandedLearningId === example.id
+
+            return (
+              <div key={example.id} className="rounded-2xl border p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-slate-500">
+                      {getReportTypeLabel(example.report_type, customTypes)}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-500">
+                      Source: {example.source || "approval_edit"} ·{" "}
+                      {example.created_at
+                        ? new Date(example.created_at).toLocaleString("en-AU")
+                        : "No date"}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() =>
+                        setExpandedLearningId(expanded ? null : example.id)
+                      }
+                      className="rounded-lg border px-3 py-2 text-xs font-semibold text-slate-700"
+                    >
+                      {expanded ? "Collapse" : "Review"}
+                    </button>
+
+                    <button
+                      onClick={() => promoteLearningToRule(example)}
+                      disabled={loading}
+                      className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                    >
+                      Promote to Rule
+                    </button>
+
+                    <button
+                      onClick={() => deleteItem("edit_example", example.id)}
+                      className="rounded-lg bg-red-600 px-3 py-2 text-xs font-semibold text-white"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+
+                {expanded ? (
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <div>
+                      <div className="mb-2 text-xs font-bold uppercase text-red-600">
+                        Original AI version
+                      </div>
+                      <div className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-xl border bg-red-50 p-3 text-sm text-slate-800">
+                        {example.original_text}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-2 text-xs font-bold uppercase text-emerald-700">
+                        Final approved version
+                      </div>
+                      <div className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-xl border bg-emerald-50 p-3 text-sm text-slate-800">
+                        {example.final_text}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <div className="text-xs font-semibold text-slate-500">
+                        Original AI
+                      </div>
+                      <div className="mt-1 whitespace-pre-wrap text-sm text-slate-700">
+                        {truncateText(example.original_text, 260)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <div className="text-xs font-semibold text-slate-500">
+                        Final approved
+                      </div>
+                      <div className="mt-1 whitespace-pre-wrap text-sm text-slate-700">
+                        {truncateText(example.final_text, 260)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </section>
+
       <div className="grid gap-6 lg:grid-cols-3">
         <section className="rounded-2xl border bg-white p-5">
           <h2 className="text-xl font-bold">Saved Rules</h2>
 
           <div className="mt-4 space-y-3">
+            {rules.length === 0 ? (
+              <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">
+                No rules saved yet.
+              </div>
+            ) : null}
+
             {rules.map((rule) => (
               <div key={rule.id} className="rounded-xl border p-3">
                 <div className="text-xs font-semibold text-slate-500">
-                  {rule.report_type}
+                  {getReportTypeLabel(rule.report_type, customTypes)}
                 </div>
-                <div className="mt-1 text-sm">{rule.rule_text}</div>
+                <div className="mt-1 whitespace-pre-wrap text-sm">
+                  {rule.rule_text}
+                </div>
 
                 <button
                   onClick={() => deleteItem("rule", rule.id)}
@@ -498,10 +726,16 @@ export default function ProviderTrainingClient() {
           <h2 className="text-xl font-bold">Saved Examples</h2>
 
           <div className="mt-4 space-y-3">
+            {examples.length === 0 ? (
+              <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">
+                No examples saved yet.
+              </div>
+            ) : null}
+
             {examples.map((example) => (
               <div key={example.id} className="rounded-xl border p-3">
                 <div className="text-xs font-semibold text-slate-500">
-                  {example.report_type}
+                  {getReportTypeLabel(example.report_type, customTypes)}
                 </div>
                 <div className="mt-1 font-semibold">
                   {example.title || "Untitled"}
@@ -525,6 +759,12 @@ export default function ProviderTrainingClient() {
           <h2 className="text-xl font-bold">Saved Terminology</h2>
 
           <div className="mt-4 space-y-3">
+            {terminology.length === 0 ? (
+              <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">
+                No terminology saved yet.
+              </div>
+            ) : null}
+
             {terminology.map((item) => (
               <div key={item.id} className="rounded-xl border p-3 text-sm">
                 <div>

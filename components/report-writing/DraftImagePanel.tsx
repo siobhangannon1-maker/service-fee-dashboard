@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
+import Cropper from "react-easy-crop"
 
 type DraftImage = {
   id: string
@@ -12,27 +13,34 @@ type DraftImage = {
   crop_zoom: number | null
   crop_rotation: number | null
   crop_aspect: string | null
+  crop_area_x: number | null
+  crop_area_y: number | null
+  crop_area_width: number | null
+  crop_area_height: number | null
   display_width_percent: number | null
   display_alignment: string | null
   display_page_break_before: boolean | null
 }
 
-type DraftImagePanelProps = {
+type Props = {
   reportDraftId: string
+}
+
+type CropAreaPixels = {
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
 async function normaliseImageFile(file: File): Promise<File> {
   const bitmap = await createImageBitmap(file)
-
   const canvas = document.createElement("canvas")
   canvas.width = bitmap.width
   canvas.height = bitmap.height
 
   const ctx = canvas.getContext("2d")
-
-  if (!ctx) {
-    return file
-  }
+  if (!ctx) return file
 
   ctx.drawImage(bitmap, 0, 0)
 
@@ -40,9 +48,7 @@ async function normaliseImageFile(file: File): Promise<File> {
     canvas.toBlob(resolve, "image/png", 0.95)
   })
 
-  if (!blob) {
-    return file
-  }
+  if (!blob) return file
 
   const safeName = file.name.replace(/\.[^/.]+$/, "")
 
@@ -51,19 +57,19 @@ async function normaliseImageFile(file: File): Promise<File> {
   })
 }
 
-export default function DraftImagePanel({
-  reportDraftId,
-}: DraftImagePanelProps) {
+export default function DraftImagePanel({ reportDraftId }: Props) {
   const [images, setImages] = useState<DraftImage[]>([])
   const [uploading, setUploading] = useState(false)
   const [selectedImage, setSelectedImage] = useState<DraftImage | null>(null)
 
   const [captionText, setCaptionText] = useState("")
-  const [cropX, setCropX] = useState(0)
-  const [cropY, setCropY] = useState(0)
+  const [crop, setCrop] = useState({ x: 0, y: 0 })
   const [cropZoom, setCropZoom] = useState(1)
   const [cropRotation, setCropRotation] = useState(0)
-  const [cropAspect, setCropAspect] = useState("original")
+  const [cropAspect, setCropAspect] = useState("landscape")
+  const [cropAreaPixels, setCropAreaPixels] =
+    useState<CropAreaPixels | null>(null)
+
   const [displayWidthPercent, setDisplayWidthPercent] = useState(60)
   const [displayAlignment, setDisplayAlignment] = useState("center")
   const [displayPageBreakBefore, setDisplayPageBreakBefore] = useState(false)
@@ -84,18 +90,48 @@ export default function DraftImagePanel({
     loadImages()
   }, [reportDraftId])
 
+  function getAspectNumber() {
+    if (cropAspect === "square") return 1
+    if (cropAspect === "portrait") return 3 / 4
+    return 16 / 9
+  }
+
   function openPreview(image: DraftImage) {
     setSelectedImage(image)
     setCaptionText(image.caption || "")
-    setCropX(Number(image.crop_x ?? 0))
-    setCropY(Number(image.crop_y ?? 0))
+
+    setCrop({ x: Number(image.crop_x ?? 0), y: Number(image.crop_y ?? 0) })
     setCropZoom(Number(image.crop_zoom ?? 1))
     setCropRotation(Number(image.crop_rotation ?? 0))
-    setCropAspect(image.crop_aspect || "original")
+    setCropAspect(image.crop_aspect || "landscape")
+
+    if (
+      image.crop_area_x !== null &&
+      image.crop_area_y !== null &&
+      image.crop_area_width !== null &&
+      image.crop_area_height !== null
+    ) {
+      setCropAreaPixels({
+        x: Number(image.crop_area_x),
+        y: Number(image.crop_area_y),
+        width: Number(image.crop_area_width),
+        height: Number(image.crop_area_height),
+      })
+    } else {
+      setCropAreaPixels(null)
+    }
+
     setDisplayWidthPercent(Number(image.display_width_percent ?? 60))
     setDisplayAlignment(image.display_alignment || "center")
     setDisplayPageBreakBefore(Boolean(image.display_page_break_before))
   }
+
+  const onCropComplete = useCallback(
+    (_croppedArea: unknown, croppedAreaPixels: CropAreaPixels) => {
+      setCropAreaPixels(croppedAreaPixels)
+    },
+    []
+  )
 
   async function saveImageSettings() {
     if (!selectedImage) return
@@ -108,11 +144,15 @@ export default function DraftImagePanel({
       body: JSON.stringify({
         imageId: selectedImage.id,
         caption: captionText,
-        cropX,
-        cropY,
+        cropX: crop.x,
+        cropY: crop.y,
         cropZoom,
         cropRotation,
         cropAspect,
+        cropAreaX: cropAreaPixels?.x ?? null,
+        cropAreaY: cropAreaPixels?.y ?? null,
+        cropAreaWidth: cropAreaPixels?.width ?? null,
+        cropAreaHeight: cropAreaPixels?.height ?? null,
         displayWidthPercent,
         displayAlignment,
         displayPageBreakBefore,
@@ -126,8 +166,35 @@ export default function DraftImagePanel({
       return
     }
 
-   await loadImages()
-setSelectedImage(null)
+    await loadImages()
+    setSelectedImage(null)
+  }
+
+  async function deleteSelectedImage() {
+    if (!selectedImage) return
+
+    const confirmed = confirm("Delete this image from the report?")
+    if (!confirmed) return
+
+    const response = await fetch("/api/report-writing/delete-draft-image", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        imageId: selectedImage.id,
+      }),
+    })
+
+    const data = await response.json()
+
+    if (!data.success) {
+      alert(data.error || "Failed to delete image.")
+      return
+    }
+
+    setSelectedImage(null)
+    await loadImages()
   }
 
   async function uploadImage(file: File) {
@@ -156,13 +223,6 @@ setSelectedImage(null)
     } finally {
       setUploading(false)
     }
-  }
-
-  function getPreviewAspectClass() {
-    if (cropAspect === "square") return "aspect-square"
-    if (cropAspect === "landscape") return "aspect-[4/3]"
-    if (cropAspect === "portrait") return "aspect-[3/4]"
-    return "aspect-[4/3]"
   }
 
   return (
@@ -230,10 +290,11 @@ setSelectedImage(null)
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-2xl font-bold">
-                  Image Preview & Formatting
+                  Image Crop & Formatting
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Adjust how this image will appear in the final report PDF.
+                  Drag the crop box corners/edges to control exactly what appears
+                  in the PDF.
                 </p>
               </div>
 
@@ -248,30 +309,26 @@ setSelectedImage(null)
 
             <div className="mt-5 grid gap-6 lg:grid-cols-[1.4fr_0.9fr]">
               <div>
-                <div
-                  className={[
-                    "relative mx-auto overflow-hidden rounded-2xl border bg-black",
-                    getPreviewAspectClass(),
-                  ].join(" ")}
-                  style={{
-                    width: `${displayWidthPercent}%`,
-                  }}
-                >
-                  <img
-                    src={selectedImage.publicUrl}
-                    alt={selectedImage.original_filename || "Clinical image"}
-                    className="absolute left-1/2 top-1/2 max-h-none max-w-none"
-                    style={{
-                      transform: `translate(-50%, -50%) translate(${cropX}px, ${cropY}px) scale(${cropZoom}) rotate(${cropRotation}deg)`,
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "contain",
-                    }}
+                <div className="relative h-[520px] overflow-hidden rounded-2xl bg-black">
+                  <Cropper
+                    image={selectedImage.publicUrl}
+                    crop={crop}
+                    zoom={cropZoom}
+                    rotation={cropRotation}
+                    aspect={getAspectNumber()}
+                    onCropChange={setCrop}
+                    onCropComplete={onCropComplete}
+                    onZoomChange={setCropZoom}
+                    onRotationChange={setCropRotation}
+                    cropShape="rect"
+                    showGrid
+                    objectFit="contain"
                   />
                 </div>
 
                 <p className="mt-3 text-center text-xs text-slate-500">
-                  Preview only. The PDF generator will use these saved settings.
+                  Drag the crop handles. The saved crop will be used in the final
+                  PDF.
                 </p>
               </div>
 
@@ -283,7 +340,7 @@ setSelectedImage(null)
 
                   <textarea
                     className="h-24 w-full rounded-xl border border-slate-300 p-3"
-                    placeholder="Example: OPG showing advanced periodontal bone loss around tooth 16."
+                    placeholder="Example: Pre operative image"
                     value={captionText}
                     onChange={(e) => setCaptionText(e.target.value)}
                   />
@@ -299,7 +356,6 @@ setSelectedImage(null)
                     value={cropAspect}
                     onChange={(e) => setCropAspect(e.target.value)}
                   >
-                    <option value="original">Standard</option>
                     <option value="landscape">Landscape</option>
                     <option value="portrait">Portrait</option>
                     <option value="square">Square</option>
@@ -313,43 +369,11 @@ setSelectedImage(null)
 
                   <input
                     type="range"
-                    min="0.5"
-                    max="3"
+                    min="1"
+                    max="5"
                     step="0.1"
                     value={cropZoom}
                     onChange={(e) => setCropZoom(Number(e.target.value))}
-                    className="w-full"
-                  />
-                </label>
-
-                <label className="block">
-                  <div className="mb-2 text-sm font-semibold text-slate-700">
-                    Move left/right: {cropX}px
-                  </div>
-
-                  <input
-                    type="range"
-                    min="-250"
-                    max="250"
-                    step="5"
-                    value={cropX}
-                    onChange={(e) => setCropX(Number(e.target.value))}
-                    className="w-full"
-                  />
-                </label>
-
-                <label className="block">
-                  <div className="mb-2 text-sm font-semibold text-slate-700">
-                    Move up/down: {cropY}px
-                  </div>
-
-                  <input
-                    type="range"
-                    min="-250"
-                    max="250"
-                    step="5"
-                    value={cropY}
-                    onChange={(e) => setCropY(Number(e.target.value))}
                     className="w-full"
                   />
                 </label>
@@ -428,11 +452,11 @@ setSelectedImage(null)
                   <button
                     type="button"
                     onClick={() => {
-                      setCropX(0)
-                      setCropY(0)
+                      setCrop({ x: 0, y: 0 })
                       setCropZoom(1)
                       setCropRotation(0)
-                      setCropAspect("original")
+                      setCropAspect("landscape")
+                      setCropAreaPixels(null)
                       setDisplayWidthPercent(60)
                       setDisplayAlignment("center")
                       setDisplayPageBreakBefore(false)
@@ -440,6 +464,14 @@ setSelectedImage(null)
                     className="rounded-xl border px-5 py-3 font-semibold text-slate-700"
                   >
                     Reset
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={deleteSelectedImage}
+                    className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white"
+                  >
+                    Delete Image
                   </button>
 
                   <button

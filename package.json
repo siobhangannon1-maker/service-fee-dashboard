@@ -45,6 +45,7 @@
     "qpdf": "^0.1.0-prealpha.1",
     "react": "19.0.0",
     "react-dom": "19.0.0",
+    "react-easy-crop": "^5.5.7",
     "recharts": "^2.15.4",
     "resend": "^4.0.1",
     "shadcn": "^2.10.0",

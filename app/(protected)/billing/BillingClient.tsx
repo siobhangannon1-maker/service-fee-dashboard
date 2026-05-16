@@ -951,8 +951,8 @@ export default function BillingClient() {
       totalFeesDue + autoTotals.hummFees + autoTotals.labImplantMaterials;
     const finalTotalDue =
       feesAndCostsTotal -
-      autoTotals.feesPaidToFocus +
-      autoTotals.feesOwed -
+      autoTotals.feesPaidToFocus -
+      autoTotals.feesOwed +
       autoTotals.feesPaidInError +
       manualInputs.ivFacilityFees;
 
@@ -1390,8 +1390,8 @@ export default function BillingClient() {
 
         const finalTotalDueWithExpenseGst =
           feesAndCostsTotalIncGst -
-          autoTotals.feesPaidToFocus +
-          autoTotals.feesOwed -
+          autoTotals.feesPaidToFocus -
+          autoTotals.feesOwed +
           autoTotals.feesPaidInError +
           manualInputs.ivFacilityFees;
 
@@ -1566,8 +1566,8 @@ try {
           totalFeesDue + labMaterialsTotalIncGst + hummMerchantFeesTotalIncGst;
         const finalTotalDueWithExpenseGst =
           feesAndCostsTotalWithExpenseGst -
-          autoTotals.feesPaidToFocus +
-          autoTotals.feesOwed -
+          autoTotals.feesPaidToFocus -
+          autoTotals.feesOwed +
           autoTotals.feesPaidInError +
           manualInputs.ivFacilityFees;
 
@@ -2409,8 +2409,8 @@ try {
               totalFeesDue + autoTotals.hummFees + autoTotals.labImplantMaterials;
             const finalTotalDue =
               feesAndCostsTotal -
-              autoTotals.feesPaidToFocus +
-              autoTotals.feesOwed -
+              autoTotals.feesPaidToFocus -
+              autoTotals.feesOwed +
               autoTotals.feesPaidInError +
               manualInputs.ivFacilityFees;
 

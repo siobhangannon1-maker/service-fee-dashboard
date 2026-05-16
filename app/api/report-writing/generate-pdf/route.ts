@@ -31,6 +31,10 @@ type DraftImage = {
   crop_zoom: number | null
   crop_rotation: number | null
   crop_aspect: string | null
+  crop_area_x: number | null
+  crop_area_y: number | null
+  crop_area_width: number | null
+  crop_area_height: number | null
   display_width_percent: number | null
   display_alignment: string | null
   display_page_break_before: boolean | null
@@ -129,21 +133,50 @@ async function downloadStorageFile(path: string) {
   return Buffer.from(await data.arrayBuffer())
 }
 
-async function embedStorageImage(
-  pdfDoc: PDFDocument,
-  storagePath: string,
-  cropRotation: number
-) {
-  const bytes = await downloadStorageFile(storagePath)
+async function embedStorageImage(pdfDoc: PDFDocument, image: DraftImage) {
+  const bytes = await downloadStorageFile(image.storage_path)
 
-  let pipeline = sharp(bytes)
-    .rotate()
-    .resize({
-      width: 1600,
-      height: 1600,
-      fit: "inside",
-      withoutEnlargement: true,
-    })
+  let pipeline = sharp(bytes).rotate()
+
+  const cropAreaX = image.crop_area_x
+  const cropAreaY = image.crop_area_y
+  const cropAreaWidth = image.crop_area_width
+  const cropAreaHeight = image.crop_area_height
+
+  if (
+    cropAreaX !== null &&
+    cropAreaY !== null &&
+    cropAreaWidth !== null &&
+    cropAreaHeight !== null &&
+    Number(cropAreaWidth) > 0 &&
+    Number(cropAreaHeight) > 0
+  ) {
+    const metadata = await pipeline.metadata()
+    const imageWidth = metadata.width || 0
+    const imageHeight = metadata.height || 0
+
+    const left = Math.max(0, Math.round(Number(cropAreaX)))
+    const top = Math.max(0, Math.round(Number(cropAreaY)))
+    const width = Math.min(
+      imageWidth - left,
+      Math.round(Number(cropAreaWidth))
+    )
+    const height = Math.min(
+      imageHeight - top,
+      Math.round(Number(cropAreaHeight))
+    )
+
+    if (width > 0 && height > 0) {
+      pipeline = pipeline.extract({
+        left,
+        top,
+        width,
+        height,
+      })
+    }
+  }
+
+  const cropRotation = Number(image.crop_rotation ?? 0)
 
   if (cropRotation) {
     pipeline = pipeline.rotate(cropRotation, {
@@ -151,15 +184,13 @@ async function embedStorageImage(
     })
   }
 
-  const jpegBytes = await pipeline
-    .flatten({ background: "#ffffff" })
-    .jpeg({
-      quality: 78,
-      mozjpeg: true,
-    })
-    .toBuffer()
+  const pngBytes = await pipeline
+  .png({
+    compressionLevel: 0,
+  })
+  .toBuffer()
 
-  return pdfDoc.embedJpg(jpegBytes)
+return pdfDoc.embedPng(pngBytes)
 }
 
 export async function POST(req: Request) {
@@ -226,7 +257,16 @@ export async function POST(req: Request) {
     const letterheadImage = await pdfDoc.embedPng(letterheadBytes)
 
     const signatureImage = signatureBytes
-      ? await pdfDoc.embedPng(signatureBytes)
+      ? await pdfDoc.embedPng(
+          await sharp(signatureBytes)
+            .trim()
+            .png({
+              compressionLevel: 9,
+              adaptiveFiltering: true,
+              force: true,
+            })
+            .toBuffer()
+        )
       : null
 
     const pageWidth = 595.28
@@ -295,7 +335,6 @@ export async function POST(req: Request) {
     drawLetterhead()
 
     const today = new Date().toLocaleDateString("en-AU")
-
     drawLine(today)
 
     y -= lineHeight
@@ -361,11 +400,14 @@ export async function POST(req: Request) {
     y -= 45
 
     if (signatureImage) {
+      const signatureWidth = 120
+      const signatureHeight = 38
+
       page.drawImage(signatureImage, {
         x: marginLeft,
         y,
-        width: 120,
-        height: 38,
+        width: signatureWidth,
+        height: signatureHeight,
       })
     }
 
@@ -387,13 +429,7 @@ export async function POST(req: Request) {
       y -= 4
 
       for (const image of images) {
-        const cropRotation = Number(image.crop_rotation ?? 0)
-
-        const embeddedImage = await embedStorageImage(
-          pdfDoc,
-          image.storage_path,
-          cropRotation
-        )
+        const embeddedImage = await embedStorageImage(pdfDoc, image)
 
         const displayWidthPercent = Number(image.display_width_percent ?? 60)
 
@@ -402,9 +438,11 @@ export async function POST(req: Request) {
             Math.min(Math.max(displayWidthPercent, 30), 100)) /
           100
 
-        const aspectRatio = getImageAspect(image.crop_aspect)
-        const frameWidth = imageWidth
-        const frameHeight = frameWidth / aspectRatio
+        const embeddedDims = embeddedImage.scale(1)
+const actualAspectRatio = embeddedDims.width / embeddedDims.height
+
+const frameWidth = imageWidth
+const frameHeight = frameWidth / actualAspectRatio
 
         const captionLines = image.caption ? wrapText(image.caption, 75) : []
 
@@ -429,32 +467,6 @@ export async function POST(req: Request) {
 
         const frameY = y - frameHeight
 
-        const cropZoom = Number(image.crop_zoom ?? 1)
-        const cropX = Number(image.crop_x ?? 0)
-        const cropY = Number(image.crop_y ?? 0)
-
-        const naturalWidth = embeddedImage.width
-        const naturalHeight = embeddedImage.height
-        const naturalAspect = naturalWidth / naturalHeight
-        const frameAspect = frameWidth / frameHeight
-
-        let containWidth = frameWidth
-        let containHeight = frameHeight
-
-        if (naturalAspect > frameAspect) {
-          containWidth = frameWidth
-          containHeight = frameWidth / naturalAspect
-        } else {
-          containHeight = frameHeight
-          containWidth = frameHeight * naturalAspect
-        }
-
-        const drawWidth = containWidth * cropZoom
-        const drawHeight = containHeight * cropZoom
-
-        const imageX = x + frameWidth / 2 - drawWidth / 2 + cropX
-        const imageY = frameY + frameHeight / 2 - drawHeight / 2 - cropY
-
         page.pushOperators(
           pushGraphicsState(),
           moveTo(x, frameY),
@@ -467,10 +479,10 @@ export async function POST(req: Request) {
         )
 
         page.drawImage(embeddedImage, {
-          x: imageX,
-          y: imageY,
-          width: drawWidth,
-          height: drawHeight,
+          x,
+          y: frameY,
+          width: frameWidth,
+          height: frameHeight,
         })
 
         page.pushOperators(popGraphicsState())

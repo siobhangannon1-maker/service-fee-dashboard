@@ -7,9 +7,23 @@ const serviceSupabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+function getDisplayNameFromEmail(email?: string | null) {
+  const normalized = String(email || "").trim().toLowerCase()
+
+  const knownUsers: Record<string, string> = {
+    "siobhangannon1@gmail.com": "Siobhan Gannon",
+    // Add Pamela’s login email here:
+    // "pamela@example.com": "Pamela Holland",
+  }
+
+  return knownUsers[normalized] || null
+}
+
 function getInitials(name?: string | null, email?: string | null) {
-  if (name) {
-    const parts = name.trim().split(/\s+/).filter(Boolean)
+  const fullName = name || getDisplayNameFromEmail(email)
+
+  if (fullName) {
+    const parts = fullName.trim().split(/\s+/).filter(Boolean)
     const initials = parts.map((part) => part[0]).join("")
     if (initials) return initials.slice(0, 3).toUpperCase()
   }
@@ -49,17 +63,20 @@ export async function getAuditActor() {
       }
     }
 
+    const email = user.email || null
+
     const fullName =
       user.user_metadata?.full_name ||
       user.user_metadata?.name ||
-      user.email ||
+      getDisplayNameFromEmail(email) ||
+      email ||
       "Unknown user"
 
     return {
       actorUserId: user.id,
       actorFullName: fullName,
-      actorEmail: user.email || null,
-      actorInitials: getInitials(fullName, user.email),
+      actorEmail: email,
+      actorInitials: getInitials(fullName, email),
     }
   } catch {
     return {

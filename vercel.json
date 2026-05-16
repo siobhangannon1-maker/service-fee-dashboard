@@ -11,8 +11,11 @@
     {
       "path": "/api/ai/brain/auto-run-pending-ocr",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/report-writing/retention-cleanup",
+      "schedule": "0 17 * * *"
     }
-
   ]
 }
   

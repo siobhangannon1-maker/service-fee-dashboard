@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import JSZip from "jszip"
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox"
 import SyncReferrersButton from "@/components/report-writing/SyncReferrersButton"
@@ -8,7 +8,11 @@ import DraftImagePanel from "@/components/report-writing/DraftImagePanel"
 import PraktikaSessionPanel from "@/components/PraktikaSessionPanel"
 import LetterAuditTrail from "@/components/report-writing/LetterAuditTrail"
 
-type Provider = { id: string; name: string }
+type Provider = {
+  id: string
+  name: string
+  typist_letters_require_approval: boolean | null
+}
 
 type ReportTypeOption = {
   value: string
@@ -25,10 +29,43 @@ type Draft = {
   edited_text: string | null
   ai_generated_text: string | null
   status: string
+  praktika_patient_id?: string | null
   created_at: string
+  uploaded_to_praktika?: boolean | null
+  uploaded_to_praktika_at?: string | null
+  emailed_to_referrer_at?: string | null
+  emailed_to_referrer_email?: string | null
+  emailed_to_referrer_resend_id?: string | null
 }
 
-type ListTab = "drafts" | "awaiting" | "approved" | "all"
+type QueueItem = {
+  id: string
+  provider_id: string | null
+  report_draft_id: string | null
+  appointment_id?: string | null
+  praktika_patient_id: string | null
+  patient_first_name: string | null
+  patient_last_name: string | null
+  patient_dob: string | null
+  appointment_time: string | null
+  queue_reason: string | null
+  status: string
+  raw_json?: Record<string, unknown> | null
+}
+
+type ListTab = "queue" | "drafts" | "awaiting" | "completed"
+
+type QueueStatusTab = "active" | "queued" | "started" | "completed"
+
+type AutoGenerateStatus =
+  | "idle"
+  | "loading_notes"
+  | "selecting_report_type"
+  | "generating"
+  | "ready"
+  | "error"
+
+type SaveStatus = "idle" | "unsaved" | "saving" | "saved" | "error"
 
 type PraktikaCandidate = {
   id: string
@@ -48,6 +85,13 @@ function splitPatientName(name: string | null) {
   }
 }
 
+function safeFileName(name: string | null | undefined) {
+  return String(name || "Patient")
+    .trim()
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+}
+
 function getFilenameFromResponse(response: Response, fallback: string) {
   const disposition = response.headers.get("Content-Disposition") || ""
   const match = disposition.match(/filename="(.+?)"/)
@@ -57,12 +101,163 @@ function getFilenameFromResponse(response: Response, fallback: string) {
   return fallback
 }
 
-function safeFileName(name: string | null | undefined) {
-  return String(name || "Patient")
-    .trim()
-    .replace(/[^a-z0-9]+/gi, "_")
-    .replace(/^_+|_+$/g, "")
+function cleanString(value: unknown) {
+  return String(value ?? "").trim()
 }
+
+
+function getQueueSearchText(item: QueueItem) {
+  const raw = item.raw_json || {}
+
+  return [
+    item.queue_reason,
+    raw.vchAppointmentNotes,
+    raw.vchTxType,
+    raw.vchTxLabel,
+    raw.vchTreatmentType,
+    raw.treatment_type,
+    raw.appointment_type,
+  ]
+    .map(cleanString)
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+}
+
+function inferReportTypeFromQueueItem(
+  item: QueueItem,
+  reportTypes: ReportTypeOption[]
+) {
+  const text = getQueueSearchText(item)
+  const available = new Set(reportTypes.map((type) => type.value))
+
+  const candidates: Array<{ value: string; keywords: string[] }> = [
+    {
+      value: "osseointegration_letter",
+      keywords: ["osseointegration", "implant review", "implant check", "implant"],
+    },
+    {
+      value: "post_op_letter",
+      keywords: [
+        "post op",
+        "post-op",
+        "postoperative",
+        "post operative",
+        "healing review",
+      ],
+    },
+    {
+      value: "surgery_report",
+      keywords: ["surgery", "surgical", "extraction", "expose", "biopsy", "graft"],
+    },
+    {
+      value: "SPT_report",
+      keywords: ["spt", "supportive periodontal", "maintenance", "perio maintenance"],
+    },
+    {
+      value: "review",
+      keywords: ["review", "follow up", "follow-up", "recall"],
+    },
+    {
+      value: "treatment_report",
+      keywords: ["treatment", "debridement", "fmd", "root planing", "non-surgical"],
+    },
+    {
+      value: "consultation_report",
+      keywords: ["consult", "consultation", "new patient", "initial", "specialist consultation"],
+    },
+  ]
+
+  for (const candidate of candidates) {
+    if (!available.has(candidate.value)) continue
+
+    if (candidate.keywords.some((keyword) => text.includes(keyword))) {
+      return candidate.value
+    }
+  }
+
+  if (available.has("consultation_report")) return "consultation_report"
+
+  return reportTypes[0]?.value || "consultation_report"
+}
+
+function getQueueBadges(item: QueueItem) {
+  const text = getQueueSearchText(item)
+  const badges: Array<{ label: string; className: string }> = []
+
+  if (/urgent|asap|today|pain|swelling|infection/.test(text)) {
+    badges.push({
+      label: "Urgent",
+      className: "bg-red-100 text-red-700",
+    })
+  }
+
+  if (/consult|consultation|new patient|initial/.test(text)) {
+    badges.push({
+      label: "Consult",
+      className: "bg-blue-100 text-blue-700",
+    })
+  }
+
+  if (/surgery|surgical|extraction|biopsy|graft/.test(text)) {
+    badges.push({
+      label: "Surgery",
+      className: "bg-purple-100 text-purple-700",
+    })
+  }
+
+  if (/review|post op|post-op|postoperative|post operative/.test(text)) {
+    badges.push({
+      label: "Review",
+      className: "bg-amber-100 text-amber-700",
+    })
+  }
+
+  if (/implant|osseointegration/.test(text)) {
+    badges.push({
+      label: "Implant",
+      className: "bg-indigo-100 text-indigo-700",
+    })
+  }
+
+  if (/spt|maintenance|supportive periodontal/.test(text)) {
+    badges.push({
+      label: "SPT",
+      className: "bg-emerald-100 text-emerald-700",
+    })
+  }
+
+  return badges.slice(0, 3)
+}
+
+function getSuggestedReportTypeLabel(
+  item: QueueItem,
+  reportTypes: ReportTypeOption[]
+) {
+  const inferredType = inferReportTypeFromQueueItem(item, reportTypes)
+
+  return (
+    reportTypes.find((type) => type.value === inferredType)?.label ||
+    inferredType.replace(/_/g, " ")
+  )
+}
+
+function getQueueClinicalNotes(item: QueueItem) {
+  const raw = item.raw_json || {}
+
+  const appointmentNotes = cleanString(raw.vchAppointmentNotes)
+  const treatmentType = cleanString(raw.vchTxType)
+  const treatmentLabel = cleanString(raw.vchTxLabel)
+
+  const lines = [
+    appointmentNotes ? `Appointment notes: ${appointmentNotes}` : "",
+    treatmentType ? `Treatment type: ${treatmentType}` : "",
+    treatmentLabel ? `Treatment label: ${treatmentLabel}` : "",
+  ].filter(Boolean)
+
+  return lines.join("\n")
+}
+
 
 export default function TypistPage() {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -72,18 +267,32 @@ export default function TypistPage() {
   ])
 
   const [drafts, setDrafts] = useState<Draft[]>([])
+  const [queue, setQueue] = useState<QueueItem[]>([])
+  const [activeQueueItemId, setActiveQueueItemId] = useState<string | null>(null)
+
+  const [queueFromDate, setQueueFromDate] = useState(
+    new Date().toISOString().slice(0, 10)
+  )
+  const [queueToDate, setQueueToDate] = useState(
+    new Date().toISOString().slice(0, 10)
+  )
+
   const [selectedDraft, setSelectedDraft] = useState<Draft | null>(null)
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([])
-  const [listTab, setListTab] = useState<ListTab>("drafts")
+  const [listTab, setListTab] = useState<ListTab>("queue")
+  const [queueStatusTab, setQueueStatusTab] = useState<QueueStatusTab>("active")
 
   const [patientFirstName, setPatientFirstName] = useState("")
   const [patientLastName, setPatientLastName] = useState("")
   const [patientDob, setPatientDob] = useState("")
+  const [dobFocused, setDobFocused] = useState(false)
+
   const [referrerName, setReferrerName] = useState("")
   const [referrerAddress, setReferrerAddress] = useState("")
   const [reportType, setReportType] = useState("consultation_report")
   const [clinicalNotes, setClinicalNotes] = useState("")
   const [letterText, setLetterText] = useState("")
+  const [generatedAiLetterText, setGeneratedAiLetterText] = useState("")
 
   const [praktikaCandidates, setPraktikaCandidates] = useState<
     PraktikaCandidate[]
@@ -93,12 +302,35 @@ export default function TypistPage() {
   const [matchingPatient, setMatchingPatient] = useState(false)
 
   const [loading, setLoading] = useState(false)
+  const [autoGenerateStatus, setAutoGenerateStatus] =
+    useState<AutoGenerateStatus>("idle")
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle")
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastAutosavedTextRef = useRef("")
+  const [secureEmailModalOpen, setSecureEmailModalOpen] = useState(false)
+  const [secureEmailRecipient, setSecureEmailRecipient] = useState("")
+  const [secureEmailSubject, setSecureEmailSubject] = useState("")
+  const [secureEmailBody, setSecureEmailBody] = useState("")
+  const [secureEmailConfirmed, setSecureEmailConfirmed] = useState(false)
+  const [secureEmailPreviewLoading, setSecureEmailPreviewLoading] =
+    useState(false)
+
+  const [completeModalOpen, setCompleteModalOpen] = useState(false)
+  const [completeConfirmed, setCompleteConfirmed] = useState(false)
+  const [completeStep, setCompleteStep] = useState("")
 
   const patientName = `${patientFirstName} ${patientLastName}`.trim()
 
-  const filteredDrafts = useMemo(() => {
-    if (listTab === "all") return drafts
+  const selectedProvider = providers.find(
+    (provider) => provider.id === selectedProviderId
+  )
+  const [mounted, setMounted] = useState(false)
 
+  const selectedProviderRequiresApproval =
+    selectedProvider?.typist_letters_require_approval !== false
+
+  const filteredDrafts = useMemo(() => {
     if (listTab === "drafts") {
       return drafts.filter((draft) =>
         ["draft", "edited_by_typist"].includes(draft.status)
@@ -111,8 +343,13 @@ export default function TypistPage() {
       )
     }
 
-    if (listTab === "approved") {
-      return drafts.filter((draft) => draft.status === "approved")
+    if (listTab === "completed") {
+      return drafts.filter(
+        (draft) =>
+          draft.status === "approved" ||
+          Boolean(draft.emailed_to_referrer_at) ||
+          Boolean(draft.uploaded_to_praktika_at)
+      )
     }
 
     return drafts
@@ -132,13 +369,493 @@ export default function TypistPage() {
     (draft) => draft.status === "awaiting_provider_approval"
   ).length
 
-  const countApproved = drafts.filter(
-    (draft) => draft.status === "approved"
+  const countCompleted = drafts.filter(
+    (draft) =>
+      draft.status === "approved" ||
+      Boolean(draft.emailed_to_referrer_at) ||
+      Boolean(draft.uploaded_to_praktika_at)
   ).length
 
-  const selectedProvider = providers.find(
-    (provider) => provider.id === selectedProviderId
+  const selectedDraftHasPraktikaPatient = Boolean(
+    selectedPraktikaPatientId || selectedDraft?.praktika_patient_id
   )
+
+  const selectedDraftUploadedToPraktika = Boolean(
+    selectedDraft?.uploaded_to_praktika || selectedDraft?.uploaded_to_praktika_at
+  )
+
+  const selectedDraftEmailed = Boolean(selectedDraft?.emailed_to_referrer_at)
+
+  const selectedDraftCanComplete = Boolean(
+    selectedDraft &&
+      ["approved", "uploaded_to_praktika"].includes(selectedDraft.status)
+  )
+
+  function getNextWorkflowAction() {
+    if (!selectedDraft) return "Select or create a letter."
+
+    if (selectedDraft.status !== "approved") {
+      return selectedProviderRequiresApproval
+        ? "Send this letter to the provider for approval."
+        : "Mark this letter approved when ready."
+    }
+
+    if (!selectedDraftHasPraktikaPatient) {
+      return "Search/select the Praktika patient match."
+    }
+
+    if (!selectedDraftUploadedToPraktika) {
+      return "Upload the approved PDF to Praktika."
+    }
+
+    if (!selectedDraftEmailed) {
+      return "Email the encrypted PDF to the referrer."
+    }
+
+    return "Completed: uploaded and emailed."
+  }
+
+  function getAutoGenerateStatusLabel() {
+    if (autoGenerateStatus === "loading_notes") {
+      return "Loading appointment and same-day clinical notes..."
+    }
+
+    if (autoGenerateStatus === "selecting_report_type") {
+      return "Selecting the best report type from the appointment notes..."
+    }
+
+    if (autoGenerateStatus === "generating") {
+      return "Ready to generate the AI draft manually."
+    }
+
+    if (autoGenerateStatus === "ready") {
+      return "Clinical notes loaded. Click Generate Letter From Notes when ready."
+    }
+
+    if (autoGenerateStatus === "error") {
+      return "Clinical notes could not be fully loaded. You can still edit or generate manually."
+    }
+
+    return "Select a queue item to begin."
+  }
+
+  function getSaveStatusLabel() {
+    if (!selectedDraft) {
+      return letterText.trim() ? "Not saved yet" : "No draft selected"
+    }
+
+    if (saveStatus === "saving") return "Saving edits..."
+    if (saveStatus === "unsaved") return "Unsaved changes"
+    if (saveStatus === "error") return "Autosave failed"
+
+    if (lastSavedAt) {
+      return `Saved ${new Date(lastSavedAt).toLocaleTimeString("en-AU", {
+        hour: "2-digit",
+        minute: "2-digit",
+      })}`
+    }
+
+    return "Saved"
+  }
+
+  function handleLetterTextChange(value: string) {
+    setLetterText(value)
+
+    if (selectedDraft) {
+      const existingText =
+        selectedDraft.edited_text || selectedDraft.ai_generated_text || ""
+
+      if (value !== existingText) {
+        setSaveStatus("unsaved")
+      }
+    }
+  }
+
+  function getQueueStatusLabel(status: QueueStatusTab) {
+    if (status === "active") return "Active"
+    if (status === "queued") return "Queued"
+    if (status === "started") return "Started"
+    return "Completed / Sent"
+  }
+
+  function getDefaultSecureEmailSubject() {
+    const name = selectedDraft?.patient_name || patientName || "Patient"
+    return `Secure correspondence from Focus Dental Specialists - ${name}`
+  }
+
+  function getDefaultSecureEmailBody() {
+    return `You have received secure correspondence from Focus Dental Specialists regarding ${
+      selectedDraft?.patient_name || patientName || "this patient"
+    }. The attached PDF is password encrypted with the patient DOB (DDMMYYYY).`
+  }
+
+  async function pullSameDayClinicalNotes(params: {
+    patientId: string
+    appointmentDate: string
+    appointmentId?: string | null
+  }) {
+    const response = await fetch("/api/report-writing/praktika-clinical-notes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        patientId: params.patientId,
+        appointmentDate: params.appointmentDate,
+        appointmentId: params.appointmentId || null,
+      }),
+    })
+
+    const text = await response.text()
+
+    if (!text.trim()) return ""
+
+    let data: any
+
+    try {
+      data = JSON.parse(text)
+    } catch (error) {
+      console.error("Clinical notes API returned non-JSON:", text.slice(0, 500))
+      return ""
+    }
+
+    if (data.success && data.text?.trim()) {
+      return String(data.text).trim()
+    }
+
+    if (!data.success) {
+      console.error("Clinical notes API error:", data)
+    }
+
+    return ""
+  }
+
+  async function openOneClickCompleteModal() {
+    if (!selectedDraft) return
+
+    if (!["approved", "uploaded_to_praktika"].includes(selectedDraft.status)) {
+      alert("Only approved reports can be completed.")
+      return
+    }
+
+    const finalPraktikaPatientId =
+      selectedPraktikaPatientId || selectedDraft.praktika_patient_id || ""
+
+    if (!finalPraktikaPatientId) {
+      alert("Please search/select the Praktika patient match before completing.")
+      return
+    }
+
+    setSecureEmailPreviewLoading(true)
+    setCompleteConfirmed(false)
+    setCompleteStep("")
+    setSecureEmailSubject(getDefaultSecureEmailSubject())
+    setSecureEmailBody(getDefaultSecureEmailBody())
+    setSecureEmailRecipient(selectedDraft.emailed_to_referrer_email || "")
+    setCompleteModalOpen(true)
+
+    try {
+      const response = await fetch(
+        `/api/report-writing/get-referrer-email?draftId=${selectedDraft.id}`
+      )
+
+      const data = await response.json()
+
+      if (data.success && data.email?.trim()) {
+        setSecureEmailRecipient(data.email.trim())
+      }
+    } catch (error) {
+      console.error("Referrer email lookup failed:", error)
+    } finally {
+      setSecureEmailPreviewLoading(false)
+    }
+  }
+
+  async function completeUploadAndEmailFromModal() {
+    if (!selectedDraft) return
+
+    if (!["approved", "uploaded_to_praktika"].includes(selectedDraft.status)) {
+      alert("Only approved reports can be completed.")
+      return
+    }
+
+    const finalPraktikaPatientId =
+      selectedPraktikaPatientId || selectedDraft.praktika_patient_id || ""
+
+    if (!finalPraktikaPatientId) {
+      alert("Please select the correct Praktika patient first.")
+      return
+    }
+
+    if (!secureEmailRecipient.trim() || !secureEmailRecipient.includes("@")) {
+      alert("Please enter a valid referrer email address.")
+      return
+    }
+
+    if (!completeConfirmed) {
+      alert("Please tick the checkbox confirming the details are correct.")
+      return
+    }
+
+    if (!secureEmailSubject.trim()) {
+      alert("Please enter an email subject.")
+      return
+    }
+
+    if (!secureEmailBody.trim()) {
+      alert("Please enter email text.")
+      return
+    }
+
+    if (selectedDraftUploadedToPraktika || selectedDraftEmailed) {
+      const alreadyDoneParts = [
+        selectedDraftUploadedToPraktika ? "already uploaded to Praktika" : "",
+        selectedDraftEmailed ? "already emailed" : "",
+      ].filter(Boolean)
+
+      const continueAnyway = confirm(
+        `This letter has ${alreadyDoneParts.join(" and ")}. Continue anyway?`
+      )
+
+      if (!continueAnyway) return
+    }
+
+    setLoading(true)
+
+    try {
+      setCompleteStep("Uploading approved PDF to Praktika...")
+
+      const uploadResponse = await fetch("/api/report-writing/upload-to-praktika", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          draftId: selectedDraft.id,
+          praktikaPatientId: finalPraktikaPatientId,
+        }),
+      })
+
+      const uploadData = await uploadResponse.json()
+
+      if (!uploadData.success) {
+        alert(uploadData.error || "Failed to upload to Praktika.")
+        console.error("Praktika upload error:", uploadData)
+        return
+      }
+
+      setCompleteStep("Updating Praktika letter icon and completing queue item...")
+
+      const iconResponse = await fetch(
+        "/api/report-writing/update-praktika-letter-icons",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            queueId: activeQueueItemId,
+            draftId: selectedDraft.id,
+          }),
+        }
+      )
+
+      const iconData = await iconResponse.json()
+
+      if (!iconData.success) {
+        console.warn("Praktika icon update skipped or failed:", iconData)
+
+        const noQueueLinked =
+          iconData.error?.toLowerCase?.().includes("queue") ||
+          iconData.error?.toLowerCase?.().includes("appointment") ||
+          iconData.error?.toLowerCase?.().includes("not found") ||
+          !activeQueueItemId
+
+        if (!noQueueLinked) {
+          alert(
+            "PDF uploaded to Praktika, but the Praktika appointment icon could not be updated. The secure email will still be sent."
+          )
+        }
+      }
+
+      setCompleteStep("Emailing encrypted PDF to referrer...")
+
+      const emailResponse = await fetch("/api/report-writing/email-secure-pdf", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          draftId: selectedDraft.id,
+          toEmail: secureEmailRecipient.trim(),
+          email: secureEmailRecipient.trim(),
+          subject: secureEmailSubject,
+          message: secureEmailBody,
+        }),
+      })
+
+      const emailData = await emailResponse.json()
+
+      if (!emailData.success) {
+        alert(
+          emailData.error ||
+            "PDF uploaded to Praktika, but failed to email secure PDF."
+        )
+        return
+      }
+
+      const completedAt = new Date().toISOString()
+
+      setSelectedDraft({
+        ...selectedDraft,
+        uploaded_to_praktika: true,
+        uploaded_to_praktika_at: completedAt,
+        emailed_to_referrer_at: completedAt,
+        emailed_to_referrer_email: emailData.email || secureEmailRecipient.trim(),
+        emailed_to_referrer_resend_id: emailData.resendId || null,
+      })
+
+      setActiveQueueItemId(null)
+      setCompleteStep("Complete.")
+      setCompleteModalOpen(false)
+      setCompleteConfirmed(false)
+
+      alert(
+        `Completed. PDF uploaded to Praktika and secure email sent to ${
+          emailData.email || secureEmailRecipient.trim()
+        }.`
+      )
+
+      await loadDrafts(selectedProviderId)
+      await loadQueue(selectedProviderId, queueStatusTab)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function openSecureEmailModal() {
+    if (!selectedDraft) return
+
+    if (!["approved", "uploaded_to_praktika"].includes(selectedDraft.status)) {
+      alert("Only approved reports can be emailed securely.")
+      return
+    }
+
+    setSecureEmailPreviewLoading(true)
+    setSecureEmailConfirmed(false)
+    setSecureEmailSubject(getDefaultSecureEmailSubject())
+    setSecureEmailBody(getDefaultSecureEmailBody())
+    setSecureEmailRecipient(
+  selectedDraft.emailed_to_referrer_email ||
+    ""
+)
+    setSecureEmailModalOpen(true)
+
+    try {
+  const response = await fetch(
+    `/api/report-writing/get-referrer-email?draftId=${selectedDraft.id}`
+  )
+
+  const data = await response.json()
+
+  if (data.success && data.email?.trim()) {
+    setSecureEmailRecipient(data.email.trim())
+  }
+} catch (error) {
+  console.error("Referrer email lookup failed:", error)
+} finally {
+  setSecureEmailPreviewLoading(false)
+}
+  }
+
+  async function sendSecureEmailFromModal() {
+    if (!selectedDraft) return
+
+    if (!secureEmailRecipient.trim() || !secureEmailRecipient.includes("@")) {
+      alert("Please enter a valid referrer email address.")
+      return
+    }
+
+    if (!secureEmailConfirmed) {
+      alert("Please tick the checkbox confirming the email address is correct.")
+      return
+    }
+
+    if (!secureEmailSubject.trim()) {
+      alert("Please enter an email subject.")
+      return
+    }
+
+    if (!secureEmailBody.trim()) {
+      alert("Please enter email text.")
+      return
+    }
+
+    setLoading(true)
+
+    try {
+      const response = await fetch("/api/report-writing/email-secure-pdf", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          draftId: selectedDraft.id,
+          toEmail: secureEmailRecipient.trim(),
+          email: secureEmailRecipient.trim(),
+          subject: secureEmailSubject,
+          message: secureEmailBody,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!data.success) {
+        alert(data.error || "Failed to email secure PDF.")
+        return
+      }
+
+      const iconResponse = await fetch(
+        "/api/report-writing/update-praktika-letter-icons",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            draftId: selectedDraft.id,
+          }),
+        }
+      )
+
+      const iconData = await iconResponse.json()
+
+      if (!iconData.success) {
+        alert(
+          `Secure PDF emailed to ${data.email}, but Praktika icons were not updated.`
+        )
+        console.error("Praktika icon update error:", iconData)
+      } else {
+        alert(`Secure PDF emailed to ${data.email}. Praktika icons updated.`)
+      }
+
+      const emailedAt = new Date().toISOString()
+      setSelectedDraft({
+        ...selectedDraft,
+        emailed_to_referrer_at: emailedAt,
+        emailed_to_referrer_email: data.email || null,
+        emailed_to_referrer_resend_id: data.resendId || null,
+      })
+
+      setSecureEmailModalOpen(false)
+      setSecureEmailConfirmed(false)
+
+      await loadDrafts(selectedProviderId)
+      await loadQueue(selectedProviderId, queueStatusTab)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function loadProviders() {
     const response = await fetch("/api/report-writing/get-providers")
@@ -184,6 +901,29 @@ export default function TypistPage() {
     }
   }
 
+  async function loadQueue(
+    providerId: string,
+    status: QueueStatusTab = queueStatusTab
+  ) {
+    const params = new URLSearchParams()
+    params.set("providerId", providerId)
+    params.set("status", status)
+
+    const response = await fetch(
+      `/api/report-writing/letter-queue?${params.toString()}`
+    )
+
+    const data = await response.json()
+
+    if (data.success) {
+      setQueue(data.queue)
+    }
+  }
+
+  useEffect(() => {
+  setMounted(true)
+}, [])
+
   useEffect(() => {
     loadProviders()
   }, [])
@@ -192,21 +932,88 @@ export default function TypistPage() {
     if (selectedProviderId) {
       loadDrafts(selectedProviderId)
       loadReportTypes(selectedProviderId)
+      loadQueue(selectedProviderId, queueStatusTab)
       clearForm()
       setSelectedDraftIds([])
     }
-  }, [selectedProviderId])
+  }, [selectedProviderId, queueStatusTab])
+
+  useEffect(() => {
+    if (!selectedDraft) return
+
+    const existingText =
+      selectedDraft.edited_text || selectedDraft.ai_generated_text || ""
+
+    if (letterText === existingText) return
+    if (letterText === lastAutosavedTextRef.current) return
+
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current)
+    }
+
+    autosaveTimerRef.current = setTimeout(async () => {
+      try {
+        setSaveStatus("saving")
+
+        const response = await fetch("/api/report-writing/update-draft", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            draftId: selectedDraft.id,
+            editedText: letterText,
+            status: selectedDraft.status,
+            learnFromEdits: false,
+            learningSource: "typist_autosave",
+          }),
+        })
+
+        const data = await response.json()
+
+        if (!data.success) {
+          console.error("Autosave failed:", data)
+          setSaveStatus("error")
+          return
+        }
+
+        lastAutosavedTextRef.current = letterText
+        setLastSavedAt(new Date().toISOString())
+        setSaveStatus("saved")
+
+        setSelectedDraft((current) =>
+          current && current.id === selectedDraft.id
+            ? { ...current, edited_text: letterText }
+            : current
+        )
+      } catch (error) {
+        console.error("Autosave error:", error)
+        setSaveStatus("error")
+      }
+    }, 1500)
+
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current)
+      }
+    }
+  }, [letterText, selectedDraft])
 
   function clearForm() {
     setSelectedDraft(null)
+    setActiveQueueItemId(null)
     setPatientFirstName("")
     setPatientLastName("")
     setPatientDob("")
+    setDobFocused(false)
     setReferrerName("")
     setReferrerAddress("")
     setReportType("consultation_report")
     setClinicalNotes("")
     setLetterText("")
+    setGeneratedAiLetterText("")
+    setAutoGenerateStatus("idle")
+    setSaveStatus("idle")
+    setLastSavedAt(null)
+    lastAutosavedTextRef.current = ""
     setPraktikaCandidates([])
     setSelectedPraktikaPatientId("")
   }
@@ -223,8 +1030,183 @@ export default function TypistPage() {
     setReportType(draft.report_type)
     setClinicalNotes("")
     setLetterText(draft.edited_text || draft.ai_generated_text || "")
+    setGeneratedAiLetterText(draft.ai_generated_text || "")
+    setSaveStatus("saved")
+    setLastSavedAt(draft.created_at || new Date().toISOString())
+    lastAutosavedTextRef.current = draft.edited_text || draft.ai_generated_text || ""
+    setAutoGenerateStatus("idle")
     setPraktikaCandidates([])
-    setSelectedPraktikaPatientId("")
+    setSelectedPraktikaPatientId(draft.praktika_patient_id || "")
+  }
+
+  async function startLetterFromQueue(item: QueueItem) {
+    setAutoGenerateStatus("loading_notes")
+    setSaveStatus("idle")
+    setLastSavedAt(null)
+    lastAutosavedTextRef.current = ""
+    setActiveQueueItemId(item.id)
+    setSelectedDraft(null)
+
+    const firstName = item.patient_first_name || ""
+    const lastName = item.patient_last_name || ""
+    const dob = item.patient_dob || ""
+    const linkedPraktikaPatientId = item.praktika_patient_id || ""
+    const queuedPatientName = `${firstName} ${lastName}`.trim()
+    const raw = item.raw_json || {}
+    const appointmentId =
+      item.appointment_id ||
+      String(raw.iAppointmentId || raw.appointment_id || "").trim() ||
+      null
+
+    setAutoGenerateStatus("selecting_report_type")
+
+    const inferredReportType = inferReportTypeFromQueueItem(item, reportTypes)
+    const appointmentNotes = getQueueClinicalNotes(item)
+
+    setPatientFirstName(firstName)
+    setPatientLastName(lastName)
+    setPatientDob(dob)
+    setReferrerName("")
+    setReferrerAddress("")
+    setReportType(inferredReportType)
+
+    setClinicalNotes(
+      [
+        appointmentNotes,
+        linkedPraktikaPatientId && item.appointment_time
+          ? "Loading same-day Praktika clinical notes..."
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+    )
+
+    setLetterText("")
+    setGeneratedAiLetterText("")
+    setPraktikaCandidates([])
+    setSelectedPraktikaPatientId(linkedPraktikaPatientId)
+
+    let sameDayClinicalNotes = ""
+
+    if (linkedPraktikaPatientId && item.appointment_time) {
+      try {
+        sameDayClinicalNotes = await pullSameDayClinicalNotes({
+          patientId: linkedPraktikaPatientId,
+          appointmentDate: item.appointment_time.slice(0, 10),
+          appointmentId,
+        })
+      } catch (error) {
+        console.error("Failed to pull Praktika clinical notes:", error)
+      }
+    }
+
+    const combinedClinicalNotes = [
+      appointmentNotes,
+      sameDayClinicalNotes ? "Same-day Praktika clinical notes:" : "",
+      sameDayClinicalNotes,
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+
+    const finalClinicalNotes = combinedClinicalNotes || appointmentNotes
+
+    setClinicalNotes(finalClinicalNotes)
+
+    setAutoGenerateStatus("ready")
+  }
+
+  async function updateQueueStatus(queueId: string, status: string) {
+    await fetch("/api/report-writing/letter-queue", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        queueId,
+        status,
+      }),
+    })
+  }
+
+  async function markQueueItemStarted(item: QueueItem) {
+    await updateQueueStatus(item.id, "started")
+    await loadQueue(selectedProviderId)
+  }
+
+  async function updatePraktikaLetterIconsForCurrentDraft() {
+    if (!selectedDraft) return
+
+    const response = await fetch(
+      "/api/report-writing/update-praktika-letter-icons",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          queueId: activeQueueItemId,
+          draftId: selectedDraft.id,
+        }),
+      }
+    )
+
+    const data = await response.json()
+
+    if (!data.success) {
+      alert(
+        data.error ||
+          "Report was completed, but failed to update Praktika letter icons."
+      )
+      return
+    }
+
+    setActiveQueueItemId(null)
+    await loadQueue(selectedProviderId, queueStatusTab)
+  }
+
+  async function syncQueueRange() {
+    if (!queueFromDate || !queueToDate) {
+      alert("Please select both a from date and a to date.")
+      return
+    }
+
+    if (queueFromDate > queueToDate) {
+      alert("From date cannot be after to date.")
+      return
+    }
+
+    setLoading(true)
+
+    try {
+      const response = await fetch(
+        "/api/report-writing/letter-queue/sync-praktika",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            fromDate: queueFromDate,
+            toDate: queueToDate,
+          }),
+        }
+      )
+
+      const data = await response.json()
+
+      if (!data.success) {
+        alert(data.error || "Failed to sync letter queue.")
+        return
+      }
+
+      alert(`Queue synced. ${data.queued || 0} item(s) found.`)
+
+      if (selectedProviderId) {
+        await loadQueue(selectedProviderId)
+      }
+    } finally {
+      setLoading(false)
+    }
   }
 
   function toggleDraftSelection(draftId: string) {
@@ -284,12 +1266,14 @@ export default function TypistPage() {
       }
 
       setLetterText(data.report)
+      setGeneratedAiLetterText(data.report)
+      setAutoGenerateStatus("ready")
     } finally {
       setLoading(false)
     }
   }
 
-  async function saveNewDraft() {
+  async function saveNewDraft(status: "draft" | "approved" = "draft") {
     if (!selectedProviderId) {
       alert("Please select a provider first.")
       return
@@ -305,6 +1289,20 @@ export default function TypistPage() {
       return
     }
 
+    if (status === "approved") {
+      const confirmed = confirm(
+        "Approve this letter now? Any edits made to the AI-generated text will be included for provider-specific learning."
+      )
+
+      if (!confirmed) return
+    }
+
+    const originalAiText = generatedAiLetterText || letterText
+    const finalApprovedText = letterText
+    const hasEditedAiText =
+      Boolean(generatedAiLetterText.trim()) &&
+      generatedAiLetterText.trim() !== letterText.trim()
+
     setLoading(true)
 
     try {
@@ -319,19 +1317,47 @@ export default function TypistPage() {
           referrerAddress,
           reportType,
           clinicalNotes,
-          generatedReport: letterText,
-          status: "draft",
+          generatedReport: originalAiText,
+          editedText: finalApprovedText,
+          finalApprovedText,
+          originalAiText,
+          learnFromEdits: status === "approved" && hasEditedAiText,
+          learningSource: "typist_direct_approval",
+          praktikaPatientId: selectedPraktikaPatientId || null,
+          queueId: activeQueueItemId,
+          status,
         }),
       })
 
       const data = await response.json()
 
       if (!data.success) {
-        alert(data.error || "Failed to save draft")
+        alert(data.error || "Failed to save letter")
         return
       }
 
-      alert("Draft saved for provider.")
+      alert(status === "approved" ? "Letter approved." : "Draft saved for provider.")
+
+      if (activeQueueItemId) {
+        await fetch("/api/report-writing/letter-queue", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            queueId: activeQueueItemId,
+            status: "started",
+            reportDraftId: data.draft?.id || data.draftId || data.id,
+          }),
+        })
+
+        setActiveQueueItemId(null)
+        await loadQueue(selectedProviderId, queueStatusTab)
+      }
+
+      setSaveStatus("saved")
+      setLastSavedAt(new Date().toISOString())
+
       await loadDrafts(selectedProviderId)
       clearForm()
     } finally {
@@ -352,6 +1378,13 @@ export default function TypistPage() {
           draftId: selectedDraft.id,
           editedText: letterText,
           status,
+          originalAiText: selectedDraft.ai_generated_text || generatedAiLetterText,
+          finalApprovedText: letterText,
+          learnFromEdits:
+            status === "approved" &&
+            Boolean((selectedDraft.ai_generated_text || generatedAiLetterText || "").trim()) &&
+            (selectedDraft.ai_generated_text || generatedAiLetterText || "").trim() !== letterText.trim(),
+          learningSource: "typist_existing_draft_approval",
         }),
       })
 
@@ -363,6 +1396,9 @@ export default function TypistPage() {
       }
 
       alert("Draft updated.")
+      setSaveStatus("saved")
+      setLastSavedAt(new Date().toISOString())
+      lastAutosavedTextRef.current = letterText
       await loadDrafts(selectedProviderId)
 
       setSelectedDraft({
@@ -370,6 +1406,7 @@ export default function TypistPage() {
         patient_name: patientName,
         patient_dob: patientDob,
         edited_text: letterText,
+        ai_generated_text: selectedDraft.ai_generated_text || generatedAiLetterText,
         status,
       })
     } finally {
@@ -557,6 +1594,49 @@ export default function TypistPage() {
     }
   }
 
+  async function persistPraktikaPatientMatch(praktikaPatientId: string | null) {
+    setSelectedPraktikaPatientId(praktikaPatientId || "")
+
+    if (!selectedDraft) return
+
+    try {
+      const response = await fetch("/api/report-writing/update-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draftId: selectedDraft.id,
+          praktikaPatientId: praktikaPatientId || null,
+          learnFromEdits: false,
+          learningSource: "typist_praktika_match",
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!data.success) {
+        alert(data.error || "Failed to save Praktika patient match.")
+        return
+      }
+
+      setSelectedDraft((current) =>
+        current && current.id === selectedDraft.id
+          ? { ...current, praktika_patient_id: praktikaPatientId || null }
+          : current
+      )
+
+      setDrafts((current) =>
+        current.map((draft) =>
+          draft.id === selectedDraft.id
+            ? { ...draft, praktika_patient_id: praktikaPatientId || null }
+            : draft
+        )
+      )
+    } catch (error) {
+      console.error("Failed to save Praktika patient match:", error)
+      alert("Failed to save Praktika patient match.")
+    }
+  }
+
   async function searchPraktikaPatientMatch() {
     if (!patientName.trim()) {
       alert("Patient name is required before matching.")
@@ -589,7 +1669,7 @@ export default function TypistPage() {
       setPraktikaCandidates(data.candidates || [])
 
       if ((data.candidates || []).length === 1) {
-        setSelectedPraktikaPatientId(data.candidates[0].id)
+        await persistPraktikaPatientMatch(data.candidates[0].id)
       }
     } finally {
       setMatchingPatient(false)
@@ -599,18 +1679,21 @@ export default function TypistPage() {
   async function uploadToPraktika() {
     if (!selectedDraft) return
 
-    if (selectedDraft.status !== "approved") {
+    if (!["approved", "uploaded_to_praktika"].includes(selectedDraft.status)) {
       alert("Only approved reports can be uploaded to Praktika.")
       return
     }
 
-    if (!selectedPraktikaPatientId) {
+    const finalPraktikaPatientId =
+      selectedPraktikaPatientId || selectedDraft.praktika_patient_id || ""
+
+    if (!finalPraktikaPatientId) {
       alert("Please search and select the correct Praktika patient first.")
       return
     }
 
     const confirmed = confirm(
-      `Upload this approved report to Praktika patient ID ${selectedPraktikaPatientId}?`
+      `Upload this approved report to Praktika patient ID ${finalPraktikaPatientId}?`
     )
 
     if (!confirmed) return
@@ -625,7 +1708,7 @@ export default function TypistPage() {
         },
         body: JSON.stringify({
           draftId: selectedDraft.id,
-          praktikaPatientId: selectedPraktikaPatientId,
+          praktikaPatientId: finalPraktikaPatientId,
         }),
       })
 
@@ -637,21 +1720,30 @@ export default function TypistPage() {
         return
       }
 
-      alert("Report uploaded to Praktika communications.")
+      alert("Report uploaded to Praktika communications. You can now email the encrypted PDF.")
+      await updatePraktikaLetterIconsForCurrentDraft()
+
+      setSelectedDraft({
+        ...selectedDraft,
+        uploaded_to_praktika: true,
+        uploaded_to_praktika_at: new Date().toISOString(),
+      })
+
       await loadDrafts(selectedProviderId)
-      clearForm()
+      await loadQueue(selectedProviderId, queueStatusTab)
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="grid h-screen grid-cols-12 bg-slate-100">
+    <>
+      <div className="grid h-screen grid-cols-12 bg-slate-100">
       <div className="col-span-3 overflow-y-auto border-r bg-white">
         <div className="border-b p-4">
           <h1 className="text-2xl font-bold">Typist Portal</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Create, edit, approve workflow, image-format, and upload reports.
+            Queue, create, edit, image-format, export, and upload reports.
           </p>
 
           <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -678,7 +1770,12 @@ export default function TypistPage() {
                   : "border-slate-200 bg-white text-slate-700 hover:bg-slate-100",
               ].join(" ")}
             >
-              {provider.name}
+              <div>{provider.name}</div>
+              <div className="mt-1 text-xs font-normal text-slate-500">
+                {provider.typist_letters_require_approval === false
+                  ? "Typist can approve"
+                  : "Provider approval required"}
+              </div>
             </button>
           ))}
         </div>
@@ -699,10 +1796,10 @@ export default function TypistPage() {
 
           <div className="mt-4 grid grid-cols-2 gap-2">
             {[
+              ["queue", `Queue (${queue.length})`],
               ["drafts", `Drafts (${countDrafts})`],
               ["awaiting", `Awaiting (${countAwaiting})`],
-              ["approved", `Approved (${countApproved})`],
-              ["all", `All (${drafts.length})`],
+              ["completed", `Completed (${countCompleted})`],
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -720,84 +1817,263 @@ export default function TypistPage() {
                 {label}
               </button>
             ))}
-          </div>
-
-          <div className="mt-4 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <label className="flex items-center gap-2 text-xs text-slate-600">
-                <input
-                  type="checkbox"
-                  checked={allVisibleSelected}
-                  onChange={toggleSelectAllVisible}
-                />
-                Select all visible
-              </label>
-
-              <button
-                onClick={deleteCheckedDrafts}
-                disabled={loading || selectedDraftIds.length === 0}
-                className="rounded-lg bg-red-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
-              >
-                Delete selected ({selectedDraftIds.length})
-              </button>
-            </div>
 
             <button
-              onClick={bulkGenerateApprovedPdfs}
-              disabled={loading || selectedDraftIds.length === 0}
-              className="w-full rounded-lg bg-purple-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              type="button"
+              onClick={() => {
+                window.location.href = "/report-writing/history"
+              }}
+              className="rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100"
             >
-              Bulk Generate Branded PDFs
+              History / Archive
             </button>
           </div>
-        </div>
 
-        <div className="space-y-2 p-3">
-          {filteredDrafts.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">
-              No letters in this list.
-            </div>
-          ) : null}
-
-          {filteredDrafts.map((draft) => (
-            <div
-              key={draft.id}
-              className={[
-                "rounded-xl border bg-white p-3 hover:bg-slate-50",
-                selectedDraft?.id === draft.id
-                  ? "border-blue-600"
-                  : "border-slate-200",
-              ].join(" ")}
-            >
-              <div className="flex gap-3">
-                <input
-                  type="checkbox"
-                  checked={selectedDraftIds.includes(draft.id)}
-                  onChange={() => toggleDraftSelection(draft.id)}
-                  className="mt-1"
-                />
+          {listTab !== "queue" ? (
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="flex items-center gap-2 text-xs text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={toggleSelectAllVisible}
+                  />
+                  Select all visible
+                </label>
 
                 <button
-                  type="button"
-                  onClick={() => selectDraft(draft)}
-                  className="flex-1 text-left"
+                  onClick={deleteCheckedDrafts}
+                  disabled={loading || selectedDraftIds.length === 0}
+                  className="rounded-lg bg-red-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
                 >
-                  <div className="font-semibold">
-                    {draft.patient_name || "Unnamed patient"}
-                  </div>
+                  Delete selected ({selectedDraftIds.length})
+                </button>
+              </div>
 
-                  <div className="text-sm text-slate-500">
-                    {draft.report_type}
-                  </div>
+              <button
+                onClick={bulkGenerateApprovedPdfs}
+                disabled={loading || selectedDraftIds.length === 0}
+                className="w-full rounded-lg bg-purple-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                Bulk Generate Branded PDFs
+              </button>
+            </div>
+          ) : null}
+        </div>
 
-                  <div className="mt-1 text-xs text-slate-400">
-                    {draft.status}
+        {listTab === "queue" ? (
+          <div className="space-y-3 p-3">
+            <div className="rounded-2xl border bg-white p-3">
+              <div className="mb-3">
+                <h3 className="text-sm font-bold text-slate-900">
+                  Sync Praktika Letter Queue
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Pull appointments with the Typist Letter icon for a single day
+                  or date range. Completed items appear in Completed / Sent.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block">
+                  <div className="mb-1 text-xs font-semibold text-slate-500">
+                    From Date
                   </div>
+                  <input
+                    type="date"
+                    value={queueFromDate}
+                    onChange={(e) => setQueueFromDate(e.target.value)}
+                    className="w-full rounded-xl border p-2 text-sm"
+                  />
+                </label>
+
+                <label className="block">
+                  <div className="mb-1 text-xs font-semibold text-slate-500">
+                    To Date
+                  </div>
+                  <input
+                    type="date"
+                    value={queueToDate}
+                    onChange={(e) => setQueueToDate(e.target.value)}
+                    className="w-full rounded-xl border p-2 text-sm"
+                  />
+                </label>
+
+                <button
+                  onClick={syncQueueRange}
+                  disabled={loading}
+                  className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {loading ? "Syncing..." : "Sync Queue"}
                 </button>
               </div>
             </div>
-          ))}
-        </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              {(["active", "queued", "started", "completed"] as QueueStatusTab[]).map(
+                (status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    onClick={() => setQueueStatusTab(status)}
+                    className={[
+                      "rounded-xl border px-3 py-2 text-xs font-semibold",
+                      queueStatusTab === status
+                        ? "border-blue-600 bg-blue-50 text-blue-900"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100",
+                    ].join(" ")}
+                  >
+                    {getQueueStatusLabel(status)}
+                  </button>
+                )
+              )}
+            </div>
+
+            {queue.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">
+                No {getQueueStatusLabel(queueStatusTab).toLowerCase()} queue items.
+              </div>
+            ) : null}
+
+            {queue.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={async () => {
+                  if (item.status === "completed") return
+
+                  await startLetterFromQueue(item)
+                  await markQueueItemStarted(item)
+                }}
+                className={[
+                  "w-full rounded-xl border bg-white p-3 text-left",
+                  item.status === "completed"
+                    ? "cursor-default opacity-90"
+                    : "hover:bg-slate-50",
+                  activeQueueItemId === item.id
+                    ? "border-blue-600 ring-2 ring-blue-100"
+                    : "border-slate-200",
+                ].join(" ")}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-semibold">
+                      {[item.patient_first_name, item.patient_last_name]
+                        .filter(Boolean)
+                        .join(" ") || "Unnamed patient"}
+                    </div>
+
+                    <div className="text-sm text-slate-500">
+                      DOB: {item.patient_dob || "Not available"}
+                    </div>
+
+                    <div className="text-xs text-slate-400">
+                      {item.appointment_time
+                        ? new Date(item.appointment_time).toLocaleString(
+                            "en-AU"
+                          )
+                        : "No appointment time"}
+                    </div>
+
+                    <div className="mt-1 text-xs text-slate-400">
+                      {item.queue_reason || "Typist Letter"}
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
+                        Suggested: {getSuggestedReportTypeLabel(item, reportTypes)}
+                      </span>
+
+                      {getQueueBadges(item).map((badge) => (
+                        <span
+                          key={badge.label}
+                          className={[
+                            "rounded-full px-2 py-1 text-xs font-semibold",
+                            badge.className,
+                          ].join(" ")}
+                        >
+                          {badge.label}
+                        </span>
+                      ))}
+                    </div>
+
+                    {item.praktika_patient_id ? (
+                      <div className="mt-1 text-xs font-semibold text-indigo-600">
+                        Praktika patient linked: {item.praktika_patient_id}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div
+                    className={[
+                      "rounded-full px-2 py-1 text-xs font-semibold",
+                      item.status === "queued"
+                        ? "bg-blue-100 text-blue-700"
+                        : item.status === "started"
+                          ? "bg-amber-100 text-amber-700"
+                          : "bg-emerald-100 text-emerald-700",
+                    ].join(" ")}
+                  >
+                    {item.status === "completed" ? "sent" : item.status}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-2 p-3">
+            {filteredDrafts.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">
+                No letters in this list.
+              </div>
+            ) : null}
+
+            {filteredDrafts.map((draft) => (
+              <div
+                key={draft.id}
+                className={[
+                  "rounded-xl border bg-white p-3 hover:bg-slate-50",
+                  selectedDraft?.id === draft.id
+                    ? "border-blue-600"
+                    : "border-slate-200",
+                ].join(" ")}
+              >
+                <div className="flex gap-3">
+                  <input
+                    type="checkbox"
+                    checked={selectedDraftIds.includes(draft.id)}
+                    onChange={() => toggleDraftSelection(draft.id)}
+                    className="mt-1"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => selectDraft(draft)}
+                    className="flex-1 text-left"
+                  >
+                    <div className="font-semibold">
+                      {draft.patient_name || "Unnamed patient"}
+                    </div>
+
+                    <div className="text-sm text-slate-500">
+                      {draft.report_type}
+                    </div>
+
+                    <div className="mt-1 text-xs text-slate-400">
+                      {draft.status}
+                    </div>
+
+                    {draft.emailed_to_referrer_at ? (
+                      <div className="mt-1 text-xs font-semibold text-emerald-600">
+                        Emailed to {draft.emailed_to_referrer_email || "referrer"}
+                      </div>
+                    ) : null}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="col-span-6 flex flex-col bg-white">
@@ -809,62 +2085,91 @@ export default function TypistPage() {
           <p className="text-sm text-slate-500">
             Provider: {selectedProvider?.name || "None selected"}
           </p>
+
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            <div
+              className={[
+                "rounded-xl border px-3 py-2 text-xs font-semibold",
+                autoGenerateStatus === "ready"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : autoGenerateStatus === "error"
+                    ? "border-red-200 bg-red-50 text-red-700"
+                    : ["loading_notes", "selecting_report_type"].includes(autoGenerateStatus)
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-slate-200 bg-slate-50 text-slate-600",
+              ].join(" ")}
+            >
+              {getAutoGenerateStatusLabel()}
+            </div>
+
+            <div
+              className={[
+                "rounded-xl border px-3 py-2 text-xs font-semibold",
+                saveStatus === "saved"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : saveStatus === "saving"
+                    ? "border-blue-200 bg-blue-50 text-blue-700"
+                    : saveStatus === "error"
+                      ? "border-red-200 bg-red-50 text-red-700"
+                      : saveStatus === "unsaved"
+                        ? "border-amber-200 bg-amber-50 text-amber-700"
+                        : "border-slate-200 bg-slate-50 text-slate-600",
+              ].join(" ")}
+            >
+              {getSaveStatusLabel()}
+            </div>
+          </div>
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-4">
           <div className="grid gap-3 md:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">
-                Patient First Name
-              </label>
-              <input
-                className="w-full rounded-xl border p-3"
-                placeholder="Patient First Name"
-                value={patientFirstName}
-                onChange={(e) => setPatientFirstName(e.target.value)}
-              />
-            </div>
+            <input
+              className="rounded-xl border p-3"
+              placeholder="Patient First Name"
+              value={patientFirstName}
+              onChange={(e) => setPatientFirstName(e.target.value)}
+            />
 
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">
-                Patient Last Name
-              </label>
-              <input
-                className="w-full rounded-xl border p-3"
-                placeholder="Patient Last Name"
-                value={patientLastName}
-                onChange={(e) => setPatientLastName(e.target.value)}
-              />
-            </div>
+            <input
+              className="rounded-xl border p-3"
+              placeholder="Patient Last Name"
+              value={patientLastName}
+              onChange={(e) => setPatientLastName(e.target.value)}
+            />
 
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">
-                Patient DOB
-              </label>
+            <div className="relative">
+              {!patientDob && !dobFocused ? (
+                <div className="pointer-events-none absolute left-4 top-1/2 z-10 -translate-y-1/2 bg-white pr-2 text-slate-400">
+                  Patient DOB
+                </div>
+              ) : null}
+
               <input
-                className="w-full rounded-xl border p-3"
+                className={[
+                  "w-full rounded-xl border p-3",
+                  !patientDob && !dobFocused
+                    ? "text-transparent"
+                    : "text-slate-900",
+                ].join(" ")}
                 type="date"
                 value={patientDob}
+                onFocus={() => setDobFocused(true)}
+                onBlur={() => setDobFocused(false)}
                 onChange={(e) => setPatientDob(e.target.value)}
               />
             </div>
 
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">
-                Report Type
-              </label>
-              <select
-                className="w-full rounded-xl border p-3"
-                value={reportType}
-                onChange={(e) => setReportType(e.target.value)}
-              >
-                {reportTypes.map((type) => (
-                  <option key={type.value} value={type.value}>
-                    {type.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <select
+              className="rounded-xl border p-3"
+              value={reportType}
+              onChange={(e) => setReportType(e.target.value)}
+            >
+              {reportTypes.map((type) => (
+                <option key={type.value} value={type.value}>
+                  {type.label}
+                </option>
+              ))}
+            </select>
 
             <ReferrerSearchBox
               onSelect={(referrer) => {
@@ -907,11 +2212,23 @@ export default function TypistPage() {
             </>
           ) : null}
 
+
+          {clinicalNotes.trim() ? (
+            <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-2 text-sm font-bold text-slate-900">
+                Source notes used for AI draft
+              </div>
+              <div className="max-h-44 overflow-y-auto whitespace-pre-wrap text-sm text-slate-700">
+                {clinicalNotes}
+              </div>
+            </section>
+          ) : null}
+
           <textarea
             className="h-96 w-full rounded-xl border p-4"
             placeholder="Letter text..."
             value={letterText}
-            onChange={(e) => setLetterText(e.target.value)}
+            onChange={(e) => handleLetterTextChange(e.target.value)}
           />
 
           {selectedDraft ? (
@@ -922,7 +2239,105 @@ export default function TypistPage() {
             <LetterAuditTrail draftId={selectedDraft.id} />
           ) : null}
 
-          {selectedDraft?.status === "approved" ? (
+          {selectedDraft ? (
+            <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-950">
+                    Workflow checklist
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Next step: {getNextWorkflowAction()}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2 text-xs font-semibold">
+                  <span
+                    className={[
+                      "rounded-full px-3 py-1",
+                      selectedDraft.status === "approved"
+                        ? "bg-emerald-100 text-emerald-700"
+                        : "bg-amber-100 text-amber-700",
+                    ].join(" ")}
+                  >
+                    {selectedDraft.status === "approved"
+                      ? "Approved"
+                      : "Needs approval"}
+                  </span>
+
+                  <span
+                    className={[
+                      "rounded-full px-3 py-1",
+                      selectedDraftHasPraktikaPatient
+                        ? "bg-emerald-100 text-emerald-700"
+                        : "bg-slate-200 text-slate-600",
+                    ].join(" ")}
+                  >
+                    {selectedDraftHasPraktikaPatient
+                      ? "Praktika linked"
+                      : "No Praktika match"}
+                  </span>
+
+                  <span
+                    className={[
+                      "rounded-full px-3 py-1",
+                      selectedDraftUploadedToPraktika
+                        ? "bg-emerald-100 text-emerald-700"
+                        : "bg-slate-200 text-slate-600",
+                    ].join(" ")}
+                  >
+                    {selectedDraftUploadedToPraktika
+                      ? "Uploaded"
+                      : "Not uploaded"}
+                  </span>
+
+                  <span
+                    className={[
+                      "rounded-full px-3 py-1",
+                      selectedDraftEmailed
+                        ? "bg-emerald-100 text-emerald-700"
+                        : "bg-slate-200 text-slate-600",
+                    ].join(" ")}
+                  >
+                    {selectedDraftEmailed ? "Emailed" : "Not emailed"}
+                  </span>
+                </div>
+              </div>
+            </section>
+          ) : null}
+
+          {selectedDraft?.emailed_to_referrer_at ? (
+            <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              <div className="font-bold">Secure email sent</div>
+              <div className="mt-1">
+                To: {selectedDraft.emailed_to_referrer_email || "Referrer"}
+              </div>
+              <div>
+                Sent: {new Date(selectedDraft.emailed_to_referrer_at).toLocaleString("en-AU")}
+              </div>
+              {selectedDraft.emailed_to_referrer_resend_id ? (
+                <div className="text-xs text-emerald-700">
+                  Resend ID: {selectedDraft.emailed_to_referrer_resend_id}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {selectedDraftCanComplete && selectedPraktikaPatientId ? (
+            <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              <div className="font-bold">Praktika patient already linked</div>
+              <div className="mt-1">Patient ID: {selectedPraktikaPatientId}</div>
+              <button
+                type="button"
+                onClick={() => persistPraktikaPatientMatch(null)}
+                className="mt-3 rounded-xl border border-emerald-300 bg-white px-4 py-2 text-xs font-semibold text-emerald-800"
+              >
+                Clear and search again
+              </button>
+            </section>
+          ) : null}
+
+          {selectedDraftCanComplete && !selectedPraktikaPatientId ? (
             <section className="space-y-4 rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
               <div>
                 <h3 className="text-lg font-bold text-indigo-950">
@@ -962,7 +2377,7 @@ export default function TypistPage() {
                           name="praktikaPatient"
                           checked={selectedPraktikaPatientId === candidate.id}
                           onChange={() =>
-                            setSelectedPraktikaPatientId(candidate.id)
+                            persistPraktikaPatientMatch(candidate.id)
                           }
                           className="mt-1"
                         />
@@ -994,13 +2409,25 @@ export default function TypistPage() {
 
         <div className="flex flex-wrap gap-3 border-t bg-white p-4">
           {!selectedDraft ? (
-            <button
-              onClick={saveNewDraft}
-              disabled={loading}
-              className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
-            >
-              Save Draft For Provider
-            </button>
+            <>
+              <button
+                onClick={() => saveNewDraft("draft")}
+                disabled={loading}
+                className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+              >
+                Save Draft For Provider
+              </button>
+
+              {mounted ? (
+  <button
+    onClick={() => saveNewDraft("approved")}
+    disabled={loading}
+    className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+  >
+    Approve Draft
+  </button>
+) : null}
+            </>
           ) : (
             <>
               <button
@@ -1013,15 +2440,21 @@ export default function TypistPage() {
 
               <button
                 onClick={() =>
-                  updateExistingDraft("awaiting_provider_approval")
+                  updateExistingDraft(
+                    selectedProviderRequiresApproval
+                      ? "awaiting_provider_approval"
+                      : "approved"
+                  )
                 }
                 disabled={loading}
                 className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
               >
-                Send To Provider Approval
+                {selectedProviderRequiresApproval
+                  ? "Send To Provider Approval"
+                  : "Mark Approved"}
               </button>
 
-              {selectedDraft.status === "approved" ? (
+              {selectedDraftCanComplete ? (
                 <>
                   <button
                     onClick={() => generatePdf(selectedDraft)}
@@ -1036,10 +2469,32 @@ export default function TypistPage() {
                     disabled={loading || !selectedPraktikaPatientId}
                     className="rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                   >
-                    Upload Approved PDF To Praktika
+                    {selectedDraftUploadedToPraktika
+                      ? "Upload Again To Praktika"
+                      : "Upload Approved PDF To Praktika"}
                   </button>
                 </>
               ) : null}
+
+              {selectedDraftCanComplete ? (
+                <button
+                  onClick={openOneClickCompleteModal}
+                  disabled={loading}
+                  className="rounded-xl bg-emerald-700 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Complete: Upload + Email
+                </button>
+              ) : null}
+
+              <button
+                onClick={openSecureEmailModal}
+                disabled={loading || !selectedDraftCanComplete}
+                className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+              >
+                {selectedDraft.emailed_to_referrer_at
+                  ? "Resend Secure PDF To Referrer"
+                  : "Email Secure PDF To Referrer"}
+              </button>
 
               <button
                 onClick={deleteSelectedDraft}
@@ -1053,5 +2508,267 @@ export default function TypistPage() {
         </div>
       </div>
     </div>
+
+      {completeModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-xl">
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-slate-950">
+                Complete Letter: Upload + Email
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Confirm the details below. This will upload the approved PDF to
+                Praktika, email the encrypted PDF to the referrer, and complete the workflow.
+                If this letter was not generated from the queue, the Praktika appointment icon step will be skipped.
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                <div className="text-xs font-semibold uppercase text-slate-500">
+                  Patient
+                </div>
+                <div className="mt-1 font-semibold text-slate-950">
+                  {selectedDraft?.patient_name || patientName || "Unnamed patient"}
+                </div>
+                <div className="mt-1 text-slate-600">
+                  DOB/password: {selectedDraft?.patient_dob || patientDob || "Not entered"} converted to DDMMYYYY
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                <div className="text-xs font-semibold uppercase text-slate-500">
+                  Praktika patient
+                </div>
+                <div className="mt-1 font-semibold text-slate-950">
+                  {selectedPraktikaPatientId || selectedDraft?.praktika_patient_id || "No patient linked"}
+                </div>
+                <div className="mt-1 text-slate-600">
+                  This patient ID will be used for the Praktika upload.
+                </div>
+              </div>
+            </div>
+
+            {!activeQueueItemId ? (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                <div className="font-semibold">Manual/non-queue letter</div>
+                <div className="mt-1">
+                  No queue appointment is linked to this letter, so the Praktika
+                  appointment icon update will be skipped. The PDF upload and
+                  secure email will still proceed.
+                </div>
+              </div>
+            ) : null}
+
+            {selectedDraftUploadedToPraktika || selectedDraftEmailed ? (
+              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+                <div className="font-semibold">Duplicate action warning</div>
+                <div className="mt-1">
+                  {selectedDraftUploadedToPraktika ? "This letter has already been uploaded to Praktika. " : ""}
+                  {selectedDraftEmailed ? "This letter has already been emailed. " : ""}
+                  Continuing will repeat one or more completion actions.
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mt-4 space-y-4">
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  Referrer email address
+                </div>
+                <input
+                  className="w-full rounded-xl border border-slate-300 p-3"
+                  value={secureEmailRecipient}
+                  onChange={(e) => {
+                    setSecureEmailRecipient(e.target.value)
+                    setCompleteConfirmed(false)
+                  }}
+                  placeholder="referrer@example.com"
+                />
+                {secureEmailPreviewLoading ? (
+                  <div className="mt-1 text-xs text-slate-500">
+                    Looking up referrer email...
+                  </div>
+                ) : null}
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  Subject
+                </div>
+                <input
+                  className="w-full rounded-xl border border-slate-300 p-3"
+                  value={secureEmailSubject}
+                  onChange={(e) => setSecureEmailSubject(e.target.value)}
+                />
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  Email text
+                </div>
+                <textarea
+                  className="h-32 w-full rounded-xl border border-slate-300 p-3"
+                  value={secureEmailBody}
+                  onChange={(e) => setSecureEmailBody(e.target.value)}
+                />
+              </label>
+
+              <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                <input
+                  type="checkbox"
+                  checked={completeConfirmed}
+                  onChange={(e) => setCompleteConfirmed(e.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  I have checked the patient, Praktika patient ID, referrer
+                  email address, and email text. I understand the attached PDF
+                  will be encrypted using the patient DOB in DDMMYYYY format.
+                </span>
+              </label>
+
+              {completeStep ? (
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm font-semibold text-blue-900">
+                  {completeStep}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setCompleteModalOpen(false)
+                  setCompleteConfirmed(false)
+                  setCompleteStep("")
+                }}
+                disabled={loading}
+                className="rounded-xl border px-5 py-3 font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={completeUploadAndEmailFromModal}
+                disabled={
+                  loading ||
+                  !completeConfirmed ||
+                  !secureEmailRecipient.includes("@") ||
+                  !(selectedPraktikaPatientId || selectedDraft?.praktika_patient_id)
+                }
+                className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+              >
+                {loading ? "Completing..." : "Upload + Email + Complete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {secureEmailModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-xl">
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-slate-950">
+                Confirm Secure Email
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Check the referrer email address and edit the message before
+                sending the password-protected PDF.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  Referrer email address
+                </div>
+                <input
+                  className="w-full rounded-xl border border-slate-300 p-3"
+                  value={secureEmailRecipient}
+                  onChange={(e) => {
+                    setSecureEmailRecipient(e.target.value)
+                    setSecureEmailConfirmed(false)
+                  }}
+                  placeholder="referrer@example.com"
+                />
+                {secureEmailPreviewLoading ? (
+                  <div className="mt-1 text-xs text-slate-500">
+                    Looking up referrer email...
+                  </div>
+                ) : null}
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  Subject
+                </div>
+                <input
+                  className="w-full rounded-xl border border-slate-300 p-3"
+                  value={secureEmailSubject}
+                  onChange={(e) => setSecureEmailSubject(e.target.value)}
+                />
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  Email text
+                </div>
+                <textarea
+                  className="h-36 w-full rounded-xl border border-slate-300 p-3"
+                  value={secureEmailBody}
+                  onChange={(e) => setSecureEmailBody(e.target.value)}
+                />
+              </label>
+
+              <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                <input
+                  type="checkbox"
+                  checked={secureEmailConfirmed}
+                  onChange={(e) => setSecureEmailConfirmed(e.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  I have checked that this email address is correct for the
+                  intended referrer.
+                </span>
+              </label>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+                The attached PDF password will be the patient DOB in DDMMYYYY
+                format.
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setSecureEmailModalOpen(false)}
+                disabled={loading}
+                className="rounded-xl border px-5 py-3 font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={sendSecureEmailFromModal}
+                disabled={
+                  loading ||
+                  !secureEmailConfirmed ||
+                  !secureEmailRecipient.includes("@")
+                }
+                className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+              >
+                {loading ? "Sending..." : "Send Secure Email"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+
   )
 }

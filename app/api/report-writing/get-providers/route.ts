@@ -7,38 +7,21 @@ const supabase = createClient(
 )
 
 export async function GET() {
-  try {
-    const { data, error } = await supabase
-      .from("providers")
-      .select("id, name, specialty, email, is_active")
-      .eq("is_active", true)
-      .order("name", { ascending: true })
+  const { data, error } = await supabase
+    .from("providers")
+    .select("id, name, typist_letters_require_approval, is_active")
+    .eq("is_active", true)
+    .order("name", { ascending: true })
 
-    if (error) {
-      console.error("SUPABASE ERROR:", error)
-
-      return NextResponse.json(
-        {
-          success: false,
-          error: error.message,
-        },
-        { status: 500 }
-      )
-    }
-
-    return NextResponse.json({
-      success: true,
-      providers: data ?? [],
-    })
-  } catch (error) {
-    console.error("SERVER ERROR:", error)
-
+  if (error) {
     return NextResponse.json(
-      {
-        success: false,
-        error: "Server error loading providers",
-      },
+      { success: false, error: error.message },
       { status: 500 }
     )
   }
+
+  return NextResponse.json({
+    success: true,
+    providers: data || [],
+  })
 }

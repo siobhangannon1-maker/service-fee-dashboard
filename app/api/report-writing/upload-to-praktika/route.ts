@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { uploadPatientCommunicationFile } from "@/lib/praktika/patient-filing"
-import { createReportAuditEvent } from "@/lib/report-writing/audit"
+import {
+  createReportAuditEvent,
+  getAuditActor,
+} from "@/lib/report-writing/audit"
 
 export const runtime = "nodejs"
 
@@ -42,6 +45,8 @@ export async function POST(req: Request) {
       )
     }
 
+    const actor = await getAuditActor()
+
     const { data: draft, error: draftError } = await supabase
       .from("report_drafts")
       .select("*")
@@ -55,7 +60,7 @@ export async function POST(req: Request) {
       )
     }
 
-    if (draft.status !== "approved") {
+    if (draft.status !== "approved" && draft.status !== "uploaded_to_praktika") {
       return NextResponse.json(
         {
           success: false,
@@ -113,8 +118,11 @@ export async function POST(req: Request) {
       .update({
         uploaded_to_praktika: true,
         uploaded_to_praktika_at: new Date().toISOString(),
+        uploaded_by_initials: actor.actorInitials,
+        uploaded_by_name: actor.actorFullName,
         praktika_patient_id: String(praktikaPatientId),
         status: "uploaded_to_praktika",
+        updated_at: new Date().toISOString(),
       })
       .eq("id", draftId)
       .select()
@@ -146,6 +154,8 @@ export async function POST(req: Request) {
         praktikaPatientId,
         fileName,
         status: updatedDraft.status,
+        uploadedByInitials: actor.actorInitials,
+        uploadedByName: actor.actorFullName,
       },
     })
 
@@ -153,6 +163,8 @@ export async function POST(req: Request) {
       success: true,
       message: "Report uploaded to Praktika communications.",
       fileName,
+      uploadedByInitials: actor.actorInitials,
+      uploadedByName: actor.actorFullName,
     })
   } catch (error) {
     console.error("Upload report to Praktika failed:", error)

@@ -27,6 +27,15 @@ function cleanText(value: unknown): string {
   return String(value ?? "").trim()
 }
 
+function cleanEmail(value: unknown): string | null {
+  const email = cleanText(value).toLowerCase()
+
+  if (!email) return null
+  if (!email.includes("@")) return null
+
+  return email
+}
+
 function buildAddress(row: PraktikaReferralRow): string {
   const street = cleanText(row.vchStreetAddress)
   const suburb = cleanText(row.vchSuburb)
@@ -67,7 +76,7 @@ async function importRows(rows: PraktikaReferralRow[]) {
     const name = cleanText(row.vchProvider)
     const practiceName = cleanText(row.vchClinic)
     const address = buildAddress(row)
-    const email = cleanText(row.vchEmail)
+    const email = cleanEmail(row.vchEmail)
     const praktikaKey = buildPraktikaKey(row)
 
     if (!name || !praktikaKey) continue
@@ -77,7 +86,7 @@ async function importRows(rows: PraktikaReferralRow[]) {
       name,
       practice_name: practiceName || null,
       address: address || null,
-      email: email || null,
+      email,
       is_active: true,
       raw_json: row,
       synced_at: new Date().toISOString(),
