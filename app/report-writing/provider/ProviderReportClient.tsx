@@ -887,11 +887,12 @@ export default function ProviderReportClient({
           {sharedPatientFields}
 
           <OpenAIDictationBox
-            disabled={!patientFirstName.trim() || !patientLastName.trim()}
-            onFinished={(text) => {
-              setDictatedLetter(text)
-            }}
-          />
+  providerId={providerId}
+  disabled={!patientFirstName.trim() || !patientLastName.trim()}
+  onFinished={(text) => {
+    setDictatedLetter(text)
+  }}
+/>
 
           <textarea
             className="h-96 w-full rounded-xl border border-slate-300 p-4"

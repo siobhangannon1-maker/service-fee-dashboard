@@ -1,0 +1,1 @@
+export { POST, runtime } from "../transcribe/route"

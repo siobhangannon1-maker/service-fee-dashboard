@@ -4,11 +4,13 @@ import { useRef, useState } from "react"
 
 type OpenAIDictationBoxProps = {
   disabled?: boolean
+  providerId: string
   onFinished: (text: string) => void
 }
 
 export default function OpenAIDictationBox({
   disabled,
+  providerId,
   onFinished,
 }: OpenAIDictationBoxProps) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -91,53 +93,51 @@ export default function OpenAIDictationBox({
     setMessage("Transcribing...")
   }
 
-async function transcribeAudio(audioBlob: Blob) {
-  try {
-    if (audioBlob.size === 0) {
-      alert("No audio was recorded. Please try again.")
-      return
-    }
-
-    const formData = new FormData()
-    formData.append("audio", audioBlob, "dictation.webm")
-
-    const response = await fetch("/api/report-writing/transcribe", {
-      method: "POST",
-      body: formData,
-    })
-
-    const responseText = await response.text()
-
-    let data: any = {}
-
+  async function transcribeAudio(audioBlob: Blob) {
     try {
-      data = JSON.parse(responseText)
-    } catch {
-      console.error("Non-JSON transcription response:", responseText)
-      alert(
-        `Transcription failed with non-JSON response. Status: ${response.status}`
-      )
-      return
-    }
+      if (audioBlob.size === 0) {
+        alert("No audio was recorded. Please try again.")
+        return
+      }
 
-    if (!response.ok || !data.success) {
-      console.error("Transcription API error:", data)
-      alert(
-        data.error ||
-          `Failed to transcribe. Status: ${response.status}`
-      )
-      return
-    }
+      const formData = new FormData()
+      formData.append("audio", audioBlob, "dictation.webm")
+      formData.append("providerId", providerId)
 
-    onFinished(data.text)
-    setMessage("Transcription complete.")
-  } catch (error) {
-    console.error("Dictation upload/transcription error:", error)
-    alert("Error transcribing audio. Check the browser console and terminal.")
-  } finally {
-    setProcessing(false)
+      const response = await fetch("/api/report-writing/transcribe", {
+        method: "POST",
+        body: formData,
+      })
+
+      const responseText = await response.text()
+
+      let data: any = {}
+
+      try {
+        data = JSON.parse(responseText)
+      } catch {
+        console.error("Non-JSON transcription response:", responseText)
+        alert(
+          `Transcription failed with non-JSON response. Status: ${response.status}`
+        )
+        return
+      }
+
+      if (!response.ok || !data.success) {
+        console.error("Transcription API error:", data)
+        alert(data.error || `Failed to transcribe. Status: ${response.status}`)
+        return
+      }
+
+      onFinished(data.text)
+      setMessage("Transcription complete.")
+    } catch (error) {
+      console.error("Dictation upload/transcription error:", error)
+      alert("Error transcribing audio. Check the browser console and terminal.")
+    } finally {
+      setProcessing(false)
+    }
   }
-}
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">

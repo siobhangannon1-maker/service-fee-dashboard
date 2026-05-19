@@ -92,9 +92,25 @@ ${dictatedText}
       }
     )
 
-    const generateData = await generateResponse.json()
+    const generateText = await generateResponse.text()
 
-    if (!generateData.success) {
+let generateData: any
+
+try {
+  generateData = generateText ? JSON.parse(generateText) : {}
+} catch {
+  return NextResponse.json(
+    {
+      success: false,
+      error:
+        "The generate API returned a web page instead of JSON. Check /api/report-writing/generate permissions or server error logs.",
+      preview: generateText.slice(0, 500),
+    },
+    { status: 500 }
+  )
+}
+
+if (!generateResponse.ok || !generateData.success) {
       return NextResponse.json(
         {
           success: false,
