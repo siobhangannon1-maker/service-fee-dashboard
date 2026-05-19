@@ -6,6 +6,7 @@ export type AppRole =
   | "super_admin"
   | "practice_manager"
   | "billing_staff"
+  | "typist"
   | "provider_readonly";
 
 export async function requireUser() {

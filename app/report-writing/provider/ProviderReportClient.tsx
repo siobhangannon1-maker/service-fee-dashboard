@@ -39,10 +39,20 @@ type Draft = {
   uploaded_to_praktika_at?: string | null
   emailed_to_referrer_at?: string | null
   emailed_to_referrer_email?: string | null
+  praktika_patient_id?: string | null
 }
 
 type ProviderReportClientProps = {
   providerId: string
+}
+
+type PraktikaCandidate = {
+  id: string
+  firstName: string
+  lastName: string
+  dob: string
+  matchScore: number | null
+  matchReason: string
 }
 
 type PatientAndReferrerFieldsProps = {
@@ -59,6 +69,12 @@ type PatientAndReferrerFieldsProps = {
   setReferrerName: (value: string) => void
   referrerAddress: string
   setReferrerAddress: (value: string) => void
+  selectedPraktikaPatientId: string
+  setSelectedPraktikaPatientId: (value: string) => void
+  praktikaCandidates: PraktikaCandidate[]
+  setPraktikaCandidates: (value: PraktikaCandidate[]) => void
+  matchingPatient: boolean
+  onSearchPraktikaPatient: () => void
 }
 
 type ActiveTab = "smart" | "dictate" | "notes" | "approval" | "approved"
@@ -77,6 +93,12 @@ function PatientAndReferrerFields({
   setReferrerName,
   referrerAddress,
   setReferrerAddress,
+  selectedPraktikaPatientId,
+  setSelectedPraktikaPatientId,
+  praktikaCandidates,
+  setPraktikaCandidates,
+  matchingPatient,
+  onSearchPraktikaPatient,
 }: PatientAndReferrerFieldsProps) {
   const [dobFocused, setDobFocused] = useState(false)
 
@@ -148,6 +170,83 @@ function PatientAndReferrerFields({
         value={referrerAddress}
         onChange={(e) => setReferrerAddress(e.target.value)}
       />
+
+      <section className="space-y-3 rounded-2xl border border-indigo-200 bg-indigo-50 p-4 md:col-span-2">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="font-bold text-indigo-950">Praktika patient link</h3>
+            <p className="mt-1 text-sm text-indigo-900">
+              Search Praktika and select the patient this letter applies to.
+              This ID is saved with the draft for the typist upload workflow.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onSearchPraktikaPatient}
+            disabled={matchingPatient || !patientFirstName.trim() || !patientLastName.trim()}
+            className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            {matchingPatient ? "Searching..." : "Search Praktika"}
+          </button>
+        </div>
+
+        {selectedPraktikaPatientId ? (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+            <div className="font-semibold">Selected Praktika patient</div>
+            <div className="mt-1">Patient ID: {selectedPraktikaPatientId}</div>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedPraktikaPatientId("")
+                setPraktikaCandidates([])
+              }}
+              className="mt-2 rounded-lg border border-emerald-300 bg-white px-3 py-1 text-xs font-semibold text-emerald-800"
+            >
+              Clear match
+            </button>
+          </div>
+        ) : null}
+
+        {praktikaCandidates.length > 0 ? (
+          <div className="space-y-2">
+            {praktikaCandidates.map((candidate) => (
+              <label
+                key={candidate.id}
+                className={[
+                  "block cursor-pointer rounded-xl border bg-white p-3",
+                  selectedPraktikaPatientId === candidate.id
+                    ? "border-indigo-600 ring-2 ring-indigo-200"
+                    : "border-slate-200",
+                ].join(" ")}
+              >
+                <div className="flex items-start gap-3">
+                  <input
+                    type="radio"
+                    name="providerPraktikaPatient"
+                    checked={selectedPraktikaPatientId === candidate.id}
+                    onChange={() => setSelectedPraktikaPatientId(candidate.id)}
+                    className="mt-1"
+                  />
+
+                  <div>
+                    <div className="font-semibold text-slate-950">
+                      {candidate.firstName} {candidate.lastName}
+                    </div>
+                    <div className="text-sm text-slate-600">
+                      DOB: {candidate.dob || "Not shown"} | Praktika ID:{" "}
+                      {candidate.id}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {candidate.matchReason}
+                    </div>
+                  </div>
+                </div>
+              </label>
+            ))}
+          </div>
+        ) : null}
+      </section>
     </div>
   )
 }
@@ -221,6 +320,12 @@ export default function ProviderReportClient({
   const [generatedReport, setGeneratedReport] = useState("")
   const [originalGeneratedReport, setOriginalGeneratedReport] = useState("")
   const [dictatedLetter, setDictatedLetter] = useState("")
+  const [selectedPraktikaPatientId, setSelectedPraktikaPatientId] =
+    useState("")
+  const [praktikaCandidates, setPraktikaCandidates] = useState<
+    PraktikaCandidate[]
+  >([])
+  const [matchingPatient, setMatchingPatient] = useState(false)
 
   const [approvalDrafts, setApprovalDrafts] = useState<Draft[]>([])
   const [approvedDrafts, setApprovedDrafts] = useState<Draft[]>([])
@@ -317,11 +422,59 @@ export default function ProviderReportClient({
     return true
   }
 
+  async function searchPraktikaPatientMatch() {
+    if (!validatePatientName()) return
+
+    setMatchingPatient(true)
+    setPraktikaCandidates([])
+    setSelectedPraktikaPatientId("")
+    setSavedMessage("")
+
+    try {
+      const response = await fetch("/api/report-writing/match-praktika-patient", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          patientName,
+          patientDob,
+        }),
+      })
+
+      const data = await readJsonSafely(response)
+
+      if (!data.success) {
+        alert(data.error || "Failed to search Praktika.")
+        return
+      }
+
+      const candidates: PraktikaCandidate[] = data.candidates || []
+      setPraktikaCandidates(candidates)
+
+      if (candidates.length === 1) {
+        setSelectedPraktikaPatientId(candidates[0].id)
+      }
+
+      if (candidates.length === 0) {
+        setSavedMessage("No Praktika patient matches found.")
+      }
+    } finally {
+      setMatchingPatient(false)
+    }
+  }
+
+  function clearPatientMatch() {
+    setSelectedPraktikaPatientId("")
+    setPraktikaCandidates([])
+  }
+
   function clearGeneratedForm() {
     setGeneratedReport("")
     setOriginalGeneratedReport("")
     setClinicalNotes("")
     setSavedMessage("")
+    clearPatientMatch()
   }
 
   async function handleGenerateFromNotes() {
@@ -409,6 +562,7 @@ export default function ProviderReportClient({
           learningSource: "provider_direct_generation_approval",
           sourceType: "clinical_notes",
           status: "approved",
+          praktikaPatientId: selectedPraktikaPatientId || null,
         }),
       })
 
@@ -461,6 +615,7 @@ export default function ProviderReportClient({
           sourceType: "dictation",
           status: "approved",
           learnFromEdits: false,
+          praktikaPatientId: selectedPraktikaPatientId || null,
         }),
       })
 
@@ -631,6 +786,12 @@ export default function ProviderReportClient({
       setReferrerName={setReferrerName}
       referrerAddress={referrerAddress}
       setReferrerAddress={setReferrerAddress}
+      selectedPraktikaPatientId={selectedPraktikaPatientId}
+      setSelectedPraktikaPatientId={setSelectedPraktikaPatientId}
+      praktikaCandidates={praktikaCandidates}
+      setPraktikaCandidates={setPraktikaCandidates}
+      matchingPatient={matchingPatient}
+      onSearchPraktikaPatient={searchPraktikaPatientMatch}
     />
   )
 
@@ -691,6 +852,7 @@ export default function ProviderReportClient({
               setGeneratedReport(result.report || "")
               setOriginalGeneratedReport(result.report || "")
               setSavedMessage("")
+              clearPatientMatch()
             }}
           />
 

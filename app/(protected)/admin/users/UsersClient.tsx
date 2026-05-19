@@ -10,6 +10,7 @@ type Role =
   | "super_admin"
   | "practice_manager"
   | "billing_staff"
+  | "typist"
   | "provider_readonly";
 
 type InviteMethod = "email" | "sms";
@@ -692,6 +693,7 @@ export default function UsersClient() {
                 <option value="practice_manager">practice_manager</option>
                 <option value="billing_staff">billing_staff</option>
                 <option value="provider_readonly">provider_readonly</option>
+                <option value="typist">typist</option>
               </select>
             </div>
 
@@ -817,22 +819,23 @@ export default function UsersClient() {
                         Role
                       </label>
                       <select
-                        className="w-full rounded-2xl border px-3 py-2"
-                        value={row.role}
-                        onChange={(e) =>
-                          updateRole(row.user_id, e.target.value as Role)
-                        }
-                      >
-                        <option value="super_admin">super_admin</option>
-                        <option value="admin">admin</option>
-                        <option value="practice_manager">
-                          practice_manager
-                        </option>
-                        <option value="billing_staff">billing_staff</option>
-                        <option value="provider_readonly">
-                          provider_readonly
-                        </option>
-                      </select>
+  className="w-full rounded-2xl border px-3 py-2"
+  value={row.role}
+  onChange={(e) =>
+    updateRole(row.user_id, e.target.value as Role)
+  }
+>
+  <option value="super_admin">super_admin</option>
+  <option value="admin">admin</option>
+  <option value="practice_manager">
+    practice_manager
+  </option>
+  <option value="billing_staff">billing_staff</option>
+  <option value="provider_readonly">
+    provider_readonly
+  </option>
+  <option value="typist">typist</option>
+</select>
                     </div>
 
                     <div className="flex items-end text-sm text-slate-500">

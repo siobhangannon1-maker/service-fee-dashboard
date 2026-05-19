@@ -98,6 +98,7 @@ const navGroups: NavGroup[] = [
     items: [
       { href: "/report-writing/typist", label: "Letter Generation", description: "Generate, approve and edit, upload and email provider's letters and upload to Praktika" },
       { href: "/report-writing/history", label: "Report History", description: "Search details of previous letters" },
+      { href: "/report-writing/dashboard", label: "Report Dashboard", description: "Review status of letters" },
     ],
   },
   {
