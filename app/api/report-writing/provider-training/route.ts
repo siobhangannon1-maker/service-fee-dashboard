@@ -3,10 +3,16 @@ import { createClient } from "@supabase/supabase-js"
 
 export const runtime = "nodejs"
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+function getSupabase() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+  if (!url || !key) {
+    throw new Error("Missing Supabase environment variables.")
+  }
+
+  return createClient(url, key)
+}
 
 function clean(value: unknown) {
   return String(value ?? "").trim()
@@ -20,8 +26,20 @@ function makeTypeKey(label: string) {
     .replace(/^_+|_+$/g, "")
 }
 
+async function safeSelect<T>(query: PromiseLike<{ data: T | null; error: any }>) {
+  const result = await query
+
+  if (result.error) {
+    console.warn("Provider training optional query failed:", result.error.message)
+    return null
+  }
+
+  return result.data
+}
+
 export async function GET(req: Request) {
   try {
+    const supabase = getSupabase()
     const { searchParams } = new URL(req.url)
     const providerId = searchParams.get("providerId")
 
@@ -32,53 +50,11 @@ export async function GET(req: Request) {
       )
     }
 
-    const [
-      providerResult,
-      rulesResult,
-      examplesResult,
-      terminologyResult,
-      correspondenceTypesResult,
-      editExamplesResult,
-    ] = await Promise.all([
-      supabase
-        .from("providers")
-        .select("id, name")
-        .eq("id", providerId)
-        .maybeSingle(),
-
-      supabase
-        .from("provider_report_rules")
-        .select("id, report_type, rule_text")
-        .eq("provider_id", providerId)
-        .order("created_at", { ascending: false }),
-
-      supabase
-        .from("provider_report_examples")
-        .select("id, report_type, title, example_text")
-        .eq("provider_id", providerId)
-        .order("created_at", { ascending: false }),
-
-      supabase
-        .from("provider_terminology_rules")
-        .select("id, spoken_or_written_text, preferred_text")
-        .eq("provider_id", providerId)
-        .order("created_at", { ascending: false }),
-
-      supabase
-        .from("provider_correspondence_types")
-        .select("id, type_key, label")
-        .eq("provider_id", providerId)
-        .order("label", { ascending: true }),
-
-      supabase
-        .from("provider_report_edit_examples")
-        .select(
-          "id, report_type, original_text, final_text, source, created_at, report_draft_id"
-        )
-        .eq("provider_id", providerId)
-        .order("created_at", { ascending: false })
-        .limit(100),
-    ])
+    const providerResult = await supabase
+      .from("providers")
+      .select("id, name")
+      .eq("id", providerId)
+      .maybeSingle()
 
     if (providerResult.error) {
       return NextResponse.json(
@@ -87,49 +63,55 @@ export async function GET(req: Request) {
       )
     }
 
-    if (rulesResult.error) {
-      return NextResponse.json(
-        { success: false, error: rulesResult.error.message },
-        { status: 500 }
-      )
-    }
+    const rules = await safeSelect(
+      supabase
+        .from("provider_report_rules")
+        .select("id, report_type, rule_text")
+        .eq("provider_id", providerId)
+        .order("created_at", { ascending: false })
+    )
 
-    if (examplesResult.error) {
-      return NextResponse.json(
-        { success: false, error: examplesResult.error.message },
-        { status: 500 }
-      )
-    }
+    const examples = await safeSelect(
+      supabase
+        .from("provider_report_examples")
+        .select("id, report_type, title, example_text")
+        .eq("provider_id", providerId)
+        .order("created_at", { ascending: false })
+    )
 
-    if (terminologyResult.error) {
-      return NextResponse.json(
-        { success: false, error: terminologyResult.error.message },
-        { status: 500 }
-      )
-    }
+    const terminology = await safeSelect(
+      supabase
+        .from("provider_terminology_rules")
+        .select("id, spoken_or_written_text, preferred_text")
+        .eq("provider_id", providerId)
+        .order("created_at", { ascending: false })
+    )
 
-    if (correspondenceTypesResult.error) {
-      return NextResponse.json(
-        { success: false, error: correspondenceTypesResult.error.message },
-        { status: 500 }
-      )
-    }
+    const correspondenceTypes = await safeSelect(
+      supabase
+        .from("provider_correspondence_types")
+        .select("id, type_key, label")
+        .eq("provider_id", providerId)
+        .order("label", { ascending: true })
+    )
 
-    if (editExamplesResult.error) {
-      return NextResponse.json(
-        { success: false, error: editExamplesResult.error.message },
-        { status: 500 }
-      )
-    }
+    const editExamples = await safeSelect(
+      supabase
+        .from("provider_report_edit_examples")
+        .select("id, report_type, original_text, final_text, source, created_at, report_draft_id")
+        .eq("provider_id", providerId)
+        .order("created_at", { ascending: false })
+        .limit(100)
+    )
 
     return NextResponse.json({
       success: true,
       provider: providerResult.data,
-      rules: rulesResult.data || [],
-      examples: examplesResult.data || [],
-      terminology: terminologyResult.data || [],
-      correspondenceTypes: correspondenceTypesResult.data || [],
-      editExamples: editExamplesResult.data || [],
+      rules: rules || [],
+      examples: examples || [],
+      terminology: terminology || [],
+      correspondenceTypes: correspondenceTypes || [],
+      editExamples: editExamples || [],
     })
   } catch (error) {
     console.error("Load provider training failed:", error)
@@ -149,6 +131,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
 
     const providerId = clean(body.providerId)
@@ -170,19 +153,11 @@ export async function POST(req: Request) {
 
     if (type === "correspondence_type") {
       const label = clean(body.label)
-
-      if (!label) {
-        return NextResponse.json(
-          { success: false, error: "Missing correspondence type label." },
-          { status: 400 }
-        )
-      }
-
       const typeKey = makeTypeKey(label)
 
-      if (!typeKey) {
+      if (!label || !typeKey) {
         return NextResponse.json(
-          { success: false, error: "Could not create correspondence type key." },
+          { success: false, error: "Missing correspondence type label." },
           { status: 400 }
         )
       }
@@ -196,12 +171,10 @@ export async function POST(req: Request) {
             label,
             updated_at: new Date().toISOString(),
           },
-          {
-            onConflict: "provider_id,type_key",
-          }
+          { onConflict: "provider_id,type_key" }
         )
         .select()
-        .single()
+        .maybeSingle()
 
       if (error) {
         return NextResponse.json(
@@ -232,7 +205,7 @@ export async function POST(req: Request) {
           rule_text: ruleText,
         })
         .select()
-        .single()
+        .maybeSingle()
 
       if (error) {
         return NextResponse.json(
@@ -256,6 +229,16 @@ export async function POST(req: Request) {
         )
       }
 
+      if (exampleText.length > 100000) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Example is too long. Please shorten it before saving.",
+          },
+          { status: 400 }
+        )
+      }
+
       const { data, error } = await supabase
         .from("provider_report_examples")
         .insert({
@@ -265,7 +248,7 @@ export async function POST(req: Request) {
           example_text: exampleText,
         })
         .select()
-        .single()
+        .maybeSingle()
 
       if (error) {
         return NextResponse.json(
@@ -299,7 +282,7 @@ export async function POST(req: Request) {
           preferred_text: preferredText,
         })
         .select()
-        .single()
+        .maybeSingle()
 
       if (error) {
         return NextResponse.json(

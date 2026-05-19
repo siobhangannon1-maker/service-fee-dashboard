@@ -174,7 +174,7 @@ function PatientAndReferrerFields({
       <section className="space-y-3 rounded-2xl border border-indigo-200 bg-indigo-50 p-4 md:col-span-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="font-bold text-indigo-950">Praktika patient link</h3>
+            <h3 className="font-bold text-indigo-950">Praktika Patient Match</h3>
             <p className="mt-1 text-sm text-indigo-900">
               Search Praktika and select the patient this letter applies to.
               This ID is saved with the draft for the typist upload workflow.
