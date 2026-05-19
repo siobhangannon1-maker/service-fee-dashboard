@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { getPraktikaCookie } from "@/lib/praktika/session-store"
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -9,6 +11,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au"
 const TYPIST_LETTER_ICON_ID = 7360
 const LETTER_SENT_ICON_ID = 6597
 
@@ -43,6 +46,21 @@ function replaceTypistLetterIcon(iconIds: number[]) {
   return updated.slice(0, 4)
 }
 
+function assertPraktikaJsonResponse(responseText: string) {
+  const trimmed = responseText.trim().toLowerCase()
+
+  if (
+    trimmed.startsWith("<!doctype") ||
+    trimmed.startsWith("<html") ||
+    trimmed.includes("/v2/login") ||
+    trimmed.includes("type=\"password\"") ||
+    trimmed.includes("logged-out") ||
+    trimmed.includes("logged out")
+  ) {
+    throw new Error("Praktika session expired or returned a login page.")
+  }
+}
+
 async function findQueueItem(params: { queueId?: string; draftId?: string }) {
   if (params.queueId) {
     const { data, error } = await supabase
@@ -71,6 +89,57 @@ async function findQueueItem(params: { queueId?: string; draftId?: string }) {
   return null
 }
 
+async function commitAppointmentIcons({
+  cookie,
+  practiceId,
+  appointmentId,
+  updatedIconIds,
+}: {
+  cookie: string
+  practiceId: number
+  appointmentId: string
+  updatedIconIds: number[]
+}) {
+  const payload = [
+    {
+      request_id: buildRequestId(cookie),
+      practice_id: practiceId,
+      appointment_id: Number(appointmentId),
+      appointment_icon1id: updatedIconIds[0],
+      appointment_icon2id: updatedIconIds[1],
+      appointment_icon3id: updatedIconIds[2],
+      appointment_icon4id: updatedIconIds[3],
+    },
+  ]
+
+  const response = await fetch(
+    `${PRAKTIKA_BASE_URL}/php/forms/db_commitFormData.php`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        Origin: PRAKTIKA_BASE_URL,
+        Referer: `${PRAKTIKA_BASE_URL}/v2/scheduler`,
+      },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    }
+  )
+
+  const responseText = await response.text()
+  assertPraktikaJsonResponse(responseText)
+
+  if (!response.ok) {
+    throw new Error(
+      `Praktika icon update failed: ${response.status}. ${responseText.slice(0, 500)}`
+    )
+  }
+
+  return responseText
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json()
@@ -84,19 +153,7 @@ export async function POST(req: Request) {
       )
     }
 
-    const cookie = process.env.PRAKTIKA_COOKIE
     const practiceId = Number(process.env.PRAKTIKA_PRACTICE_ID || "1181")
-
-    if (!cookie) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Missing PRAKTIKA_COOKIE. Refresh Praktika session first.",
-        },
-        { status: 500 }
-      )
-    }
-
     const queueItem = await findQueueItem({ queueId, draftId })
 
     if (!queueItem) {
@@ -130,46 +187,16 @@ export async function POST(req: Request) {
 
     const updatedIconIds = replaceTypistLetterIcon(currentIconIds)
 
-    const payload = [
-      {
-        request_id: buildRequestId(cookie),
-        practice_id: practiceId,
-        appointment_id: Number(appointmentId),
-        appointment_icon1id: updatedIconIds[0],
-        appointment_icon2id: updatedIconIds[1],
-        appointment_icon3id: updatedIconIds[2],
-        appointment_icon4id: updatedIconIds[3],
-      },
-    ]
+    const responseText = await withPraktikaAutoRefresh(async () => {
+      const cookie = await getPraktikaCookie()
 
-    const response = await fetch(
-      "https://praktika.praktika.net.au/php/forms/db_commitFormData.php",
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/json",
-          Cookie: cookie,
-          Origin: "https://praktika.praktika.net.au",
-          Referer: "https://praktika.praktika.net.au/v2/scheduler",
-        },
-        body: JSON.stringify(payload),
-        cache: "no-store",
-      }
-    )
-
-    const responseText = await response.text()
-
-    if (!response.ok) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Praktika icon update failed: ${response.status}`,
-          preview: responseText.slice(0, 500),
-        },
-        { status: 500 }
-      )
-    }
+      return commitAppointmentIcons({
+        cookie,
+        practiceId,
+        appointmentId,
+        updatedIconIds,
+      })
+    })
 
     const now = new Date().toISOString()
 

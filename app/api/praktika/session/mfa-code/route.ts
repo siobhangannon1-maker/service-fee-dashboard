@@ -1,28 +1,36 @@
-import fs from "node:fs";
-import path from "node:path";
 import { NextResponse } from "next/server";
+import { savePraktikaMfaCode } from "@/lib/praktika/session-store";
 
 export const runtime = "nodejs";
 
-const SESSION_DIR = path.join(process.cwd(), ".praktika-session");
-const MFA_CODE_PATH = path.join(SESSION_DIR, "mfa-code.txt");
-
 export async function POST(request: Request) {
-  const body = await request.json();
-  const code = String(body.code ?? "").replace(/\D/g, "").trim();
+  try {
+    const body = await request.json();
+    const code = String(body?.code || "").replace(/\D/g, "").trim();
 
-  if (!code || code.length < 4) {
+    if (!code) {
+      return NextResponse.json(
+        {
+          ok: false,
+          message: "Missing MFA code.",
+        },
+        { status: 400 },
+      );
+    }
+
+    await savePraktikaMfaCode(code);
+
+    return NextResponse.json({
+      ok: true,
+      message: "MFA code saved. Waiting for local helper machine.",
+    });
+  } catch (error: any) {
     return NextResponse.json(
-      { ok: false, error: "Enter a valid MFA code." },
-      { status: 400 }
+      {
+        ok: false,
+        message: error?.message || "Could not save MFA code.",
+      },
+      { status: 500 },
     );
   }
-
-  fs.mkdirSync(SESSION_DIR, { recursive: true });
-  fs.writeFileSync(MFA_CODE_PATH, code);
-
-  return NextResponse.json({
-    ok: true,
-    message: "MFA code sent to Praktika refresh browser.",
-  });
 }

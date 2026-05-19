@@ -1,12 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
-import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-
-const PRAKTIKA_ENDPOINT =
-  "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php";
+import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
 function getClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -51,74 +46,6 @@ function isValidIsoDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
-function loadPraktikaCookieFromEnvFile(): string {
-  const envPath = path.join(process.cwd(), ".env.local");
-
-  if (!fs.existsSync(envPath)) {
-    throw new Error("Missing .env.local file.");
-  }
-
-  const parsed = dotenv.parse(fs.readFileSync(envPath));
-  const cookie = parsed.PRAKTIKA_COOKIE;
-
-  if (!cookie) {
-    throw new Error("PRAKTIKA_COOKIE was not found in .env.local.");
-  }
-
-  process.env.PRAKTIKA_COOKIE = cookie;
-  return cookie;
-}
-
-function refreshPraktikaCookieLocally() {
-  execFileSync("npm", ["run", "refresh:praktika-cookie"], {
-    stdio: "inherit",
-    cwd: process.cwd(),
-  });
-
-  return loadPraktikaCookieFromEnvFile();
-}
-
-async function fetchPraktikaJson(params: URLSearchParams) {
-  async function makeRequest(cookie: string) {
-    const response = await fetch(PRAKTIKA_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/x-www-form-urlencoded",
-        Cookie: cookie,
-        Origin: "https://praktika.praktika.net.au",
-        Referer: "https://praktika.praktika.net.au/v2/reports/completed-procedures",
-      },
-      body: params.toString(),
-      cache: "no-store",
-    });
-
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-      return Array.isArray(data) ? data : null;
-    } catch {
-      console.log("Praktika non-JSON response preview:", text.slice(0, 500));
-      return null;
-    }
-  }
-
-  const firstCookie = process.env.PRAKTIKA_COOKIE;
-  if (!firstCookie) throw new Error("Missing PRAKTIKA_COOKIE.");
-
-  const firstAttempt = await makeRequest(firstCookie);
-  if (firstAttempt) return firstAttempt;
-
-  const refreshedCookie = refreshPraktikaCookieLocally();
-  const secondAttempt = await makeRequest(refreshedCookie);
-  if (secondAttempt) return secondAttempt;
-
-  throw new Error(
-    "Praktika did not return production rows after refreshing the cookie. MFA may be required."
-  );
-}
-
 async function loadProviderLookup() {
   const supabase = getClient();
 
@@ -161,6 +88,7 @@ function pickFirst(row: any, keys: string[]) {
       return row[key];
     }
   }
+
   return null;
 }
 
@@ -256,20 +184,26 @@ export async function POST(request: Request) {
     params.append("sFromDate", fromDate);
     params.append("sToDate", toDate);
 
-    const data = await fetchPraktikaJson(params);
+    const data = await withPraktikaAutoRefresh(() =>
+      fetchPraktikaJson(
+        params,
+        "https://praktika.praktika.net.au/v2/reports/completed-procedures",
+      ),
+    );
+
     const providerLookup = await loadProviderLookup();
 
     const sourceFileName = `Praktika Production Sync ${fromDate} to ${toDate}`;
 
     const { data: importRow, error: importError } = await supabase
       .from("imports")
-.insert({
-  source_file_name: sourceFileName,
-  storage_path: `praktika-sync/${fromDate}_${toDate}.json`,
-  status: "processed",
-  billing_period_id: billingPeriodId,
-  month: Number(fromDate.slice(5, 7)),
-})
+      .insert({
+        source_file_name: sourceFileName,
+        storage_path: `praktika-sync/${fromDate}_${toDate}.json`,
+        status: "processed",
+        billing_period_id: billingPeriodId,
+        month: Number(fromDate.slice(5, 7)),
+      })
       .select("id")
       .single();
 
@@ -293,13 +227,13 @@ export async function POST(request: Request) {
     const normalizedRows = data.map((row: any, index: number) => {
       const providerRaw = normalizeWhitespace(
         pickFirst(row, [
-  "vchProvider",
-  "vchProviderName",
-  "provider_name",
-  "provider",
-  "Provider",
-  "Provider Name",
-])
+          "vchProvider",
+          "vchProviderName",
+          "provider_name",
+          "provider",
+          "Provider",
+          "Provider Name",
+        ]),
       );
 
       const providerId =
@@ -312,29 +246,29 @@ export async function POST(request: Request) {
 
       const itemNumber = toNullableText(
         pickFirst(row, [
-  "vchCode",
-  "vchADACodeRef",
-  "vchItemCode",
-  "vchProcedureCode",
-  "procedure_code",
-  "item_number",
-  "Item",
-  "Code",
-])
+          "vchCode",
+          "vchADACodeRef",
+          "vchItemCode",
+          "vchProcedureCode",
+          "procedure_code",
+          "item_number",
+          "Item",
+          "Code",
+        ]),
       );
 
       const description = toNullableText(
         pickFirst(row, [
-  "vchCodeDescShort",
-  "vchGroupDesc",
-  "vchItemDescription",
-  "vchProcedureDescription",
-  "description",
-  "Description",
-])
+          "vchCodeDescShort",
+          "vchGroupDesc",
+          "vchItemDescription",
+          "vchProcedureDescription",
+          "description",
+          "Description",
+        ]),
       );
 
-            const productionAmount = toNumber(
+      const productionAmount = toNumber(
         pickFirst(row, [
           "iTotalFee",
           "iScheduledFee",
@@ -348,7 +282,7 @@ export async function POST(request: Request) {
           "amount",
           "Amount",
           "Fee",
-        ])
+        ]),
       );
 
       return {
@@ -416,7 +350,7 @@ export async function POST(request: Request) {
         ok: false,
         error: error?.message || "Praktika production sync failed.",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

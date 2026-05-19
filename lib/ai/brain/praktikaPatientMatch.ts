@@ -2,6 +2,7 @@ import OpenAI from "openai";
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { searchPraktikaPatients } from "@/lib/praktika/patientSearch";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -345,7 +346,9 @@ export async function matchPraktikaPatientForInboxItem({
       let attemptMatches: any[] = [];
 
       try {
-        attemptMatches = await searchPraktikaPatients(attempt.input);
+        attemptMatches = await withPraktikaAutoRefresh(() =>
+          searchPraktikaPatients(attempt.input),
+        );
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Praktika search failed.";

@@ -1,18 +1,10 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getPraktikaCookie } from "@/lib/praktika/session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
 const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
 const PRAKTIKA_UPDATE_FORM_URL = `${PRAKTIKA_BASE_URL}/php/forms/db_updateFormData.php`;
 const DEFAULT_PRACTICE_ID = Number(process.env.PRAKTIKA_PRACTICE_ID || 1181);
-
-function getPraktikaCookie() {
-  const cookie =
-    process.env.PRAKTIKA_COOKIE ||
-    process.env.PRAKTIKA_SESSION_COOKIE ||
-    process.env.PRAKTIKA_AUTH_COOKIE ||
-    "";
-  if (!cookie.trim()) throw new Error("Missing Praktika session cookie.");
-  return cookie;
-}
 
 function toIsoDate(value?: string | null) {
   const raw = String(value || "").trim();
@@ -23,29 +15,55 @@ function toIsoDate(value?: string | null) {
   return raw;
 }
 
-async function praktikaJsonPost(payload: any) {
-  const response = await fetch(PRAKTIKA_UPDATE_FORM_URL, {
-    method: "POST",
-    headers: {
-      Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json",
-      Origin: PRAKTIKA_BASE_URL,
-      Referer: `${PRAKTIKA_BASE_URL}/v2/patient-directory/patient-search`,
-      Cookie: getPraktikaCookie(),
-    },
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
+function looksLikeLoginOrHtml(text: string) {
+  const lower = text.trim().toLowerCase();
 
-  const text = await response.text();
-  let json: any = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(`Praktika returned non-JSON response: ${text.slice(0, 300)}`);
-  }
-  if (!response.ok) throw new Error(json?.error || json?.message || "Praktika referral creation failed.");
-  return json;
+  return (
+    lower.startsWith("<!doctype") ||
+    lower.startsWith("<html") ||
+    lower.includes("/v2/login") ||
+    lower.includes("type=\"password\"") ||
+    lower.includes("logged-out") ||
+    lower.includes("logged out")
+  );
+}
+
+async function praktikaJsonPost(payload: any) {
+  return withPraktikaAutoRefresh(async () => {
+    const cookie = await getPraktikaCookie();
+
+    const response = await fetch(PRAKTIKA_UPDATE_FORM_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        Origin: PRAKTIKA_BASE_URL,
+        Referer: `${PRAKTIKA_BASE_URL}/v2/patient-directory/patient-search`,
+        Cookie: cookie,
+      },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    });
+
+    const text = await response.text();
+
+    if (looksLikeLoginOrHtml(text)) {
+      throw new Error("Praktika session expired or returned a login page.");
+    }
+
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(`Praktika returned non-JSON response: ${text.slice(0, 300)}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(json?.error || json?.message || "Praktika referral creation failed.");
+    }
+
+    return json;
+  });
 }
 
 function buildReferralNotes(item: any, notes?: string | null) {

@@ -1,50 +1,53 @@
-import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { getPraktikaCookie } from "@/lib/praktika/session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
-export const runtime = "nodejs"
-export const dynamic = "force-dynamic"
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
 
 type PraktikaReferralRow = {
-  vchProvider?: string
-  vchClinic?: string
-  vchStreetAddress?: string
-  vchSuburb?: string
-  vchPostCode?: string
-  vchState?: string
-  vchEmail?: string
-  iReferralCount?: string
-  mnyTotalReceived?: string
-  totalIncoming?: string
-  totalOutgoing?: string
-}
+  vchProvider?: string;
+  vchClinic?: string;
+  vchStreetAddress?: string;
+  vchSuburb?: string;
+  vchPostCode?: string;
+  vchState?: string;
+  vchEmail?: string;
+  iReferralCount?: string;
+  mnyTotalReceived?: string;
+  totalIncoming?: string;
+  totalOutgoing?: string;
+  [key: string]: unknown;
+};
 
 function cleanText(value: unknown): string {
-  return String(value ?? "").trim()
+  return String(value ?? "").trim();
 }
 
 function cleanEmail(value: unknown): string | null {
-  const email = cleanText(value).toLowerCase()
+  const email = cleanText(value).toLowerCase();
 
-  if (!email) return null
-  if (!email.includes("@")) return null
+  if (!email) return null;
+  if (!email.includes("@")) return null;
 
-  return email
+  return email;
 }
 
 function buildAddress(row: PraktikaReferralRow): string {
-  const street = cleanText(row.vchStreetAddress)
-  const suburb = cleanText(row.vchSuburb)
-  const state = cleanText(row.vchState)
-  const postcode = cleanText(row.vchPostCode)
+  const street = cleanText(row.vchStreetAddress);
+  const suburb = cleanText(row.vchSuburb);
+  const state = cleanText(row.vchState);
+  const postcode = cleanText(row.vchPostCode);
 
-  const suburbLine = [suburb, state, postcode].filter(Boolean).join(" ")
+  const suburbLine = [suburb, state, postcode].filter(Boolean).join(" ");
 
-  return [street, suburbLine].filter(Boolean).join("\n")
+  return [street, suburbLine].filter(Boolean).join("\n");
 }
 
 function buildPraktikaKey(row: PraktikaReferralRow): string {
@@ -56,84 +59,21 @@ function buildPraktikaKey(row: PraktikaReferralRow): string {
     cleanText(row.vchPostCode).toLowerCase(),
   ]
     .filter(Boolean)
-    .join("|")
+    .join("|");
 }
 
-async function importRows(rows: PraktikaReferralRow[]) {
-  const referrerMap = new Map<string, {
-    praktika_referrer_key: string
-    name: string
-    practice_name: string | null
-    address: string | null
-    email: string | null
-    is_active: boolean
-    raw_json: PraktikaReferralRow
-    synced_at: string
-    updated_at: string
-  }>()
+async function fetchPraktikaReferrers() {
+  return withPraktikaAutoRefresh(async () => {
+    const cookie = await getPraktikaCookie();
+    const today = new Date().toISOString().slice(0, 10);
+    const practiceId = process.env.PRAKTIKA_PRACTICE_ID || "1181";
 
-  for (const row of rows) {
-    const name = cleanText(row.vchProvider)
-    const practiceName = cleanText(row.vchClinic)
-    const address = buildAddress(row)
-    const email = cleanEmail(row.vchEmail)
-    const praktikaKey = buildPraktikaKey(row)
-
-    if (!name || !praktikaKey) continue
-
-    referrerMap.set(praktikaKey, {
-      praktika_referrer_key: praktikaKey,
-      name,
-      practice_name: practiceName || null,
-      address: address || null,
-      email,
-      is_active: true,
-      raw_json: row,
-      synced_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-  }
-
-  const referrers = Array.from(referrerMap.values())
-
-  const { error } = await supabase
-    .from("report_referrers")
-    .upsert(referrers, {
-      onConflict: "praktika_referrer_key",
-    })
-
-  if (error) {
-    throw new Error(error.message)
-  }
-
-  return {
-    imported: referrers.length,
-    skipped: rows.length - referrers.length,
-  }
-}
-  
-export async function POST() {
-  try {
-    const cookie = process.env.PRAKTIKA_COOKIE
-
-    if (!cookie) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Missing PRAKTIKA_COOKIE. Refresh Praktika session first.",
-        },
-        { status: 500 }
-      )
-    }
-
-    const today = new Date().toISOString().slice(0, 10)
-
-    const formData = new URLSearchParams()
-    formData.set("sReportName", "referrals")
-    formData.set("iPracticeId", "1181")
-    formData.set("sFromDate", "2000-01-01")
-    formData.set("sToDate", today)
-    formData.set("sMode", "PROVIDER_IN")
+    const formData = new URLSearchParams();
+    formData.set("sReportName", "referrals");
+    formData.set("iPracticeId", practiceId);
+    formData.set("sFromDate", "2000-01-01");
+    formData.set("sToDate", today);
+    formData.set("sMode", "PROVIDER_IN");
 
     const response = await fetch(
       "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php",
@@ -145,63 +85,123 @@ export async function POST() {
           Accept: "application/json, text/plain, */*",
           Origin: "https://praktika.praktika.net.au",
           Referer: "https://praktika.praktika.net.au/v2/reports/referrals",
+          "X-Requested-With": "XMLHttpRequest",
           "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
         },
         body: formData.toString(),
         cache: "no-store",
-      }
-    )
+      },
+    );
 
-    const responseText = await response.text()
+    const responseText = await response.text();
 
     if (!response.ok) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Praktika request failed: ${response.status}`,
-          preview: responseText.slice(0, 500),
-        },
-        { status: 500 }
-      )
+      throw new Error(
+        `Praktika request failed: ${response.status}. ${responseText.slice(0, 500)}`,
+      );
     }
 
-    let parsedRows: unknown
+    if (responseText.trim().startsWith("<")) {
+      throw new Error(
+        "Praktika returned HTML instead of JSON. The Praktika session is probably expired.",
+      );
+    }
+
+    let parsedRows: unknown;
 
     try {
-      parsedRows = JSON.parse(responseText)
+      parsedRows = JSON.parse(responseText);
     } catch {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Praktika returned non-JSON response.",
-          preview: responseText.slice(0, 500),
-        },
-        { status: 500 }
-      )
+      throw new Error(
+        `Praktika returned non-JSON response. ${responseText.slice(0, 500)}`,
+      );
     }
 
     if (!Array.isArray(parsedRows)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Praktika did not return a valid array.",
-          preview: responseText.slice(0, 500),
-        },
-        { status: 500 }
-      )
+      throw new Error(
+        `Praktika did not return a valid array. ${responseText.slice(0, 500)}`,
+      );
     }
 
-    const result = await importRows(parsedRows as PraktikaReferralRow[])
+    return parsedRows as PraktikaReferralRow[];
+  });
+}
+
+async function importRows(rows: PraktikaReferralRow[]) {
+  const referrerMap = new Map<
+    string,
+    {
+      praktika_referrer_key: string;
+      name: string;
+      practice_name: string | null;
+      address: string | null;
+      email: string | null;
+      is_active: boolean;
+      raw_json: PraktikaReferralRow;
+      synced_at: string;
+      updated_at: string;
+    }
+  >();
+
+  for (const row of rows) {
+    const name = cleanText(row.vchProvider);
+    const practiceName = cleanText(row.vchClinic);
+    const address = buildAddress(row);
+    const email = cleanEmail(row.vchEmail);
+    const praktikaKey = buildPraktikaKey(row);
+
+    if (!name || !praktikaKey) continue;
+
+    referrerMap.set(praktikaKey, {
+      praktika_referrer_key: praktikaKey,
+      name,
+      practice_name: practiceName || null,
+      address: address || null,
+      email,
+      is_active: true,
+      raw_json: row,
+      synced_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  const referrers = Array.from(referrerMap.values());
+
+  if (referrers.length === 0) {
+    return {
+      imported: 0,
+      skipped: rows.length,
+    };
+  }
+
+  const { error } = await supabase.from("report_referrers").upsert(referrers, {
+    onConflict: "praktika_referrer_key",
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return {
+    imported: referrers.length,
+    skipped: rows.length - referrers.length,
+  };
+}
+
+export async function POST() {
+  try {
+    const parsedRows = await fetchPraktikaReferrers();
+    const result = await importRows(parsedRows);
 
     return NextResponse.json({
       success: true,
       imported: result.imported,
       skipped: result.skipped,
       totalRows: parsedRows.length,
-    })
+    });
   } catch (error) {
-    console.error(error)
+    console.error("Failed to sync Praktika referrers:", error);
 
     return NextResponse.json(
       {
@@ -211,7 +211,7 @@ export async function POST() {
             ? error.message
             : "Failed to sync Praktika referrers.",
       },
-      { status: 500 }
-    )
+      { status: 500 },
+    );
   }
 }

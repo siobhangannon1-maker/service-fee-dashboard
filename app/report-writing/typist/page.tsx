@@ -26,6 +26,8 @@ type Draft = {
   referrer_name: string | null
   referrer_address: string | null
   report_type: string
+  clinical_notes?: string | null
+  source_clinical_notes?: string | null
   edited_text: string | null
   ai_generated_text: string | null
   status: string
@@ -105,6 +107,13 @@ function cleanString(value: unknown) {
   return String(value ?? "").trim()
 }
 
+function getDraftClinicalNotes(draft: Draft) {
+  return (
+    cleanString(draft.clinical_notes) ||
+    cleanString(draft.source_clinical_notes) ||
+    ""
+  )
+}
 
 function getQueueSearchText(item: QueueItem) {
   const raw = item.raw_json || {}
@@ -508,26 +517,28 @@ export default function TypistPage() {
 
     const text = await response.text()
 
-    if (!text.trim()) return ""
+    if (!text.trim()) {
+      throw new Error("Clinical notes API returned an empty response.")
+    }
 
     let data: any
 
     try {
       data = JSON.parse(text)
-    } catch (error) {
-      console.error("Clinical notes API returned non-JSON:", text.slice(0, 500))
-      return ""
+    } catch {
+      throw new Error(
+        `Clinical notes API returned non-JSON: ${text.slice(0, 300)}`
+      )
     }
 
-    if (data.success && data.text?.trim()) {
-      return String(data.text).trim()
+    if (!response.ok || !data.success) {
+      throw new Error(
+        data?.error ||
+          `Clinical notes request failed with status ${response.status}.`
+      )
     }
 
-    if (!data.success) {
-      console.error("Clinical notes API error:", data)
-    }
-
-    return ""
+    return String(data.text || "").trim()
   }
 
   async function openOneClickCompleteModal() {
@@ -1028,7 +1039,11 @@ export default function TypistPage() {
     setReferrerName(draft.referrer_name || "")
     setReferrerAddress(draft.referrer_address || "")
     setReportType(draft.report_type)
-    setClinicalNotes("")
+
+    // Do not clear the notes panel when opening an existing draft.
+    // If the get-drafts API returns saved source notes, show them here.
+    setClinicalNotes(getDraftClinicalNotes(draft))
+
     setLetterText(draft.edited_text || draft.ai_generated_text || "")
     setGeneratedAiLetterText(draft.ai_generated_text || "")
     setSaveStatus("saved")
@@ -1051,8 +1066,8 @@ export default function TypistPage() {
     const lastName = item.patient_last_name || ""
     const dob = item.patient_dob || ""
     const linkedPraktikaPatientId = item.praktika_patient_id || ""
-    const queuedPatientName = `${firstName} ${lastName}`.trim()
     const raw = item.raw_json || {}
+
     const appointmentId =
       item.appointment_id ||
       String(raw.iAppointmentId || raw.appointment_id || "").trim() ||
@@ -1070,17 +1085,16 @@ export default function TypistPage() {
     setReferrerAddress("")
     setReportType(inferredReportType)
 
-    setClinicalNotes(
-      [
-        appointmentNotes,
-        linkedPraktikaPatientId && item.appointment_time
-          ? "Loading same-day Praktika clinical notes..."
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n")
-    )
+    const initialClinicalNotes = [
+      appointmentNotes,
+      linkedPraktikaPatientId && item.appointment_time
+        ? "Loading same-day Praktika clinical notes..."
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n")
 
+    setClinicalNotes(initialClinicalNotes)
     setLetterText("")
     setGeneratedAiLetterText("")
     setPraktikaCandidates([])
@@ -1097,6 +1111,17 @@ export default function TypistPage() {
         })
       } catch (error) {
         console.error("Failed to pull Praktika clinical notes:", error)
+
+        const fallbackNotes = [
+          appointmentNotes,
+          "Same-day Praktika clinical notes could not be loaded. Praktika may be disconnected, refreshing, or waiting for MFA. Existing appointment notes have been preserved.",
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+
+        setClinicalNotes(fallbackNotes)
+        setAutoGenerateStatus("error")
+        return
       }
     }
 
@@ -1108,10 +1133,7 @@ export default function TypistPage() {
       .filter(Boolean)
       .join("\n\n")
 
-    const finalClinicalNotes = combinedClinicalNotes || appointmentNotes
-
-    setClinicalNotes(finalClinicalNotes)
-
+    setClinicalNotes(combinedClinicalNotes || appointmentNotes)
     setAutoGenerateStatus("ready")
   }
 

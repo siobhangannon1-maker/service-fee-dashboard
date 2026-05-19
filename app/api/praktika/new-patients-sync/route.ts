@@ -1,11 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
 function getClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
   );
 }
 
@@ -63,9 +64,11 @@ export async function POST(req: Request) {
     params.append("sFromDate", fromDate);
     params.append("sToDate", toDate);
 
-    const data = await fetchPraktikaJson(
-      params,
-      "https://praktika.praktika.net.au/v2/reports/new-patients"
+    const data = await withPraktikaAutoRefresh(() =>
+      fetchPraktikaJson(
+        params,
+        "https://praktika.praktika.net.au/v2/reports/new-patients",
+      ),
     );
 
     const importBatchId = crypto.randomUUID();

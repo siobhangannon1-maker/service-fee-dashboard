@@ -292,11 +292,25 @@ export async function createServiceFeeStatementPdf(
   row("Includes GST", input.totalGst, { bold: true });
 
   sectionTitle("Adjustments for patient fees - no GST included");
-  row(`Less patient fees owed to ${input.providerName}`, input.patientFeesPaidToFocusNoGst);
-  row(`Facility fees paid to ${input.providerName}, owed to Focus`, input.patientFeesPaidToAnotherProviderNoGst);
-  row(`Patient fee paid to ${input.providerName} in error`, input.patientFeesReceivedInErrorNoGst);
-  row("Plus IV Facility Fees", input.ivFacilityFeesNoGst);
-  row("TOTAL DUE TO FOCUS DENTAL", input.finalTotalDue, { bold: true });
+
+row(
+  "Less patient fees paid to Focus",
+  input.patientFeesPaidToFocusNoGst
+);
+
+row(
+  `Plus patient fees received by ${input.providerName} in error`,
+  input.patientFeesReceivedInErrorNoGst
+);
+
+row(
+  "Less patient fees paid to another provider in error",
+  input.patientFeesPaidToAnotherProviderNoGst
+);
+
+row("Plus IV Facility Fees", input.ivFacilityFeesNoGst);
+
+row("TOTAL DUE TO FOCUS DENTAL", input.finalTotalDue, { bold: true });
 
   sectionTitle("Patient Billings");
   row("Gross production", input.grossProduction);

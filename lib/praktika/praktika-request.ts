@@ -1,7 +1,8 @@
-import fs from "node:fs";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
-import dotenv from "dotenv";
+import {
+  getPraktikaCookie,
+  markPraktikaRefreshRequested,
+  updatePraktikaSession,
+} from "@/lib/praktika/session-store";
 
 export const PRAKTIKA_APP_BASE_URL =
   process.env.PRAKTIKA_APP_BASE_URL || "https://praktika.praktika.net.au";
@@ -25,36 +26,6 @@ type PraktikaRequestResult =
       data: any;
       message: string;
     };
-
-function loadPraktikaCookieFromEnvFile(): string {
-  const envPath = path.join(process.cwd(), ".env.local");
-
-  if (!fs.existsSync(envPath)) {
-    throw new Error("Missing .env.local file.");
-  }
-
-  const parsed = dotenv.parse(fs.readFileSync(envPath));
-  const cookie = parsed.PRAKTIKA_COOKIE;
-
-  if (!cookie) {
-    throw new Error("PRAKTIKA_COOKIE was not found in .env.local.");
-  }
-
-  process.env.PRAKTIKA_COOKIE = cookie;
-
-  return cookie;
-}
-
-function refreshPraktikaCookieLocally(): string {
-  console.log("Refreshing Praktika cookie...");
-
-  execFileSync("npm", ["run", "refresh:praktika-cookie"], {
-    stdio: "inherit",
-    cwd: process.cwd(),
-  });
-
-  return loadPraktikaCookieFromEnvFile();
-}
 
 function looksLikeLoginResponse(text: string): boolean {
   const trimmed = text.trim();
@@ -128,15 +99,9 @@ async function makeRequest({
       Accept: "application/json, text/plain, */*",
       Cookie: cookie,
       Origin: PRAKTIKA_APP_BASE_URL,
-
-      /*
-        These browser-like headers help some Praktika endpoints behave the same
-        as the logged-in browser request.
-      */
       "X-Requested-With": "XMLHttpRequest",
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
-
       ...headers,
     },
     body,
@@ -180,18 +145,6 @@ async function makeRequest({
     };
   }
 
-  /*
-    Important:
-    Patient search is a NON-report endpoint. It correctly returns an object:
-      { rows: [...] }
-
-    So do not require a top-level array here.
-
-    But Praktika can also return:
-      { exception: { message: "Login failed. User session is logged-out." } }
-
-    That must trigger cookie refresh.
-  */
   if (json?.exception) {
     const message =
       getPraktikaExceptionMessage(json) || "Praktika returned an exception.";
@@ -232,12 +185,6 @@ async function makeRequest({
   };
 }
 
-/*
-  Use this for NON-report Praktika endpoints, including:
-  - /php/json/db_gridPatientList.php
-  - endpoints that return { rows: [...] }
-  - endpoints that return plain objects
-*/
 export async function requestPraktikaJson({
   path: requestPath,
   method = "POST",
@@ -251,8 +198,17 @@ export async function requestPraktikaJson({
 }) {
   const url = `${PRAKTIKA_APP_BASE_URL}${requestPath}`;
 
-  const initialCookie =
-    process.env.PRAKTIKA_COOKIE || loadPraktikaCookieFromEnvFile();
+  let initialCookie: string;
+
+try {
+  initialCookie = await getPraktikaCookie();
+} catch {
+  await markPraktikaRefreshRequested();
+
+  throw new Error(
+    "No Praktika cookie is saved yet. Refresh has been requested. Open the Praktika Session panel and complete MFA if needed.",
+  );
+}
 
   const firstAttempt = await makeRequest({
     url,
@@ -263,41 +219,31 @@ export async function requestPraktikaJson({
   });
 
   if (firstAttempt.ok) {
-    return firstAttempt.data;
-  }
+  await updatePraktikaSession({
+    status: "connected",
+    message: "Praktika connection is active.",
+  });
+
+  return firstAttempt.data;
+}
 
   if (firstAttempt.reason !== "auth") {
     throw new Error(firstAttempt.message);
   }
 
-  const refreshedCookie = refreshPraktikaCookieLocally();
-
-  const secondAttempt = await makeRequest({
-    url,
-    method,
-    headers,
-    body,
-    cookie: refreshedCookie,
+  await updatePraktikaSession({
+    status: "expired",
+    message:
+      "Praktika cookie appears expired. Refresh requested from local helper machine.",
   });
 
-  if (secondAttempt.ok) {
-    return secondAttempt.data;
-  }
+  await markPraktikaRefreshRequested();
 
-  if (secondAttempt.reason === "auth") {
-    throw new Error(
-      `Praktika still appears logged out after refreshing the cookie. ${secondAttempt.message} MFA/manual login may be required.`,
-    );
-  }
-
-  throw new Error(secondAttempt.message);
+  throw new Error(
+    "Praktika session expired. Refresh has been requested. Open the Praktika Session panel and complete MFA if needed.",
+  );
 }
 
-/*
-  Use this ONLY for reporting endpoints that should return a top-level array,
-  especially:
-  - /php/json/db_reportingDataWarehouse.php
-*/
 export async function fetchPraktikaJson({
   path: requestPath,
   method = "POST",

@@ -7,6 +7,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "refresh:praktika-cookie": "tsx scripts/refresh-praktika-cookie.ts",
+    "watch:praktika-refresh": "tsx scripts/watch-praktika-refresh.ts",
     "import:obsidian": "tsx scripts/import-obsidian.ts"
   },
   "dependencies": {

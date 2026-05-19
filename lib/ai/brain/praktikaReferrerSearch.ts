@@ -1,4 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getPraktikaCookie } from "@/lib/praktika/session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
 const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
 const PRAKTIKA_GET_FORM_DATA_URL = `${PRAKTIKA_BASE_URL}/php/forms/db_getFormData.php`;
@@ -19,20 +21,6 @@ type ReferrerCandidate = {
   reason: string;
   raw: any;
 };
-
-function getPraktikaCookie() {
-  const cookie =
-    process.env.PRAKTIKA_COOKIE ||
-    process.env.PRAKTIKA_SESSION_COOKIE ||
-    process.env.PRAKTIKA_AUTH_COOKIE ||
-    "";
-
-  if (!cookie.trim()) {
-    throw new Error("Missing Praktika session cookie. Refresh the Praktika session first.");
-  }
-
-  return cookie;
-}
 
 function clean(value: any) {
   return String(value || "").trim();
@@ -123,55 +111,71 @@ function extractReferrerSearchFromItem(item: any) {
 }
 
 async function praktikaGetReferralParties(searchText: string) {
-  const payload = {
-    parameters: { customer_id: DEFAULT_CUSTOMER_ID },
-    fields: [
-      {
-        customer_referral_parties: {
-          filter: { name: searchText },
-          sort_by: "name",
-          sort_order: "asc",
-          offset: 0,
+  return withPraktikaAutoRefresh(async () => {
+    const cookie = await getPraktikaCookie();
+
+    const payload = {
+      parameters: { customer_id: DEFAULT_CUSTOMER_ID },
+      fields: [
+        {
+          customer_referral_parties: {
+            filter: { name: searchText },
+            sort_by: "name",
+            sort_order: "asc",
+            offset: 0,
+          },
         },
+      ],
+    };
+
+    const response = await fetch(PRAKTIKA_GET_FORM_DATA_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        Origin: PRAKTIKA_BASE_URL,
+        Referer: `${PRAKTIKA_BASE_URL}/v2/referrals/clinics`,
+        Cookie: cookie,
       },
-    ],
-  };
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    });
 
-  const response = await fetch(PRAKTIKA_GET_FORM_DATA_URL, {
-    method: "POST",
-    headers: {
-      Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json",
-      Origin: PRAKTIKA_BASE_URL,
-      Referer: `${PRAKTIKA_BASE_URL}/v2/referrals/clinics`,
-      Cookie: getPraktikaCookie(),
-    },
-    body: JSON.stringify(payload),
-    cache: "no-store",
+    const text = await response.text();
+    const lower = text.trim().toLowerCase();
+
+    if (
+      lower.startsWith("<!doctype") ||
+      lower.startsWith("<html") ||
+      lower.includes("/v2/login") ||
+      lower.includes("type=\"password\"") ||
+      lower.includes("logged-out") ||
+      lower.includes("logged out")
+    ) {
+      throw new Error("Praktika session expired or returned a login page.");
+    }
+
+    let json: any;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(`Praktika returned non-JSON referrer response: ${text.slice(0, 300)}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        json?.error ||
+          json?.message ||
+          `Praktika referrer search failed (${response.status}).`,
+      );
+    }
+
+    return Array.isArray(json.customer_referral_parties)
+      ? json.customer_referral_parties
+          .map(parseParty)
+          .filter((party: ReferrerCandidate) => party.partyId)
+      : [];
   });
-
-  const text = await response.text();
-
-  let json: any;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(`Praktika returned non-JSON referrer response: ${text.slice(0, 300)}`);
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      json?.error ||
-        json?.message ||
-        `Praktika referrer search failed (${response.status}).`,
-    );
-  }
-
-  return Array.isArray(json.customer_referral_parties)
-    ? json.customer_referral_parties
-        .map(parseParty)
-        .filter((party: ReferrerCandidate) => party.partyId)
-    : [];
 }
 
 function scoreCandidate(

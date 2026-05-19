@@ -1,19 +1,28 @@
-import fs from "node:fs";
-import path from "node:path";
 import { NextResponse } from "next/server";
+import { getPraktikaSession } from "@/lib/praktika/session-store";
 
 export const runtime = "nodejs";
 
-const STATE_PATH = path.join(process.cwd(), ".praktika-session", "state.json");
-
 export async function GET() {
-  if (!fs.existsSync(STATE_PATH)) {
-    return NextResponse.json({
-      status: "idle",
-      message: "No Praktika session refresh has been started.",
-    });
-  }
+  try {
+    const session = await getPraktikaSession();
 
-  const state = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
-  return NextResponse.json(state);
+    return NextResponse.json({
+      status: session.status,
+      message: session.message,
+      currentUrl: session.current_url,
+      updatedAt: session.updated_at,
+      refreshRequestedAt: session.refresh_requested_at,
+      mfaCodeUpdatedAt: session.mfa_code_updated_at,
+    });
+  } catch (error: any) {
+    return NextResponse.json(
+      {
+        status: "error",
+        message: error?.message || "Could not load Praktika session status.",
+        updatedAt: new Date().toISOString(),
+      },
+      { status: 500 },
+    );
+  }
 }

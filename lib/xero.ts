@@ -258,7 +258,7 @@ export async function xeroUploadInvoiceAttachment(
   }
 
   const response = await fetch(
-    `https://api.xero.com/api.xro/2.0/Invoices/${invoiceId}/Attachments/${safeFileName}?IncludeOnline=false`,
+    `https://api.xero.com/api.xro/2.0/Invoices/${invoiceId}/Attachments/${safeFileName}?IncludeOnline=true`,
     {
       method: "PUT",
       headers,

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
 function num(value: any) {
@@ -21,7 +22,7 @@ export async function POST(request: NextRequest) {
     if (!practiceId) {
       return NextResponse.json(
         { error: "Missing PRAKTIKA_PRACTICE_ID" },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
@@ -33,9 +34,11 @@ export async function POST(request: NextRequest) {
     formData.append("sToDate", toDate);
     formData.append("sWorkingHoursMethod", "dumb");
 
-    const data = await fetchPraktikaJson(
-      formData,
-      "https://praktika.praktika.net.au/v2/reports/provider-performance"
+    const data = await withPraktikaAutoRefresh(() =>
+      fetchPraktikaJson(
+        formData,
+        "https://praktika.praktika.net.au/v2/reports/provider-performance",
+      ),
     );
 
     const rows = data.map((row: any) => ({
@@ -92,9 +95,10 @@ export async function POST(request: NextRequest) {
     });
   } catch (err: any) {
     console.error(err);
+
     return NextResponse.json(
       { error: err?.message || "Failed to sync Provider Performance" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

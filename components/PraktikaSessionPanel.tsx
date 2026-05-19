@@ -3,7 +3,14 @@
 import { useEffect, useState } from "react";
 
 type SessionState = {
-  status: "idle" | "running" | "mfa_required" | "success" | "error";
+  status:
+  | "not_started"
+  | "connected"
+  | "refreshing"
+  | "waiting_for_mfa"
+  | "refresh_requested"
+  | "expired"
+  | "error";
   message: string;
   currentUrl?: string;
   updatedAt?: string;
@@ -26,7 +33,7 @@ async function safeJson(res: Response) {
 
 export default function PraktikaSessionPanel() {
   const [state, setState] = useState<SessionState>({
-    status: "idle",
+    status: "not_started",
     message: "Checking Praktika session...",
   });
 
@@ -144,14 +151,26 @@ export default function PraktikaSessionPanel() {
     }
   }
 
+const statusLabelMap: Record<string, string> = {
+  not_started: "Not Started",
+  connected: "Connected",
+  refreshing: "Refreshing",
+  waiting_for_mfa: "Waiting for MFA",
+  refresh_requested: "Refresh Requested",
+  expired: "Expired",
+  error: "Error",
+};  
+
   const tone =
-    state.status === "success"
-      ? "border-green-200 bg-green-50 text-green-800"
-      : state.status === "error"
-        ? "border-red-200 bg-red-50 text-red-800"
-        : state.status === "mfa_required"
-          ? "border-amber-200 bg-amber-50 text-amber-900"
-          : "border-gray-200 bg-gray-50 text-gray-800";
+  state.status === "connected"
+    ? "border-green-200 bg-green-50 text-green-800"
+    : state.status === "error" || state.status === "expired"
+      ? "border-red-200 bg-red-50 text-red-800"
+      : state.status === "waiting_for_mfa" ||
+          state.status === "refresh_requested" ||
+          state.status === "refreshing"
+        ? "border-amber-200 bg-amber-50 text-amber-900"
+        : "border-gray-200 bg-gray-50 text-gray-800";
 
   return (
     <section className={`rounded-2xl border p-4 ${tone}`}>
@@ -162,7 +181,7 @@ export default function PraktikaSessionPanel() {
           </div>
 
           <div className="mt-1 text-sm">
-            <strong>Status:</strong> {state.status}
+            <strong>Status:</strong> {statusLabelMap[state.status] || state.status}
           </div>
 
           <p className="mt-1 text-sm break-words">
@@ -186,16 +205,16 @@ export default function PraktikaSessionPanel() {
         <button
           type="button"
           onClick={refreshSession}
-          disabled={busy || state.status === "running"}
+          disabled={busy || state.status === "refreshing"}
           className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
-          {busy || state.status === "running"
-            ? "Refreshing..."
-            : "Refresh Praktika Session"}
+          {busy || state.status === "refreshing"
+  ? "Refreshing..."
+  : "Refresh Praktika Session"}
         </button>
       </div>
 
-      {state.status === "mfa_required" ? (
+      {state.status === "waiting_for_mfa" ? (
         <div className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
           <label className="block">
             <div className="mb-1 text-xs font-medium">

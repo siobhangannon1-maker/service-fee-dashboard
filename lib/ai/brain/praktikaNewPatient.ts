@@ -1,6 +1,8 @@
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { autoFileInboxItemToPraktika } from "@/lib/ai/brain/praktikaAutoFile";
+import { getPraktikaCookie } from "@/lib/praktika/session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
 const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
 const PRAKTIKA_UPDATE_FORM_URL = `${PRAKTIKA_BASE_URL}/php/forms/db_updateFormData.php`;
@@ -32,22 +34,6 @@ type Actor = {
   fullName?: string | null;
   initials?: string | null;
 };
-
-function getPraktikaCookie() {
-  const cookie =
-    process.env.PRAKTIKA_COOKIE ||
-    process.env.PRAKTIKA_SESSION_COOKIE ||
-    process.env.PRAKTIKA_AUTH_COOKIE ||
-    "";
-
-  if (!cookie.trim()) {
-    throw new Error(
-      "Missing Praktika session cookie. Set PRAKTIKA_COOKIE or refresh the Praktika session.",
-    );
-  }
-
-  return cookie;
-}
 
 function getInitials(name?: string | null, email?: string | null) {
   const cleanName = String(name || "").trim();
@@ -155,34 +141,50 @@ async function writeAuditEvent({
 }
 
 async function praktikaJsonPost(url: string, payload: any) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json; charset=UTF-8",
-      Origin: PRAKTIKA_BASE_URL,
-      Referer: `${PRAKTIKA_BASE_URL}/v2/patient-directory/patient-search`,
-      Cookie: getPraktikaCookie(),
-      "X-Requested-With": "XMLHttpRequest",
-    },
-    body: JSON.stringify(payload),
-    cache: "no-store",
+  return withPraktikaAutoRefresh(async () => {
+    const cookie = await getPraktikaCookie();
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json; charset=UTF-8",
+        Origin: PRAKTIKA_BASE_URL,
+        Referer: `${PRAKTIKA_BASE_URL}/v2/patient-directory/patient-search`,
+        Cookie: cookie,
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    });
+
+    const text = await response.text();
+    const lower = text.trim().toLowerCase();
+
+    if (
+      lower.startsWith("<!doctype") ||
+      lower.startsWith("<html") ||
+      lower.includes("/v2/login") ||
+      lower.includes("type=\"password\"") ||
+      lower.includes("logged-out") ||
+      lower.includes("logged out")
+    ) {
+      throw new Error("Praktika session expired or returned a login page.");
+    }
+
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(`Praktika returned non-JSON response: ${text.slice(0, 300)}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(json?.error || json?.message || `Praktika request failed (${response.status}).`);
+    }
+
+    return json;
   });
-
-  const text = await response.text();
-
-  let json: any = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(`Praktika returned non-JSON response: ${text.slice(0, 300)}`);
-  }
-
-  if (!response.ok) {
-    throw new Error(json?.error || json?.message || `Praktika request failed (${response.status}).`);
-  }
-
-  return json;
 }
 
 function buildCreatePatientPayload(input: NewPatientInput) {

@@ -1,16 +1,8 @@
 import { requestPraktikaJson, PRAKTIKA_APP_BASE_URL } from "@/lib/praktika/praktika-request";
+import { getPraktikaCookie } from "@/lib/praktika/session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
 const PRAKTIKA_PRACTICE_ID = process.env.PRAKTIKA_PRACTICE_ID || "1181";
-
-function getCookie() {
-  const cookie = process.env.PRAKTIKA_COOKIE;
-
-  if (!cookie) {
-    throw new Error("Missing PRAKTIKA_COOKIE.");
-  }
-
-  return cookie;
-}
 
 function formatPraktikaDateTime(date = new Date()) {
   const yyyy = date.getFullYear();
@@ -22,29 +14,67 @@ function formatPraktikaDateTime(date = new Date()) {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 }
 
-async function postMultipartToPraktika(formData: FormData) {
-  const response = await fetch(
-    `${PRAKTIKA_APP_BASE_URL}/php/forms/db_updateFormData.php`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        Cookie: getCookie(),
-        Origin: PRAKTIKA_APP_BASE_URL,
-        Referer: `${PRAKTIKA_APP_BASE_URL}/v2/patient-directory/patient-search`,
-      },
-      body: formData,
-      cache: "no-store",
-    }
+function getSessionIdFromCookie(cookie: string) {
+  const match = cookie.match(/PHPSESSID=([^;]+)/);
+  return match?.[1] || crypto.randomUUID();
+}
+
+function looksLikeLoginOrHtml(text: string) {
+  const lower = text.trim().toLowerCase();
+
+  return (
+    lower.startsWith("<!doctype") ||
+    lower.startsWith("<html") ||
+    lower.includes("/v2/login") ||
+    lower.includes("type=\"password\"") ||
+    lower.includes("logged-out") ||
+    lower.includes("logged out")
   );
+}
 
-  const text = await response.text();
+async function postMultipartToPraktika(formData: FormData) {
+  return withPraktikaAutoRefresh(async () => {
+    const cookie = await getPraktikaCookie();
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`Praktika upload did not return JSON: ${text.slice(0, 300)}`);
-  }
+    const response = await fetch(
+      `${PRAKTIKA_APP_BASE_URL}/php/forms/db_updateFormData.php`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          Cookie: cookie,
+          Origin: PRAKTIKA_APP_BASE_URL,
+          Referer: `${PRAKTIKA_APP_BASE_URL}/v2/patient-directory/patient-search`,
+        },
+        body: formData,
+        cache: "no-store",
+      }
+    );
+
+    const text = await response.text();
+
+    if (looksLikeLoginOrHtml(text)) {
+      throw new Error("Praktika session expired or returned a login page.");
+    }
+
+    let json: any;
+
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(`Praktika upload did not return JSON: ${text.slice(0, 300)}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        json?.error ||
+          json?.message ||
+          `Praktika upload failed with status ${response.status}.`
+      );
+    }
+
+    return json;
+  });
 }
 
 export async function uploadPatientCommunicationFile({
@@ -135,18 +165,12 @@ export async function createPatientClinicalNote({
 }) {
   const now = new Date();
   const dateTime = `${formatPraktikaDateTime(now)}:00`;
-
-  /**
-   * IMPORTANT:
-   * Praktika normally generated the note id before commit in your captured request.
-   * For first test, we use a temporary negative id.
-   * Test this ONLY on a dummy patient first.
-   */
   const tempId = `-${Date.now()}`;
+  const cookie = await getPraktikaCookie();
 
   const payload = [
     {
-      request_id: `${process.env.PRAKTIKA_COOKIE?.split("=")[1]?.split(";")[0] ?? "request"}_ai`,
+      request_id: `${getSessionIdFromCookie(cookie)}_ai`,
       practice_id: Number(PRAKTIKA_PRACTICE_ID),
       patient_id: Number(patientId),
       patient_clinicalnotes: [

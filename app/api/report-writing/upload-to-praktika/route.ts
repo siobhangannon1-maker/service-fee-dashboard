@@ -1,17 +1,18 @@
-import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-import { uploadPatientCommunicationFile } from "@/lib/praktika/patient-filing"
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { uploadPatientCommunicationFile } from "@/lib/praktika/patient-filing";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 import {
   createReportAuditEvent,
   getAuditActor,
-} from "@/lib/report-writing/audit"
+} from "@/lib/report-writing/audit";
 
-export const runtime = "nodejs"
+export const runtime = "nodejs";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
 
 function getSafePatientName(patientName: string | null | undefined) {
   return patientName
@@ -19,45 +20,45 @@ function getSafePatientName(patientName: string | null | undefined) {
         .trim()
         .replace(/[^a-z0-9]+/gi, "_")
         .replace(/^_+|_+$/g, "")
-    : "Patient"
+    : "Patient";
 }
 
 function getFileDate() {
-  return new Date().toISOString().slice(0, 10)
+  return new Date().toISOString().slice(0, 10);
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json()
-    const { draftId, praktikaPatientId, notes } = body
+    const body = await req.json();
+    const { draftId, praktikaPatientId, notes } = body;
 
     if (!draftId) {
       return NextResponse.json(
         { success: false, error: "Missing draftId." },
-        { status: 400 }
-      )
+        { status: 400 },
+      );
     }
 
     if (!praktikaPatientId) {
       return NextResponse.json(
         { success: false, error: "Missing Praktika patient ID." },
-        { status: 400 }
-      )
+        { status: 400 },
+      );
     }
 
-    const actor = await getAuditActor()
+    const actor = await getAuditActor();
 
     const { data: draft, error: draftError } = await supabase
       .from("report_drafts")
       .select("*")
       .eq("id", draftId)
-      .single()
+      .single();
 
     if (draftError || !draft) {
       return NextResponse.json(
         { success: false, error: "Draft not found." },
-        { status: 404 }
-      )
+        { status: 404 },
+      );
     }
 
     if (draft.status !== "approved" && draft.status !== "uploaded_to_praktika") {
@@ -66,20 +67,20 @@ export async function POST(req: Request) {
           success: false,
           error: "Only approved reports can be uploaded to Praktika.",
         },
-        { status: 400 }
-      )
+        { status: 400 },
+      );
     }
 
-    const origin = new URL(req.url).origin
+    const origin = new URL(req.url).origin;
 
     const pdfResponse = await fetch(`${origin}/api/report-writing/generate-pdf`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ draftId }),
-    })
+    });
 
     if (!pdfResponse.ok) {
-      const errorText = await pdfResponse.text()
+      const errorText = await pdfResponse.text();
 
       return NextResponse.json(
         {
@@ -87,31 +88,33 @@ export async function POST(req: Request) {
           error: "Failed to generate PDF before Praktika upload.",
           details: errorText.slice(0, 1000),
         },
-        { status: 500 }
-      )
+        { status: 500 },
+      );
     }
 
-    const pdfBlob = await pdfResponse.blob()
-    const pdfBuffer = Buffer.from(await pdfBlob.arrayBuffer())
+    const pdfBlob = await pdfResponse.blob();
+    const pdfBuffer = Buffer.from(await pdfBlob.arrayBuffer());
 
     const fileName = `${getFileDate()} ${getSafePatientName(
-      draft.patient_name
-    )} Letter.pdf`
+      draft.patient_name,
+    )} Letter.pdf`;
 
     const file = new File([pdfBuffer], fileName, {
       type: "application/pdf",
-    })
+    });
 
-    await uploadPatientCommunicationFile({
-      patientId: praktikaPatientId,
-      file,
-      fileName,
-      notes:
-        notes ||
-        `Specialist report uploaded from AI report-writing assistant for ${
-          draft.patient_name || "patient"
-        }.`,
-    })
+    await withPraktikaAutoRefresh(() =>
+      uploadPatientCommunicationFile({
+        patientId: praktikaPatientId,
+        file,
+        fileName,
+        notes:
+          notes ||
+          `Specialist report uploaded from AI report-writing assistant for ${
+            draft.patient_name || "patient"
+          }.`,
+      }),
+    );
 
     const { data: updatedDraft, error: updateError } = await supabase
       .from("report_drafts")
@@ -126,13 +129,13 @@ export async function POST(req: Request) {
       })
       .eq("id", draftId)
       .select()
-      .single()
+      .single();
 
     if (updateError) {
       console.error(
         "PDF uploaded to Praktika, but failed to update report status:",
-        updateError
-      )
+        updateError,
+      );
 
       return NextResponse.json(
         {
@@ -141,8 +144,8 @@ export async function POST(req: Request) {
             "PDF uploaded to Praktika, but failed to update report status.",
           details: updateError.message,
         },
-        { status: 500 }
-      )
+        { status: 500 },
+      );
     }
 
     await createReportAuditEvent({
@@ -157,7 +160,7 @@ export async function POST(req: Request) {
         uploadedByInitials: actor.actorInitials,
         uploadedByName: actor.actorFullName,
       },
-    })
+    });
 
     return NextResponse.json({
       success: true,
@@ -165,9 +168,9 @@ export async function POST(req: Request) {
       fileName,
       uploadedByInitials: actor.actorInitials,
       uploadedByName: actor.actorFullName,
-    })
+    });
   } catch (error) {
-    console.error("Upload report to Praktika failed:", error)
+    console.error("Upload report to Praktika failed:", error);
 
     return NextResponse.json(
       {
@@ -177,7 +180,7 @@ export async function POST(req: Request) {
             ? error.message
             : "Failed to upload report to Praktika.",
       },
-      { status: 500 }
-    )
+      { status: 500 },
+    );
   }
 }

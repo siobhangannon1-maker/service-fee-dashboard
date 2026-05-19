@@ -2,6 +2,7 @@ import { createClient as createSupabaseAdmin } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
 
 function getAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -67,9 +68,9 @@ async function geocodeAddress(row: {
 
   const res = await fetch(
     `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-      fullAddress
+      fullAddress,
     )}&key=${key}`,
-    { cache: "no-store" }
+    { cache: "no-store" },
   );
 
   const json = await res.json();
@@ -168,9 +169,11 @@ export async function POST(request: Request) {
     params.append("sToDate", toDate);
     params.append("sMode", "CLINIC");
 
-    const data = await fetchPraktikaJson(
-      params,
-      "https://praktika.praktika.net.au/v2/reports/referrals"
+    const data = await withPraktikaAutoRefresh(() =>
+      fetchPraktikaJson(
+        params,
+        "https://praktika.praktika.net.au/v2/reports/referrals",
+      ),
     );
 
     const fileName = `Praktika Referrals ${fromDate} to ${toDate}`;
@@ -184,7 +187,7 @@ export async function POST(request: Request) {
 
     if (existingError) {
       throw new Error(
-        `Failed to check existing referral sync: ${existingError.message}`
+        `Failed to check existing referral sync: ${existingError.message}`,
       );
     }
 
@@ -198,7 +201,7 @@ export async function POST(request: Request) {
 
       if (deleteOldError) {
         throw new Error(
-          `Failed to delete old referral sync: ${deleteOldError.message}`
+          `Failed to delete old referral sync: ${deleteOldError.message}`,
         );
       }
     }
@@ -218,7 +221,7 @@ export async function POST(request: Request) {
       throw new Error(
         `Failed to create referral upload: ${
           uploadError?.message || "No upload returned"
-        }`
+        }`,
       );
     }
 
@@ -239,25 +242,25 @@ export async function POST(request: Request) {
           "referrer_name",
           "Clinic Name",
           "Referral Source",
-        ])
+        ]),
       );
 
       if (!clinicName) continue;
 
       const address = normalizeWhitespace(
-        pickFirst(row, ["vchStreetAddress", "vchAddress", "address", "Address"])
+        pickFirst(row, ["vchStreetAddress", "vchAddress", "address", "Address"]),
       );
 
       const suburb = normalizeWhitespace(
-        pickFirst(row, ["vchSuburb", "suburb", "Suburb"])
+        pickFirst(row, ["vchSuburb", "suburb", "Suburb"]),
       );
 
       const postCode = normalizeWhitespace(
-        pickFirst(row, ["vchPostCode", "post_code", "Post Code", "postcode"])
+        pickFirst(row, ["vchPostCode", "post_code", "Post Code", "postcode"]),
       );
 
       const state = normalizeWhitespace(
-        pickFirst(row, ["vchState", "state", "State"])
+        pickFirst(row, ["vchState", "state", "State"]),
       );
 
       const referralCount =
@@ -269,7 +272,7 @@ export async function POST(request: Request) {
             "Referral Count",
             "count",
             "Count",
-          ])
+          ]),
         ) || 1;
 
       const normalizedName = normalizeName(clinicName);
@@ -283,7 +286,7 @@ export async function POST(request: Request) {
 
       if (existingReferrerError) {
         throw new Error(
-          `Failed to check referrer ${clinicName}: ${existingReferrerError.message}`
+          `Failed to check referrer ${clinicName}: ${existingReferrerError.message}`,
         );
       }
 
@@ -318,7 +321,7 @@ export async function POST(request: Request) {
           throw new Error(
             `Failed to create referrer ${clinicName}: ${
               createReferrerError?.message || "No referrer returned"
-            }`
+            }`,
           );
         }
 
@@ -373,7 +376,7 @@ export async function POST(request: Request) {
         ok: false,
         error: error?.message || "Praktika referrals sync failed.",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
