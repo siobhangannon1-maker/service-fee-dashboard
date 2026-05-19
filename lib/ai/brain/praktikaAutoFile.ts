@@ -135,7 +135,7 @@ function buildAiActionNote({
   }
 
   lines.push("");
-  lines.push("Filed by DocuDental assisted automation.");
+  lines.push("Filed by AI assisted automation.");
 
   return lines.join("\n");
 }
@@ -203,7 +203,7 @@ export async function autoFileInboxItemToPraktika({
           patientId: item.praktika_patient_id,
           file: fileBlob,
           fileName,
-          notes: `Filed by DocuDental from inbox item ${inboxItemId}.`,
+          notes: `Filed by AI Assistant from inbox item ${inboxItemId}.`,
         });
 
         communicationResults.push({ fileName, result });
@@ -216,7 +216,7 @@ export async function autoFileInboxItemToPraktika({
           patientId: item.praktika_patient_id,
           file: fileBlob,
           fileName,
-          notes: `Filed by DocuDental from inbox item ${inboxItemId}.`,
+          notes: `Filed by AI Assistant from inbox item ${inboxItemId}.`,
         });
 
         imageResults.push({ fileName, result });

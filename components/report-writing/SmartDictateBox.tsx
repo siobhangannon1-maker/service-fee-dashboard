@@ -25,6 +25,30 @@ type Props = {
   onResult: (result: SmartDictateResult) => void
 }
 
+async function readJsonSafely(response: Response) {
+  const text = await response.text()
+
+  if (!text.trim()) {
+    return {
+      success: false,
+      error: "The server returned an empty response.",
+    }
+  }
+
+  try {
+    return JSON.parse(text)
+  } catch {
+    console.error("Smart Dictate non-JSON response:", text.slice(0, 1000))
+
+    return {
+      success: false,
+      error:
+        "The server returned a web page instead of JSON. This usually means the API route is missing, unauthorized, or crashing.",
+      preview: text.slice(0, 500),
+    }
+  }
+}
+
 export default function SmartDictateBox({
   providerId,
   reportTypes,
@@ -49,9 +73,9 @@ export default function SmartDictateBox({
       body: formData,
     })
 
-    const data = await response.json()
+    const data = await readJsonSafely(response)
 
-    if (!data.success) {
+    if (!response.ok || !data.success) {
       throw new Error(data.error || "Failed to transcribe audio.")
     }
 
@@ -79,61 +103,73 @@ export default function SmartDictateBox({
         }),
       })
 
-      const data = await response.json()
+      const data = await readJsonSafely(response)
 
-      if (!data.success) {
+      if (!response.ok || !data.success) {
         alert(data.error || "Smart Dictate failed.")
         return
       }
 
       onResult(data)
+    } catch (error) {
+      console.error("Smart Dictate error:", error)
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Smart Dictate failed unexpectedly."
+      )
     } finally {
       setWorking(false)
     }
   }
 
   async function startRecording() {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
 
-    chunksRef.current = []
+      chunksRef.current = []
 
-    const recorder = new MediaRecorder(stream)
-    mediaRecorderRef.current = recorder
+      const recorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = recorder
 
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        chunksRef.current.push(event.data)
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data)
+        }
       }
-    }
 
-    recorder.onstop = async () => {
-      stream.getTracks().forEach((track) => track.stop())
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop())
 
-      const blob = new Blob(chunksRef.current, {
-        type: "audio/webm",
-      })
+        const blob = new Blob(chunksRef.current, {
+          type: "audio/webm",
+        })
 
-      try {
-        setWorking(true)
-        const text = await transcribeAudio(blob)
-        setManualText(text)
-        await runSmartDictate(text)
-      } catch (error) {
-        alert(
-          error instanceof Error
-            ? error.message
-            : "Failed to process dictation."
-        )
-      } finally {
-        setWorking(false)
-        setRecording(false)
-        setPaused(false)
+        try {
+          setWorking(true)
+          const text = await transcribeAudio(blob)
+          setManualText(text)
+          await runSmartDictate(text)
+        } catch (error) {
+          alert(
+            error instanceof Error
+              ? error.message
+              : "Failed to process dictation."
+          )
+        } finally {
+          setWorking(false)
+          setRecording(false)
+          setPaused(false)
+        }
       }
-    }
 
-    recorder.start()
-    setRecording(true)
-    setPaused(false)
+      recorder.start()
+      setRecording(true)
+      setPaused(false)
+    } catch (error) {
+      console.error("Microphone error:", error)
+      alert("Could not start microphone recording.")
+    }
   }
 
   function pauseRecording() {
