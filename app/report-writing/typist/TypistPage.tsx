@@ -1820,8 +1820,8 @@ export default function TypistPage() {
             {[
               ["queue", `Queue (${queue.length})`],
               ["drafts", `Drafts (${countDrafts})`],
-              ["awaiting", `Awaiting (${countAwaiting})`],
-              ["completed", `Completed (${countCompleted})`],
+              ["awaiting", `Awaiting Approval (${countAwaiting})`],
+              ["completed", `Approved (${countCompleted})`],
             ].map(([key, label]) => (
               <button
                 key={key}

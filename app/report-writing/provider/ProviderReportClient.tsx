@@ -803,32 +803,71 @@ export default function ProviderReportClient({
         <SyncReferrersButton />
       </div>
 
-      <div className="grid gap-3 md:grid-cols-5">
-        {[
-          ["smart", "Smart Dictate"],
-          ["dictate", "Dictate"],
-          ["notes", "Clinical Notes"],
-          ["approval", `Approval Inbox (${approvalDrafts.length})`],
-          ["approved", `Approved (${approvedDrafts.length})`],
-        ].map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => {
-              setActiveTab(key as ActiveTab)
-              loadDrafts()
-              loadReportTypes()
-            }}
-            className={[
-              "rounded-2xl px-5 py-4 text-sm font-semibold shadow-sm",
-              activeTab === key
-                ? "bg-slate-950 text-white"
-                : "border bg-white text-slate-700 hover:bg-slate-50",
-            ].join(" ")}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+<div className="space-y-4">
+  <div className="rounded-2xl border bg-white p-4 shadow-sm">
+    <h2 className="mb-3 text-lg font-bold text-slate-900">
+      Create a Letter
+    </h2>
+
+    <div className="grid gap-3 md:grid-cols-3">
+      {[
+        ["dictate", "Dictate"],
+        ["smart", "Smart Dictate"],
+        ["notes", "Generate Letter From Notes"],
+      ].map(([key, label]) => (
+        <button
+          key={key}
+          onClick={() => {
+            setActiveTab(key as ActiveTab)
+            loadReportTypes()
+          }}
+          className={[
+            "rounded-2xl px-5 py-4 text-sm font-semibold shadow-sm",
+            activeTab === key
+              ? "bg-slate-950 text-white"
+              : "border bg-white text-slate-700 hover:bg-slate-50",
+          ].join(" ")}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  </div>
+
+  <div className="rounded-2xl border bg-slate-50 p-4 shadow-sm">
+    <div className="mb-3">
+      <h2 className="text-lg font-bold text-slate-900">
+        Review Centre
+      </h2>
+      <p className="text-sm text-slate-500">
+        Review letters awaiting approval or view recently approved letters.
+      </p>
+    </div>
+
+    <div className="grid gap-3 md:grid-cols-2">
+      {[
+        ["approval", `Approval Inbox (${approvalDrafts.length})`],
+        ["approved", `Approved Letters (${approvedDrafts.length})`],
+      ].map(([key, label]) => (
+        <button
+          key={key}
+          onClick={() => {
+            setActiveTab(key as ActiveTab)
+            loadDrafts()
+          }}
+          className={[
+            "rounded-2xl px-5 py-4 text-sm font-semibold shadow-sm",
+            activeTab === key
+              ? "bg-blue-600 text-white"
+              : "border bg-white text-slate-700 hover:bg-slate-50",
+          ].join(" ")}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  </div>
+</div>
 
       {savedMessage ? (
         <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
@@ -837,50 +876,46 @@ export default function ProviderReportClient({
       ) : null}
 
       {activeTab === "smart" ? (
-        <div className="space-y-6 rounded-2xl border bg-white p-5">
-          <SmartDictateBox
-            providerId={providerId}
-            reportTypes={reportTypes}
-            selectedReportType={reportType}
-            onReportTypeChange={setReportType}
-            onResult={(result) => {
-              setPatientFirstName(result.patientFirstName || "")
-              setPatientLastName(result.patientLastName || "")
-              setPatientDob(result.patientDob || "")
-              setReportType(result.reportType || reportType)
-              setClinicalNotes(result.clinicalNotes || "")
-              setGeneratedReport(result.report || "")
-              setOriginalGeneratedReport(result.report || "")
-              setSavedMessage("")
-              clearPatientMatch()
-            }}
-          />
+  <div className="space-y-6">
+    {sharedPatientFields}
 
-          {sharedPatientFields}
+    <div className="space-y-6 rounded-2xl border bg-white p-5">
+      <SmartDictateBox
+        providerId={providerId}
+        patientFirstName={patientFirstName}
+        patientLastName={patientLastName}
+        patientDob={patientDob}
+        disabled={
+          !patientFirstName.trim() || !patientLastName.trim()
+        }
+        reportTypes={reportTypes}
+        selectedReportType={reportType}
+        onReportTypeChange={setReportType}
+        onResult={(result) => {
+          setClinicalNotes(result.clinicalNotes || "")
+          setGeneratedReport(result.report || "")
+          setOriginalGeneratedReport(result.report || "")
+          setSavedMessage("")
+        }}
+      />
 
-          <textarea
-            className="h-40 w-full rounded-xl border border-slate-300 p-4"
-            placeholder="Extracted clinical notes from Smart Dictate..."
-            value={clinicalNotes}
-            onChange={(e) => setClinicalNotes(e.target.value)}
-          />
+      <textarea
+        className="h-96 w-full rounded-xl border border-slate-300 p-4"
+        placeholder="Smart Dictate generated report..."
+        value={generatedReport}
+        onChange={(e) => setGeneratedReport(e.target.value)}
+      />
 
-          <textarea
-            className="h-96 w-full rounded-xl border border-slate-300 p-4"
-            placeholder="Smart Dictate generated report..."
-            value={generatedReport}
-            onChange={(e) => setGeneratedReport(e.target.value)}
-          />
-
-          <button
-            onClick={saveNotesDraft}
-            disabled={loading}
-            className="rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
-          >
-            Save Smart Dictate Report As Approved Draft
-          </button>
-        </div>
-      ) : null}
+      <button
+        onClick={saveNotesDraft}
+        disabled={loading}
+        className="rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
+      >
+        Save Smart Dictate Report As Approved Draft
+      </button>
+    </div>
+  </div>
+) : null}
 
       {activeTab === "dictate" ? (
         <div className="space-y-6 rounded-2xl border bg-white p-5">
@@ -888,6 +923,8 @@ export default function ProviderReportClient({
 
           <OpenAIDictationBox
   providerId={providerId}
+  patientFirstName={patientFirstName}
+  patientLastName={patientLastName}
   disabled={!patientFirstName.trim() || !patientLastName.trim()}
   onFinished={(text) => {
     setDictatedLetter(text)

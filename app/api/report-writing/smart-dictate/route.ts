@@ -11,11 +11,29 @@ export async function POST(req: Request) {
   try {
     const body = await req.json()
 
-    const { providerId, dictatedText, reportType } = body
+    const {
+      providerId,
+      patientFirstName,
+      patientLastName,
+      patientName,
+      patientDob,
+      dictatedText,
+      reportType,
+    } = body
 
     if (!providerId) {
       return NextResponse.json(
         { success: false, error: "Missing providerId." },
+        { status: 400 }
+      )
+    }
+
+    if (!patientFirstName || !patientLastName) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Patient first name and last name are required.",
+        },
         { status: 400 }
       )
     }
@@ -27,25 +45,29 @@ export async function POST(req: Request) {
       )
     }
 
+    const finalPatientFirstName = String(patientFirstName).trim()
+    const finalPatientLastName = String(patientLastName).trim()
+
+    const finalPatientName =
+      String(patientName || "").trim() ||
+      `${finalPatientFirstName} ${finalPatientLastName}`.trim()
+
     const finalReportType = reportType || "consultation_report"
 
     const extractionPrompt = `
-Extract structured information from this dictated dental report instruction.
+Extract clinical notes from this dictated dental report instruction.
 
 Return JSON only with:
 {
-  "patientFirstName": "",
-  "patientLastName": "",
-  "patientDob": "",
   "clinicalNotes": ""
 }
 
 Rules:
-- Extract patient name if present.
-- Extract DOB only if clearly mentioned.
+- Never extract or modify the patient name from dictation.
+- The patient name has already been entered separately and is authoritative.
 - Keep all findings, diagnoses, treatment plan and relevant instructions in clinicalNotes.
 - Do not invent missing information.
-- Do not decide the report type. The provider has already selected it.
+- Do not decide the report type.
 
 Dictation:
 ${dictatedText}
@@ -58,7 +80,7 @@ ${dictatedText}
         {
           role: "system",
           content:
-            "You extract structured report-writing data from dictated specialist dental instructions. Return valid JSON only.",
+            "You extract clinical notes from dictated specialist dental instructions. Return valid JSON only.",
         },
         {
           role: "user",
@@ -68,11 +90,12 @@ ${dictatedText}
     })
 
     const raw = completion.choices[0]?.message?.content?.trim() || "{}"
+
     const parsed = JSON.parse(raw)
 
-    const patientFirstName = String(parsed.patientFirstName || "").trim()
-    const patientLastName = String(parsed.patientLastName || "").trim()
-    const patientName = `${patientFirstName} ${patientLastName}`.trim()
+    const clinicalNotes = String(
+      parsed.clinicalNotes || dictatedText
+    ).trim()
 
     const generateResponse = await fetch(
       `${new URL(req.url).origin}/api/report-writing/generate`,
@@ -83,34 +106,34 @@ ${dictatedText}
         },
         body: JSON.stringify({
           providerId,
-          patientName,
-          patientFirstName,
-          patientDob: parsed.patientDob || "",
+          patientName: finalPatientName,
+          patientFirstName: finalPatientFirstName,
+          patientDob: patientDob || "",
           reportType: finalReportType,
-          clinicalNotes: parsed.clinicalNotes || dictatedText,
+          clinicalNotes,
         }),
       }
     )
 
     const generateText = await generateResponse.text()
 
-let generateData: any
+    let generateData: any
 
-try {
-  generateData = generateText ? JSON.parse(generateText) : {}
-} catch {
-  return NextResponse.json(
-    {
-      success: false,
-      error:
-        "The generate API returned a web page instead of JSON. Check /api/report-writing/generate permissions or server error logs.",
-      preview: generateText.slice(0, 500),
-    },
-    { status: 500 }
-  )
-}
+    try {
+      generateData = generateText ? JSON.parse(generateText) : {}
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "The generate API returned a web page instead of JSON.",
+          preview: generateText.slice(0, 500),
+        },
+        { status: 500 }
+      )
+    }
 
-if (!generateResponse.ok || !generateData.success) {
+    if (!generateResponse.ok || !generateData.success) {
       return NextResponse.json(
         {
           success: false,
@@ -122,11 +145,11 @@ if (!generateResponse.ok || !generateData.success) {
 
     return NextResponse.json({
       success: true,
-      patientFirstName,
-      patientLastName,
-      patientDob: parsed.patientDob || "",
+      patientFirstName: finalPatientFirstName,
+      patientLastName: finalPatientLastName,
+      patientDob: patientDob || "",
       reportType: finalReportType,
-      clinicalNotes: parsed.clinicalNotes || dictatedText,
+      clinicalNotes,
       report: generateData.report,
       dictatedText,
     })
@@ -137,7 +160,9 @@ if (!generateResponse.ok || !generateData.success) {
       {
         success: false,
         error:
-          error instanceof Error ? error.message : "Smart dictate failed.",
+          error instanceof Error
+            ? error.message
+            : "Smart dictate failed.",
       },
       { status: 500 }
     )

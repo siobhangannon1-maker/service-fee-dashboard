@@ -5,12 +5,16 @@ import { useRef, useState } from "react"
 type OpenAIDictationBoxProps = {
   disabled?: boolean
   providerId: string
+  patientFirstName: string
+  patientLastName: string
   onFinished: (text: string) => void
 }
 
 export default function OpenAIDictationBox({
   disabled,
   providerId,
+  patientFirstName,
+  patientLastName,
   onFinished,
 }: OpenAIDictationBoxProps) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -130,7 +134,10 @@ export default function OpenAIDictationBox({
       }
 
       onFinished(data.text)
-      setMessage("Transcription complete.")
+
+      setMessage(
+        `Transcription complete for ${patientFirstName} ${patientLastName}.`
+      )
     } catch (error) {
       console.error("Dictation upload/transcription error:", error)
       alert("Error transcribing audio. Check the browser console and terminal.")
@@ -186,7 +193,7 @@ export default function OpenAIDictationBox({
         <div className="text-sm text-slate-500">
           {disabled
             ? "Enter patient first and last name before dictating."
-            : "Text appears only after you finish dictation."}
+            : `Dictation locked to patient: ${patientFirstName} ${patientLastName}`}
         </div>
       </div>
 
