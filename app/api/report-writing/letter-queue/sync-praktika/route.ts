@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { getPraktikaCookie } from "@/lib/praktika/session-store";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import { getPraktikaCookie } from "@/lib/praktika/hybrid-session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,8 +56,9 @@ async function fetchAppointmentRowsFromPraktika({
   toDate: string;
   practiceId: string;
 }) {
-  return withPraktikaAutoRefresh(async () => {
-    const cookie = await getPraktikaCookie();
+  return withPraktikaAutoRefresh(
+    async () => {
+    const cookie = await getPraktikaCookie({ scope: "practice" });
 
     const params = new URLSearchParams();
     params.append("sReportName", "appointments");
@@ -116,7 +117,11 @@ async function fetchAppointmentRowsFromPraktika({
     }
 
     return parsedRows as PraktikaAppointmentRow[];
-  });
+    },
+    {
+      mode: { scope: "practice" },
+    },
+  );
 }
 
 export async function POST(req: Request) {

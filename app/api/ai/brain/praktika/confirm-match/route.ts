@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { autoFileInboxItemToPraktika } from "@/lib/ai/brain/praktikaAutoFile";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
+    const mode = await getCurrentUserPraktikaSessionMode();
     const body = await request.json();
 
     const inboxItemId = String(body.inboxItemId || "").trim();
@@ -59,10 +62,16 @@ export async function POST(request: Request) {
     let filingError: string | null = null;
 
     try {
-      filingResult = await autoFileInboxItemToPraktika({
-        inboxItemId,
-        force: false,
-      });
+      filingResult = await withPraktikaAutoRefresh(
+        () =>
+          autoFileInboxItemToPraktika({
+            inboxItemId,
+            force: false,
+          }),
+        {
+          mode,
+        },
+      );
     } catch (error: any) {
       filingError = error?.message || "Auto filing failed after match confirmation.";
 

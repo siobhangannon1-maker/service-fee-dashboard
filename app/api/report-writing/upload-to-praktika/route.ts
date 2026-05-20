@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { uploadPatientCommunicationFile } from "@/lib/praktika/patient-filing";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 import {
   createReportAuditEvent,
   getAuditActor,
 } from "@/lib/report-writing/audit";
 
 export const runtime = "nodejs";
+
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -29,6 +31,7 @@ function getFileDate() {
 
 export async function POST(req: Request) {
   try {
+    const mode = await getCurrentUserPraktikaSessionMode();
     const body = await req.json();
     const { draftId, praktikaPatientId, notes } = body;
 
@@ -103,17 +106,21 @@ export async function POST(req: Request) {
       type: "application/pdf",
     });
 
-    await withPraktikaAutoRefresh(() =>
-      uploadPatientCommunicationFile({
-        patientId: praktikaPatientId,
-        file,
-        fileName,
-        notes:
-          notes ||
-          `Specialist report uploaded from AI report-writing assistant for ${
-            draft.patient_name || "patient"
-          }.`,
-      }),
+    await withPraktikaAutoRefresh(
+      () =>
+        uploadPatientCommunicationFile({
+          patientId: praktikaPatientId,
+          file,
+          fileName,
+          notes:
+            notes ||
+            `Specialist report uploaded from AI report-writing assistant for ${
+              draft.patient_name || "patient"
+            }.`,
+        }),
+      {
+        mode,
+      },
     );
 
     const { data: updatedDraft, error: updateError } = await supabase

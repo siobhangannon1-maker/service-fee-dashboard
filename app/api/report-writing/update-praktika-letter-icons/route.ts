@@ -1,63 +1,66 @@
-import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-import { getPraktikaCookie } from "@/lib/praktika/session-store"
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request"
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import {
+  getCurrentUserPraktikaSessionMode,
+  getPraktikaCookie,
+} from "@/lib/praktika/hybrid-session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
 
-export const runtime = "nodejs"
-export const dynamic = "force-dynamic"
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
 
-const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au"
-const TYPIST_LETTER_ICON_ID = 7360
-const LETTER_SENT_ICON_ID = 6597
+const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
+const TYPIST_LETTER_ICON_ID = 7360;
+const LETTER_SENT_ICON_ID = 6597;
 
 function clean(value: unknown) {
-  return String(value ?? "").trim()
+  return String(value ?? "").trim();
 }
 
 function numberValue(value: unknown) {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : 0
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function buildRequestId(cookie: string) {
-  const match = cookie.match(/PHPSESSID=([^;]+)/)
-  const sessionId = match?.[1] || crypto.randomUUID()
-  return `${sessionId}_${Date.now()}`
+  const match = cookie.match(/PHPSESSID=([^;]+)/);
+  const sessionId = match?.[1] || crypto.randomUUID();
+  return `${sessionId}_${Date.now()}`;
 }
 
 function replaceTypistLetterIcon(iconIds: number[]) {
   const updated = iconIds.map((id) =>
-    id === TYPIST_LETTER_ICON_ID ? LETTER_SENT_ICON_ID : id
-  )
+    id === TYPIST_LETTER_ICON_ID ? LETTER_SENT_ICON_ID : id,
+  );
 
   if (!updated.includes(LETTER_SENT_ICON_ID)) {
-    const emptyIndex = updated.findIndex((id) => id === 0)
+    const emptyIndex = updated.findIndex((id) => id === 0);
 
     if (emptyIndex >= 0) {
-      updated[emptyIndex] = LETTER_SENT_ICON_ID
+      updated[emptyIndex] = LETTER_SENT_ICON_ID;
     }
   }
 
-  return updated.slice(0, 4)
+  return updated.slice(0, 4);
 }
 
 function assertPraktikaJsonResponse(responseText: string) {
-  const trimmed = responseText.trim().toLowerCase()
+  const trimmed = responseText.trim().toLowerCase();
 
   if (
     trimmed.startsWith("<!doctype") ||
     trimmed.startsWith("<html") ||
     trimmed.includes("/v2/login") ||
-    trimmed.includes("type=\"password\"") ||
+    trimmed.includes('type="password"') ||
     trimmed.includes("logged-out") ||
     trimmed.includes("logged out")
   ) {
-    throw new Error("Praktika session expired or returned a login page.")
+    throw new Error("Praktika session expired or returned a login page.");
   }
 }
 
@@ -67,10 +70,10 @@ async function findQueueItem(params: { queueId?: string; draftId?: string }) {
       .from("report_letter_queue")
       .select("*")
       .eq("id", params.queueId)
-      .maybeSingle()
+      .maybeSingle();
 
-    if (error) throw new Error(error.message)
-    if (data) return data
+    if (error) throw new Error(error.message);
+    if (data) return data;
   }
 
   if (params.draftId) {
@@ -80,13 +83,13 @@ async function findQueueItem(params: { queueId?: string; draftId?: string }) {
       .eq("report_draft_id", params.draftId)
       .order("updated_at", { ascending: false })
       .limit(1)
-      .maybeSingle()
+      .maybeSingle();
 
-    if (error) throw new Error(error.message)
-    if (data) return data
+    if (error) throw new Error(error.message);
+    if (data) return data;
   }
 
-  return null
+  return null;
 }
 
 async function commitAppointmentIcons({
@@ -95,10 +98,10 @@ async function commitAppointmentIcons({
   appointmentId,
   updatedIconIds,
 }: {
-  cookie: string
-  practiceId: number
-  appointmentId: string
-  updatedIconIds: number[]
+  cookie: string;
+  practiceId: number;
+  appointmentId: string;
+  updatedIconIds: number[];
 }) {
   const payload = [
     {
@@ -110,7 +113,7 @@ async function commitAppointmentIcons({
       appointment_icon3id: updatedIconIds[2],
       appointment_icon4id: updatedIconIds[3],
     },
-  ]
+  ];
 
   const response = await fetch(
     `${PRAKTIKA_BASE_URL}/php/forms/db_commitFormData.php`,
@@ -122,39 +125,41 @@ async function commitAppointmentIcons({
         Cookie: cookie,
         Origin: PRAKTIKA_BASE_URL,
         Referer: `${PRAKTIKA_BASE_URL}/v2/scheduler`,
+        "X-Requested-With": "XMLHttpRequest",
       },
       body: JSON.stringify(payload),
       cache: "no-store",
-    }
-  )
+    },
+  );
 
-  const responseText = await response.text()
-  assertPraktikaJsonResponse(responseText)
+  const responseText = await response.text();
+  assertPraktikaJsonResponse(responseText);
 
   if (!response.ok) {
     throw new Error(
-      `Praktika icon update failed: ${response.status}. ${responseText.slice(0, 500)}`
-    )
+      `Praktika icon update failed: ${response.status}. ${responseText.slice(0, 500)}`,
+    );
   }
 
-  return responseText
+  return responseText;
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json()
-    const queueId = clean(body.queueId)
-    const draftId = clean(body.draftId)
+    const mode = await getCurrentUserPraktikaSessionMode();
+    const body = await req.json();
+    const queueId = clean(body.queueId);
+    const draftId = clean(body.draftId);
 
     if (!queueId && !draftId) {
       return NextResponse.json(
         { success: false, error: "Missing queueId or draftId." },
-        { status: 400 }
-      )
+        { status: 400 },
+      );
     }
 
-    const practiceId = Number(process.env.PRAKTIKA_PRACTICE_ID || "1181")
-    const queueItem = await findQueueItem({ queueId, draftId })
+    const practiceId = Number(process.env.PRAKTIKA_PRACTICE_ID || "1181");
+    const queueItem = await findQueueItem({ queueId, draftId });
 
     if (!queueItem) {
       return NextResponse.json(
@@ -163,19 +168,19 @@ export async function POST(req: Request) {
           error:
             "No linked queue item found for this draft. Open the item from the queue before creating the draft, or link the queue item to the draft.",
         },
-        { status: 404 }
-      )
+        { status: 404 },
+      );
     }
 
-    const raw = queueItem.raw_json || {}
+    const raw = queueItem.raw_json || {};
     const appointmentId =
-      clean(queueItem.appointment_id) || clean(raw.iAppointmentId)
+      clean(queueItem.appointment_id) || clean(raw.iAppointmentId);
 
     if (!appointmentId) {
       return NextResponse.json(
         { success: false, error: "Missing appointment ID." },
-        { status: 400 }
-      )
+        { status: 400 },
+      );
     }
 
     const currentIconIds = [
@@ -183,22 +188,27 @@ export async function POST(req: Request) {
       numberValue(raw.iIcon2Id),
       numberValue(raw.iIcon3Id),
       numberValue(raw.iIcon4Id),
-    ]
+    ];
 
-    const updatedIconIds = replaceTypistLetterIcon(currentIconIds)
+    const updatedIconIds = replaceTypistLetterIcon(currentIconIds);
 
-    const responseText = await withPraktikaAutoRefresh(async () => {
-      const cookie = await getPraktikaCookie()
+    const responseText = await withPraktikaAutoRefresh(
+      async () => {
+        const cookie = await getPraktikaCookie(mode);
 
-      return commitAppointmentIcons({
-        cookie,
-        practiceId,
-        appointmentId,
-        updatedIconIds,
-      })
-    })
+        return commitAppointmentIcons({
+          cookie,
+          practiceId,
+          appointmentId,
+          updatedIconIds,
+        });
+      },
+      {
+        mode,
+      },
+    );
 
-    const now = new Date().toISOString()
+    const now = new Date().toISOString();
 
     const { error: updateError } = await supabase
       .from("report_letter_queue")
@@ -216,7 +226,7 @@ export async function POST(req: Request) {
           letterIconUpdateResponsePreview: responseText.slice(0, 500),
         },
       })
-      .eq("id", queueItem.id)
+      .eq("id", queueItem.id);
 
     if (updateError) {
       return NextResponse.json(
@@ -224,8 +234,8 @@ export async function POST(req: Request) {
           success: false,
           error: `Praktika icons updated, but queue status failed: ${updateError.message}`,
         },
-        { status: 500 }
-      )
+        { status: 500 },
+      );
     }
 
     return NextResponse.json({
@@ -234,9 +244,9 @@ export async function POST(req: Request) {
       appointmentId,
       oldIconIds: currentIconIds,
       newIconIds: updatedIconIds,
-    })
+    });
   } catch (error) {
-    console.error("Update Praktika letter icons failed:", error)
+    console.error("Update Praktika letter icons failed:", error);
 
     return NextResponse.json(
       {
@@ -246,7 +256,7 @@ export async function POST(req: Request) {
             ? error.message
             : "Failed to update Praktika letter icons.",
       },
-      { status: 500 }
-    )
+      { status: 500 },
+    );
   }
 }

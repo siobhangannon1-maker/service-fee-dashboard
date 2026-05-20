@@ -2,7 +2,12 @@ import { createClient as createSupabaseAdmin } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
+import { ensureValidPraktikaSession } from "@/lib/praktika/ensure-valid-praktika-session";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function getAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -144,6 +149,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Not allowed" }, { status: 403 });
     }
 
+    const mode = await getCurrentUserPraktikaSessionMode();
+
+    await ensureValidPraktikaSession(mode);
+
     const body = await request.json();
 
     const fromDate = String(body.fromDate ?? "").trim();
@@ -169,11 +178,16 @@ export async function POST(request: Request) {
     params.append("sToDate", toDate);
     params.append("sMode", "CLINIC");
 
-    const data = await withPraktikaAutoRefresh(() =>
-      fetchPraktikaJson(
-        params,
-        "https://praktika.praktika.net.au/v2/reports/referrals",
-      ),
+    const data = await withPraktikaAutoRefresh(
+      () =>
+        fetchPraktikaJson(
+          params,
+          "https://praktika.praktika.net.au/v2/reports/referrals",
+          mode,
+        ),
+      {
+        mode,
+      },
     );
 
     const fileName = `Praktika Referrals ${fromDate} to ${toDate}`;
@@ -366,7 +380,7 @@ export async function POST(request: Request) {
       recordsInserted,
       newReferrers,
       createdTasks,
-      message: `Synced ${recordsInserted} referral records from Praktika.`,
+      message: `Synced ${recordsInserted} referral records from Praktika using your Praktika session.`,
     });
   } catch (error: any) {
     console.error("Praktika referrals sync failed:", error);

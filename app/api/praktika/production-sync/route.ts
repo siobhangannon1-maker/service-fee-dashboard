@@ -1,7 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 
 function getClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -154,6 +155,7 @@ function sanitizeRawJson(row: any) {
 
 export async function POST(request: Request) {
   try {
+    const mode = await getCurrentUserPraktikaSessionMode();
     const body = await request.json();
 
     const billingPeriodId = String(body.billingPeriodId ?? "").trim();
@@ -184,11 +186,16 @@ export async function POST(request: Request) {
     params.append("sFromDate", fromDate);
     params.append("sToDate", toDate);
 
-    const data = await withPraktikaAutoRefresh(() =>
-      fetchPraktikaJson(
-        params,
-        "https://praktika.praktika.net.au/v2/reports/completed-procedures",
-      ),
+    const data = await withPraktikaAutoRefresh(
+      () =>
+        fetchPraktikaJson(
+          params,
+          "https://praktika.praktika.net.au/v2/reports/completed-procedures",
+          mode,
+        ),
+      {
+        mode,
+      },
     );
 
     const providerLookup = await loadProviderLookup();

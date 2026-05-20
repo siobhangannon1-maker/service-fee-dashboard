@@ -1,8 +1,8 @@
 import {
   getPraktikaCookie,
-  markPraktikaRefreshRequested,
   updatePraktikaSession,
-} from "@/lib/praktika/session-store";
+  type PraktikaSessionMode,
+} from "@/lib/praktika/hybrid-session-store";
 
 export const PRAKTIKA_APP_BASE_URL =
   process.env.PRAKTIKA_APP_BASE_URL || "https://praktika.praktika.net.au";
@@ -40,7 +40,9 @@ function looksLikeLoginResponse(text: string): boolean {
     lower.includes('type="password"') ||
     lower.includes("login failed") ||
     lower.includes("user session is logged-out") ||
-    lower.includes("user session is logged out")
+    lower.includes("user session is logged out") ||
+    lower.includes("logged-out") ||
+    lower.includes("logged out")
   );
 }
 
@@ -115,7 +117,7 @@ async function makeRequest({
       ok: false,
       reason: "auth",
       data: null,
-      message: "Praktika returned a login/session response.",
+      message: "Praktika session expired or returned a login page.",
     };
   }
 
@@ -190,76 +192,67 @@ export async function requestPraktikaJson({
   method = "POST",
   headers,
   body,
+  mode = { scope: "practice" },
 }: {
   path: string;
   method?: "GET" | "POST";
   headers?: Record<string, string>;
   body?: BodyInit | null;
+  mode?: PraktikaSessionMode;
 }) {
   const url = `${PRAKTIKA_APP_BASE_URL}${requestPath}`;
+  const cookie = await getPraktikaCookie(mode);
 
-  let initialCookie: string;
-
-try {
-  initialCookie = await getPraktikaCookie();
-} catch {
-  await markPraktikaRefreshRequested();
-
-  throw new Error(
-    "No Praktika cookie is saved yet. Refresh has been requested. Open the Praktika Session panel and complete MFA if needed.",
-  );
-}
-
-  const firstAttempt = await makeRequest({
+  const result = await makeRequest({
     url,
     method,
     headers,
     body,
-    cookie: initialCookie,
+    cookie,
   });
 
-  if (firstAttempt.ok) {
-  await updatePraktikaSession({
-    status: "connected",
-    message: "Praktika connection is active.",
-  });
+  if (result.ok) {
+    await updatePraktikaSession(mode, {
+      status: "connected",
+      message: "Praktika connection is active.",
+      last_used_at: new Date().toISOString(),
+    });
 
-  return firstAttempt.data;
-}
-
-  if (firstAttempt.reason !== "auth") {
-    throw new Error(firstAttempt.message);
+    return result.data;
   }
 
-  await updatePraktikaSession({
-    status: "expired",
-    message:
-      "Praktika cookie appears expired. Refresh requested from local helper machine.",
-  });
+  if (result.reason === "auth") {
+    await updatePraktikaSession(mode, {
+      status: "expired",
+      message:
+        "Praktika cookie appears expired. Refresh requested from local helper machine.",
+    });
 
-  await markPraktikaRefreshRequested();
+    throw new Error("Praktika session expired or returned login page.");
+  }
 
-  throw new Error(
-    "Praktika session expired. Refresh has been requested. Open the Praktika Session panel and complete MFA if needed.",
-  );
+  throw new Error(result.message);
 }
 
-export async function fetchPraktikaJson({
+export async function praktikaRequest({
   path: requestPath,
   method = "POST",
   headers,
   body,
+  mode = { scope: "practice" },
 }: {
   path: string;
   method?: "GET" | "POST";
   headers?: Record<string, string>;
   body?: BodyInit | null;
+  mode?: PraktikaSessionMode;
 }) {
   const json = await requestPraktikaJson({
     path: requestPath,
     method,
     headers,
     body,
+    mode,
   });
 
   if (!Array.isArray(json)) {

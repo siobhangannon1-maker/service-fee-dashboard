@@ -1,6 +1,8 @@
 import { requestPraktikaJson } from "@/lib/praktika/praktika-request";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
 
 const PRAKTIKA_PRACTICE_ID = process.env.PRAKTIKA_PRACTICE_ID || "1181";
+const PRACTICE_MODE = { scope: "practice" as const };
 
 export type PraktikaPatientSearchInput = {
   firstName?: string;
@@ -46,13 +48,11 @@ function normaliseDob(value: string | null | undefined) {
 
   if (!raw) return "";
 
-  // ISO: 1961-07-24 -> 24/07/1961
   const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (iso) {
     return `${iso[3].padStart(2, "0")}/${iso[2].padStart(2, "0")}/${iso[1]}`;
   }
 
-  // AU: 24/07/61 or 24/07/1961 -> 24/07/1961
   const au = raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
   if (au) {
     const day = au[1].padStart(2, "0");
@@ -91,11 +91,6 @@ function buildSearchAttempts(input: PraktikaPatientSearchInput) {
   const firstName = input.firstName?.trim();
   const lastName = input.lastName?.trim();
   const mobile = normalisePhone(input.mobile);
-
-  /*
-    Praktika grid search is filter based. We deliberately search broadly and
-    score locally so DOB format differences do not prevent a match.
-  */
 
   if (lastName) {
     attempts.push({
@@ -279,6 +274,7 @@ async function searchAttempt({
         { sort: "asc", colId: "firstName", caseSensitive: false },
       ],
     }),
+    mode: PRACTICE_MODE,
   });
 
   const rows = Array.isArray(json?.rows) ? json.rows : [];
@@ -346,5 +342,10 @@ export async function searchPraktikaPatients(
     throw new Error("Enter at least one search field.");
   }
 
-  return searchOnce(input);
+  return withPraktikaAutoRefresh(
+    () => searchOnce(input),
+    {
+      mode: PRACTICE_MODE,
+    },
+  );
 }

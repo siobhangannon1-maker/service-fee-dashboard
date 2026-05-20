@@ -1,8 +1,12 @@
-import { requestPraktikaJson, PRAKTIKA_APP_BASE_URL } from "@/lib/praktika/praktika-request";
-import { getPraktikaCookie } from "@/lib/praktika/session-store";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import {
+  requestPraktikaJson,
+  PRAKTIKA_APP_BASE_URL,
+} from "@/lib/praktika/praktika-request";
+import { getPraktikaCookie } from "@/lib/praktika/hybrid-session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
 
 const PRAKTIKA_PRACTICE_ID = process.env.PRAKTIKA_PRACTICE_ID || "1181";
+const PRACTICE_MODE = { scope: "practice" as const };
 
 function formatPraktikaDateTime(date = new Date()) {
   const yyyy = date.getFullYear();
@@ -26,55 +30,61 @@ function looksLikeLoginOrHtml(text: string) {
     lower.startsWith("<!doctype") ||
     lower.startsWith("<html") ||
     lower.includes("/v2/login") ||
-    lower.includes("type=\"password\"") ||
+    lower.includes('type="password"') ||
     lower.includes("logged-out") ||
     lower.includes("logged out")
   );
 }
 
 async function postMultipartToPraktika(formData: FormData) {
-  return withPraktikaAutoRefresh(async () => {
-    const cookie = await getPraktikaCookie();
+  return withPraktikaAutoRefresh(
+    async () => {
+      const cookie = await getPraktikaCookie(PRACTICE_MODE);
 
-    const response = await fetch(
-      `${PRAKTIKA_APP_BASE_URL}/php/forms/db_updateFormData.php`,
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          Cookie: cookie,
-          Origin: PRAKTIKA_APP_BASE_URL,
-          Referer: `${PRAKTIKA_APP_BASE_URL}/v2/patient-directory/patient-search`,
+      const response = await fetch(
+        `${PRAKTIKA_APP_BASE_URL}/php/forms/db_updateFormData.php`,
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            Cookie: cookie,
+            Origin: PRAKTIKA_APP_BASE_URL,
+            Referer: `${PRAKTIKA_APP_BASE_URL}/v2/patient-directory/patient-search`,
+            "X-Requested-With": "XMLHttpRequest",
+          },
+          body: formData,
+          cache: "no-store",
         },
-        body: formData,
-        cache: "no-store",
-      }
-    );
-
-    const text = await response.text();
-
-    if (looksLikeLoginOrHtml(text)) {
-      throw new Error("Praktika session expired or returned a login page.");
-    }
-
-    let json: any;
-
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error(`Praktika upload did not return JSON: ${text.slice(0, 300)}`);
-    }
-
-    if (!response.ok) {
-      throw new Error(
-        json?.error ||
-          json?.message ||
-          `Praktika upload failed with status ${response.status}.`
       );
-    }
 
-    return json;
-  });
+      const text = await response.text();
+
+      if (looksLikeLoginOrHtml(text)) {
+        throw new Error("Praktika session expired or returned a login page.");
+      }
+
+      let json: any;
+
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error(`Praktika upload did not return JSON: ${text.slice(0, 300)}`);
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          json?.error ||
+            json?.message ||
+            `Praktika upload failed with status ${response.status}.`,
+        );
+      }
+
+      return json;
+    },
+    {
+      mode: PRACTICE_MODE,
+    },
+  );
 }
 
 export async function uploadPatientCommunicationFile({
@@ -99,7 +109,7 @@ export async function uploadPatientCommunicationFile({
   formData.append("patient_communication[file][file]", file, fileName);
   formData.append(
     "patient_communication[file][modifiedDate]",
-    formatPraktikaDateTime()
+    formatPraktikaDateTime(),
   );
 
   return postMultipartToPraktika(formData);
@@ -133,25 +143,32 @@ export async function uploadPatientImageFile({
 }
 
 export async function getPatientClinicalNotes(patientId: string | number) {
-  return requestPraktikaJson({
-    path: "/php/forms/db_getFormData.php",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Referer: `${PRAKTIKA_APP_BASE_URL}/v2/patient-directory/patient-search`,
-    },
-    body: JSON.stringify([
-      {
-        parameters: [
+  return withPraktikaAutoRefresh(
+    () =>
+      requestPraktikaJson({
+        path: "/php/forms/db_getFormData.php",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Referer: `${PRAKTIKA_APP_BASE_URL}/v2/patient-directory/patient-search`,
+        },
+        body: JSON.stringify([
           {
-            practice_id: Number(PRAKTIKA_PRACTICE_ID),
-            patient_id: String(patientId),
+            parameters: [
+              {
+                practice_id: Number(PRAKTIKA_PRACTICE_ID),
+                patient_id: String(patientId),
+              },
+            ],
+            fields: ["patient_clinicalnotes"],
           },
-        ],
-        fields: ["patient_clinicalnotes"],
-      },
-    ]),
-  });
+        ]),
+        mode: PRACTICE_MODE,
+      }),
+    {
+      mode: PRACTICE_MODE,
+    },
+  );
 }
 
 export async function createPatientClinicalNote({
@@ -166,43 +183,52 @@ export async function createPatientClinicalNote({
   const now = new Date();
   const dateTime = `${formatPraktikaDateTime(now)}:00`;
   const tempId = `-${Date.now()}`;
-  const cookie = await getPraktikaCookie();
 
-  const payload = [
-    {
-      request_id: `${getSessionIdFromCookie(cookie)}_ai`,
-      practice_id: Number(PRAKTIKA_PRACTICE_ID),
-      patient_id: Number(patientId),
-      patient_clinicalnotes: [
+  return withPraktikaAutoRefresh(
+    async () => {
+      const cookie = await getPraktikaCookie(PRACTICE_MODE);
+
+      const payload = [
         {
-          id: tempId,
-          oldid: null,
-          previd: null,
-          author,
-          date: dateTime,
-          type: 2,
-          teeth: null,
-          draft: false,
-          text,
-          editable: true,
-          deleted: false,
-          rootid: tempId,
-          appointmentid: null,
-          dateOverride: null,
-          dateCreated: dateTime,
-          history: [],
+          request_id: `${getSessionIdFromCookie(cookie)}_ai`,
+          practice_id: Number(PRAKTIKA_PRACTICE_ID),
+          patient_id: Number(patientId),
+          patient_clinicalnotes: [
+            {
+              id: tempId,
+              oldid: null,
+              previd: null,
+              author,
+              date: dateTime,
+              type: 2,
+              teeth: null,
+              draft: false,
+              text,
+              editable: true,
+              deleted: false,
+              rootid: tempId,
+              appointmentid: null,
+              dateOverride: null,
+              dateCreated: dateTime,
+              history: [],
+            },
+          ],
         },
-      ],
-    },
-  ];
+      ];
 
-  return requestPraktikaJson({
-    path: "/php/forms/db_commitFormData.php",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Referer: `${PRAKTIKA_APP_BASE_URL}/v2/patient-directory/patient-search`,
+      return requestPraktikaJson({
+        path: "/php/forms/db_commitFormData.php",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Referer: `${PRAKTIKA_APP_BASE_URL}/v2/patient-directory/patient-search`,
+        },
+        body: JSON.stringify(payload),
+        mode: PRACTICE_MODE,
+      });
     },
-    body: JSON.stringify(payload),
-  });
+    {
+      mode: PRACTICE_MODE,
+    },
+  );
 }

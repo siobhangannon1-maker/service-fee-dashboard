@@ -2,19 +2,73 @@
 
 import { useEffect, useState } from "react";
 
+type SessionScope = "practice" | "user";
+
 type SessionState = {
+  scope?: SessionScope;
   status:
-  | "not_started"
-  | "connected"
-  | "refreshing"
-  | "waiting_for_mfa"
-  | "refresh_requested"
-  | "expired"
-  | "error";
+    | "not_started"
+    | "connected"
+    | "refreshing"
+    | "waiting_for_credentials"
+    | "waiting_for_mfa"
+    | "refresh_requested"
+    | "expired"
+    | "error";
   message: string;
-  currentUrl?: string;
+  currentUrl?: string | null;
+  praktikaUsername?: string | null;
   updatedAt?: string;
+  refreshRequestedAt?: string | null;
+  refreshedAt?: string | null;
+  lastUsedAt?: string | null;
+  mfaCodeUpdatedAt?: string | null;
 };
+
+const statusLabelMap: Record<string, string> = {
+  not_started: "Not Started",
+  connected: "Connected",
+  refreshing: "Refreshing",
+  waiting_for_credentials: "Credentials Needed",
+  waiting_for_mfa: "MFA Needed",
+  refresh_requested: "Refresh Requested",
+  expired: "Expired",
+  error: "Connection Problem",
+};
+
+function getFriendlyMessage(state: SessionState, scope: SessionScope) {
+  if (state.status === "connected") {
+    return "Praktika is connected and ready to use.";
+  }
+
+  if (state.status === "refreshing") {
+    return "Checking Praktika connection...";
+  }
+
+  if (state.status === "refresh_requested") {
+    return "Connection refresh requested. This should update shortly.";
+  }
+
+  if (state.status === "waiting_for_credentials") {
+    return scope === "user"
+      ? "Enter your Praktika username and password to reconnect."
+      : "Practice Praktika credentials are needed.";
+  }
+
+  if (state.status === "waiting_for_mfa") {
+    return "Praktika requires an MFA code. Enter the code below.";
+  }
+
+  if (state.status === "expired") {
+    return "Your Praktika session has expired. Reconnect to continue.";
+  }
+
+  if (state.status === "error") {
+    return state.message || "There was a problem connecting to Praktika.";
+  }
+
+  return state.message || "Checking Praktika session...";
+}
 
 async function safeJson(res: Response) {
   const text = await res.text();
@@ -31,38 +85,53 @@ async function safeJson(res: Response) {
   }
 }
 
-export default function PraktikaSessionPanel() {
+function formatDate(value?: string | null) {
+  if (!value) return "Never";
+
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
+  }
+}
+
+export default function PraktikaSessionPanel({
+  scope = "practice",
+  title,
+}: {
+  scope?: SessionScope;
+  title?: string;
+}) {
   const [state, setState] = useState<SessionState>({
     status: "not_started",
     message: "Checking Praktika session...",
   });
 
-  const [code, setCode] = useState("");
+  const [mfaCode, setMfaCode] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [validating, setValidating] = useState(false);
 
   async function loadStatus() {
     try {
-      const res = await fetch("/api/praktika/session/status", {
+      const res = await fetch(`/api/praktika/session/status?scope=${scope}`, {
         cache: "no-store",
       });
-
-      if (!res.ok) {
-        setState({
-          status: "error",
-          message: `Could not check Praktika session. API returned ${res.status}.`,
-          updatedAt: new Date().toISOString(),
-        });
-
-        return;
-      }
 
       const json = await safeJson(res);
 
       setState({
+        scope: json.scope || scope,
         status: json.status || "error",
         message: json.message || "Unknown Praktika session state.",
-        currentUrl: json.currentUrl,
+        currentUrl: json.currentUrl || null,
+        praktikaUsername: json.praktikaUsername || null,
         updatedAt: json.updatedAt || new Date().toISOString(),
+        refreshRequestedAt: json.refreshRequestedAt || null,
+        refreshedAt: json.refreshedAt || null,
+        lastUsedAt: json.lastUsedAt || null,
+        mfaCodeUpdatedAt: json.mfaCodeUpdatedAt || null,
       });
     } catch (error: any) {
       console.error("Praktika session status failed:", error);
@@ -70,8 +139,7 @@ export default function PraktikaSessionPanel() {
       setState({
         status: "error",
         message:
-          error?.message ||
-          "Could not connect to Praktika session service.",
+          error?.message || "Could not connect to Praktika session service.",
         updatedAt: new Date().toISOString(),
       });
     }
@@ -80,11 +148,10 @@ export default function PraktikaSessionPanel() {
   useEffect(() => {
     loadStatus();
 
-    // Poll less aggressively
-    const timer = setInterval(loadStatus, 10000);
+    const timer = setInterval(loadStatus, 5000);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [scope]);
 
   async function refreshSession() {
     setBusy(true);
@@ -92,11 +159,19 @@ export default function PraktikaSessionPanel() {
     try {
       const res = await fetch("/api/praktika/session/refresh", {
         method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ scope }),
       });
+
+      const json = await safeJson(res);
 
       if (!res.ok) {
         throw new Error(
-          `Refresh request failed with status ${res.status}.`,
+          json?.message ||
+            json?.error ||
+            `Refresh request failed with status ${res.status}.`,
         );
       }
 
@@ -106,8 +181,7 @@ export default function PraktikaSessionPanel() {
 
       setState({
         status: "error",
-        message:
-          error?.message || "Failed to refresh Praktika session.",
+        message: error?.message || "Failed to refresh Praktika session.",
         updatedAt: new Date().toISOString(),
       });
     } finally {
@@ -115,8 +189,91 @@ export default function PraktikaSessionPanel() {
     }
   }
 
-  async function submitCode() {
-    if (!code.trim()) return;
+  async function validateSession() {
+    setValidating(true);
+
+    try {
+      const res = await fetch("/api/praktika/session/validate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          scope,
+          requestRefresh: true,
+        }),
+      });
+
+      const json = await safeJson(res);
+
+      if (!res.ok) {
+        throw new Error(
+          json?.message ||
+            json?.error ||
+            `Validation failed with status ${res.status}.`,
+        );
+      }
+
+      await loadStatus();
+    } catch (error: any) {
+      console.error("Praktika validation failed:", error);
+
+      setState({
+        status: "error",
+        message: error?.message || "Failed to validate Praktika session.",
+        updatedAt: new Date().toISOString(),
+      });
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  async function submitCredentials(event: React.FormEvent) {
+    event.preventDefault();
+
+    if (!username.trim() || !password) return;
+
+    setBusy(true);
+
+    try {
+      const res = await fetch("/api/praktika/session/credentials", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username,
+          password,
+        }),
+      });
+
+      const json = await safeJson(res);
+
+      if (!res.ok) {
+        throw new Error(
+          json?.message ||
+            json?.error ||
+            `Credential submission failed with status ${res.status}.`,
+        );
+      }
+
+      setPassword("");
+      await loadStatus();
+    } catch (error: any) {
+      console.error("Praktika credential submit failed:", error);
+
+      setState({
+        status: "error",
+        message: error?.message || "Failed to submit Praktika login details.",
+        updatedAt: new Date().toISOString(),
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitMfaCode() {
+    if (!mfaCode.trim()) return;
 
     setBusy(true);
 
@@ -126,24 +283,27 @@ export default function PraktikaSessionPanel() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ scope, code: mfaCode }),
       });
+
+      const json = await safeJson(res);
 
       if (!res.ok) {
         throw new Error(
-          `MFA code submission failed with status ${res.status}.`,
+          json?.message ||
+            json?.error ||
+            `MFA code submission failed with status ${res.status}.`,
         );
       }
 
-      setCode("");
+      setMfaCode("");
       await loadStatus();
     } catch (error: any) {
       console.error("Praktika MFA failed:", error);
 
       setState({
         status: "error",
-        message:
-          error?.message || "Failed to submit MFA code.",
+        message: error?.message || "Failed to submit MFA code.",
         updatedAt: new Date().toISOString(),
       });
     } finally {
@@ -151,91 +311,171 @@ export default function PraktikaSessionPanel() {
     }
   }
 
-const statusLabelMap: Record<string, string> = {
-  not_started: "Not Started",
-  connected: "Connected",
-  refreshing: "Refreshing",
-  waiting_for_mfa: "Waiting for MFA",
-  refresh_requested: "Refresh Requested",
-  expired: "Expired",
-  error: "Error",
-};  
-
   const tone =
-  state.status === "connected"
-    ? "border-green-200 bg-green-50 text-green-800"
-    : state.status === "error" || state.status === "expired"
-      ? "border-red-200 bg-red-50 text-red-800"
-      : state.status === "waiting_for_mfa" ||
-          state.status === "refresh_requested" ||
-          state.status === "refreshing"
-        ? "border-amber-200 bg-amber-50 text-amber-900"
-        : "border-gray-200 bg-gray-50 text-gray-800";
+    state.status === "connected"
+      ? "border-green-200 bg-green-50 text-green-900"
+      : state.status === "error" || state.status === "expired"
+        ? "border-red-200 bg-red-50 text-red-900"
+        : state.status === "waiting_for_mfa" ||
+            state.status === "waiting_for_credentials" ||
+            state.status === "refresh_requested" ||
+            state.status === "refreshing"
+          ? "border-amber-200 bg-amber-50 text-amber-950"
+          : "border-gray-200 bg-gray-50 text-gray-900";
+
+  const showCredentials =
+    scope === "user" &&
+    state.status !== "connected" &&
+    state.status !== "refreshing" &&
+    state.status !== "refresh_requested" &&
+    state.status !== "waiting_for_mfa";
+
+  const showMfa = state.status === "waiting_for_mfa";
+  const friendlyMessage = getFriendlyMessage(state, scope);
 
   return (
-    <section className={`rounded-2xl border p-4 ${tone}`}>
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div>
+    <section className={`rounded-2xl border p-4 shadow-sm ${tone}`}>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold uppercase tracking-[0.14em]">
-            Praktika Session
+            {title ||
+              (scope === "practice"
+                ? "Practice Praktika Session"
+                : "My Praktika Session")}
           </div>
 
-          <div className="mt-1 text-sm">
-            <strong>Status:</strong> {statusLabelMap[state.status] || state.status}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-semibold shadow-sm">
+              {statusLabelMap[state.status] || state.status}
+            </span>
+
+            <span className="rounded-full bg-white/60 px-3 py-1 text-xs">
+              {scope === "practice" ? "Practice mode" : "User mode"}
+            </span>
           </div>
 
-          <p className="mt-1 text-sm break-words">
-            {state.message}
-          </p>
+          {state.praktikaUsername ? (
+            <div className="mt-3 text-sm">
+              <strong>Connected as:</strong> {state.praktikaUsername}
+            </div>
+          ) : (
+            <div className="mt-3 text-sm">
+              <strong>Connected as:</strong> Not connected
+            </div>
+          )}
 
-          {state.currentUrl ? (
-            <p className="mt-1 text-xs opacity-75 break-all">
-              URL: {state.currentUrl}
-            </p>
-          ) : null}
+          <p className="mt-2 break-words text-sm">{friendlyMessage}</p>
 
-          {state.updatedAt ? (
-            <p className="mt-1 text-xs opacity-75">
-              Last updated:{" "}
-              {new Date(state.updatedAt).toLocaleString()}
+          <div className="mt-3 grid gap-2 text-xs opacity-80 md:grid-cols-2">
+            <div>
+              <strong>Last refreshed:</strong> {formatDate(state.refreshedAt)}
+            </div>
+            <div>
+              <strong>Last used:</strong> {formatDate(state.lastUsedAt)}
+            </div>
+            <div>
+              <strong>Refresh requested:</strong>{" "}
+              {formatDate(state.refreshRequestedAt)}
+            </div>
+            <div>
+              <strong>Last status update:</strong> {formatDate(state.updatedAt)}
+            </div>
+          </div>
+
+          {scope === "user" && state.status !== "connected" ? (
+            <p className="mt-3 text-xs leading-5 opacity-80">
+              Your password is encrypted temporarily, used only to reconnect,
+              and cleared after login.
             </p>
           ) : null}
         </div>
 
-        <button
-          type="button"
-          onClick={refreshSession}
-          disabled={busy || state.status === "refreshing"}
-          className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-        >
-          {busy || state.status === "refreshing"
-  ? "Refreshing..."
-  : "Refresh Praktika Session"}
-        </button>
+        <div className="flex flex-col gap-2 sm:flex-row lg:flex-col">
+          <button
+            type="button"
+            onClick={validateSession}
+            disabled={busy || validating || state.status === "refreshing"}
+            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 disabled:opacity-50"
+          >
+            {validating ? "Checking..." : "Check Session"}
+          </button>
+
+          <button
+            type="button"
+            onClick={refreshSession}
+            disabled={busy || state.status === "refreshing"}
+            className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {busy || state.status === "refreshing"
+              ? "Refreshing..."
+              : state.status === "connected"
+                ? "Reconnect"
+                : "Request Refresh"}
+          </button>
+        </div>
       </div>
 
-      {state.status === "waiting_for_mfa" ? (
+      {showCredentials ? (
+        <form
+          onSubmit={submitCredentials}
+          className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3"
+        >
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="block">
+              <div className="mb-1 text-xs font-medium">Praktika username</div>
+              <input
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                autoComplete="username"
+                className="w-full rounded-lg border border-amber-300 px-3 py-2 text-sm text-gray-900"
+                placeholder="Your Praktika username"
+              />
+            </label>
+
+            <label className="block">
+              <div className="mb-1 text-xs font-medium">Praktika password</div>
+              <input
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                type="password"
+                className="w-full rounded-lg border border-amber-300 px-3 py-2 text-sm text-gray-900"
+                placeholder="Your Praktika password"
+              />
+            </label>
+          </div>
+
+          <button
+            type="submit"
+            disabled={busy || !username.trim() || !password}
+            className="mt-3 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            Reconnect Praktika
+          </button>
+        </form>
+      ) : null}
+
+      {showMfa ? (
         <div className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
           <label className="block">
-            <div className="mb-1 text-xs font-medium">
-              Email MFA code
-            </div>
+            <div className="mb-1 text-xs font-medium">MFA code</div>
 
             <input
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              placeholder="Enter code from email"
+              value={mfaCode}
+              onChange={(event) => setMfaCode(event.target.value)}
+              placeholder="Enter MFA code"
+              inputMode="numeric"
               className="w-full rounded-lg border border-amber-300 px-3 py-2 text-sm text-gray-900"
             />
           </label>
 
           <button
             type="button"
-            onClick={submitCode}
-            disabled={busy || !code.trim()}
+            onClick={submitMfaCode}
+            disabled={busy || !mfaCode.trim()}
             className="mt-3 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            Use this code
+            Submit MFA code
           </button>
         </div>
       ) : null}

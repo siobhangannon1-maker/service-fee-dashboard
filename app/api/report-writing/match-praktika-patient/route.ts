@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 import { searchPraktikaPatients } from "@/lib/praktika/patientSearch";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function normaliseDob(dob: string) {
   if (!dob) return "";
@@ -16,6 +18,7 @@ function normaliseDob(dob: string) {
 
 export async function POST(req: Request) {
   try {
+    const mode = await getCurrentUserPraktikaSessionMode();
     const body = await req.json();
 
     const patientName = String(body.patientName || "").trim();
@@ -32,12 +35,16 @@ export async function POST(req: Request) {
     const firstName = nameParts[0] || "";
     const lastName = nameParts[nameParts.length - 1] || "";
 
-    const results = await withPraktikaAutoRefresh(() =>
-      searchPraktikaPatients({
-        firstName,
-        lastName,
-        dob: patientDob,
-      }),
+    const results = await withPraktikaAutoRefresh(
+      () =>
+        searchPraktikaPatients({
+          firstName,
+          lastName,
+          dob: patientDob,
+        }),
+      {
+        mode,
+      },
     );
 
     const candidates =

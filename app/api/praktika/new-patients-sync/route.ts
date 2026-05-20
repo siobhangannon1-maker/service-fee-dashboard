@@ -1,7 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import {  } from "@/lib/praktika/fetch-praktika-json";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function getClient() {
   return createClient(
@@ -47,6 +52,7 @@ function sanitizeRawJson(row: any) {
 
 export async function POST(req: Request) {
   try {
+    const mode = await getCurrentUserPraktikaSessionMode();
     const { fromDate, toDate } = await req.json();
 
     const supabase = getClient();
@@ -64,12 +70,11 @@ export async function POST(req: Request) {
     params.append("sFromDate", fromDate);
     params.append("sToDate", toDate);
 
-    const data = await withPraktikaAutoRefresh(() =>
-      fetchPraktikaJson(
-        params,
-        "https://praktika.praktika.net.au/v2/reports/new-patients",
-      ),
-    );
+  const result = await fetchPraktikaJson(
+  params,
+  "https://praktika.praktika.net.au/v2/reports/new-patients",
+  mode,
+);
 
     const importBatchId = crypto.randomUUID();
 
@@ -79,7 +84,9 @@ export async function POST(req: Request) {
       .gte("joined_date", fromDate)
       .lte("joined_date", toDate);
 
-    const rows = data.map((row: any) => {
+    const data = result;
+
+const rows = data.map((row: any) => {
       const joinedDate = parseDate(row.dtDateJoined) || fromDate;
       const firstProviderSeen = normalizeWhitespace(row.vchFirstProviderSeenName);
       const hasFirstProvider = firstProviderSeen.length > 0;
@@ -88,22 +95,16 @@ export async function POST(req: Request) {
         source_file_name: `Praktika New Patients ${fromDate} to ${toDate}`,
         import_batch_id: importBatchId,
         joined_date: joinedDate,
-
         provider_name_raw: hasFirstProvider ? firstProviderSeen : null,
         provider_name_normalized: hasFirstProvider
           ? normalizeProviderNameCompact(firstProviderSeen)
           : null,
-
         provider_id: null,
-
         first_appointment_raw: row.dtFirstAppointment || null,
         has_first_appointment: hasFirstProvider,
-
         next_appointment_raw: row.dtNextAppointmentDate || null,
         has_next_appointment: Boolean(row.dtNextAppointmentDate),
-
         patient_name_raw: null,
-
         raw_json: {
           ...sanitizeRawJson(row),
           referral_source: row.vchReferralSource || null,

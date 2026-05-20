@@ -2,7 +2,9 @@ import OpenAI from "openai";
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { searchPraktikaPatients } from "@/lib/praktika/patientSearch";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+
+const PRACTICE_MODE = { scope: "practice" as const };
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -346,8 +348,11 @@ export async function matchPraktikaPatientForInboxItem({
       let attemptMatches: any[] = [];
 
       try {
-        attemptMatches = await withPraktikaAutoRefresh(() =>
-          searchPraktikaPatients(attempt.input),
+        attemptMatches = await withPraktikaAutoRefresh(
+          () => searchPraktikaPatients(attempt.input),
+          {
+            mode: PRACTICE_MODE,
+          },
         );
       } catch (error) {
         const message =

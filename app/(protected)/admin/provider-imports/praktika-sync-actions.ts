@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@supabase/supabase-js";
 import { getAppointmentCategory } from "@/lib/appointmentCategories";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 
 type ActionState = {
   ok: boolean;
@@ -23,11 +25,7 @@ function getClient() {
 
 function getPracticeId() {
   const practiceId = process.env.PRAKTIKA_PRACTICE_ID;
-
-  if (!practiceId) {
-    throw new Error("Missing PRAKTIKA_PRACTICE_ID");
-  }
-
+  if (!practiceId) throw new Error("Missing PRAKTIKA_PRACTICE_ID");
   return practiceId;
 }
 
@@ -83,12 +81,11 @@ function getMonthEndIso(monthKey: string): string {
   const [yearRaw, monthRaw] = monthKey.split("-");
   const year = Number(yearRaw);
   const month = Number(monthRaw);
-
   const end = new Date(year, month, 0);
 
   return `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(
     2,
-    "0"
+    "0",
   )}-${String(end.getDate()).padStart(2, "0")}`;
 }
 
@@ -122,7 +119,6 @@ function addMinutesToTimestamp(startTimestamp: string, minutes: number): string 
 
 function parseDurationMinutes(value: unknown): number {
   const text = normalizeWhitespace(String(value ?? ""));
-
   if (!text) return 0;
 
   const numeric = Number(text);
@@ -142,11 +138,9 @@ function normaliseStatusId(value: unknown): string | null {
 
 function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   const chunks: T[][] = [];
-
   for (let index = 0; index < items.length; index += chunkSize) {
     chunks.push(items.slice(index, index + chunkSize));
   }
-
   return chunks;
 }
 
@@ -157,7 +151,9 @@ async function loadProviderLookup(sourceTypes: string[]) {
     supabase.from("providers").select("id, name"),
     supabase
       .from("provider_name_mappings")
-      .select("provider_id, raw_provider_name, normalized_provider_name, source_type")
+      .select(
+        "provider_id, raw_provider_name, normalized_provider_name, source_type",
+      )
       .in("source_type", sourceTypes),
   ]);
 
@@ -166,14 +162,15 @@ async function loadProviderLookup(sourceTypes: string[]) {
   }
 
   if (mappingsResult.error) {
-    throw new Error(`Failed to load provider mappings: ${mappingsResult.error.message}`);
+    throw new Error(
+      `Failed to load provider mappings: ${mappingsResult.error.message}`,
+    );
   }
 
   const lookup = new Map<string, string>();
 
   for (const provider of providersResult.data ?? []) {
     if (!provider.name) continue;
-
     lookup.set(normalizeProviderName(provider.name), provider.id);
     lookup.set(normalizeProviderNameCompact(provider.name), provider.id);
     lookup.set(createBaseProviderName(provider.name), provider.id);
@@ -182,7 +179,10 @@ async function loadProviderLookup(sourceTypes: string[]) {
   for (const mapping of mappingsResult.data ?? []) {
     lookup.set(String(mapping.normalized_provider_name ?? ""), mapping.provider_id);
     lookup.set(normalizeProviderName(mapping.raw_provider_name), mapping.provider_id);
-    lookup.set(normalizeProviderNameCompact(mapping.raw_provider_name), mapping.provider_id);
+    lookup.set(
+      normalizeProviderNameCompact(mapping.raw_provider_name),
+      mapping.provider_id,
+    );
     lookup.set(createBaseProviderName(mapping.raw_provider_name), mapping.provider_id);
   }
 
@@ -232,11 +232,13 @@ function refreshProviderPages() {
 
 export async function syncPraktikaProviderPerformance(
   _prevState: ActionState,
-  formData: FormData
+  formData: FormData,
 ): Promise<ActionState> {
   try {
     const supabase = getClient();
     const practiceId = getPracticeId();
+    const mode = await getCurrentUserPraktikaSessionMode();
+
     const { fromDate, toDate } = getRequiredDateRange(formData);
     const rangeKey = getImportLinkKey(fromDate, toDate);
 
@@ -248,9 +250,14 @@ export async function syncPraktikaProviderPerformance(
     params.append("sToDate", toDate);
     params.append("sWorkingHoursMethod", "dumb");
 
-    const data = await fetchPraktikaJson(
-      params,
-      "https://praktika.praktika.net.au/v2/reports/provider-performance"
+    const data = await withPraktikaAutoRefresh(
+      () =>
+        fetchPraktikaJson(
+          params,
+          "https://praktika.praktika.net.au/v2/reports/provider-performance",
+          mode,
+        ),
+      { mode },
     );
 
     const providerLookup = await loadProviderLookup(["provider_performance_csv"]);
@@ -327,11 +334,13 @@ export async function syncPraktikaProviderPerformance(
 
 export async function syncPraktikaAppointments(
   _prevState: ActionState,
-  formData: FormData
+  formData: FormData,
 ): Promise<ActionState> {
   try {
     const supabase = getClient();
     const practiceId = getPracticeId();
+    const mode = await getCurrentUserPraktikaSessionMode();
+
     const { fromDate, toDate } = getRequiredDateRange(formData);
     const rangeKey = getImportLinkKey(fromDate, toDate);
 
@@ -342,9 +351,14 @@ export async function syncPraktikaAppointments(
     params.append("sFromDate", fromDate);
     params.append("sToDate", toDate);
 
-    const data = await fetchPraktikaJson(
-      params,
-      "https://praktika.praktika.net.au/v2/reports/upcoming-appointments"
+    const data = await withPraktikaAutoRefresh(
+      () =>
+        fetchPraktikaJson(
+          params,
+          "https://praktika.praktika.net.au/v2/reports/upcoming-appointments",
+          mode,
+        ),
+      { mode },
     );
 
     const providerLookup = await loadProviderLookup(["appointments_csv"]);
@@ -363,16 +377,25 @@ export async function syncPraktikaAppointments(
     await replaceImportBatchForRange({ importType: "appointments", rangeKey });
 
     const rows = data
-      .filter((row: any) => row.vchNextAppDate || row.dtNextAppointment)
+      .filter(
+        (row: any) =>
+          row.dtAppointment ||
+          row.vchAppointmentDate ||
+          row.vchNextAppDate ||
+          row.dtNextAppointment,
+      )
       .map((row: any) => {
         const rawProviderName = normalizeWhitespace(row.vchProviderName ?? "");
         const normalized = normalizeProviderName(rawProviderName);
 
         const appointmentDate =
-          normalizeWhitespace(row.vchNextAppDate ?? "") ||
+          normalizeWhitespace(row.dtAppointment ?? "").slice(0, 10) ||
+          normalizeWhitespace(row.vchAppointmentDate ?? "").slice(0, 10) ||
+          normalizeWhitespace(row.vchNextAppDate ?? "").slice(0, 10) ||
           normalizeWhitespace(row.dtNextAppointment ?? "").slice(0, 10);
 
         const appointmentStart =
+          normalizeWhitespace(row.dtAppointment ?? "") ||
           normalizeWhitespace(row.dtNextAppointment ?? "") ||
           `${appointmentDate} 00:00:00`;
 
@@ -382,7 +405,7 @@ export async function syncPraktikaAppointments(
 
         const appointmentEnd = addMinutesToTimestamp(
           appointmentStart,
-          durationMinutes
+          durationMinutes,
         );
 
         const appointmentStatus = normaliseStatusId(row.iAppointmentStatusId);
@@ -395,7 +418,11 @@ export async function syncPraktikaAppointments(
 
         const isFta = !isCancelled && arrivalStatus === null && responseStatus === null;
 
-        const followingAppointmentRaw = toNullableText(row.dtFollowingAppDate);
+        const followingAppointmentRaw =
+          toNullableText(row.dtFollowingAppDate) ||
+          toNullableText(row.vchNextAppDate) ||
+          toNullableText(row.dtNextAppointment);
+
         const hasFollowingAppointment = Boolean(followingAppointmentRaw);
 
         return {
@@ -454,11 +481,13 @@ export async function syncPraktikaAppointments(
 
 export async function syncPraktikaCancellationsFtas(
   _prevState: ActionState,
-  formData: FormData
+  formData: FormData,
 ): Promise<ActionState> {
   try {
     const supabase = getClient();
     const practiceId = getPracticeId();
+    const mode = await getCurrentUserPraktikaSessionMode();
+
     const { fromDate, toDate } = getRequiredDateRange(formData);
     const rangeKey = getImportLinkKey(fromDate, toDate);
 
@@ -469,9 +498,14 @@ export async function syncPraktikaCancellationsFtas(
     params.append("sFromDate", fromDate);
     params.append("sToDate", toDate);
 
-    const data = await fetchPraktikaJson(
-      params,
-      "https://praktika.praktika.net.au/v2/reports/fta-cancellations"
+    const data = await withPraktikaAutoRefresh(
+      () =>
+        fetchPraktikaJson(
+          params,
+          "https://praktika.praktika.net.au/v2/reports/fta-cancellations",
+          mode,
+        ),
+      { mode },
     );
 
     const providerLookup = await loadProviderLookup([

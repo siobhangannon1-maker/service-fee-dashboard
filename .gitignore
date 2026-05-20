@@ -42,3 +42,9 @@ next-env.d.ts
 praktika-browser-profile/
 praktika-browser-profile/
 .praktika-session/
+
+# Local Praktika browser profiles - never commit
+praktika-browser-profiles/
+
+# Local Praktika browser profiles - never commit
+praktika-browser-profiles/

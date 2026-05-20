@@ -1,10 +1,11 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { getPraktikaCookie } from "@/lib/praktika/session-store";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import { getPraktikaCookie } from "@/lib/praktika/hybrid-session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
 
 const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
 const PRAKTIKA_GET_FORM_DATA_URL = `${PRAKTIKA_BASE_URL}/php/forms/db_getFormData.php`;
 const DEFAULT_CUSTOMER_ID = Number(process.env.PRAKTIKA_CUSTOMER_ID || 480);
+const PRACTICE_MODE = { scope: "practice" as const };
 
 type ReferrerCandidate = {
   partyId: number;
@@ -49,6 +50,19 @@ function splitName(value: any) {
     firstName: parts.slice(0, -1).join(" "),
     lastName: parts[parts.length - 1],
   };
+}
+
+function looksLikeLoginOrHtml(text: string) {
+  const lower = text.trim().toLowerCase();
+
+  return (
+    lower.startsWith("<!doctype") ||
+    lower.startsWith("<html") ||
+    lower.includes("/v2/login") ||
+    lower.includes('type="password"') ||
+    lower.includes("logged-out") ||
+    lower.includes("logged out")
+  );
 }
 
 function parseParty(row: any): ReferrerCandidate {
@@ -111,71 +125,72 @@ function extractReferrerSearchFromItem(item: any) {
 }
 
 async function praktikaGetReferralParties(searchText: string) {
-  return withPraktikaAutoRefresh(async () => {
-    const cookie = await getPraktikaCookie();
+  return withPraktikaAutoRefresh(
+    async () => {
+      const cookie = await getPraktikaCookie(PRACTICE_MODE);
 
-    const payload = {
-      parameters: { customer_id: DEFAULT_CUSTOMER_ID },
-      fields: [
-        {
-          customer_referral_parties: {
-            filter: { name: searchText },
-            sort_by: "name",
-            sort_order: "asc",
-            offset: 0,
+      const payload = {
+        parameters: { customer_id: DEFAULT_CUSTOMER_ID },
+        fields: [
+          {
+            customer_referral_parties: {
+              filter: { name: searchText },
+              sort_by: "name",
+              sort_order: "asc",
+              offset: 0,
+            },
           },
+        ],
+      };
+
+      const response = await fetch(PRAKTIKA_GET_FORM_DATA_URL, {
+        method: "POST",
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/json",
+          Origin: PRAKTIKA_BASE_URL,
+          Referer: `${PRAKTIKA_BASE_URL}/v2/referrals/clinics`,
+          Cookie: cookie,
+          "X-Requested-With": "XMLHttpRequest",
         },
-      ],
-    };
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      });
 
-    const response = await fetch(PRAKTIKA_GET_FORM_DATA_URL, {
-      method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        Origin: PRAKTIKA_BASE_URL,
-        Referer: `${PRAKTIKA_BASE_URL}/v2/referrals/clinics`,
-        Cookie: cookie,
-      },
-      body: JSON.stringify(payload),
-      cache: "no-store",
-    });
+      const text = await response.text();
 
-    const text = await response.text();
-    const lower = text.trim().toLowerCase();
+      if (looksLikeLoginOrHtml(text)) {
+        throw new Error("Praktika session expired or returned a login page.");
+      }
 
-    if (
-      lower.startsWith("<!doctype") ||
-      lower.startsWith("<html") ||
-      lower.includes("/v2/login") ||
-      lower.includes("type=\"password\"") ||
-      lower.includes("logged-out") ||
-      lower.includes("logged out")
-    ) {
-      throw new Error("Praktika session expired or returned a login page.");
-    }
+      let json: any;
 
-    let json: any;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error(`Praktika returned non-JSON referrer response: ${text.slice(0, 300)}`);
-    }
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `Praktika returned non-JSON referrer response: ${text.slice(0, 300)}`,
+        );
+      }
 
-    if (!response.ok) {
-      throw new Error(
-        json?.error ||
-          json?.message ||
-          `Praktika referrer search failed (${response.status}).`,
-      );
-    }
+      if (!response.ok) {
+        throw new Error(
+          json?.error ||
+            json?.message ||
+            `Praktika referrer search failed (${response.status}).`,
+        );
+      }
 
-    return Array.isArray(json.customer_referral_parties)
-      ? json.customer_referral_parties
-          .map(parseParty)
-          .filter((party: ReferrerCandidate) => party.partyId)
-      : [];
-  });
+      return Array.isArray(json.customer_referral_parties)
+        ? json.customer_referral_parties
+            .map(parseParty)
+            .filter((party: ReferrerCandidate) => party.partyId)
+        : [];
+    },
+    {
+      mode: PRACTICE_MODE,
+    },
+  );
 }
 
 function scoreCandidate(

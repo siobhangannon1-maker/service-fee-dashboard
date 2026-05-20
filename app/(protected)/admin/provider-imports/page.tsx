@@ -105,11 +105,11 @@ export default async function ProviderImportsPage() {
   const linkedMonths = groupLinkedBatchesByMonth(batches);
 
   const readyToRecalculate = linkedMonths.filter(
-    (month) => month.canRecalculate
+    (month) => month.canRecalculate,
   ).length;
 
   const missingDataMonths = linkedMonths.filter(
-    (month) => !month.canRecalculate
+    (month) => !month.canRecalculate,
   ).length;
 
   return (
@@ -164,14 +164,14 @@ export default async function ProviderImportsPage() {
       </section>
 
       <PageSection
-  title="Sync from Praktika"
-  description="Use this when you want to pull provider data directly from Praktika."
->
-  <div className="space-y-4">
-    <PraktikaSessionPanel />
-    <PraktikaSyncPanel />
-  </div>
-</PageSection>
+        title="Sync from Praktika"
+        description="Use this when you want to pull provider data directly from Praktika."
+      >
+        <div className="space-y-4">
+          <PraktikaSessionPanel scope="user" title="My Praktika Session" />
+          <PraktikaSyncPanel />
+        </div>
+      </PageSection>
 
       <PageSection
         title="Upload CSV files"
@@ -216,7 +216,7 @@ export default async function ProviderImportsPage() {
                       <div className="mt-3 flex flex-wrap gap-2">
                         <span
                           className={`rounded-full border px-3 py-1 text-xs font-medium ${getTypeBadgeClass(
-                            hasAppointments
+                            hasAppointments,
                           )}`}
                         >
                           Appointments {hasAppointments ? "linked" : "missing"}
@@ -224,7 +224,7 @@ export default async function ProviderImportsPage() {
 
                         <span
                           className={`rounded-full border px-3 py-1 text-xs font-medium ${getTypeBadgeClass(
-                            hasPerformance
+                            hasPerformance,
                           )}`}
                         >
                           Performance {hasPerformance ? "linked" : "missing"}
@@ -232,7 +232,7 @@ export default async function ProviderImportsPage() {
 
                         <span
                           className={`rounded-full border px-3 py-1 text-xs font-medium ${getTypeBadgeClass(
-                            hasCancellations
+                            hasCancellations,
                           )}`}
                         >
                           Cancellations{" "}
@@ -254,7 +254,7 @@ export default async function ProviderImportsPage() {
                     </div>
                   </div>
                 </div>
-              )
+              ),
             )}
           </div>
         )}

@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+
+import {  } from "@/lib/praktika/fetch-praktika-json";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -15,6 +21,7 @@ function num(value: any) {
 
 export async function POST(request: NextRequest) {
   try {
+    const mode = await getCurrentUserPraktikaSessionMode();
     const { fromDate, toDate } = await request.json();
 
     const practiceId = process.env.PRAKTIKA_PRACTICE_ID;
@@ -34,12 +41,15 @@ export async function POST(request: NextRequest) {
     formData.append("sToDate", toDate);
     formData.append("sWorkingHoursMethod", "dumb");
 
-    const data = await withPraktikaAutoRefresh(() =>
-      fetchPraktikaJson(
-        formData,
-        "https://praktika.praktika.net.au/v2/reports/provider-performance",
-      ),
-    );
+  const data = await withPraktikaAutoRefresh(
+  () =>
+    fetchPraktikaJson(
+      formData,
+      "https://praktika.praktika.net.au/v2/reports/provider-performance",
+      mode,
+    ),
+  { mode },
+);
 
     const rows = data.map((row: any) => ({
       report_date: fromDate,

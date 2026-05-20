@@ -8,6 +8,14 @@ const supabase = createClient(
 
 const ALLOWED_STATUSES = new Set(["queued", "started", "completed"])
 
+function asObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+
+  return value as Record<string, unknown>
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const providerId = searchParams.get("providerId")
@@ -52,7 +60,13 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   const body = await req.json()
-  const { queueId, status, reportDraftId } = body
+  const {
+    queueId,
+    status,
+    reportDraftId,
+    cachedClinicalNotes,
+    cachedClinicalNotesSource,
+  } = body
 
   if (!queueId || !status) {
     return NextResponse.json(
@@ -75,6 +89,31 @@ export async function POST(req: Request) {
 
   if (reportDraftId) {
     updatePayload.report_draft_id = reportDraftId
+  }
+
+  if (typeof cachedClinicalNotes === "string") {
+    const { data: existing, error: existingError } = await supabase
+      .from("report_letter_queue")
+      .select("raw_json")
+      .eq("id", queueId)
+      .single()
+
+    if (existingError) {
+      return NextResponse.json(
+        { success: false, error: existingError.message },
+        { status: 500 }
+      )
+    }
+
+    const rawJson = asObject(existing?.raw_json)
+
+    updatePayload.raw_json = {
+      ...rawJson,
+      cached_clinical_notes: cachedClinicalNotes,
+      cached_clinical_notes_source:
+        cachedClinicalNotesSource || "praktika_clinical_notes",
+      cached_clinical_notes_at: new Date().toISOString(),
+    }
   }
 
   const { data, error } = await supabase

@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { getPraktikaCookie } from "@/lib/praktika/session-store";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import {
+  getCurrentUserPraktikaSessionMode,
+  getPraktikaCookie,
+  type PraktikaSessionMode,
+} from "@/lib/praktika/hybrid-session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -62,70 +67,85 @@ function buildPraktikaKey(row: PraktikaReferralRow): string {
     .join("|");
 }
 
-async function fetchPraktikaReferrers() {
-  return withPraktikaAutoRefresh(async () => {
-    const cookie = await getPraktikaCookie();
-    const today = new Date().toISOString().slice(0, 10);
-    const practiceId = process.env.PRAKTIKA_PRACTICE_ID || "1181";
+function assertPraktikaJsonResponse(responseText: string) {
+  const lower = responseText.trim().toLowerCase();
 
-    const formData = new URLSearchParams();
-    formData.set("sReportName", "referrals");
-    formData.set("iPracticeId", practiceId);
-    formData.set("sFromDate", "2000-01-01");
-    formData.set("sToDate", today);
-    formData.set("sMode", "PROVIDER_IN");
+  if (
+    lower.startsWith("<!doctype") ||
+    lower.startsWith("<html") ||
+    lower.includes("/v2/login") ||
+    lower.includes('type="password"') ||
+    lower.includes("logged-out") ||
+    lower.includes("logged out")
+  ) {
+    throw new Error("Praktika session expired or returned login page.");
+  }
+}
 
-    const response = await fetch(
-      "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php",
-      {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          "Content-Type": "application/x-www-form-urlencoded",
-          Accept: "application/json, text/plain, */*",
-          Origin: "https://praktika.praktika.net.au",
-          Referer: "https://praktika.praktika.net.au/v2/reports/referrals",
-          "X-Requested-With": "XMLHttpRequest",
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
+async function fetchPraktikaReferrers(mode: PraktikaSessionMode) {
+  return withPraktikaAutoRefresh(
+    async () => {
+      const cookie = await getPraktikaCookie(mode);
+      const today = new Date().toISOString().slice(0, 10);
+      const practiceId = process.env.PRAKTIKA_PRACTICE_ID || "1181";
+
+      const formData = new URLSearchParams();
+      formData.set("sReportName", "referrals");
+      formData.set("iPracticeId", practiceId);
+      formData.set("sFromDate", "2000-01-01");
+      formData.set("sToDate", today);
+      formData.set("sMode", "PROVIDER_IN");
+
+      const response = await fetch(
+        "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php",
+        {
+          method: "POST",
+          headers: {
+            Cookie: cookie,
+            "Content-Type": "application/x-www-form-urlencoded",
+            Accept: "application/json, text/plain, */*",
+            Origin: "https://praktika.praktika.net.au",
+            Referer: "https://praktika.praktika.net.au/v2/reports/referrals",
+            "X-Requested-With": "XMLHttpRequest",
+            "User-Agent":
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
+          },
+          body: formData.toString(),
+          cache: "no-store",
         },
-        body: formData.toString(),
-        cache: "no-store",
-      },
-    );
-
-    const responseText = await response.text();
-
-    if (!response.ok) {
-      throw new Error(
-        `Praktika request failed: ${response.status}. ${responseText.slice(0, 500)}`,
       );
-    }
 
-    if (responseText.trim().startsWith("<")) {
-      throw new Error(
-        "Praktika returned HTML instead of JSON. The Praktika session is probably expired.",
-      );
-    }
+      const responseText = await response.text();
+      assertPraktikaJsonResponse(responseText);
 
-    let parsedRows: unknown;
+      if (!response.ok) {
+        throw new Error(
+          `Praktika request failed: ${response.status}. ${responseText.slice(0, 500)}`,
+        );
+      }
 
-    try {
-      parsedRows = JSON.parse(responseText);
-    } catch {
-      throw new Error(
-        `Praktika returned non-JSON response. ${responseText.slice(0, 500)}`,
-      );
-    }
+      let parsedRows: unknown;
 
-    if (!Array.isArray(parsedRows)) {
-      throw new Error(
-        `Praktika did not return a valid array. ${responseText.slice(0, 500)}`,
-      );
-    }
+      try {
+        parsedRows = JSON.parse(responseText);
+      } catch {
+        throw new Error(
+          `Praktika returned non-JSON response. ${responseText.slice(0, 500)}`,
+        );
+      }
 
-    return parsedRows as PraktikaReferralRow[];
-  });
+      if (!Array.isArray(parsedRows)) {
+        throw new Error(
+          `Praktika did not return a valid array. ${responseText.slice(0, 500)}`,
+        );
+      }
+
+      return parsedRows as PraktikaReferralRow[];
+    },
+    {
+      mode,
+    },
+  );
 }
 
 async function importRows(rows: PraktikaReferralRow[]) {
@@ -191,7 +211,8 @@ async function importRows(rows: PraktikaReferralRow[]) {
 
 export async function POST() {
   try {
-    const parsedRows = await fetchPraktikaReferrers();
+    const mode = await getCurrentUserPraktikaSessionMode();
+    const parsedRows = await fetchPraktikaReferrers(mode);
     const result = await importRows(parsedRows);
 
     return NextResponse.json({

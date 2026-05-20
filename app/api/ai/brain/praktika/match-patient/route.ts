@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 
 import { requireRole } from "@/lib/auth";
 import { matchPraktikaPatientForInboxItem } from "@/lib/ai/brain/praktikaPatientMatch";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,6 +13,7 @@ export async function POST(request: Request) {
   try {
     await requireRole(["super_admin"]);
 
+    const mode = await getCurrentUserPraktikaSessionMode();
     const body = await request.json();
     const inboxItemId = body.inboxItemId as string | undefined;
 
@@ -21,9 +24,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const result = await matchPraktikaPatientForInboxItem({
-      inboxItemId,
-    });
+    const result = await withPraktikaAutoRefresh(
+      () =>
+        matchPraktikaPatientForInboxItem({
+          inboxItemId,
+        }),
+      {
+        mode,
+      },
+    );
 
     return NextResponse.json({
       success: true,

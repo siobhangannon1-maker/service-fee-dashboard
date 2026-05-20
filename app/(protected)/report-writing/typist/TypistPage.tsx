@@ -1055,87 +1055,139 @@ export default function TypistPage() {
   }
 
   async function startLetterFromQueue(item: QueueItem) {
-    setAutoGenerateStatus("loading_notes")
-    setSaveStatus("idle")
-    setLastSavedAt(null)
-    lastAutosavedTextRef.current = ""
-    setActiveQueueItemId(item.id)
-    setSelectedDraft(null)
+  setAutoGenerateStatus("loading_notes")
+  setSaveStatus("idle")
+  setLastSavedAt(null)
+  lastAutosavedTextRef.current = ""
+  setActiveQueueItemId(item.id)
+  setSelectedDraft(null)
 
-    const firstName = item.patient_first_name || ""
-    const lastName = item.patient_last_name || ""
-    const dob = item.patient_dob || ""
-    const linkedPraktikaPatientId = item.praktika_patient_id || ""
-    const raw = item.raw_json || {}
+  const firstName = item.patient_first_name || ""
+  const lastName = item.patient_last_name || ""
+  const dob = item.patient_dob || ""
+  const linkedPraktikaPatientId = item.praktika_patient_id || ""
+  const raw = item.raw_json || {}
 
-    const appointmentId =
-      item.appointment_id ||
-      String(raw.iAppointmentId || raw.appointment_id || "").trim() ||
-      null
+  const appointmentId =
+    item.appointment_id ||
+    String(raw.iAppointmentId || raw.appointment_id || "").trim() ||
+    null
 
-    setAutoGenerateStatus("selecting_report_type")
+  setAutoGenerateStatus("selecting_report_type")
 
-    const inferredReportType = inferReportTypeFromQueueItem(item, reportTypes)
-    const appointmentNotes = getQueueClinicalNotes(item)
+  const inferredReportType = inferReportTypeFromQueueItem(item, reportTypes)
+  const appointmentNotes = getQueueClinicalNotes(item)
 
-    setPatientFirstName(firstName)
-    setPatientLastName(lastName)
-    setPatientDob(dob)
-    setReferrerName("")
-    setReferrerAddress("")
-    setReportType(inferredReportType)
+  setPatientFirstName(firstName)
+  setPatientLastName(lastName)
+  setPatientDob(dob)
+  setReferrerName("")
+  setReferrerAddress("")
+  setReportType(inferredReportType)
 
-    const initialClinicalNotes = [
+  const cachedClinicalNotes = cleanString(raw.cached_clinical_notes)
+
+  if (cachedClinicalNotes) {
+    const combinedCachedNotes = [
       appointmentNotes,
-      linkedPraktikaPatientId && item.appointment_time
-        ? "Loading same-day Praktika clinical notes..."
-        : "",
+      "Same-day Praktika clinical notes:",
+      cachedClinicalNotes,
     ]
       .filter(Boolean)
       .join("\n\n")
 
-    setClinicalNotes(initialClinicalNotes)
+    setClinicalNotes(combinedCachedNotes)
     setLetterText("")
     setGeneratedAiLetterText("")
     setPraktikaCandidates([])
     setSelectedPraktikaPatientId(linkedPraktikaPatientId)
-
-    let sameDayClinicalNotes = ""
-
-    if (linkedPraktikaPatientId && item.appointment_time) {
-      try {
-        sameDayClinicalNotes = await pullSameDayClinicalNotes({
-          patientId: linkedPraktikaPatientId,
-          appointmentDate: item.appointment_time.slice(0, 10),
-          appointmentId,
-        })
-      } catch (error) {
-        console.error("Failed to pull Praktika clinical notes:", error)
-
-        const fallbackNotes = [
-          appointmentNotes,
-          "Same-day Praktika clinical notes could not be loaded. Praktika may be disconnected, refreshing, or waiting for MFA. Existing appointment notes have been preserved.",
-        ]
-          .filter(Boolean)
-          .join("\n\n")
-
-        setClinicalNotes(fallbackNotes)
-        setAutoGenerateStatus("error")
-        return
-      }
-    }
-
-    const combinedClinicalNotes = [
-      appointmentNotes,
-      sameDayClinicalNotes ? "Same-day Praktika clinical notes:" : "",
-      sameDayClinicalNotes,
-    ]
-      .filter(Boolean)
-      .join("\n\n")
-
-    setClinicalNotes(combinedClinicalNotes || appointmentNotes)
     setAutoGenerateStatus("ready")
+    return
   }
+
+  const initialClinicalNotes = [
+    appointmentNotes,
+    linkedPraktikaPatientId && item.appointment_time
+      ? "Loading same-day Praktika clinical notes..."
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+
+  setClinicalNotes(initialClinicalNotes)
+  setLetterText("")
+  setGeneratedAiLetterText("")
+  setPraktikaCandidates([])
+  setSelectedPraktikaPatientId(linkedPraktikaPatientId)
+
+  let sameDayClinicalNotes = ""
+
+  if (linkedPraktikaPatientId && item.appointment_time) {
+    try {
+      sameDayClinicalNotes = await pullSameDayClinicalNotes({
+        patientId: linkedPraktikaPatientId,
+        appointmentDate: item.appointment_time.slice(0, 10),
+        appointmentId,
+      })
+
+      if (sameDayClinicalNotes.trim()) {
+        await fetch("/api/report-writing/letter-queue", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            queueId: item.id,
+            status: item.status === "completed" ? "completed" : "started",
+            cachedClinicalNotes: sameDayClinicalNotes,
+            cachedClinicalNotesSource: "praktika_live",
+          }),
+        })
+
+        setQueue((current) =>
+          current.map((queueItem) => {
+            if (queueItem.id !== item.id) return queueItem
+
+            return {
+              ...queueItem,
+              status: item.status === "completed" ? "completed" : "started",
+              raw_json: {
+                ...(queueItem.raw_json || {}),
+                cached_clinical_notes: sameDayClinicalNotes,
+                cached_clinical_notes_source: "praktika_live",
+                cached_clinical_notes_at: new Date().toISOString(),
+              },
+            }
+          })
+        )
+      }
+    } catch (error) {
+      console.error("Failed to pull Praktika clinical notes:", error)
+
+      const fallbackNotes = [
+        appointmentNotes,
+        "Same-day Praktika clinical notes could not be loaded. Praktika may be disconnected, refreshing, or waiting for MFA. Existing appointment notes have been preserved.",
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+
+      setClinicalNotes(fallbackNotes)
+      setAutoGenerateStatus("error")
+      return
+    }
+  }
+
+  const combinedClinicalNotes = [
+    appointmentNotes,
+    sameDayClinicalNotes ? "Same-day Praktika clinical notes:" : "",
+    sameDayClinicalNotes,
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+
+  setClinicalNotes(combinedClinicalNotes || appointmentNotes)
+  setAutoGenerateStatus("ready")
+}
 
   async function updateQueueStatus(queueId: string, status: string) {
     await fetch("/api/report-writing/letter-queue", {
@@ -1772,7 +1824,7 @@ export default function TypistPage() {
             <div className="mb-2 text-xs font-semibold uppercase text-slate-500">
               Praktika Session
             </div>
-            <PraktikaSessionPanel />
+            <PraktikaSessionPanel scope="user" title="My Praktika Session" />
           </div>
 
           <div className="mt-3">

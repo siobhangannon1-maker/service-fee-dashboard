@@ -1,8 +1,7 @@
-
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { autoFileInboxItemToPraktika } from "@/lib/ai/brain/praktikaAutoFile";
-import { getPraktikaCookie } from "@/lib/praktika/session-store";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/seamless-request";
+import { getPraktikaCookie } from "@/lib/praktika/hybrid-session-store";
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
 
 const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
 const PRAKTIKA_UPDATE_FORM_URL = `${PRAKTIKA_BASE_URL}/php/forms/db_updateFormData.php`;
@@ -12,6 +11,7 @@ const DEFAULT_USER_ID = String(process.env.PRAKTIKA_USER_ID || 12393);
 const DEFAULT_FEE_SCHEDULE_ID = Number(
   process.env.PRAKTIKA_DEFAULT_FEE_SCHEDULE_ID || 8769,
 );
+const PRACTICE_MODE = { scope: "practice" as const };
 
 type NewPatientInput = {
   inboxItemId: string;
@@ -142,7 +142,7 @@ async function writeAuditEvent({
 
 async function praktikaJsonPost(url: string, payload: any) {
   return withPraktikaAutoRefresh(async () => {
-    const cookie = await getPraktikaCookie();
+    const cookie = await getPraktikaCookie(PRACTICE_MODE);
 
     const response = await fetch(url, {
       method: "POST",
@@ -184,6 +184,9 @@ async function praktikaJsonPost(url: string, payload: any) {
     }
 
     return json;
+  },
+  {
+    mode: PRACTICE_MODE,
   });
 }
 

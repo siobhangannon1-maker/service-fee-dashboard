@@ -33,9 +33,23 @@ export async function GET(req: Request) {
       )
     }
 
+    const drafts = (data || []).map((draft: any) => ({
+      ...draft,
+      clinical_notes:
+        draft.clinical_notes ||
+        draft.source_clinical_notes ||
+        draft.source_text ||
+        null,
+      source_clinical_notes:
+        draft.source_clinical_notes ||
+        draft.clinical_notes ||
+        draft.source_text ||
+        null,
+    }))
+
     return NextResponse.json({
       success: true,
-      drafts: data || [],
+      drafts,
     })
   } catch (error) {
     console.error("Get report drafts failed:", error)
