@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -134,4 +135,27 @@ export async function POST(req: Request) {
     success: true,
     queueItem: data,
   })
+
+  const actor = await getAuditActor()
+
+await createReportAuditEvent({
+  reportDraftId: reportDraftId || data.report_draft_id || null,
+  providerId: data.provider_id,
+  patientName: [data.patient_first_name, data.patient_last_name]
+    .filter(Boolean)
+    .join(" "),
+  action:
+    status === "started"
+      ? "Started queue item"
+      : status === "completed"
+        ? "Completed queue item"
+        : "Updated queue item",
+  details: {
+    queueId: data.id,
+    queueStatus: status,
+    reportDraftId: reportDraftId || data.report_draft_id || null,
+    actorInitials: actor.actorInitials,
+    actorFullName: actor.actorFullName,
+  },
+})
 }
