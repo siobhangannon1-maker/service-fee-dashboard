@@ -1,5 +1,6 @@
 import Link from "next/link"
 import { createClient } from "@supabase/supabase-js"
+import { normalizeProviderName } from "@/lib/providers/normalize-provider-name"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -15,7 +16,12 @@ type Provider = {
   id: string
   name: string | null
   is_active?: boolean | null
-  archived?: boolean | null
+}
+
+type ProviderNameMapping = {
+  provider_id: string
+  normalized_provider_name: string
+  source_type: string
 }
 
 type QueueItem = {
@@ -42,6 +48,16 @@ type Draft = {
   created_at: string | null
   uploaded_to_praktika_at?: string | null
   emailed_to_referrer_at?: string | null
+}
+
+type ProviderSummaryRow = {
+  id: string
+  name: string
+  queue: number
+  active: number
+  awaiting: number
+  ready: number
+  completed: number
 }
 
 function getAestDateKey(date = new Date()) {
@@ -105,10 +121,19 @@ function clean(value: unknown) {
   return String(value ?? "").trim()
 }
 
+function cleanDisplayProviderName(name: string) {
+  return name
+    .replace(/\s*\(medical\)\s*/gi, "")
+    .replace(/\s*\(dental\)\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
 function getRawProviderName(item: QueueItem) {
   const raw = item.raw_json || {}
 
   return (
+    clean(raw.vchProviderName) ||
     clean(raw.praktika_provider) ||
     clean(raw.vchProvider) ||
     clean(raw.provider) ||
@@ -116,23 +141,50 @@ function getRawProviderName(item: QueueItem) {
     clean(raw.provider_name) ||
     clean(raw.vchPractitioner) ||
     clean(raw.practitioner) ||
+    clean(raw.vchResourceName) ||
+    clean(raw.vchProviderFirstName) ||
     ""
   )
+}
+
+function getMappedProviderId(
+  item: QueueItem,
+  providerNameMappings: Map<string, string>
+) {
+  if (item.provider_id) return item.provider_id
+
+  const rawProvider = getRawProviderName(item)
+  if (!rawProvider) return null
+
+  const normalizedProvider = normalizeProviderName(rawProvider)
+
+  return providerNameMappings.get(normalizedProvider) || null
 }
 
 function providerName(
   providerId: string | null | undefined,
   providerMap: Map<string, string>,
-  item?: QueueItem
+  item?: QueueItem,
+  providerNameMappings?: Map<string, string>
 ) {
-  if (providerId && providerMap.has(providerId)) {
-    return providerMap.get(providerId) || "Unknown provider"
+  let resolvedProviderId = providerId
+
+  if (!resolvedProviderId && item && providerNameMappings) {
+    resolvedProviderId = getMappedProviderId(item, providerNameMappings)
+  }
+
+  if (resolvedProviderId && providerMap.has(resolvedProviderId)) {
+    return cleanDisplayProviderName(
+      providerMap.get(resolvedProviderId) || "Unknown provider"
+    )
   }
 
   if (item) {
     const rawProvider = getRawProviderName(item)
 
-    if (rawProvider) return rawProvider
+    if (rawProvider) {
+      return cleanDisplayProviderName(rawProvider)
+    }
   }
 
   return "Unmatched provider"
@@ -202,34 +254,42 @@ function Card({
 export default async function ReportWritingDashboardPage() {
   const { todayKey, startIso, endIso, label } = getTodayRangeAest()
 
-  const [providersResult, queueResult, draftsResult] = await Promise.all([
-    supabase
-      .from("providers")
-      .select("id, name, is_active, archived")
-      .order("name", { ascending: true }),
+  const [providersResult, providerMappingsResult, queueResult, draftsResult] =
+    await Promise.all([
+      supabase
+        .from("providers")
+        .select("id, name, is_active")
+        .order("name", { ascending: true }),
 
-    supabase
-      .from("report_letter_queue")
-      .select(
-        "id, provider_id, patient_first_name, patient_last_name, patient_dob, appointment_time, queue_reason, status, report_draft_id, praktika_patient_id, raw_json"
-      )
-      .gte("appointment_time", startIso)
-      .lt("appointment_time", endIso)
-      .order("appointment_time", { ascending: true }),
+      supabase
+        .from("provider_name_mappings")
+        .select("provider_id, normalized_provider_name, source_type")
+        .in("source_type", [
+          "appointments_csv",
+          "provider_performance_csv",
+          "cancellations_csv",
+          "praktika_completed_procedures",
+        ]),
 
-    supabase
-      .from("report_drafts")
-      .select(
-        "id, provider_id, patient_name, patient_dob, report_type, status, created_at, uploaded_to_praktika_at, emailed_to_referrer_at"
-      )
-      .gte("created_at", startIso)
-      .lt("created_at", endIso)
-      .order("created_at", { ascending: false }),
-  ])
+      supabase
+        .from("report_letter_queue")
+        .select(
+          "id, provider_id, patient_first_name, patient_last_name, patient_dob, appointment_time, queue_reason, status, report_draft_id, praktika_patient_id, raw_json"
+        )
+        .neq("status", "completed")
+        .order("appointment_time", { ascending: true }),
 
-  const providers = ((providersResult.data || []) as Provider[]).filter(
-    (provider) => provider.archived !== true && provider.is_active !== false
-  )
+      supabase
+        .from("report_drafts")
+        .select(
+          "id, provider_id, patient_name, patient_dob, report_type, status, created_at, uploaded_to_praktika_at, emailed_to_referrer_at"
+        )
+        .gte("created_at", startIso)
+        .lt("created_at", endIso)
+        .order("created_at", { ascending: false }),
+    ])
+
+  const providers = (providersResult.data || []) as Provider[]
 
   const providerMap = new Map(
     providers.map((provider) => [
@@ -238,13 +298,18 @@ export default async function ReportWritingDashboardPage() {
     ])
   )
 
+  const providerNameMappings = new Map(
+    ((providerMappingsResult.data || []) as ProviderNameMapping[]).map(
+      (mapping) => [mapping.normalized_provider_name, mapping.provider_id]
+    )
+  )
+
   const queue = (queueResult.data || []) as QueueItem[]
   const drafts = (draftsResult.data || []) as Draft[]
 
   const activeQueue = queue.filter((item) => item.status !== "completed")
-  const queued = queue.filter((item) => item.status === "queued")
-  const started = queue.filter((item) => item.status === "started")
-  const completedQueue = queue.filter((item) => item.status === "completed")
+  const queued = activeQueue.filter((item) => item.status === "queued")
+  const started = activeQueue.filter((item) => item.status === "started")
 
   const generatedDrafts = drafts.length
   const awaitingApproval = drafts.filter(
@@ -258,30 +323,59 @@ export default async function ReportWritingDashboardPage() {
   )
   const emailed = drafts.filter((draft) => Boolean(draft.emailed_to_referrer_at))
 
-  const providerRows = providers.map((provider) => {
-    const providerQueue = queue.filter((item) => item.provider_id === provider.id)
-    const providerDrafts = drafts.filter(
-      (draft) => draft.provider_id === provider.id
+const providerRows = Array.from(
+  activeQueue.reduce((map, item) => {
+    const mappedProviderId = getMappedProviderId(item, providerNameMappings)
+
+    const displayName = providerName(
+      item.provider_id,
+      providerMap,
+      item,
+      providerNameMappings
     )
 
-    return {
-      provider,
-      queue: providerQueue.length,
-      active: providerQueue.filter((item) => item.status !== "completed").length,
-      awaiting: providerDrafts.filter(
-        (draft) => draft.status === "awaiting_provider_approval"
-      ).length,
-      ready: providerDrafts.filter(
-        (draft) => draft.status === "approved" && !isDraftCompleted(draft)
-      ).length,
-      completed: providerDrafts.filter(isDraftCompleted).length,
-    }
-  })
+    const key = mappedProviderId || displayName
+
+    const providerDrafts = drafts.filter(
+      (draft) => draft.provider_id === mappedProviderId
+    )
+
+    const existing =
+      map.get(key) ||
+      ({
+        id: key,
+        name: displayName,
+        queue: 0,
+        drafts: providerDrafts.length,
+        awaitingApproval: providerDrafts.filter(
+          (draft) => draft.status === "awaiting_provider_approval"
+        ).length,
+        approved: providerDrafts.filter(
+          (draft) => draft.status === "approved" && !isDraftCompleted(draft)
+        ).length,
+      })
+
+    existing.queue += 1
+
+    map.set(key, existing)
+
+    return map
+  }, new Map<string, {
+    id: string
+    name: string
+    queue: number
+    drafts: number
+    awaitingApproval: number
+    approved: number
+  }>())
+)
+  .map(([, row]) => row)
+  .sort((a, b) => a.name.localeCompare(b.name))
 
   const unmatchedProviderNames = Array.from(
     new Set(
-      queue
-        .filter((item) => !item.provider_id)
+      activeQueue
+        .filter((item) => !getMappedProviderId(item, providerNameMappings))
         .map(getRawProviderName)
         .filter(Boolean)
     )
@@ -331,17 +425,34 @@ export default async function ReportWritingDashboardPage() {
           </section>
         ) : null}
 
-        {queueResult.error || draftsResult.error ? (
+        {queueResult.error ||
+        draftsResult.error ||
+        providerMappingsResult.error ||
+        providersResult.error ? (
           <section className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
             <div className="font-bold">Dashboard warning</div>
+
+            {providersResult.error ? (
+              <div className="mt-1">
+                Provider error: {providersResult.error.message}
+              </div>
+            ) : null}
+
             {queueResult.error ? (
               <div className="mt-1">
                 Queue error: {queueResult.error.message}
               </div>
             ) : null}
+
             {draftsResult.error ? (
               <div className="mt-1">
                 Draft error: {draftsResult.error.message}
+              </div>
+            ) : null}
+
+            {providerMappingsResult.error ? (
+              <div className="mt-1">
+                Provider mapping error: {providerMappingsResult.error.message}
               </div>
             ) : null}
           </section>
@@ -349,9 +460,9 @@ export default async function ReportWritingDashboardPage() {
 
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
           <Card
-            title="Today’s queue"
-            value={queue.length}
-            helper={`${activeQueue.length} still active`}
+            title="Active queue"
+            value={activeQueue.length}
+            helper="All unfinished queue items"
             href="/report-writing/typist"
           />
           <Card
@@ -367,7 +478,7 @@ export default async function ReportWritingDashboardPage() {
             accent="text-amber-700"
           />
           <Card
-            title="Generated"
+            title="Generated today"
             value={generatedDrafts}
             helper="Drafts created today"
             href={`/report-writing/history?fromDate=${todayKey}&toDate=${todayKey}`}
@@ -380,8 +491,8 @@ export default async function ReportWritingDashboardPage() {
             href={`/report-writing/history?status=awaiting&fromDate=${todayKey}&toDate=${todayKey}`}
           />
           <Card
-            title="Completed"
-            value={Math.max(completedQueue.length, emailed.length, uploaded.length)}
+            title="Completed today"
+            value={Math.max(emailed.length, uploaded.length)}
             helper={`${uploaded.length} uploaded, ${emailed.length} emailed`}
             accent="text-emerald-700"
             href={`/report-writing/history?status=completed&fromDate=${todayKey}&toDate=${todayKey}`}
@@ -392,10 +503,10 @@ export default async function ReportWritingDashboardPage() {
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
             <div className="mb-4">
               <h2 className="text-xl font-bold text-slate-950">
-                Today’s active queue
+                Active queue
               </h2>
               <p className="text-sm text-slate-500">
-                Queue items that are not completed yet. Times shown in AEST.
+                All queue items that are not completed yet. Times shown in AEST.
               </p>
             </div>
 
@@ -415,7 +526,7 @@ export default async function ReportWritingDashboardPage() {
                   {activeQueue.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="p-6 text-center text-slate-500">
-                        No active queue items for today.
+                        No active queue items.
                       </td>
                     </tr>
                   ) : null}
@@ -436,7 +547,12 @@ export default async function ReportWritingDashboardPage() {
                       </td>
 
                       <td className="p-3 text-slate-600">
-                        {providerName(item.provider_id, providerMap, item)}
+                        {providerName(
+                          item.provider_id,
+                          providerMap,
+                          item,
+                          providerNameMappings
+                        )}
                       </td>
 
                       <td className="p-3">
@@ -464,9 +580,7 @@ export default async function ReportWritingDashboardPage() {
             <h2 className="text-xl font-bold text-slate-950">
               Provider summary
             </h2>
-            <p className="text-sm text-slate-500">
-              Today’s queue and completion status by provider.
-            </p>
+            <p className="text-sm text-slate-500">Active queue by provider.</p>
 
             <div className="mt-4 space-y-3">
               {providerRows.length === 0 ? (
@@ -477,22 +591,19 @@ export default async function ReportWritingDashboardPage() {
 
               {providerRows.map((row) => (
                 <div
-                  key={row.provider.id}
+                  key={row.id}
                   className="rounded-xl border border-slate-200 p-3"
                 >
                   <div className="font-semibold text-slate-950">
-                    {row.provider.name || "Unnamed provider"}
+                    {row.name || "Unnamed provider"}
                   </div>
 
                   <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-600">
-                    <div>Queue: {row.queue}</div>
-                    <div>Active: {row.active}</div>
-                    <div>Awaiting: {row.awaiting}</div>
-                    <div>Ready: {row.ready}</div>
-                    <div className="col-span-2 text-emerald-700">
-                      Completed: {row.completed}
-                    </div>
-                  </div>
+  <div>Queue: {row.queue}</div>
+  <div>Drafts: {row.drafts}</div>
+  <div>Awaiting Approval: {row.awaitingApproval}</div>
+  <div>Approved: {row.approved}</div>
+</div>
                 </div>
               ))}
             </div>
