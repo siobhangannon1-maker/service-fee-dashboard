@@ -1420,7 +1420,7 @@ export default function TypistPage() {
           },
           body: JSON.stringify({
             queueId: activeQueueItemId,
-            status: "started",
+            status: "completed",
             reportDraftId: data.draft?.id || data.draftId || data.id,
           }),
         })
