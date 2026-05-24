@@ -134,8 +134,7 @@ export default function PraktikaReconnectPopup() {
       </div>
 
       <p className="mt-3 text-xs leading-5 text-slate-500">
-        Use the Praktika Session panel on the page. This notification no longer
-        accepts username, password, or MFA to avoid duplicate login attempts.
+        Use the Praktika Session panel on the page.
       </p>
     </div>
   );
