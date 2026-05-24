@@ -8,20 +8,17 @@ type Role =
   | "super_admin"
   | "practice_manager"
   | "billing_staff"
-  | "provider_readonly";
+  | "provider_readonly"
+  | "typist";
 
 type InviteMethod = "email" | "sms";
 
 function getBaseUrl() {
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-
   if (siteUrl) return siteUrl.replace(/\/$/, "");
 
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
-    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`.replace(
-      /\/$/,
-      ""
-    );
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`.replace(/\/$/, "");
   }
 
   if (process.env.VERCEL_URL) {
@@ -37,20 +34,17 @@ function getBaseUrl() {
 
 function normaliseAustralianPhone(input: string) {
   const raw = input.trim().replace(/\s+/g, "");
-
   if (!raw) return "";
-
   if (raw.startsWith("+")) return raw;
-
-  if (raw.startsWith("04")) {
-    return `+61${raw.slice(1)}`;
-  }
-
-  if (raw.startsWith("4") && raw.length === 9) {
-    return `+61${raw}`;
-  }
-
+  if (raw.startsWith("04")) return `+61${raw.slice(1)}`;
+  if (raw.startsWith("4") && raw.length === 9) return `+61${raw}`;
   return raw;
+}
+
+function getFallbackName(email: string, phone: string) {
+  if (email) return email.split("@")[0];
+  if (phone) return phone;
+  return "Unknown User";
 }
 
 async function sendTwilioSms(to: string, body: string) {
@@ -128,7 +122,11 @@ export async function POST(request: Request) {
       .eq("user_id", user.id)
       .single();
 
-    if (roleError || !roleRow || !["admin", "super_admin"].includes(roleRow.role)) {
+    if (
+      roleError ||
+      !roleRow ||
+      !["admin", "super_admin"].includes(roleRow.role)
+    ) {
       return NextResponse.json(
         { error: "Only admins can invite users." },
         { status: 403 }
@@ -140,7 +138,7 @@ export async function POST(request: Request) {
     const inviteMethod = (body.invite_method || "email") as InviteMethod;
     const email = body.email?.trim().toLowerCase() || "";
     const phone = normaliseAustralianPhone(body.phone || "");
-    const fullName = body.full_name?.trim() || "";
+    const enteredFullName = body.full_name?.trim() || "";
     const role = body.role as Role;
 
     if (!role) {
@@ -152,8 +150,13 @@ export async function POST(request: Request) {
     }
 
     if (inviteMethod === "sms" && !phone) {
-      return NextResponse.json({ error: "Missing phone number." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Missing phone number." },
+        { status: 400 }
+      );
     }
+
+    const fullName = enteredFullName || getFallbackName(email, phone);
 
     const supabaseAdmin = createSupabaseJsClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -188,39 +191,53 @@ export async function POST(request: Request) {
 
       const invitedUser = data.user;
 
-      if (invitedUser) {
-        await supabaseAdmin.from("profiles").upsert(
+      if (!invitedUser) {
+        return NextResponse.json(
+          { error: "Failed to create invited user." },
+          { status: 500 }
+        );
+      }
+
+      const { error: profileError } = await supabaseAdmin
+        .from("profiles")
+        .upsert(
           {
             id: invitedUser.id,
             email,
             full_name: fullName,
+            role,
+            phone: null,
+            phone_verified: false,
             invited_by_sms: false,
           },
           { onConflict: "id" }
         );
 
-        await supabaseAdmin.from("user_roles").upsert(
-          {
-            user_id: invitedUser.id,
-            role,
-          },
-          { onConflict: "user_id" }
-        );
-
-        await supabaseAdmin.from("user_status").upsert(
-          {
-            user_id: invitedUser.id,
-            is_active: true,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "user_id" }
-        );
+      if (profileError) {
+        return NextResponse.json({ error: profileError.message }, { status: 500 });
       }
+
+      await supabaseAdmin.from("user_roles").upsert(
+        {
+          user_id: invitedUser.id,
+          role,
+        },
+        { onConflict: "user_id" }
+      );
+
+      await supabaseAdmin.from("user_status").upsert(
+        {
+          user_id: invitedUser.id,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
 
       return NextResponse.json({
         success: true,
         invite_method: "email",
-        user: invitedUser ?? null,
+        user: invitedUser,
       });
     }
 
@@ -248,16 +265,22 @@ export async function POST(request: Request) {
       );
     }
 
-    await supabaseAdmin.from("profiles").upsert(
+    const { error: profileError } = await supabaseAdmin.from("profiles").upsert(
       {
         id: invitedUser.id,
+        email: null,
         phone,
         full_name: fullName,
+        role,
         phone_verified: true,
         invited_by_sms: true,
       },
       { onConflict: "id" }
     );
+
+    if (profileError) {
+      return NextResponse.json({ error: profileError.message }, { status: 500 });
+    }
 
     await supabaseAdmin.from("user_roles").upsert(
       {

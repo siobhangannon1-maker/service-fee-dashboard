@@ -11,11 +11,21 @@ type AuditRow = {
 type ProfileRow = {
   id: string;
   full_name: string | null;
+  email?: string | null;
+};
+
+type AuthUserMetadata = {
+  full_name?: string;
+  linked_email?: string;
+  linked_email_user_id?: string;
+  hidden_sms_login_user?: boolean;
 };
 
 type AdminUserRow = {
   id: string;
   email?: string | null;
+  phone?: string | null;
+  user_metadata?: AuthUserMetadata;
 };
 
 function getInitials(name: string) {
@@ -42,6 +52,14 @@ function getInitials(name: string) {
   return `${first[0]}${second[0]}`.toUpperCase();
 }
 
+function isHiddenSmsLoginUser(user: AdminUserRow | undefined) {
+  return user?.user_metadata?.hidden_sms_login_user === true;
+}
+
+function getLinkedProfileId(user: AdminUserRow | undefined) {
+  return user?.user_metadata?.linked_email_user_id || null;
+}
+
 export async function POST(request: Request) {
   try {
     const supabase = await createClient();
@@ -56,10 +74,11 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
+
     const entryIds = Array.isArray(body.entryIds)
       ? body.entryIds.filter(
-         (value: unknown): value is string =>
-  typeof value === "string" && value.length > 0
+          (value: unknown): value is string =>
+            typeof value === "string" && value.length > 0
         )
       : [];
 
@@ -102,26 +121,42 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: usersError.message }, { status: 500 });
     }
 
+    const authUsersById = new Map<string, AdminUserRow>(
+      ((authUsers.users || []) as AdminUserRow[]).map((authUser) => [
+        authUser.id,
+        authUser,
+      ])
+    );
+
+    const profileIdsToLoad = new Set<string>();
+
+    for (const actorId of actorIds) {
+      profileIdsToLoad.add(actorId);
+
+      const authUser = authUsersById.get(actorId);
+      const linkedProfileId = getLinkedProfileId(authUser);
+
+      if (isHiddenSmsLoginUser(authUser) && linkedProfileId) {
+        profileIdsToLoad.add(linkedProfileId);
+      }
+    }
+
     const { data: profiles, error: profilesError } = await supabaseAdmin
       .from("profiles")
-      .select("id, full_name")
-      .in("id", actorIds);
+      .select("id, full_name, email")
+      .in("id", Array.from(profileIdsToLoad));
 
     if (profilesError) {
-      return NextResponse.json({ error: profilesError.message }, { status: 500 });
+      return NextResponse.json(
+        { error: profilesError.message },
+        { status: 500 }
+      );
     }
 
     const profilesById = new Map(
       ((profiles || []) as ProfileRow[]).map((profile) => [
         profile.id,
-        profile.full_name,
-      ])
-    );
-
-    const authUsersById = new Map(
-      ((authUsers.users || []) as AdminUserRow[]).map((authUser) => [
-        authUser.id,
-        authUser.email ?? null,
+        profile,
       ])
     );
 
@@ -131,9 +166,25 @@ export async function POST(request: Request) {
     > = {};
 
     for (const [entryId, actorUserId] of firstCreatorByEntryId.entries()) {
-      const fullName = profilesById.get(actorUserId)?.trim();
-      const email = authUsersById.get(actorUserId) ?? null;
-      const displayName = fullName || email || actorUserId;
+      const authUser = authUsersById.get(actorUserId);
+
+      const linkedProfileId =
+        isHiddenSmsLoginUser(authUser) && getLinkedProfileId(authUser)
+          ? getLinkedProfileId(authUser)
+          : null;
+
+      const profileLookupId = linkedProfileId || actorUserId;
+      const profile = profilesById.get(profileLookupId);
+
+      const metadata = authUser?.user_metadata;
+
+      const displayName =
+        profile?.full_name?.trim() ||
+        metadata?.full_name?.trim() ||
+        profile?.email?.trim() ||
+        authUser?.email?.trim() ||
+        metadata?.linked_email?.trim() ||
+        "Unknown User";
 
       creators[entryId] = {
         userId: actorUserId,

@@ -7,7 +7,11 @@ import path from "path"
 import { execFile } from "child_process"
 import { promisify } from "util"
 import { formatDobPassword } from "@/lib/report-writing/pdf-password"
-import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
+import {
+  createReportAuditEvent,
+  getAuditActor,
+} from "@/lib/report-writing/audit"
+import { generatePeriodontalChartPdf } from "@/lib/praktika/periodontal-chart"
 
 export const runtime = "nodejs"
 
@@ -18,6 +22,11 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
+
+type EmailAttachment = {
+  filename: string
+  content: string
+}
 
 function safeFileName(name: string | null | undefined) {
   return String(name || "Patient")
@@ -149,6 +158,35 @@ function buildDisclaimerHtml() {
   `
 }
 
+async function getAppointmentDateForDraft(draftId: string) {
+  const { data } = await supabase
+    .from("report_letter_queue")
+    .select("appointment_time")
+    .eq("report_draft_id", draftId)
+    .order("appointment_time", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  return data?.appointment_time ? String(data.appointment_time).slice(0, 10) : null
+}
+
+async function updatePerioStatus(params: {
+  draftId: string
+  attachedAt?: string | null
+  attachmentName?: string | null
+  error?: string | null
+}) {
+  await supabase
+    .from("report_drafts")
+    .update({
+      periodontal_chart_attached_at: params.attachedAt || null,
+      periodontal_chart_attachment_name: params.attachmentName || null,
+      periodontal_chart_attachment_error: params.error || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.draftId)
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json()
@@ -165,6 +203,13 @@ export async function POST(req: Request) {
 
     const subject = body.subject
     const message = body.message
+
+    /*
+      Periodontal chart attachment is opt-in.
+      The frontend sends this as true only when the user ticks
+      "Attach periodontal chart" before sending.
+    */
+    const attachPeriodontalChart = Boolean(body.attachPeriodontalChart)
 
     if (!draftId) {
       return NextResponse.json(
@@ -248,6 +293,94 @@ export async function POST(req: Request) {
       patientName
     )} Letter.pdf`
 
+    const attachments: EmailAttachment[] = [
+      {
+        filename: fileName,
+        content: encryptedPdf.toString("base64"),
+      },
+    ]
+
+    let periodontalChartAttached = false
+    let periodontalChartAttachmentName: string | null = null
+    let periodontalChartError: string | null = null
+
+    if (attachPeriodontalChart) {
+      if (draft.praktika_patient_id) {
+        try {
+          const appointmentDate = await getAppointmentDateForDraft(draft.id)
+
+          const perioChart = await generatePeriodontalChartPdf({
+            patientId: draft.praktika_patient_id,
+            appointmentDate,
+            patientName,
+            providerName: actor.actorFullName || null,
+          })
+
+          if (perioChart) {
+            attachments.push({
+              filename: perioChart.fileName,
+              content: perioChart.buffer.toString("base64"),
+            })
+
+            periodontalChartAttached = true
+            periodontalChartAttachmentName = perioChart.fileName
+
+            await updatePerioStatus({
+              draftId: draft.id,
+              attachedAt: new Date().toISOString(),
+              attachmentName: perioChart.fileName,
+              error: null,
+            })
+          } else {
+            periodontalChartError =
+              "No periodontal chart found for the linked patient."
+
+            await updatePerioStatus({
+              draftId: draft.id,
+              attachedAt: null,
+              attachmentName: null,
+              error: periodontalChartError,
+            })
+          }
+        } catch (perioError) {
+          periodontalChartError =
+            perioError instanceof Error
+              ? perioError.message
+              : "Failed to generate periodontal chart."
+
+          console.warn("Periodontal chart attachment skipped:", perioError)
+
+          await updatePerioStatus({
+            draftId: draft.id,
+            attachedAt: null,
+            attachmentName: null,
+            error: periodontalChartError,
+          })
+        }
+      } else {
+        periodontalChartError =
+          "Periodontal chart was requested, but no Praktika patient ID is linked."
+
+        await updatePerioStatus({
+          draftId: draft.id,
+          attachedAt: null,
+          attachmentName: null,
+          error: periodontalChartError,
+        })
+      }
+    } else {
+      /*
+        User intentionally chose not to attach the periodontal chart.
+        Do not write this as an error.
+      */
+      await updatePerioStatus({
+        draftId: draft.id,
+        attachedAt: null,
+        attachmentName: null,
+        error: null,
+      })
+    }
+
     const baseSubject =
       String(subject || "").trim() ||
       "Secure correspondence from Focus Dental Specialists"
@@ -273,12 +406,7 @@ export async function POST(req: Request) {
       to: finalToEmail,
       subject: finalSubject,
       html: emailHtml,
-      attachments: [
-        {
-          filename: fileName,
-          content: encryptedPdf.toString("base64"),
-        },
-      ],
+      attachments,
     })
 
     if (resendResponse.error) {
@@ -314,6 +442,11 @@ export async function POST(req: Request) {
         subject: finalSubject,
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
+        periodontalChartRequested: attachPeriodontalChart,
+        periodontalChartAttached,
+        periodontalChartAttachmentName,
+        periodontalChartError,
+        attachmentCount: attachments.length,
       },
     })
 
@@ -322,6 +455,10 @@ export async function POST(req: Request) {
       email: finalToEmail,
       resendId: resendResponse.data?.id || null,
       subject: finalSubject,
+      periodontalChartRequested: attachPeriodontalChart,
+      periodontalChartAttached,
+      periodontalChartAttachmentName,
+      periodontalChartError,
     })
   } catch (error) {
     console.error("Secure email failed:", error)

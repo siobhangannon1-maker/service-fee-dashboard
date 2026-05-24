@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { getPraktikaCookie } from "@/lib/praktika/hybrid-session-store";
+import {
+  getCurrentUserPraktikaSessionMode,
+  getPraktikaCookie,
+  type PraktikaSessionMode,
+} from "@/lib/praktika/hybrid-session-store";
 import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
 
 export const runtime = "nodejs";
@@ -51,81 +55,82 @@ async function fetchAppointmentRowsFromPraktika({
   fromDate,
   toDate,
   practiceId,
+  mode,
 }: {
   fromDate: string;
   toDate: string;
   practiceId: string;
+  mode: PraktikaSessionMode;
 }) {
   return withPraktikaAutoRefresh(
     async () => {
-    const cookie = await getPraktikaCookie({ scope: "practice" });
+      const cookie = await getPraktikaCookie(mode);
 
-    const params = new URLSearchParams();
-    params.append("sReportName", "appointments");
-    params.append("bByCreationTime", "false");
-    params.append("iPracticeIds[]", practiceId);
-    params.append("sFromDate", fromDate);
-    params.append("sToDate", toDate);
+      const params = new URLSearchParams();
+      params.append("sReportName", "appointments");
+      params.append("bByCreationTime", "false");
+      params.append("iPracticeIds[]", practiceId);
+      params.append("sFromDate", fromDate);
+      params.append("sToDate", toDate);
 
-    const response = await fetch(
-      "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php",
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/x-www-form-urlencoded",
-          Cookie: cookie,
-          Origin: "https://praktika.praktika.net.au",
-          Referer: "https://praktika.praktika.net.au/v2/reports/appointments",
-          "X-Requested-With": "XMLHttpRequest",
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
+      const response = await fetch(
+        "https://praktika.praktika.net.au/php/json/db_reportingDataWarehouse.php",
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            Cookie: cookie,
+            Origin: "https://praktika.praktika.net.au",
+            Referer: "https://praktika.praktika.net.au/v2/reports/appointments",
+            "X-Requested-With": "XMLHttpRequest",
+            "User-Agent":
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
+          },
+          body: params.toString(),
+          cache: "no-store",
         },
-        body: params.toString(),
-        cache: "no-store",
-      },
-    );
-
-    const responseText = await response.text();
-
-    if (!response.ok) {
-      throw new Error(
-        `Praktika request failed: ${response.status}. ${responseText.slice(0, 500)}`,
       );
-    }
 
-    if (responseText.trim().startsWith("<")) {
-      throw new Error(
-        "Praktika returned HTML instead of JSON. The Praktika session is probably expired.",
-      );
-    }
+      const responseText = await response.text();
 
-    let parsedRows: unknown;
+      if (!response.ok) {
+        throw new Error(
+          `Praktika request failed: ${response.status}. ${responseText.slice(0, 500)}`,
+        );
+      }
 
-    try {
-      parsedRows = JSON.parse(responseText);
-    } catch {
-      throw new Error(
-        `Praktika returned non-JSON response. ${responseText.slice(0, 500)}`,
-      );
-    }
+      if (responseText.trim().startsWith("<")) {
+        throw new Error(
+          "Praktika returned HTML instead of JSON. The Praktika session is probably expired.",
+        );
+      }
 
-    if (!Array.isArray(parsedRows)) {
-      throw new Error(
-        `Praktika did not return a valid appointment array. ${responseText.slice(0, 500)}`,
-      );
-    }
+      let parsedRows: unknown;
 
-    return parsedRows as PraktikaAppointmentRow[];
+      try {
+        parsedRows = JSON.parse(responseText);
+      } catch {
+        throw new Error(
+          `Praktika returned non-JSON response. ${responseText.slice(0, 500)}`,
+        );
+      }
+
+      if (!Array.isArray(parsedRows)) {
+        throw new Error(
+          `Praktika did not return a valid appointment array. ${responseText.slice(0, 500)}`,
+        );
+      }
+
+      return parsedRows as PraktikaAppointmentRow[];
     },
-    {
-      mode: { scope: "practice" },
-    },
+    { mode },
   );
 }
 
 export async function POST(req: Request) {
   try {
+    const mode = await getCurrentUserPraktikaSessionMode();
     const body = await req.json().catch(() => ({}));
 
     const fromDate =
@@ -145,6 +150,7 @@ export async function POST(req: Request) {
       fromDate,
       toDate,
       practiceId,
+      mode,
     });
 
     const { data: mappings, error: mappingError } = await supabase
@@ -240,13 +246,7 @@ export async function POST(req: Request) {
 
       return {
         ...row,
-
-        // Critical preservation:
-        // Do NOT reset started/completed rows back to queued during a resync.
         status: existing?.status || "queued",
-
-        // Critical preservation:
-        // Keep the linked draft if this appointment already started a letter.
         report_draft_id: existing?.report_draft_id || null,
       };
     });

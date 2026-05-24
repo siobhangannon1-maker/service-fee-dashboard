@@ -1,20 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type SessionScope = "practice" | "user";
 
+type SessionStatus =
+  | "not_started"
+  | "connected"
+  | "refreshing"
+  | "waiting_for_credentials"
+  | "waiting_for_mfa"
+  | "refresh_requested"
+  | "expired"
+  | "error";
+
+type LiveStatus = "not_checked" | "checking" | "connected" | "expired" | "error";
+
 type SessionState = {
   scope?: SessionScope;
-  status:
-    | "not_started"
-    | "connected"
-    | "refreshing"
-    | "waiting_for_credentials"
-    | "waiting_for_mfa"
-    | "refresh_requested"
-    | "expired"
-    | "error";
+  status: SessionStatus;
   message: string;
   currentUrl?: string | null;
   praktikaUsername?: string | null;
@@ -25,9 +29,11 @@ type SessionState = {
   mfaCodeUpdatedAt?: string | null;
 };
 
+const STALE_AFTER_MS = 60 * 60 * 1000;
+
 const statusLabelMap: Record<string, string> = {
   not_started: "Not Started",
-  connected: "Connected",
+  connected: "Last Known Connected",
   refreshing: "Refreshing",
   waiting_for_credentials: "Credentials Needed",
   waiting_for_mfa: "MFA Needed",
@@ -36,18 +42,18 @@ const statusLabelMap: Record<string, string> = {
   error: "Connection Problem",
 };
 
-function getFriendlyMessage(state: SessionState, scope: SessionScope) {
+function getFriendlyMessage(state: SessionState, liveStatus: LiveStatus, scope: SessionScope) {
+  if (liveStatus === "checking") return "Checking Praktika live connection...";
+  if (liveStatus === "connected") return "Live check passed. Praktika is connected.";
+  if (liveStatus === "expired") return "Live check failed. Praktika needs reconnection.";
+  if (liveStatus === "error") return "Live check could not confirm the Praktika connection.";
+
   if (state.status === "connected") {
-    return "Praktika is connected and ready to use.";
+    return "Praktika was last known to be connected. Use Check Session for a live check.";
   }
 
-  if (state.status === "refreshing") {
-    return "Checking Praktika connection...";
-  }
-
-  if (state.status === "refresh_requested") {
-    return "Connection refresh requested. This should update shortly.";
-  }
+  if (state.status === "refreshing") return "Checking Praktika connection...";
+  if (state.status === "refresh_requested") return "Connection refresh requested. This should update shortly.";
 
   if (state.status === "waiting_for_credentials") {
     return scope === "user"
@@ -55,17 +61,9 @@ function getFriendlyMessage(state: SessionState, scope: SessionScope) {
       : "Practice Praktika credentials are needed.";
   }
 
-  if (state.status === "waiting_for_mfa") {
-    return "Praktika requires an MFA code. Enter the code below.";
-  }
-
-  if (state.status === "expired") {
-    return "Your Praktika session has expired. Reconnect to continue.";
-  }
-
-  if (state.status === "error") {
-    return state.message || "There was a problem connecting to Praktika.";
-  }
+  if (state.status === "waiting_for_mfa") return "Praktika requires an MFA code. Enter the code below.";
+  if (state.status === "expired") return "Your Praktika session has expired. Reconnect to continue.";
+  if (state.status === "error") return state.message || "There was a problem connecting to Praktika.";
 
   return state.message || "Checking Praktika session...";
 }
@@ -77,10 +75,7 @@ async function safeJson(res: Response) {
     return JSON.parse(text);
   } catch {
     throw new Error(
-      `API returned non-JSON response (${res.status}). Preview: ${text.slice(
-        0,
-        120,
-      )}`,
+      `API returned non-JSON response (${res.status}). Preview: ${text.slice(0, 120)}`,
     );
   }
 }
@@ -95,6 +90,15 @@ function formatDate(value?: string | null) {
   }
 }
 
+function isStale(value?: string | null) {
+  if (!value) return true;
+
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return true;
+
+  return Date.now() - time > STALE_AFTER_MS;
+}
+
 export default function PraktikaSessionPanel({
   scope = "practice",
   title,
@@ -107,11 +111,17 @@ export default function PraktikaSessionPanel({
     message: "Checking Praktika session...",
   });
 
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>("not_checked");
+  const [liveMessage, setLiveMessage] = useState("Not checked yet");
+  const [liveCheckedAt, setLiveCheckedAt] = useState<string | null>(null);
+
   const [mfaCode, setMfaCode] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [validating, setValidating] = useState(false);
+
+  const autoCheckedRef = useRef(false);
 
   async function loadStatus() {
     try {
@@ -121,7 +131,7 @@ export default function PraktikaSessionPanel({
 
       const json = await safeJson(res);
 
-      setState({
+      const nextState: SessionState = {
         scope: json.scope || scope,
         status: json.status || "error",
         message: json.message || "Unknown Praktika session state.",
@@ -132,20 +142,33 @@ export default function PraktikaSessionPanel({
         refreshedAt: json.refreshedAt || null,
         lastUsedAt: json.lastUsedAt || null,
         mfaCodeUpdatedAt: json.mfaCodeUpdatedAt || null,
-      });
+      };
+
+      setState(nextState);
+
+      const lastActivity = nextState.lastUsedAt || nextState.refreshedAt;
+
+      if (
+        !autoCheckedRef.current &&
+        nextState.status === "connected" &&
+        isStale(lastActivity)
+      ) {
+        autoCheckedRef.current = true;
+        validateSession({ requestRefresh: false });
+      }
     } catch (error: any) {
       console.error("Praktika session status failed:", error);
 
       setState({
         status: "error",
-        message:
-          error?.message || "Could not connect to Praktika session service.",
+        message: error?.message || "Could not connect to Praktika session service.",
         updatedAt: new Date().toISOString(),
       });
     }
   }
 
   useEffect(() => {
+    autoCheckedRef.current = false;
     loadStatus();
 
     const timer = setInterval(loadStatus, 5000);
@@ -159,9 +182,7 @@ export default function PraktikaSessionPanel({
     try {
       const res = await fetch("/api/praktika/session/refresh", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scope }),
       });
 
@@ -169,12 +190,12 @@ export default function PraktikaSessionPanel({
 
       if (!res.ok) {
         throw new Error(
-          json?.message ||
-            json?.error ||
-            `Refresh request failed with status ${res.status}.`,
+          json?.message || json?.error || `Refresh request failed with status ${res.status}.`,
         );
       }
 
+      setLiveStatus("not_checked");
+      setLiveMessage("Refresh requested. Live check will update after reconnect.");
       await loadStatus();
     } catch (error: any) {
       console.error("Praktika refresh failed:", error);
@@ -189,18 +210,18 @@ export default function PraktikaSessionPanel({
     }
   }
 
-  async function validateSession() {
+  async function validateSession(options: { requestRefresh?: boolean } = {}) {
     setValidating(true);
+    setLiveStatus("checking");
+    setLiveMessage("Checking live Praktika connection...");
 
     try {
       const res = await fetch("/api/praktika/session/validate", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           scope,
-          requestRefresh: true,
+          requestRefresh: options.requestRefresh ?? true,
         }),
       });
 
@@ -208,9 +229,23 @@ export default function PraktikaSessionPanel({
 
       if (!res.ok) {
         throw new Error(
-          json?.message ||
-            json?.error ||
-            `Validation failed with status ${res.status}.`,
+          json?.message || json?.error || `Validation failed with status ${res.status}.`,
+        );
+      }
+
+      const checkedAt = new Date().toISOString();
+      setLiveCheckedAt(checkedAt);
+
+      if (json.connected) {
+        setLiveStatus("connected");
+        setLiveMessage(json.message || "Live Praktika connection confirmed.");
+      } else {
+        setLiveStatus("expired");
+        setLiveMessage(
+          json.message ||
+            (json.refreshRequested
+              ? "Praktika is not connected. Refresh requested."
+              : "Praktika is not connected."),
         );
       }
 
@@ -218,11 +253,16 @@ export default function PraktikaSessionPanel({
     } catch (error: any) {
       console.error("Praktika validation failed:", error);
 
-      setState({
-        status: "error",
+      setLiveStatus("error");
+      setLiveCheckedAt(new Date().toISOString());
+      setLiveMessage(error?.message || "Failed to validate Praktika session.");
+
+      setState((current) => ({
+        ...current,
+        status: current.status === "connected" ? "error" : current.status,
         message: error?.message || "Failed to validate Praktika session.",
         updatedAt: new Date().toISOString(),
-      });
+      }));
     } finally {
       setValidating(false);
     }
@@ -238,13 +278,8 @@ export default function PraktikaSessionPanel({
     try {
       const res = await fetch("/api/praktika/session/credentials", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          username,
-          password,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
       });
 
       const json = await safeJson(res);
@@ -258,6 +293,8 @@ export default function PraktikaSessionPanel({
       }
 
       setPassword("");
+      setLiveStatus("not_checked");
+      setLiveMessage("Credentials submitted. Waiting for reconnect.");
       await loadStatus();
     } catch (error: any) {
       console.error("Praktika credential submit failed:", error);
@@ -280,9 +317,7 @@ export default function PraktikaSessionPanel({
     try {
       const res = await fetch("/api/praktika/session/mfa-code", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scope, code: mfaCode }),
       });
 
@@ -290,13 +325,13 @@ export default function PraktikaSessionPanel({
 
       if (!res.ok) {
         throw new Error(
-          json?.message ||
-            json?.error ||
-            `MFA code submission failed with status ${res.status}.`,
+          json?.message || json?.error || `MFA code submission failed with status ${res.status}.`,
         );
       }
 
       setMfaCode("");
+      setLiveStatus("not_checked");
+      setLiveMessage("MFA submitted. Waiting for reconnect.");
       await loadStatus();
     } catch (error: any) {
       console.error("Praktika MFA failed:", error);
@@ -311,37 +346,37 @@ export default function PraktikaSessionPanel({
     }
   }
 
+  const effectiveHealthy = state.status === "connected" && liveStatus !== "expired" && liveStatus !== "error";
+
   const tone =
-    state.status === "connected"
+    effectiveHealthy
       ? "border-green-200 bg-green-50 text-green-900"
-      : state.status === "error" || state.status === "expired"
+      : state.status === "error" || state.status === "expired" || liveStatus === "expired" || liveStatus === "error"
         ? "border-red-200 bg-red-50 text-red-900"
         : state.status === "waiting_for_mfa" ||
             state.status === "waiting_for_credentials" ||
             state.status === "refresh_requested" ||
-            state.status === "refreshing"
+            state.status === "refreshing" ||
+            liveStatus === "checking"
           ? "border-amber-200 bg-amber-50 text-amber-950"
           : "border-gray-200 bg-gray-50 text-gray-900";
 
   const showCredentials =
     scope === "user" &&
-    state.status !== "connected" &&
+    (state.status !== "connected" || liveStatus === "expired") &&
     state.status !== "refreshing" &&
     state.status !== "refresh_requested" &&
     state.status !== "waiting_for_mfa";
 
   const showMfa = state.status === "waiting_for_mfa";
-  const friendlyMessage = getFriendlyMessage(state, scope);
+  const friendlyMessage = getFriendlyMessage(state, liveStatus, scope);
 
   return (
     <section className={`rounded-2xl border p-4 shadow-sm ${tone}`}>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold uppercase tracking-[0.14em]">
-            {title ||
-              (scope === "practice"
-                ? "Practice Praktika Session"
-                : "My Praktika Session")}
+            {title || (scope === "practice" ? "Practice Praktika Session" : "My Praktika Session")}
           </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -352,17 +387,25 @@ export default function PraktikaSessionPanel({
             <span className="rounded-full bg-white/60 px-3 py-1 text-xs">
               {scope === "practice" ? "Practice mode" : "User mode"}
             </span>
+
+            <span className="rounded-full bg-white/70 px-3 py-1 text-xs">
+              Live:{" "}
+              {liveStatus === "not_checked"
+                ? "Not checked"
+                : liveStatus === "checking"
+                  ? "Checking"
+                  : liveStatus === "connected"
+                    ? "Connected"
+                    : liveStatus === "expired"
+                      ? "Expired"
+                      : "Error"}
+            </span>
           </div>
 
-          {state.praktikaUsername ? (
-            <div className="mt-3 text-sm">
-              <strong>Connected as:</strong> {state.praktikaUsername}
-            </div>
-          ) : (
-            <div className="mt-3 text-sm">
-              <strong>Connected as:</strong> Not connected
-            </div>
-          )}
+          <div className="mt-3 text-sm">
+            <strong>Connected as:</strong>{" "}
+            {state.praktikaUsername ? state.praktikaUsername : "Not connected"}
+          </div>
 
           <p className="mt-2 break-words text-sm">{friendlyMessage}</p>
 
@@ -374,18 +417,20 @@ export default function PraktikaSessionPanel({
               <strong>Last used:</strong> {formatDate(state.lastUsedAt)}
             </div>
             <div>
-              <strong>Refresh requested:</strong>{" "}
-              {formatDate(state.refreshRequestedAt)}
+              <strong>Live checked:</strong> {formatDate(liveCheckedAt)}
             </div>
             <div>
               <strong>Last status update:</strong> {formatDate(state.updatedAt)}
             </div>
           </div>
 
-          {scope === "user" && state.status !== "connected" ? (
+          {liveStatus === "error" || liveStatus === "expired" ? (
+            <p className="mt-3 text-xs leading-5 opacity-90">{liveMessage}</p>
+          ) : null}
+
+          {scope === "user" && showCredentials ? (
             <p className="mt-3 text-xs leading-5 opacity-80">
-              Your password is encrypted temporarily, used only to reconnect,
-              and cleared after login.
+              Your password is encrypted temporarily, used only to reconnect, and cleared after login.
             </p>
           ) : null}
         </div>
@@ -393,11 +438,11 @@ export default function PraktikaSessionPanel({
         <div className="flex flex-col gap-2 sm:flex-row lg:flex-col">
           <button
             type="button"
-            onClick={validateSession}
+            onClick={() => validateSession({ requestRefresh: true })}
             disabled={busy || validating || state.status === "refreshing"}
             className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 disabled:opacity-50"
           >
-            {validating ? "Checking..." : "Check Session"}
+            {validating ? "Checking..." : "Check Live"}
           </button>
 
           <button
@@ -416,10 +461,7 @@ export default function PraktikaSessionPanel({
       </div>
 
       {showCredentials ? (
-        <form
-          onSubmit={submitCredentials}
-          className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3"
-        >
+        <form onSubmit={submitCredentials} className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
           <div className="grid gap-3 md:grid-cols-2">
             <label className="block">
               <div className="mb-1 text-xs font-medium">Praktika username</div>
@@ -459,7 +501,6 @@ export default function PraktikaSessionPanel({
         <div className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
           <label className="block">
             <div className="mb-1 text-xs font-medium">MFA code</div>
-
             <input
               value={mfaCode}
               onChange={(event) => setMfaCode(event.target.value)}

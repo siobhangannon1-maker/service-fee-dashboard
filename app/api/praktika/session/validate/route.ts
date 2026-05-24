@@ -12,13 +12,13 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const scope = body?.scope || "practice";
+    const scope = body?.scope || "user";
     const requestRefresh = Boolean(body?.requestRefresh);
 
     const mode =
-      scope === "user"
-        ? await getCurrentUserPraktikaSessionMode()
-        : { scope: "practice" as const };
+      scope === "practice"
+        ? { scope: "practice" as const }
+        : await getCurrentUserPraktikaSessionMode();
 
     const result = await validatePraktikaSession(mode);
 

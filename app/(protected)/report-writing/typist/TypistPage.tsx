@@ -322,6 +322,7 @@ export default function TypistPage() {
   const [secureEmailSubject, setSecureEmailSubject] = useState("")
   const [secureEmailBody, setSecureEmailBody] = useState("")
   const [secureEmailConfirmed, setSecureEmailConfirmed] = useState(false)
+  const [attachPeriodontalChart, setAttachPeriodontalChart] = useState(false)
   const [secureEmailPreviewLoading, setSecureEmailPreviewLoading] =
     useState(false)
 
@@ -559,6 +560,7 @@ export default function TypistPage() {
 
     setSecureEmailPreviewLoading(true)
     setCompleteConfirmed(false)
+    setAttachPeriodontalChart(false)
     setCompleteStep("")
     setSecureEmailSubject(getDefaultSecureEmailSubject())
     setSecureEmailBody(getDefaultSecureEmailBody())
@@ -702,6 +704,7 @@ export default function TypistPage() {
           email: secureEmailRecipient.trim(),
           subject: secureEmailSubject,
           message: secureEmailBody,
+          attachPeriodontalChart,
         }),
       })
 
@@ -730,6 +733,7 @@ export default function TypistPage() {
       setCompleteStep("Complete.")
       setCompleteModalOpen(false)
       setCompleteConfirmed(false)
+      setAttachPeriodontalChart(false)
 
       alert(
         `Completed. PDF uploaded to Praktika and secure email sent to ${
@@ -754,6 +758,7 @@ export default function TypistPage() {
 
     setSecureEmailPreviewLoading(true)
     setSecureEmailConfirmed(false)
+    setAttachPeriodontalChart(false)
     setSecureEmailSubject(getDefaultSecureEmailSubject())
     setSecureEmailBody(getDefaultSecureEmailBody())
     setSecureEmailRecipient(
@@ -816,6 +821,7 @@ export default function TypistPage() {
           email: secureEmailRecipient.trim(),
           subject: secureEmailSubject,
           message: secureEmailBody,
+          attachPeriodontalChart,
         }),
       })
 
@@ -860,6 +866,7 @@ export default function TypistPage() {
 
       setSecureEmailModalOpen(false)
       setSecureEmailConfirmed(false)
+      setAttachPeriodontalChart(false)
 
       await loadDrafts(selectedProviderId)
       await loadQueue(selectedProviderId, queueStatusTab)
@@ -1027,6 +1034,7 @@ export default function TypistPage() {
     lastAutosavedTextRef.current = ""
     setPraktikaCandidates([])
     setSelectedPraktikaPatientId("")
+    setAttachPeriodontalChart(false)
   }
 
   function selectDraft(draft: Draft) {
@@ -2688,6 +2696,22 @@ export default function TypistPage() {
                 />
               </label>
 
+              <label className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+                <input
+                  type="checkbox"
+                  checked={attachPeriodontalChart}
+                  disabled={!(selectedPraktikaPatientId || selectedDraft?.praktika_patient_id)}
+                  onChange={(e) => setAttachPeriodontalChart(e.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-semibold">Attach periodontal chart</span>
+                  <br />
+                  Optional. Leave unticked for short update letters. This is only
+                  available when a Praktika patient is linked.
+                </span>
+              </label>
+
               <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
                 <input
                   type="checkbox"
@@ -2715,6 +2739,7 @@ export default function TypistPage() {
                 onClick={() => {
                   setCompleteModalOpen(false)
                   setCompleteConfirmed(false)
+                  setAttachPeriodontalChart(false)
                   setCompleteStep("")
                 }}
                 disabled={loading}
@@ -2797,6 +2822,22 @@ export default function TypistPage() {
                 />
               </label>
 
+              <label className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+                <input
+                  type="checkbox"
+                  checked={attachPeriodontalChart}
+                  disabled={!(selectedPraktikaPatientId || selectedDraft?.praktika_patient_id)}
+                  onChange={(e) => setAttachPeriodontalChart(e.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-semibold">Attach periodontal chart</span>
+                  <br />
+                  Optional. Leave unticked for short update letters. This is only
+                  available when a Praktika patient is linked.
+                </span>
+              </label>
+
               <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
                 <input
                   type="checkbox"
@@ -2819,7 +2860,10 @@ export default function TypistPage() {
             <div className="mt-6 flex flex-wrap justify-end gap-3">
               <button
                 type="button"
-                onClick={() => setSecureEmailModalOpen(false)}
+                onClick={() => {
+                  setSecureEmailModalOpen(false)
+                  setAttachPeriodontalChart(false)
+                }}
                 disabled={loading}
                 className="rounded-xl border px-5 py-3 font-semibold text-slate-700 disabled:opacity-50"
               >

@@ -13,6 +13,10 @@ const HEADLESS =
   String(process.env.PRAKTIKA_HELPER_HEADLESS ?? "true").toLowerCase() !==
   "false";
 
+const KEEP_BROWSER_OPEN =
+  String(process.env.PRAKTIKA_KEEP_BROWSER_OPEN ?? "false").toLowerCase() ===
+  "true";
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -44,6 +48,7 @@ function decryptTemporaryCredential(value: string | null | undefined) {
   }
 
   const [, ivBase64, authTagBase64, encryptedBase64] = value.split(":");
+
   if (!ivBase64 || !authTagBase64 || !encryptedBase64) {
     throw new Error("Invalid encrypted temporary credential format.");
   }
@@ -69,7 +74,10 @@ function argValue(name: string) {
 }
 
 const sessionId = argValue("session-id");
-if (!sessionId) throw new Error("Missing --session-id=<praktika_sessions.id>");
+
+if (!sessionId) {
+  throw new Error("Missing --session-id=<praktika_sessions.id>");
+}
 
 async function getSession() {
   const { data, error } = await supabase
@@ -78,14 +86,20 @@ async function getSession() {
     .eq("id", sessionId)
     .single();
 
-  if (error || !data) throw new Error(error?.message || "Session not found.");
+  if (error || !data) {
+    throw new Error(error?.message || "Session not found.");
+  }
+
   return data as SessionRow;
 }
 
 async function updateSession(values: Record<string, unknown>) {
   const { error } = await supabase
     .from("praktika_sessions")
-    .update({ ...values, updated_at: new Date().toISOString() })
+    .update({
+      ...values,
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", sessionId);
 
   if (error) {
@@ -125,7 +139,9 @@ async function getAndClearMfaCode() {
     })
     .eq("id", sessionId);
 
-  if (error) throw new Error(`Could not clear MFA code: ${error.message}`);
+  if (error) {
+    throw new Error(`Could not clear MFA code: ${error.message}`);
+  }
 
   return code;
 }
@@ -139,7 +155,16 @@ async function safePageUrl(page: any) {
 }
 
 async function pageHasPasswordInput(page: any) {
-  return (await page.locator('input[type="password"]').count()) > 0;
+  const inputs = page.locator('input[type="password"]');
+  const count = await inputs.count().catch(() => 0);
+
+  for (let i = 0; i < count; i++) {
+    const input = inputs.nth(i);
+    const visible = await input.isVisible().catch(() => false);
+    if (visible) return true;
+  }
+
+  return false;
 }
 
 async function pageHasMfaInput(page: any) {
@@ -176,8 +201,22 @@ async function pageHasMfaInput(page: any) {
 async function isLoggedIn(page: any) {
   const url = page.url().toLowerCase();
 
-  if (url.includes("/login") || url.includes("/v2/login")) return false;
-  if (await pageHasPasswordInput(page)) return false;
+  if (
+    url.includes("/v2/scheduler") ||
+    url.includes("/v2/appointment") ||
+    url.includes("/v2/patient") ||
+    url.includes("/v2/reports")
+  ) {
+    return true;
+  }
+
+  if (url.includes("/login") || url.includes("/v2/login")) {
+    return false;
+  }
+
+  if (await pageHasPasswordInput(page)) {
+    return false;
+  }
 
   const bodyText = await page.locator("body").innerText().catch(() => "");
   const lowerBody = bodyText.toLowerCase();
@@ -275,6 +314,7 @@ async function submitMfaCodeIfAvailable(page: any) {
   if (!(await pageHasMfaInput(page))) return false;
 
   const code = await getAndClearMfaCode();
+
   if (!code) {
     await updateSession({
       status: "waiting_for_mfa",
@@ -301,6 +341,12 @@ async function submitMfaCodeIfAvailable(page: any) {
     .first()
     .click();
 
+  await updateSession({
+    status: "refreshing",
+    message: "MFA code submitted. Waiting for Praktika to finish signing in.",
+    current_url: await safePageUrl(page),
+  });
+
   await page.waitForTimeout(5000);
 
   return true;
@@ -308,11 +354,21 @@ async function submitMfaCodeIfAvailable(page: any) {
 
 async function saveCookies(context: any, page: any) {
   const cookies = await context.cookies(PRAKTIKA_BASE_URL);
-  const phpSession = cookies.find((cookie: any) => cookie.name === "PHPSESSID");
-  const uat = cookies.find((cookie: any) => cookie.name === "UAT");
 
-  if (!phpSession || !uat) {
-    throw new Error("Could not find PHPSESSID and UAT cookies.");
+  if (!cookies.length) {
+    throw new Error("No Praktika cookies found in the helper browser.");
+  }
+
+  const cookieHeader = cookies
+    .filter((cookie: any) => cookie.name && cookie.value)
+    .map((cookie: any) => `${cookie.name}=${cookie.value}`)
+    .join("; ");
+
+  const hasPhpSession = cookies.some((cookie: any) => cookie.name === "PHPSESSID");
+  const hasUat = cookies.some((cookie: any) => cookie.name === "UAT");
+
+  if (!hasPhpSession || !hasUat) {
+    throw new Error("Could not find required Praktika PHPSESSID and UAT cookies.");
   }
 
   const session = await getSession();
@@ -323,9 +379,11 @@ async function saveCookies(context: any, page: any) {
     (session.scope === "practice" ? process.env.PRAKTIKA_USERNAME || null : null);
 
   await clearTemporaryCredentialsAfterSuccess({
-    cookie: `PHPSESSID=${phpSession.value}; UAT=${uat.value}`,
+    cookie: cookieHeader,
     status: "connected",
-    message: "Praktika session refreshed successfully.",
+    message: KEEP_BROWSER_OPEN
+      ? "Praktika session connected. Full browser cookies saved from open helper browser."
+      : "Praktika session refreshed successfully.",
     current_url: await safePageUrl(page),
     praktika_username: usernameToDisplay,
     mfa_code: null,
@@ -333,6 +391,44 @@ async function saveCookies(context: any, page: any) {
     refreshed_at: new Date().toISOString(),
     last_used_at: new Date().toISOString(),
   });
+}
+
+async function keepBrowserOpenForever(context: any, page: any) {
+  console.log(
+    "Praktika browser left open. Helper will keep saving fresh cookies every 60 seconds.",
+  );
+
+  while (true) {
+    try {
+      if (await isLoggedIn(page)) {
+        await saveCookies(context, page);
+
+        await updateSession({
+          status: "connected",
+          message:
+            "Praktika browser is still open and connected. Cookies refreshed from live browser.",
+          current_url: await safePageUrl(page),
+          last_used_at: new Date().toISOString(),
+        });
+      } else {
+        await updateSession({
+          status: "expired",
+          message:
+            "Praktika helper browser is open but no longer logged in.",
+          current_url: await safePageUrl(page),
+        });
+      }
+    } catch (error: any) {
+      await updateSession({
+        status: "error",
+        message:
+          error?.message || "Could not refresh cookies from open Praktika browser.",
+        current_url: await safePageUrl(page),
+      });
+    }
+
+    await page.waitForTimeout(60_000);
+  }
 }
 
 async function refreshOnce() {
@@ -369,6 +465,11 @@ async function refreshOnce() {
   try {
     if (await hasExistingBrowserSession(page)) {
       await saveCookies(context, page);
+
+      if (KEEP_BROWSER_OPEN) {
+        await keepBrowserOpenForever(context, page);
+      }
+
       return;
     }
 
@@ -395,6 +496,11 @@ async function refreshOnce() {
       if (await isLoggedIn(page)) {
         await page.waitForTimeout(3000);
         await saveCookies(context, page);
+
+        if (KEEP_BROWSER_OPEN) {
+          await keepBrowserOpenForever(context, page);
+        }
+
         return;
       }
 
@@ -440,7 +546,9 @@ async function refreshOnce() {
 
     throw error;
   } finally {
-    await context.close().catch(() => {});
+    if (!KEEP_BROWSER_OPEN) {
+      await context.close().catch(() => {});
+    }
   }
 }
 

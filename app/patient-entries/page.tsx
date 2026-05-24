@@ -505,7 +505,7 @@ export default function PatientEntriesPage() {
 
     setForm((prev) => ({
       ...prev,
-      provider_id: prev.provider_id || providerList[0]?.id || "",
+      provider_id: prev.provider_id || "",
       billing_period_id: prev.billing_period_id || activePeriodId || "",
     }));
   }
@@ -618,7 +618,7 @@ export default function PatientEntriesPage() {
     resetScanUi();
     setForm({
       ...emptyForm,
-      provider_id: providers[0]?.id || "",
+      provider_id: "",
       billing_period_id:
         nextPeriodId ||
         selectedPeriodId ||

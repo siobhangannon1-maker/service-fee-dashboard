@@ -65,6 +65,19 @@ export async function validatePraktikaSession(
 ): Promise<ValidateResult> {
   const session = await getPraktikaSession(mode);
 
+  if (
+  session.status === "waiting_for_mfa" ||
+  session.status === "refresh_requested" ||
+  session.status === "refreshing"
+) {
+  return {
+    connected: false,
+    status: session.status as any,
+    reason: session.status,
+    message: session.message || "Praktika reconnect is in progress.",
+  };
+}
+
   if (!session.cookie) {
     await updatePraktikaSession(mode, {
       status: "not_started",

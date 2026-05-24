@@ -8,7 +8,20 @@ type AppRole =
   | "super_admin"
   | "practice_manager"
   | "billing_staff"
+  | "typist"
   | "provider_readonly";
+
+type AuthUserMetadata = {
+  full_name?: string;
+  invited_by_sms?: boolean;
+  hidden_sms_login_user?: boolean;
+  linked_email_user_id?: string;
+  linked_email?: string;
+};
+
+function isHiddenSmsLoginUser(metadata: AuthUserMetadata | null | undefined) {
+  return metadata?.hidden_sms_login_user === true;
+}
 
 export async function GET() {
   try {
@@ -74,17 +87,15 @@ export async function GET() {
       await supabaseAdmin.auth.admin.listUsers();
 
     if (usersError) {
-      return NextResponse.json(
-        { error: usersError.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: usersError.message }, { status: 500 });
     }
 
-    const visibleAuthUsers = authUsers.users.filter((authUser) => {
-      return !authUser.user_metadata?.hidden_sms_login_user;
+    const visibleAuthUsers = (authUsers.users || []).filter((authUser) => {
+      const metadata = authUser.user_metadata as AuthUserMetadata | undefined;
+      return !isHiddenSmsLoginUser(metadata);
     });
 
-    const userIds = visibleAuthUsers.map((u) => u.id);
+    const userIds = visibleAuthUsers.map((user) => user.id);
 
     if (userIds.length === 0) {
       return NextResponse.json({ users: [] });
@@ -123,21 +134,18 @@ export async function GET() {
     );
 
     const users = visibleAuthUsers.map((authUser) => {
+      const metadata = authUser.user_metadata as AuthUserMetadata | undefined;
       const profile = profilesById.get(authUser.id);
 
       return {
         user_id: authUser.id,
         email: profile?.email ?? authUser.email ?? null,
         phone: profile?.phone ?? authUser.phone ?? null,
-        full_name:
-          profile?.full_name ??
-          (authUser.user_metadata?.full_name as string | undefined) ??
-          null,
+        full_name: profile?.full_name ?? metadata?.full_name ?? null,
         phone_verified:
           profile?.phone_verified ?? Boolean(authUser.phone_confirmed_at),
         invited_by_sms:
-          profile?.invited_by_sms ??
-          Boolean(authUser.user_metadata?.invited_by_sms),
+          profile?.invited_by_sms ?? Boolean(metadata?.invited_by_sms),
         is_active: statusById.get(authUser.id) ?? true,
       };
     });
@@ -146,8 +154,7 @@ export async function GET() {
   } catch (error) {
     return NextResponse.json(
       {
-        error:
-          error instanceof Error ? error.message : "Failed to load users.",
+        error: error instanceof Error ? error.message : "Failed to load users.",
       },
       { status: 500 }
     );

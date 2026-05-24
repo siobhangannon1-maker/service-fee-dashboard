@@ -11,7 +11,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const code = String(body?.code || "").replace(/\D/g, "").trim();
-    const scope = body?.scope || "practice";
+    const scope = body?.scope || "user";
 
     if (!code) {
       return NextResponse.json(
@@ -21,9 +21,9 @@ export async function POST(request: Request) {
     }
 
     const mode =
-      scope === "user"
-        ? await getCurrentUserPraktikaSessionMode()
-        : { scope: "practice" as const };
+      scope === "practice"
+        ? { scope: "practice" as const }
+        : await getCurrentUserPraktikaSessionMode();
 
     await savePraktikaMfaCode({ mode, code });
 

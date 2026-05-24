@@ -74,6 +74,77 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
+  label: "Communication Excellence",
+  roles: ["super_admin"],
+  items: [
+    {
+      href: "/communication-excellence",
+      label: "Dashboard",
+      description: "Communication training overview",
+    },
+    {
+      href: "/communication-excellence/my-hub",
+      label: "My Hub",
+      description: "Personalised training, scores and microlearning",
+    },
+    {
+      href: "/communication-excellence/training",
+      label: "Training",
+      description: "Complete assigned training modules",
+    },
+    {
+      href: "/communication-excellence/voice-practice",
+      label: "Voice Practice",
+      description: "Voice coaching foundation",
+    },
+    {
+      href: "/communication-excellence/admin",
+      label: "Admin",
+      description: "Manage modules, assignments and audit",
+    },
+    {
+  href: "/communication-excellence/admin/audit",
+  label: "Audit",
+  description: "Review Communication Excellence history",
+},
+{
+  href: "/communication-excellence/microlearning",
+  label: "Microlearning",
+  description: "Short personalised learning tasks",
+},
+{
+  href: "/communication-excellence/scenarios",
+  label: "Scenarios",
+  description: "Practice patient conversations",
+},
+{
+  href: "/communication-excellence/admin/scenarios",
+  label: "Scenario Admin",
+  description: "Create AI roleplay scenarios",
+},
+{
+  href: "/communication-excellence/admin/competencies",
+  label: "Competencies",
+  description: "Manage competency scoring categories",
+},
+{
+  href: "/communication-excellence/scenarios/history",
+  label: "Scenario History",
+  description: "Review your previous scenario attempts",
+},
+{
+  href: "/communication-excellence/admin/scenario-analytics",
+  label: "Scenario Analytics",
+  description: "Review scenario performance across staff",
+},
+{
+  href: "/communication-excellence/admin/practice-rules",
+  label: "Practice Rules",
+  description: "Manage approved wording and practice-specific guidance",
+},
+  ],
+},
+  {
     label: "Practice Manager",
     roles: ["practice_manager", "admin", "super_admin"],
     items: [

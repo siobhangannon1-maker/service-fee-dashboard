@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
-import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
+import {
+  createReportAuditEvent,
+  getAuditActor,
+} from "@/lib/report-writing/audit"
+
+export const runtime = "nodejs"
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -60,102 +65,121 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const body = await req.json()
-  const {
-    queueId,
-    status,
-    reportDraftId,
-    cachedClinicalNotes,
-    cachedClinicalNotesSource,
-  } = body
+  try {
+    const body = await req.json()
+    const {
+      queueId,
+      status,
+      reportDraftId,
+      cachedClinicalNotes,
+      cachedClinicalNotesSource,
+    } = body
 
-  if (!queueId || !status) {
-    return NextResponse.json(
-      { success: false, error: "Missing queueId or status." },
-      { status: 400 }
-    )
-  }
+    if (!queueId || !status) {
+      return NextResponse.json(
+        { success: false, error: "Missing queueId or status." },
+        { status: 400 }
+      )
+    }
 
-  if (!ALLOWED_STATUSES.has(status)) {
-    return NextResponse.json(
-      { success: false, error: "Invalid queue status." },
-      { status: 400 }
-    )
-  }
+    if (!ALLOWED_STATUSES.has(status)) {
+      return NextResponse.json(
+        { success: false, error: "Invalid queue status." },
+        { status: 400 }
+      )
+    }
 
-  const updatePayload: Record<string, unknown> = {
-    status,
-    updated_at: new Date().toISOString(),
-  }
+    const updatePayload: Record<string, unknown> = {
+      status,
+      updated_at: new Date().toISOString(),
+    }
 
-  if (reportDraftId) {
-    updatePayload.report_draft_id = reportDraftId
-  }
+    if (reportDraftId) {
+      updatePayload.report_draft_id = reportDraftId
+    }
 
-  if (typeof cachedClinicalNotes === "string") {
-    const { data: existing, error: existingError } = await supabase
+    if (typeof cachedClinicalNotes === "string") {
+      const { data: existing, error: existingError } = await supabase
+        .from("report_letter_queue")
+        .select("raw_json")
+        .eq("id", queueId)
+        .single()
+
+      if (existingError) {
+        return NextResponse.json(
+          { success: false, error: existingError.message },
+          { status: 500 }
+        )
+      }
+
+      const rawJson = asObject(existing?.raw_json)
+
+      updatePayload.raw_json = {
+        ...rawJson,
+        cached_clinical_notes: cachedClinicalNotes,
+        cached_clinical_notes_source:
+          cachedClinicalNotesSource || "praktika_clinical_notes",
+        cached_clinical_notes_at: new Date().toISOString(),
+      }
+    }
+
+    const { data, error } = await supabase
       .from("report_letter_queue")
-      .select("raw_json")
+      .update(updatePayload)
       .eq("id", queueId)
+      .select()
       .single()
 
-    if (existingError) {
+    if (error) {
       return NextResponse.json(
-        { success: false, error: existingError.message },
+        { success: false, error: error.message },
         { status: 500 }
       )
     }
 
-    const rawJson = asObject(existing?.raw_json)
+    try {
+      const actor = await getAuditActor()
 
-    updatePayload.raw_json = {
-      ...rawJson,
-      cached_clinical_notes: cachedClinicalNotes,
-      cached_clinical_notes_source:
-        cachedClinicalNotesSource || "praktika_clinical_notes",
-      cached_clinical_notes_at: new Date().toISOString(),
+      await createReportAuditEvent({
+        reportDraftId: reportDraftId || data.report_draft_id || null,
+        providerId: data.provider_id,
+        patientName: [data.patient_first_name, data.patient_last_name]
+          .filter(Boolean)
+          .join(" "),
+        action:
+          status === "started"
+            ? "Started queue item"
+            : status === "completed"
+              ? "Completed queue item"
+              : "Updated queue item",
+        details: {
+          queueId: data.id,
+          queueStatus: status,
+          reportDraftId: reportDraftId || data.report_draft_id || null,
+          actorInitials: actor.actorInitials,
+          actorFullName: actor.actorFullName,
+        },
+      })
+    } catch (auditError) {
+      console.warn("Queue audit event failed:", auditError)
     }
-  }
 
-  const { data, error } = await supabase
-    .from("report_letter_queue")
-    .update(updatePayload)
-    .eq("id", queueId)
-    .select()
-    .single()
+    return NextResponse.json({
+      success: true,
+      queueItem: data,
+    })
+  } catch (error) {
+    console.error("Update letter queue failed:", error)
 
-  if (error) {
     return NextResponse.json(
-      { success: false, error: error.message },
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to update queue item.",
+      },
       { status: 500 }
     )
   }
-
-  return NextResponse.json({
-    success: true,
-    queueItem: data,
-  })
-
-  const actor = await getAuditActor()
-
-await createReportAuditEvent({
-  reportDraftId: reportDraftId || data.report_draft_id || null,
-  providerId: data.provider_id,
-  patientName: [data.patient_first_name, data.patient_last_name]
-    .filter(Boolean)
-    .join(" "),
-  action:
-    status === "started"
-      ? "Started queue item"
-      : status === "completed"
-        ? "Completed queue item"
-        : "Updated queue item",
-  details: {
-    queueId: data.id,
-    queueStatus: status,
-    reportDraftId: reportDraftId || data.report_draft_id || null,
-    actorInitials: actor.actorInitials,
-    actorFullName: actor.actorFullName,
-  },
-})
 }

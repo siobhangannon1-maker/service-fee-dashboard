@@ -120,7 +120,7 @@ export async function getPraktikaSession(
 
   if (data) return data as PraktikaSessionRow;
 
-    const insertPayload: {
+  const insertPayload: {
     scope: PraktikaSessionScope;
     app_user_id: string | null;
     label: string;
@@ -238,6 +238,16 @@ export async function savePraktikaCookie({
 export async function markPraktikaRefreshRequested(
   mode: PraktikaSessionMode = { scope: "practice" },
 ) {
+  const current = await getPraktikaSession(mode);
+
+  if (
+    current.status === "refresh_requested" ||
+    current.status === "refreshing" ||
+    current.status === "waiting_for_mfa"
+  ) {
+    return;
+  }
+
   await updatePraktikaSession(mode, {
     status: "refresh_requested",
     message:
@@ -255,11 +265,15 @@ export async function savePraktikaMfaCode({
   mode: PraktikaSessionMode;
   code: string;
 }) {
+  const now = new Date().toISOString();
+
   await updatePraktikaSession(mode, {
     mfa_code: code.replace(/\D/g, "").trim(),
-    mfa_code_updated_at: new Date().toISOString(),
-    status: "waiting_for_mfa",
-    message: "MFA code received. Waiting for local Praktika helper to use it.",
+    mfa_code_updated_at: now,
+    status: "refresh_requested",
+    message:
+      "MFA code received. Waiting for the local Praktika helper to finish signing in.",
+    refresh_requested_at: now,
   });
 }
 

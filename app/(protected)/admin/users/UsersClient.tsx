@@ -24,10 +24,12 @@ type UserRow = {
   full_name?: string | null;
   original_full_name?: string | null;
   is_active: boolean;
+  has_profile: boolean;
   savingName?: boolean;
   savingPhone?: boolean;
   savingStatus?: boolean;
   resendingInvite?: boolean;
+  deleting?: boolean;
 };
 
 type InviteForm = {
@@ -124,6 +126,7 @@ export default function UsersClient() {
 
       const mergedRows: UserRow[] = roleRows.map((row) => {
         const matchedUser = usersById.get(row.user_id);
+        const hasProfile = Boolean(matchedUser);
 
         return {
           user_id: row.user_id,
@@ -134,31 +137,17 @@ export default function UsersClient() {
           full_name: matchedUser?.full_name ?? null,
           original_full_name: matchedUser?.full_name ?? null,
           is_active: matchedUser?.is_active ?? true,
+          has_profile: hasProfile,
           savingName: false,
           savingPhone: false,
           savingStatus: false,
           resendingInvite: false,
+          deleting: false,
         };
       });
 
       setRows(mergedRows);
     } catch (err) {
-      setRows(
-        roleRows.map((row) => ({
-          ...row,
-          email: null,
-          phone: null,
-          original_phone: null,
-          full_name: null,
-          original_full_name: null,
-          is_active: true,
-          savingName: false,
-          savingPhone: false,
-          savingStatus: false,
-          resendingInvite: false,
-        }))
-      );
-
       setTone("error");
       setMessage(
         err instanceof Error ? err.message : "Failed to load user details."
@@ -183,36 +172,20 @@ export default function UsersClient() {
       return;
     }
 
-    if (phone === row?.original_phone) {
-      return;
-    }
+    if (phone === row?.original_phone) return;
 
     setRows((prev) =>
-      prev.map((r) =>
-        r.user_id === userId ? { ...r, savingPhone: true } : r
-      )
+      prev.map((r) => (r.user_id === userId ? { ...r, savingPhone: true } : r))
     );
 
     try {
       const response = await fetch("/api/admin/update-user-phone", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          user_id: userId,
-          phone,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, phone }),
       });
 
-      const rawText = await response.text();
-
-      let result: { error?: string; success?: boolean; phone?: string } = {};
-      try {
-        result = rawText ? JSON.parse(rawText) : {};
-      } catch {
-        throw new Error("Server returned non-JSON response.");
-      }
+      const result = await response.json();
 
       if (!response.ok) {
         throw new Error(result.error || "Failed to update phone number.");
@@ -222,46 +195,25 @@ export default function UsersClient() {
         action: "phone_updated",
         entityType: "profile",
         entityId: userId,
-        metadata: {
-          phone: result.phone ?? phone,
-        },
+        metadata: { phone: result.phone ?? phone },
       });
 
       setTone("success");
-      setMessage("Phone number updated. This user can now use SMS login.");
-
-      setRows((prev) =>
-        prev.map((r) =>
-          r.user_id === userId
-            ? {
-                ...r,
-                phone: result.phone ?? phone,
-                original_phone: result.phone ?? phone,
-                savingPhone: false,
-              }
-            : r
-        )
-      );
-
+      setMessage("Phone number updated.");
       await loadRoles();
     } catch (err) {
-      setRows((prev) =>
-        prev.map((r) =>
-          r.user_id === userId ? { ...r, savingPhone: false } : r
-        )
-      );
-
       setTone("error");
       setMessage(
         err instanceof Error ? err.message : "Failed to update phone number."
       );
+      await loadRoles();
     }
   }
 
   async function updateRole(userId: string, role: Role) {
     const { error } = await supabase
       .from("user_roles")
-      .upsert({ user_id: userId, role });
+      .upsert({ user_id: userId, role }, { onConflict: "user_id" });
 
     if (error) {
       setTone("error");
@@ -291,9 +243,7 @@ export default function UsersClient() {
       return;
     }
 
-    if (row?.full_name === row?.original_full_name) {
-      return;
-    }
+    if (fullName === row?.original_full_name) return;
 
     setRows((prev) =>
       prev.map((r) => (r.user_id === userId ? { ...r, savingName: true } : r))
@@ -302,23 +252,11 @@ export default function UsersClient() {
     try {
       const response = await fetch("/api/admin/update-user-name", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          user_id: userId,
-          full_name: fullName,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, full_name: fullName }),
       });
 
-      const rawText = await response.text();
-
-      let result: { error?: string; success?: boolean } = {};
-      try {
-        result = rawText ? JSON.parse(rawText) : {};
-      } catch {
-        throw new Error("Server returned non-JSON response.");
-      }
+      const result = await response.json();
 
       if (!response.ok) {
         throw new Error(result.error || "Failed to update name.");
@@ -335,44 +273,25 @@ export default function UsersClient() {
       setMessage("Name updated successfully.");
       await loadRoles();
     } catch (err) {
-      setRows((prev) =>
-        prev.map((r) =>
-          r.user_id === userId ? { ...r, savingName: false } : r
-        )
-      );
-
       setTone("error");
       setMessage(err instanceof Error ? err.message : "Failed to update name.");
+      await loadRoles();
     }
   }
 
   async function updateUserStatus(userId: string, isActive: boolean) {
     setRows((prev) =>
-      prev.map((r) =>
-        r.user_id === userId ? { ...r, savingStatus: true } : r
-      )
+      prev.map((r) => (r.user_id === userId ? { ...r, savingStatus: true } : r))
     );
 
     try {
       const response = await fetch("/api/admin/update-user-status", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          user_id: userId,
-          is_active: isActive,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, is_active: isActive }),
       });
 
-      const rawText = await response.text();
-
-      let result: { error?: string; success?: boolean } = {};
-      try {
-        result = rawText ? JSON.parse(rawText) : {};
-      } catch {
-        throw new Error("Server returned non-JSON response.");
-      }
+      const result = await response.json();
 
       if (!response.ok) {
         throw new Error(result.error || "Failed to update user status.");
@@ -386,24 +305,14 @@ export default function UsersClient() {
       });
 
       setTone("success");
-      setMessage(
-        isActive
-          ? "User reactivated successfully."
-          : "User deactivated successfully."
-      );
-
+      setMessage(isActive ? "User reactivated." : "User deactivated.");
       await loadRoles();
     } catch (err) {
-      setRows((prev) =>
-        prev.map((r) =>
-          r.user_id === userId ? { ...r, savingStatus: false } : r
-        )
-      );
-
       setTone("error");
       setMessage(
         err instanceof Error ? err.message : "Failed to update user status."
       );
+      await loadRoles();
     }
   }
 
@@ -417,9 +326,7 @@ export default function UsersClient() {
     }
 
     setRows((prev) =>
-      prev.map((r) =>
-        r.user_id === userId ? { ...r, resendingInvite: true } : r
-      )
+      prev.map((r) => (r.user_id === userId ? { ...r, resendingInvite: true } : r))
     );
 
     try {
@@ -427,9 +334,7 @@ export default function UsersClient() {
 
       const response = await fetch("/api/admin/resend-invite", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           invite_method: inviteMethod,
           email: row.email ?? "",
@@ -439,14 +344,7 @@ export default function UsersClient() {
         }),
       });
 
-      const rawText = await response.text();
-
-      let result: { error?: string; success?: boolean } = {};
-      try {
-        result = rawText ? JSON.parse(rawText) : {};
-      } catch {
-        throw new Error("Server returned non-JSON response.");
-      }
+      const result = await response.json();
 
       if (!response.ok) {
         throw new Error(result.error || "Failed to resend invite.");
@@ -465,20 +363,52 @@ export default function UsersClient() {
       });
 
       setTone("success");
-      setMessage(
-        inviteMethod === "sms"
-          ? "SMS invite sent again."
-          : "Invite email sent again."
-      );
+      setMessage(inviteMethod === "sms" ? "SMS invite sent." : "Invite email sent.");
     } catch (err) {
       setTone("error");
       setMessage(err instanceof Error ? err.message : "Failed to resend invite.");
     } finally {
-      setRows((prev) =>
-        prev.map((r) =>
-          r.user_id === userId ? { ...r, resendingInvite: false } : r
-        )
-      );
+      await loadRoles();
+    }
+  }
+
+  async function deleteUser(userId: string) {
+    const confirmed = window.confirm(
+      "Delete this user from auth, profiles, user_roles, and user_status? This will not delete historical audit logs or patient entries."
+    );
+
+    if (!confirmed) return;
+
+    setRows((prev) =>
+      prev.map((r) => (r.user_id === userId ? { ...r, deleting: true } : r))
+    );
+
+    try {
+      const response = await fetch("/api/admin/delete-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to delete user.");
+      }
+
+      await writeAuditLog({
+        action: "user_deleted",
+        entityType: "user",
+        entityId: userId,
+      });
+
+      setTone("success");
+      setMessage("User deleted.");
+      await loadRoles();
+    } catch (err) {
+      setTone("error");
+      setMessage(err instanceof Error ? err.message : "Failed to delete user.");
+      await loadRoles();
     }
   }
 
@@ -490,6 +420,12 @@ export default function UsersClient() {
     const email = inviteForm.email.trim().toLowerCase();
     const phone = inviteForm.phone.trim();
     const fullName = inviteForm.full_name.trim();
+
+    if (!fullName) {
+      setTone("error");
+      setMessage("Please enter a full name.");
+      return;
+    }
 
     if (inviteMethod === "email" && !email) {
       setTone("error");
@@ -508,9 +444,7 @@ export default function UsersClient() {
     try {
       const response = await fetch("/api/admin/invite-user", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           invite_method: inviteMethod,
           email,
@@ -520,14 +454,7 @@ export default function UsersClient() {
         }),
       });
 
-      const rawText = await response.text();
-
-      let result: { error?: string; success?: boolean } = {};
-      try {
-        result = rawText ? JSON.parse(rawText) : {};
-      } catch {
-        throw new Error("Server returned non-JSON response.");
-      }
+      const result = await response.json();
 
       if (!response.ok) {
         throw new Error(result.error || "Failed to invite user.");
@@ -540,7 +467,7 @@ export default function UsersClient() {
           invite_method: inviteMethod,
           email: email || null,
           phone: phone || null,
-          full_name: fullName || null,
+          full_name: fullName,
           role: inviteForm.role,
         },
       });
@@ -564,7 +491,6 @@ export default function UsersClient() {
 
   const filteredRows = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-
     if (!term) return rows;
 
     return rows.filter((row) => {
@@ -573,13 +499,16 @@ export default function UsersClient() {
       const phone = row.phone?.toLowerCase() ?? "";
       const role = row.role.toLowerCase();
       const status = row.is_active ? "active" : "inactive";
+      const type = row.has_profile ? "profile" : "orphan missing profile";
 
       return (
         name.includes(term) ||
         email.includes(term) ||
         phone.includes(term) ||
         role.includes(term) ||
-        status.includes(term)
+        status.includes(term) ||
+        type.includes(term) ||
+        row.user_id.toLowerCase().includes(term)
       );
     });
   }, [rows, searchTerm]);
@@ -601,14 +530,10 @@ export default function UsersClient() {
         <div className="mt-6 rounded-3xl border bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Invite New User</h2>
           <p className="mt-1 text-sm text-slate-600">
-            Send an email invite or SMS invite and assign a role at the same
-            time.
+            Send an email invite or SMS invite and assign a role.
           </p>
 
-          <form
-            onSubmit={inviteUser}
-            className="mt-4 grid gap-4 md:grid-cols-2"
-          >
+          <form onSubmit={inviteUser} className="mt-4 grid gap-4 md:grid-cols-2">
             <div>
               <label className="mb-1 block text-sm">Invite method</label>
               <select
@@ -630,6 +555,7 @@ export default function UsersClient() {
               <label className="mb-1 block text-sm">Full name</label>
               <input
                 type="text"
+                required
                 className="w-full rounded-2xl border px-3 py-2"
                 placeholder="e.g. Jane Smith"
                 value={inviteForm.full_name}
@@ -651,10 +577,7 @@ export default function UsersClient() {
                   placeholder="e.g. jane@example.com"
                   value={inviteForm.email}
                   onChange={(e) =>
-                    setInviteForm((prev) => ({
-                      ...prev,
-                      email: e.target.value,
-                    }))
+                    setInviteForm((prev) => ({ ...prev, email: e.target.value }))
                   }
                 />
               </div>
@@ -667,10 +590,7 @@ export default function UsersClient() {
                   placeholder="e.g. 0412 345 678"
                   value={inviteForm.phone}
                   onChange={(e) =>
-                    setInviteForm((prev) => ({
-                      ...prev,
-                      phone: e.target.value,
-                    }))
+                    setInviteForm((prev) => ({ ...prev, phone: e.target.value }))
                   }
                 />
               </div>
@@ -718,7 +638,7 @@ export default function UsersClient() {
             <div>
               <h2 className="text-xl font-semibold">Existing Users</h2>
               <p className="mt-1 text-sm text-slate-600">
-                Search by full name, email, phone, role, or status.
+                Orphaned users are role rows without a matching profile.
               </p>
             </div>
 
@@ -727,7 +647,7 @@ export default function UsersClient() {
               <input
                 type="text"
                 className="w-full rounded-2xl border px-3 py-2"
-                placeholder="Search name, email, phone, role, or status"
+                placeholder="Search name, email, phone, role, ID, or orphan"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -739,12 +659,27 @@ export default function UsersClient() {
           ) : (
             <div className="mt-4 space-y-3">
               {filteredRows.map((row) => (
-                <div
-                  key={row.user_id}
-                  className="flex flex-col gap-4 rounded-2xl border p-4"
-                >
+                <div key={row.user_id} className="rounded-2xl border p-4">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div className="min-w-0 flex-1">
+                      <div className="mb-2 flex flex-wrap gap-2">
+                        <span
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
+                            row.is_active
+                              ? "bg-green-100 text-green-700"
+                              : "bg-slate-200 text-slate-700"
+                          }`}
+                        >
+                          {row.is_active ? "Active" : "Inactive"}
+                        </span>
+
+                        {!row.has_profile && (
+                          <span className="inline-flex rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800">
+                            Missing profile / orphan role
+                          </span>
+                        )}
+                      </div>
+
                       <label className="mb-1 block text-xs text-slate-500">
                         Full name
                       </label>
@@ -789,53 +724,31 @@ export default function UsersClient() {
                         onBlur={() => updatePhone(row.user_id)}
                       />
 
-                      <div className="mt-1 text-xs text-slate-500">
-                        {row.savingPhone
-                          ? "Saving phone..."
-                          : "Used for SMS login."}
-                      </div>
-
                       <div className="mt-2 break-all text-xs text-slate-500">
                         User ID: {row.user_id}
                       </div>
                     </div>
-
-                    <div>
-                      <span
-                        className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
-                          row.is_active
-                            ? "bg-green-100 text-green-700"
-                            : "bg-slate-200 text-slate-700"
-                        }`}
-                      >
-                        {row.is_active ? "Active" : "Inactive"}
-                      </span>
-                    </div>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-4">
+                  <div className="mt-4 grid gap-4 md:grid-cols-5">
                     <div>
                       <label className="mb-1 block text-xs text-slate-500">
                         Role
                       </label>
                       <select
-  className="w-full rounded-2xl border px-3 py-2"
-  value={row.role}
-  onChange={(e) =>
-    updateRole(row.user_id, e.target.value as Role)
-  }
->
-  <option value="super_admin">super_admin</option>
-  <option value="admin">admin</option>
-  <option value="practice_manager">
-    practice_manager
-  </option>
-  <option value="billing_staff">billing_staff</option>
-  <option value="provider_readonly">
-    provider_readonly
-  </option>
-  <option value="typist">typist</option>
-</select>
+                        className="w-full rounded-2xl border px-3 py-2"
+                        value={row.role}
+                        onChange={(e) =>
+                          updateRole(row.user_id, e.target.value as Role)
+                        }
+                      >
+                        <option value="super_admin">super_admin</option>
+                        <option value="admin">admin</option>
+                        <option value="practice_manager">practice_manager</option>
+                        <option value="billing_staff">billing_staff</option>
+                        <option value="provider_readonly">provider_readonly</option>
+                        <option value="typist">typist</option>
+                      </select>
                     </div>
 
                     <div className="flex items-end text-sm text-slate-500">
@@ -846,9 +759,7 @@ export default function UsersClient() {
                       <button
                         type="button"
                         disabled={row.savingStatus}
-                        onClick={() =>
-                          updateUserStatus(row.user_id, !row.is_active)
-                        }
+                        onClick={() => updateUserStatus(row.user_id, !row.is_active)}
                         className={`w-full rounded-2xl px-4 py-2 text-white disabled:opacity-50 ${
                           row.is_active
                             ? "bg-red-600 hover:bg-red-700"
@@ -865,17 +776,28 @@ export default function UsersClient() {
 
                     <div className="flex items-end">
                       <button
-  type="button"
-  disabled={row.resendingInvite || (!row.email && !row.phone)}
-  onClick={() => resendInvite(row.user_id)}
-  className="w-full rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
->
-  {row.resendingInvite
-    ? "Sending..."
-    : row.phone
-    ? "Resend SMS Invite"
-    : "Resend Email Invite"}
-</button>
+                        type="button"
+                        disabled={row.resendingInvite || (!row.email && !row.phone)}
+                        onClick={() => resendInvite(row.user_id)}
+                        className="w-full rounded-2xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {row.resendingInvite
+                          ? "Sending..."
+                          : row.phone
+                          ? "Resend SMS Invite"
+                          : "Resend Email Invite"}
+                      </button>
+                    </div>
+
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        disabled={row.deleting}
+                        onClick={() => deleteUser(row.user_id)}
+                        className="w-full rounded-2xl bg-slate-900 px-4 py-2 text-white hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        {row.deleting ? "Deleting..." : "Delete User"}
+                      </button>
                     </div>
                   </div>
                 </div>

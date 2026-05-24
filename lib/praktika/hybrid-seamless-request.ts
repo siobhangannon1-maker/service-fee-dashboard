@@ -85,11 +85,10 @@ export async function waitForPraktikaConnected(
       return session.cookie;
     }
 
-    if (session.status === "waiting_for_mfa") {
-      throw new PraktikaNeedsMfaError(
-        "Praktika needs an MFA code. Enter the code in the Praktika Session panel, then try again.",
-      );
-    }
+   if (session.status === "waiting_for_mfa") {
+  await sleep(intervalMs);
+  continue;
+}
 
     if (session.status === "waiting_for_credentials") {
       throw new PraktikaNeedsCredentialsError(
@@ -107,6 +106,10 @@ export async function waitForPraktikaConnected(
   throw new PraktikaRefreshTimeoutError(
     "Praktika refresh was requested but did not complete in time. Check that the local helper machine is running.",
   );
+  
+  throw new PraktikaRefreshTimeoutError(
+  "Praktika refresh did not complete. If Praktika is asking for MFA, enter the code in the Praktika Session panel and try again.",
+);
 }
 
 export async function withPraktikaAutoRefresh<T>(

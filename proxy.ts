@@ -12,6 +12,7 @@ const protectedPaths = [
   "/material-costs",
   "/benchmarks",
   "/ai-reception",
+  "/communication-excellence",
 ];
 
 const authPaths = ["/login"];
@@ -80,5 +81,6 @@ export const config = {
     "/material-costs/:path*",
     "/benchmarks/:path*",
     "/ai-reception/:path*",
+    "/communication-excellence/:path*",
   ],
 };

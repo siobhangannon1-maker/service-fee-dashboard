@@ -10,12 +10,12 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
-    const scope = url.searchParams.get("scope") || "practice";
+    const scope = url.searchParams.get("scope") || "user";
 
     const mode =
-      scope === "user"
-        ? await getCurrentUserPraktikaSessionMode()
-        : { scope: "practice" as const };
+      scope === "practice"
+        ? { scope: "practice" as const }
+        : await getCurrentUserPraktikaSessionMode();
 
     const session = await getPraktikaSession(mode);
 
