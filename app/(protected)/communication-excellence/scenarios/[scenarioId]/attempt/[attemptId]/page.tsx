@@ -6,6 +6,7 @@ import {
   generatePatientReply,
   scoreScenario,
 } from "@/lib/communication-excellence/scenario-ai";
+import { generateCoachingFeedback } from "@/lib/communication-excellence/coaching-ai";
 
 type PageProps = {
   params: Promise<{
@@ -42,14 +43,10 @@ async function sendScenarioMessage(formData: FormData) {
     .eq("user_id", user.id)
     .single();
 
-  if (attemptError || !attempt) {
-    throw new Error("Attempt not found.");
-  }
+  if (attemptError || !attempt) throw new Error("Attempt not found.");
 
   if (attempt.status === "completed") {
-    redirect(
-      `/communication-excellence/scenarios/${scenarioId}/attempt/${attemptId}`
-    );
+    redirect(`/communication-excellence/scenarios/${scenarioId}/attempt/${attemptId}`);
   }
 
   const { error: insertStaffError } = await supabase
@@ -62,9 +59,7 @@ async function sendScenarioMessage(formData: FormData) {
       message: staffMessage,
     });
 
-  if (insertStaffError) {
-    throw new Error(insertStaffError.message);
-  }
+  if (insertStaffError) throw new Error(insertStaffError.message);
 
   const { data: scenario, error: scenarioError } = await supabase
     .from("communication_scenarios")
@@ -72,9 +67,7 @@ async function sendScenarioMessage(formData: FormData) {
     .eq("id", scenarioId)
     .single();
 
-  if (scenarioError || !scenario) {
-    throw new Error("Scenario not found.");
-  }
+  if (scenarioError || !scenario) throw new Error("Scenario not found.");
 
   const { data: messages, error: messagesError } = await supabase
     .from("communication_scenario_messages")
@@ -82,9 +75,7 @@ async function sendScenarioMessage(formData: FormData) {
     .eq("attempt_id", attemptId)
     .order("created_at", { ascending: true });
 
-  if (messagesError) {
-    throw new Error(messagesError.message);
-  }
+  if (messagesError) throw new Error(messagesError.message);
 
   const safeMessages =
     (messages ?? []).map((row) => ({
@@ -112,13 +103,9 @@ async function sendScenarioMessage(formData: FormData) {
       message: patientReply,
     });
 
-  if (patientReplyError) {
-    throw new Error(patientReplyError.message);
-  }
+  if (patientReplyError) throw new Error(patientReplyError.message);
 
-  revalidatePath(
-    `/communication-excellence/scenarios/${scenarioId}/attempt/${attemptId}`
-  );
+  revalidatePath(`/communication-excellence/scenarios/${scenarioId}/attempt/${attemptId}`);
 }
 
 async function finishScenario(formData: FormData) {
@@ -140,33 +127,23 @@ async function finishScenario(formData: FormData) {
     throw new Error("Scenario and attempt are required.");
   }
 
-  const [scenarioResult, messagesResult, competenciesResult] =
-    await Promise.all([
-      supabase
-        .from("communication_scenarios")
-        .select("*")
-        .eq("id", scenarioId)
-        .single(),
+  const [scenarioResult, messagesResult, competenciesResult] = await Promise.all([
+    supabase.from("communication_scenarios").select("*").eq("id", scenarioId).single(),
 
-      supabase
-        .from("communication_scenario_messages")
-        .select("role, content")
-        .eq("attempt_id", attemptId)
-        .order("created_at", { ascending: true }),
+    supabase
+      .from("communication_scenario_messages")
+      .select("role, content")
+      .eq("attempt_id", attemptId)
+      .order("created_at", { ascending: true }),
 
-      supabase
-        .from("communication_scenario_competencies")
-        .select("competency_id")
-        .eq("scenario_id", scenarioId),
-    ]);
+    supabase
+      .from("communication_scenario_competencies")
+      .select("competency_id")
+      .eq("scenario_id", scenarioId),
+  ]);
 
-  if (scenarioResult.error) {
-    throw new Error(scenarioResult.error.message);
-  }
-
-  if (messagesResult.error) {
-    throw new Error(messagesResult.error.message);
-  }
+  if (scenarioResult.error) throw new Error(scenarioResult.error.message);
+  if (messagesResult.error) throw new Error(messagesResult.error.message);
 
   const scenario = scenarioResult.data;
 
@@ -185,6 +162,18 @@ async function finishScenario(formData: FormData) {
     practiceRules: await getPracticeRules(supabase),
   });
 
+  const coaching = await generateCoachingFeedback({
+    scenarioTitle: scenario.title || "",
+    score: scoring.score,
+    empathyScore: scoring.empathy_score,
+    clarityScore: scoring.clarity_score,
+    professionalismScore: scoring.professionalism_score,
+    escalationScore: scoring.escalation_score,
+    summary: scoring.summary,
+    strengths: scoring.strengths,
+    improvements: scoring.improvements,
+  });
+
   const { error: updateError } = await supabase
     .from("communication_scenario_attempts")
     .update({
@@ -195,33 +184,63 @@ async function finishScenario(formData: FormData) {
     })
     .eq("id", attemptId);
 
-  if (updateError) {
-    throw new Error(updateError.message);
-  }
+  if (updateError) throw new Error(updateError.message);
+
+  await supabase.from("communication_coaching_feedback").insert({
+    user_id: user.id,
+    scenario_attempt_id: attemptId,
+    overall_summary: coaching.overall_summary,
+    strengths: coaching.strengths,
+    improvement_areas: coaching.improvement_areas,
+    recommended_focus: coaching.recommended_focus,
+  });
 
   for (const competency of competenciesResult.data ?? []) {
-    await supabase.from("communication_skill_scores").upsert({
-      user_id: user.id,
-      competency_id: competency.competency_id,
-      score: scoring.score,
-      evidence_count: 1,
-      last_updated_at: new Date().toISOString(),
-    });
-  }
+  await supabase.from("communication_skill_scores").upsert({
+    user_id: user.id,
+    competency_id: competency.competency_id,
+    score: scoring.score,
+    evidence_count: 1,
+    last_updated_at: new Date().toISOString(),
+  });
+
+  await supabase.from("communication_skill_score_history").insert({
+    user_id: user.id,
+    competency_id: competency.competency_id,
+
+    source_type: "scenario",
+    source_id: attemptId,
+
+    score: scoring.score,
+
+    metadata: {
+      scenario_id: scenarioId,
+      scenario_title: scenario.title,
+      empathy_score: scoring.empathy_score,
+      clarity_score: scoring.clarity_score,
+      professionalism_score: scoring.professionalism_score,
+      escalation_score: scoring.escalation_score,
+    },
+  });
+}
 
   if (scoring.score < 80) {
     await supabase.from("communication_microlearning").insert({
       user_id: user.id,
-      competency_id:
-        competenciesResult.data?.[0]?.competency_id ?? null,
+      competency_id: competenciesResult.data?.[0]?.competency_id ?? null,
       title: `Scenario review: ${scenario.title}`,
-      description:
-        "Review the feedback and practise this scenario again.",
+      description: "Review the feedback and practise this scenario again.",
       status: "assigned",
       assigned_reason: `Scenario score ${scoring.score}% was below target.`,
       due_date: getDateDaysFromNow(7),
     });
   }
+
+  await autoAssignMicrolearning({
+    supabase,
+    userId: user.id,
+    coaching,
+  });
 
   await supabase.from("audit_log").insert({
     action: "communication_scenario_completed",
@@ -231,17 +250,18 @@ async function finishScenario(formData: FormData) {
     metadata: {
       scenario_id: scenarioId,
       score: scoring.score,
+      empathy_score: scoring.empathy_score,
+      clarity_score: scoring.clarity_score,
+      professionalism_score: scoring.professionalism_score,
+      escalation_score: scoring.escalation_score,
+      recommended_focus: coaching.recommended_focus,
     },
   });
 
-  revalidatePath(
-    `/communication-excellence/scenarios/${scenarioId}/attempt/${attemptId}`
-  );
+  revalidatePath(`/communication-excellence/scenarios/${scenarioId}/attempt/${attemptId}`);
 }
 
-export default async function ScenarioAttemptPage({
-  params,
-}: PageProps) {
+export default async function ScenarioAttemptPage({ params }: PageProps) {
   const { scenarioId, attemptId } = await params;
 
   const { supabase, user } = await requireRole([
@@ -253,13 +273,9 @@ export default async function ScenarioAttemptPage({
     "provider_readonly",
   ]);
 
-  const [scenarioResult, attemptResult, messagesResult] =
+  const [scenarioResult, attemptResult, messagesResult, coachingResult] =
     await Promise.all([
-      supabase
-        .from("communication_scenarios")
-        .select("*")
-        .eq("id", scenarioId)
-        .single(),
+      supabase.from("communication_scenarios").select("*").eq("id", scenarioId).single(),
 
       supabase
         .from("communication_scenario_attempts")
@@ -273,25 +289,26 @@ export default async function ScenarioAttemptPage({
         .select("*")
         .eq("attempt_id", attemptId)
         .order("created_at", { ascending: true }),
+
+      supabase
+        .from("communication_coaching_feedback")
+        .select("*")
+        .eq("scenario_attempt_id", attemptId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
 
-  if (scenarioResult.error) {
-    throw new Error(scenarioResult.error.message);
-  }
-
-  if (attemptResult.error) {
-    throw new Error(attemptResult.error.message);
-  }
-
-  if (messagesResult.error) {
-    throw new Error(messagesResult.error.message);
-  }
+  if (scenarioResult.error) throw new Error(scenarioResult.error.message);
+  if (attemptResult.error) throw new Error(attemptResult.error.message);
+  if (messagesResult.error) throw new Error(messagesResult.error.message);
 
   const scenario = scenarioResult.data;
   const attempt = attemptResult.data;
   const messages = messagesResult.data ?? [];
   const completed = attempt.status === "completed";
   const feedback = attempt.feedback as any;
+  const coaching = coachingResult.data as any | null;
 
   return (
     <PageLayout
@@ -301,39 +318,22 @@ export default async function ScenarioAttemptPage({
     >
       <section className="grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
         <aside className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-950">
-            Scenario Guide
-          </h2>
+          <h2 className="text-lg font-semibold text-slate-950">Scenario Guide</h2>
 
-          <InfoBlock
-            title="Patient Persona"
-            text={scenario.patient_persona}
-          />
-
-          <InfoBlock
-            title="Ideal Behaviours"
-            text={scenario.ideal_behaviours}
-          />
-
-          <InfoBlock
-            title="Escalation Rules"
-            text={scenario.escalation_rules}
-          />
+          <InfoBlock title="Patient Persona" text={scenario.patient_persona} />
+          <InfoBlock title="Ideal Behaviours" text={scenario.ideal_behaviours} />
+          <InfoBlock title="Escalation Rules" text={scenario.escalation_rules} />
 
           {completed ? (
             <div className="mt-5 rounded-2xl bg-emerald-50 p-5 text-sm text-emerald-900">
               Final score:
-              <span className="ml-2 font-semibold">
-                {attempt.score}%
-              </span>
+              <span className="ml-2 font-semibold">{attempt.score}%</span>
             </div>
           ) : null}
         </aside>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-950">
-            Roleplay Chat
-          </h2>
+          <h2 className="text-lg font-semibold text-slate-950">Roleplay Chat</h2>
 
           <div className="mt-5 space-y-3">
             {messages.map((message: any) => (
@@ -349,7 +349,6 @@ export default async function ScenarioAttemptPage({
                 <div className="mb-1 text-xs font-semibold uppercase tracking-wide opacity-70">
                   {message.role === "staff" ? "You" : "Patient"}
                 </div>
-
                 {message.content}
               </div>
             ))}
@@ -357,21 +356,9 @@ export default async function ScenarioAttemptPage({
 
           {!completed ? (
             <>
-              <form
-                action={sendScenarioMessage}
-                className="mt-6 grid gap-3"
-              >
-                <input
-                  type="hidden"
-                  name="scenario_id"
-                  value={scenarioId}
-                />
-
-                <input
-                  type="hidden"
-                  name="attempt_id"
-                  value={attemptId}
-                />
+              <form action={sendScenarioMessage} className="mt-6 grid gap-3">
+                <input type="hidden" name="scenario_id" value={scenarioId} />
+                <input type="hidden" name="attempt_id" value={attemptId} />
 
                 <textarea
                   name="message"
@@ -387,17 +374,8 @@ export default async function ScenarioAttemptPage({
               </form>
 
               <form action={finishScenario} className="mt-3">
-                <input
-                  type="hidden"
-                  name="scenario_id"
-                  value={scenarioId}
-                />
-
-                <input
-                  type="hidden"
-                  name="attempt_id"
-                  value={attemptId}
-                />
+                <input type="hidden" name="scenario_id" value={scenarioId} />
+                <input type="hidden" name="attempt_id" value={attemptId} />
 
                 <button className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700">
                   Finish & Score Scenario
@@ -405,7 +383,10 @@ export default async function ScenarioAttemptPage({
               </form>
             </>
           ) : (
-            <FeedbackBlock feedback={feedback} />
+            <>
+              <FeedbackBlock feedback={feedback} />
+              <CoachingBlock coaching={coaching} />
+            </>
           )}
         </section>
       </section>
@@ -413,19 +394,10 @@ export default async function ScenarioAttemptPage({
   );
 }
 
-function InfoBlock({
-  title,
-  text,
-}: {
-  title: string;
-  text: string | null;
-}) {
+function InfoBlock({ title, text }: { title: string; text: string | null }) {
   return (
     <div className="mt-4 rounded-2xl bg-slate-50 p-4">
-      <div className="text-sm font-semibold text-slate-950">
-        {title}
-      </div>
-
+      <div className="text-sm font-semibold text-slate-950">{title}</div>
       <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
         {text || "—"}
       </p>
@@ -436,33 +408,18 @@ function InfoBlock({
 function FeedbackBlock({ feedback }: { feedback: any }) {
   return (
     <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-5">
-      <h3 className="font-semibold text-slate-950">
-        Scenario Feedback
-      </h3>
+      <h3 className="font-semibold text-slate-950">Scenario Feedback</h3>
 
       <div className="mt-4 grid gap-4 md:grid-cols-4">
         <ScoreCard title="Empathy" value={feedback?.empathy_score} />
         <ScoreCard title="Clarity" value={feedback?.clarity_score} />
-        <ScoreCard
-          title="Professionalism"
-          value={feedback?.professionalism_score}
-        />
-        <ScoreCard
-          title="Escalation"
-          value={feedback?.escalation_score}
-        />
+        <ScoreCard title="Professionalism" value={feedback?.professionalism_score} />
+        <ScoreCard title="Escalation" value={feedback?.escalation_score} />
       </div>
 
       <div className="mt-5 grid gap-4 md:grid-cols-2">
-        <FeedbackList
-          title="Strengths"
-          items={feedback?.strengths ?? []}
-        />
-
-        <FeedbackList
-          title="Improvements"
-          items={feedback?.improvements ?? []}
-        />
+        <FeedbackList title="Strengths" items={feedback?.strengths ?? []} />
+        <FeedbackList title="Improvements" items={feedback?.improvements ?? []} />
       </div>
 
       {feedback?.summary ? (
@@ -474,19 +431,38 @@ function FeedbackBlock({ feedback }: { feedback: any }) {
   );
 }
 
-function ScoreCard({
-  title,
-  value,
-}: {
-  title: string;
-  value: number | undefined;
-}) {
+function CoachingBlock({ coaching }: { coaching: any | null }) {
+  if (!coaching) return null;
+
+  return (
+    <div className="mt-6 rounded-2xl border border-blue-200 bg-blue-50 p-5">
+      <h3 className="font-semibold text-slate-950">AI Coaching Plan</h3>
+
+      <p className="mt-3 text-sm leading-6 text-slate-700">
+        {coaching.overall_summary}
+      </p>
+
+      <div className="mt-5 grid gap-4 md:grid-cols-3">
+        <CoachingList title="Strengths" items={coaching.strengths ?? []} />
+        <CoachingList
+          title="Improvements"
+          items={coaching.improvement_areas ?? []}
+        />
+        <CoachingList
+          title="Recommended Focus"
+          items={coaching.recommended_focus ?? []}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ScoreCard({ title, value }: { title: string; value: number | undefined }) {
   return (
     <div className="rounded-2xl bg-white p-4 text-center ring-1 ring-slate-200">
       <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
         {title}
       </div>
-
       <div className="mt-2 text-2xl font-semibold text-slate-950">
         {value ?? "—"}%
       </div>
@@ -494,24 +470,33 @@ function ScoreCard({
   );
 }
 
-function FeedbackList({
-  title,
-  items,
-}: {
-  title: string;
-  items: string[];
-}) {
+function FeedbackList({ title, items }: { title: string; items: string[] }) {
   return (
     <div>
-      <div className="text-sm font-semibold text-slate-950">
-        {title}
-      </div>
-
+      <div className="text-sm font-semibold text-slate-950">{title}</div>
       <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
         {items.length === 0 ? (
           <li>No feedback recorded.</li>
         ) : (
           items.map((item) => <li key={item}>{item}</li>)
+        )}
+      </ul>
+    </div>
+  );
+}
+
+function CoachingList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-2xl bg-white/70 p-4 ring-1 ring-blue-100">
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </div>
+
+      <ul className="mt-3 space-y-2 text-sm text-slate-700">
+        {items.length === 0 ? (
+          <li>No items.</li>
+        ) : (
+          items.map((item, index) => <li key={index}>• {item}</li>)
         )}
       </ul>
     </div>
@@ -538,4 +523,60 @@ async function getPracticeRules(supabase: any) {
   }
 
   return data ?? [];
+}
+
+async function autoAssignMicrolearning({
+  supabase,
+  userId,
+  coaching,
+}: {
+  supabase: any;
+  userId: string;
+  coaching: {
+    recommended_focus: string[];
+  };
+}) {
+  const focuses = coaching.recommended_focus ?? [];
+
+  if (focuses.length === 0) return;
+
+  const { data: templates, error } = await supabase
+    .from("communication_microlearning_templates")
+    .select("*")
+    .eq("is_active", true);
+
+  if (error || !templates) {
+    console.error(error);
+    return;
+  }
+
+  for (const focus of focuses) {
+    const focusLower = String(focus).toLowerCase();
+
+    const template = templates.find((item: any) => {
+      const templateFocus = String(item.competency_focus || "").toLowerCase();
+      const title = String(item.title || "").toLowerCase();
+      const description = String(item.description || "").toLowerCase();
+
+      return (
+        templateFocus.includes(focusLower) ||
+        focusLower.includes(templateFocus) ||
+        title.includes(focusLower) ||
+        description.includes(focusLower)
+      );
+    });
+
+    if (!template) continue;
+
+    await supabase.from("communication_microlearning").insert({
+      user_id: userId,
+      title: template.title,
+      description: [template.description, template.content]
+        .filter(Boolean)
+        .join("\n\n"),
+      assigned_reason: `Automatically assigned after scenario coaching feedback: ${focus}`,
+      status: "assigned",
+      due_date: getDateDaysFromNow(7),
+    });
+  }
 }

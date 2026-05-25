@@ -38,6 +38,10 @@ type SessionRow = {
   praktika_username: string | null;
 };
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
 function decryptTemporaryCredential(value: string | null | undefined) {
   if (!value) return "";
   if (!value.startsWith("v1:")) return value;
@@ -98,7 +102,7 @@ async function updateSession(values: Record<string, unknown>) {
     .from("praktika_sessions")
     .update({
       ...values,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso(),
     })
     .eq("id", sessionId);
 
@@ -135,7 +139,7 @@ async function getAndClearMfaCode() {
     .update({
       mfa_code: null,
       mfa_code_updated_at: null,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso(),
     })
     .eq("id", sessionId);
 
@@ -388,8 +392,9 @@ async function saveCookies(context: any, page: any) {
     praktika_username: usernameToDisplay,
     mfa_code: null,
     mfa_code_updated_at: null,
-    refreshed_at: new Date().toISOString(),
-    last_used_at: new Date().toISOString(),
+    refresh_requested_at: null,
+    refreshed_at: nowIso(),
+    last_used_at: nowIso(),
   });
 }
 
@@ -408,13 +413,13 @@ async function keepBrowserOpenForever(context: any, page: any) {
           message:
             "Praktika browser is still open and connected. Cookies refreshed from live browser.",
           current_url: await safePageUrl(page),
-          last_used_at: new Date().toISOString(),
+          refresh_requested_at: null,
+          last_used_at: nowIso(),
         });
       } else {
         await updateSession({
           status: "expired",
-          message:
-            "Praktika helper browser is open but no longer logged in.",
+          message: "Praktika helper browser is open but no longer logged in.",
           current_url: await safePageUrl(page),
         });
       }

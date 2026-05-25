@@ -36,7 +36,7 @@ async function submitQuiz(formData: FormData) {
 
   const { data: module, error: moduleError } = await supabase
     .from("communication_training_modules")
-    .select("passing_score")
+    .select("id, title, passing_score")
     .eq("id", moduleId)
     .single();
 
@@ -81,7 +81,7 @@ async function submitQuiz(formData: FormData) {
   const score = Math.round((correct / total) * 100);
   const passed = score >= Number(module.passing_score || 80);
 
-  const { error: attemptError } = await supabase
+  const { data: attempt, error: attemptError } = await supabase
     .from("communication_training_attempts")
     .insert({
       assignment_id: assignmentId,
@@ -91,9 +91,13 @@ async function submitQuiz(formData: FormData) {
       passed,
       answers,
       feedback: { items: feedback },
-    });
+    })
+    .select("id")
+    .single();
 
-  if (attemptError) throw new Error(attemptError.message);
+  if (attemptError || !attempt) {
+    throw new Error(attemptError?.message || "Could not save quiz attempt.");
+  }
 
   await supabase
     .from("communication_training_assignments")
@@ -116,6 +120,19 @@ async function submitQuiz(formData: FormData) {
         score,
         evidence_count: 1,
         last_updated_at: new Date().toISOString(),
+      });
+
+      await supabase.from("communication_skill_score_history").insert({
+        user_id: user.id,
+        competency_id: row.competency_id,
+        source_type: "quiz",
+        source_id: attempt.id,
+        score,
+        metadata: {
+          module_id: moduleId,
+          module_title: module.title,
+          passed,
+        },
       });
     }
   }

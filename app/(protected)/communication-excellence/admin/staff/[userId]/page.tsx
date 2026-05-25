@@ -63,6 +63,8 @@ type MicrolearningRow = {
   assigned_reason: string | null;
   due_date: string | null;
   completed_at: string | null;
+  reflection_notes: string | null;
+  created_at: string;
 };
 
 type ScenarioAttemptRow = {
@@ -78,6 +80,29 @@ type ScenarioAttemptRow = {
         title: string;
       }[]
     | null;
+};
+
+type CoachingFeedbackRow = {
+  id: string;
+  overall_summary: string;
+  strengths: string[];
+  improvement_areas: string[];
+  recommended_focus: string[];
+  created_at: string;
+};
+
+type CallReviewRow = {
+  id: string;
+  file_name: string | null;
+  overall_score: number;
+  empathy_score: number;
+  clarity_score: number;
+  professionalism_score: number;
+  escalation_score: number;
+  ai_summary: string;
+  strengths: string[];
+  improvements: string[];
+  created_at: string;
 };
 
 export default async function StaffDetailPage({ params }: PageProps) {
@@ -96,6 +121,8 @@ export default async function StaffDetailPage({ params }: PageProps) {
     scoresResult,
     microlearningResult,
     scenarioAttemptsResult,
+    coachingFeedbackResult,
+    callReviewsResult,
   ] = await Promise.all([
     supabase
       .from("profiles")
@@ -160,7 +187,7 @@ export default async function StaffDetailPage({ params }: PageProps) {
     supabase
       .from("communication_microlearning")
       .select(
-        "id, title, description, status, assigned_reason, due_date, completed_at"
+        "id, title, description, status, assigned_reason, due_date, reflection_notes, completed_at, created_at"
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: false }),
@@ -183,17 +210,52 @@ export default async function StaffDetailPage({ params }: PageProps) {
       )
       .eq("user_id", userId)
       .order("started_at", { ascending: false }),
+
+    supabase
+      .from("communication_coaching_feedback")
+      .select(
+        "id, overall_summary, strengths, improvement_areas, recommended_focus, created_at"
+      )
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false }),
+
+    supabase
+      .from("communication_call_reviews")
+      .select(
+        `
+        id,
+        file_name,
+        overall_score,
+        empathy_score,
+        clarity_score,
+        professionalism_score,
+        escalation_score,
+        ai_summary,
+        strengths,
+        improvements,
+        created_at
+        `
+      )
+      .eq("reviewed_user_id", userId)
+      .order("created_at", { ascending: false }),
   ]);
 
   if (profileResult.error) throw new Error(profileResult.error.message);
   if (assignmentsResult.error) throw new Error(assignmentsResult.error.message);
   if (attemptsResult.error) throw new Error(attemptsResult.error.message);
   if (scoresResult.error) throw new Error(scoresResult.error.message);
-  if (microlearningResult.error) {
-    throw new Error(microlearningResult.error.message);
-  }
+  if (microlearningResult.error) throw new Error(microlearningResult.error.message);
+
   if (scenarioAttemptsResult.error) {
     throw new Error(scenarioAttemptsResult.error.message);
+  }
+
+  if (coachingFeedbackResult.error) {
+    throw new Error(coachingFeedbackResult.error.message);
+  }
+
+  if (callReviewsResult.error) {
+    throw new Error(callReviewsResult.error.message);
   }
 
   const profile = profileResult.data as ProfileRow;
@@ -203,6 +265,10 @@ export default async function StaffDetailPage({ params }: PageProps) {
   const microlearning = (microlearningResult.data ?? []) as MicrolearningRow[];
   const scenarioAttempts =
     (scenarioAttemptsResult.data ?? []) as ScenarioAttemptRow[];
+  const coachingFeedback =
+    (coachingFeedbackResult.data ?? []) as CoachingFeedbackRow[];
+  const callReviews =
+    (callReviewsResult.data ?? []) as CallReviewRow[];
 
   const completedAssignments = assignments.filter(
     (assignment) => assignment.status === "completed"
@@ -237,11 +303,21 @@ export default async function StaffDetailPage({ params }: PageProps) {
         )
       : 0;
 
+  const averageCallScore =
+    callReviews.length > 0
+      ? Math.round(
+          callReviews.reduce(
+            (sum, review) => sum + Number(review.overall_score || 0),
+            0
+          ) / callReviews.length
+        )
+      : 0;
+
   return (
     <PageLayout
       eyebrow="Communication Excellence"
       title={profile.full_name || profile.email || "Staff member"}
-      description="Individual training history, quiz attempts, scenario attempts, completion status and competency profile."
+      description="Individual training history, quiz attempts, scenario attempts, AI coaching feedback and competency profile."
     >
       <Link
         href="/communication-excellence/admin/staff"
@@ -268,291 +344,80 @@ export default async function StaffDetailPage({ params }: PageProps) {
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-6">
+      <section className="grid gap-4 md:grid-cols-7">
         <MetricCard title="Assigned" value={String(assignments.length)} />
         <MetricCard title="Completed" value={String(completedAssignments.length)} />
         <MetricCard title="Overdue" value={String(overdueAssignments.length)} />
         <MetricCard title="Avg Quiz" value={`${averageAttemptScore}%`} />
         <MetricCard title="Scenarios" value={String(completedScenarioAttempts.length)} />
         <MetricCard title="Avg Scenario" value={`${averageScenarioScore}%`} />
+        <MetricCard title="Avg Calls" value={`${averageCallScore}%`} />
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        <Panel title="Competency profile">
-          {scores.length === 0 ? (
-            <EmptyState text="No competency scores yet." />
-          ) : (
-            <div className="space-y-3">
-              {scores.map((score) => {
-                const competency = getFirstRelatedRow(
-                  score.communication_competencies
-                );
-
-                return (
-                  <div
-                    key={score.id}
-                    className="rounded-2xl border border-slate-200 p-4"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="font-semibold text-slate-950">
-                          {competency?.name || "Unknown competency"}
-                        </div>
-
-                        <p className="mt-1 text-xs leading-5 text-slate-500">
-                          {competency?.description}
-                        </p>
-
-                        <div className="mt-2 text-xs text-slate-400">
-                          Evidence: {score.evidence_count}
-                        </div>
-                      </div>
-
-                      <div className="text-2xl font-semibold text-slate-950">
-                        {score.score}%
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Panel>
-
-        <Panel title="Training assignments">
-          {assignments.length === 0 ? (
-            <EmptyState text="No assignments yet." />
-          ) : (
-            <div className="space-y-3">
-              {assignments.map((assignment) => {
-                const module = getFirstRelatedRow(
-                  assignment.communication_training_modules
-                );
-
-                return (
-                  <div
-                    key={assignment.id}
-                    className="rounded-2xl border border-slate-200 p-4"
-                  >
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div>
-                        <div className="font-semibold text-slate-950">
-                          {module?.title || "Unknown module"}
-                        </div>
-
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <StatusBadge label={assignment.status} />
-
-                          {assignment.due_date ? (
-                            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                              Due: {assignment.due_date}
-                            </span>
-                          ) : null}
-
-                          {assignment.completed_at ? (
-                            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
-                              Completed: {formatDate(assignment.completed_at)}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div className="text-sm text-slate-500">
-                        Pass: {module?.passing_score ?? "—"}%
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Panel>
-      </section>
-
-      <Panel title="Scenario attempts">
-        {scenarioAttempts.length === 0 ? (
-          <EmptyState text="No scenario attempts yet." />
+      <Panel title="Call reviews">
+        {callReviews.length === 0 ? (
+          <EmptyState text="No call reviews yet." />
         ) : (
-          <div className="space-y-3">
-            {scenarioAttempts.map((attempt) => {
-              const scenario = getFirstRelatedRow(
-                attempt.communication_scenarios
-              );
-
-              return (
-                <div
-                  key={attempt.id}
-                  className="rounded-2xl border border-slate-200 p-4"
-                >
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div>
-                      <div className="font-semibold text-slate-950">
-                        {scenario?.title || "Unknown scenario"}
-                      </div>
-
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <StatusBadge label={attempt.status} />
-
-                        {attempt.completed_at ? (
-                          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                            Completed: {formatDate(attempt.completed_at)}
-                          </span>
-                        ) : null}
-                      </div>
-
-                      {attempt.feedback?.summary ? (
-                        <p className="mt-3 text-sm leading-6 text-slate-500">
-                          {attempt.feedback.summary}
-                        </p>
-                      ) : null}
-                    </div>
-
-                    <div className="text-right">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                        Score
-                      </div>
-                      <div className="mt-1 text-2xl font-semibold text-slate-950">
-                        {attempt.score === null || attempt.score === undefined
-                          ? "—"
-                          : `${attempt.score}%`}
-                      </div>
-                    </div>
-                  </div>
-
-                  {attempt.status === "completed" ? (
-                    <div className="mt-4 grid gap-3 md:grid-cols-4">
-                      <ScoreMini
-                        title="Empathy"
-                        value={attempt.feedback?.empathy_score}
-                      />
-                      <ScoreMini
-                        title="Clarity"
-                        value={attempt.feedback?.clarity_score}
-                      />
-                      <ScoreMini
-                        title="Professionalism"
-                        value={attempt.feedback?.professionalism_score}
-                      />
-                      <ScoreMini
-                        title="Escalation"
-                        value={attempt.feedback?.escalation_score}
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Panel>
-
-      <Panel title="Microlearning">
-        {microlearning.length === 0 ? (
-          <EmptyState text="No microlearning tasks yet." />
-        ) : (
-          <div className="space-y-3">
-            {microlearning.map((item) => (
+          <div className="space-y-4">
+            {callReviews.map((review) => (
               <div
-                key={item.id}
-                className="rounded-2xl border border-slate-200 p-4"
+                key={review.id}
+                className="rounded-2xl border border-slate-200 p-5"
               >
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div>
                     <div className="font-semibold text-slate-950">
-                      {item.title}
+                      {review.file_name || "Manual transcript"}
                     </div>
 
-                    {item.description ? (
-                      <p className="mt-1 text-sm leading-6 text-slate-500">
-                        {item.description}
-                      </p>
-                    ) : null}
+                    <div className="mt-1 text-xs text-slate-400">
+                      {formatDateTime(review.created_at)}
+                    </div>
 
-                    {item.assigned_reason ? (
-                      <p className="mt-2 text-xs leading-5 text-slate-400">
-                        Reason: {item.assigned_reason}
-                      </p>
-                    ) : null}
+                    <p className="mt-3 text-sm leading-6 text-slate-600">
+                      {review.ai_summary}
+                    </p>
                   </div>
 
-                  <div className="flex flex-wrap gap-2">
-                    <StatusBadge label={item.status} />
+                  <div className="text-right">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      Overall
+                    </div>
 
-                    {item.due_date ? (
-                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                        Due: {item.due_date}
-                      </span>
-                    ) : null}
+                    <div className="mt-1 text-2xl font-semibold text-slate-950">
+                      {review.overall_score}%
+                    </div>
                   </div>
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-4">
+                  <ScoreMini title="Empathy" value={review.empathy_score} />
+                  <ScoreMini title="Clarity" value={review.clarity_score} />
+                  <ScoreMini
+                    title="Professionalism"
+                    value={review.professionalism_score}
+                  />
+                  <ScoreMini
+                    title="Escalation"
+                    value={review.escalation_score}
+                  />
+                </div>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <CoachingList
+                    title="Strengths"
+                    items={review.strengths || []}
+                  />
+
+                  <CoachingList
+                    title="Improvements"
+                    items={review.improvements || []}
+                  />
                 </div>
               </div>
             ))}
           </div>
         )}
-      </Panel>
-
-      <Panel title="Quiz attempts">
-        <div className="overflow-x-auto rounded-2xl border border-slate-200">
-          <table className="min-w-full divide-y divide-slate-100 text-sm">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600">
-                  Date
-                </th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600">
-                  Module
-                </th>
-                <th className="px-4 py-3 text-right font-semibold text-slate-600">
-                  Score
-                </th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600">
-                  Result
-                </th>
-              </tr>
-            </thead>
-
-            <tbody className="divide-y divide-slate-100 bg-white">
-              {attempts.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={4}
-                    className="px-4 py-8 text-center text-slate-500"
-                  >
-                    No quiz attempts yet.
-                  </td>
-                </tr>
-              ) : (
-                attempts.map((attempt) => {
-                  const module = getFirstRelatedRow(
-                    attempt.communication_training_modules
-                  );
-
-                  return (
-                    <tr key={attempt.id}>
-                      <td className="whitespace-nowrap px-4 py-3 text-slate-600">
-                        {formatDateTime(attempt.completed_at)}
-                      </td>
-
-                      <td className="px-4 py-3 text-slate-700">
-                        {module?.title || "Unknown"}
-                      </td>
-
-                      <td className="px-4 py-3 text-right font-semibold text-slate-950">
-                        {attempt.score}%
-                      </td>
-
-                      <td className="px-4 py-3">
-                        <StatusBadge
-                          label={attempt.passed ? "passed" : "not passed"}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
       </Panel>
     </PageLayout>
   );
@@ -564,14 +429,6 @@ function getFirstRelatedRow<T>(value: T[] | null | undefined): T | null {
 
 function getTodayIso() {
   return new Date().toISOString().slice(0, 10);
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("en-AU", {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-  }).format(new Date(value));
 }
 
 function formatDateTime(value: string) {
@@ -633,25 +490,27 @@ function ScoreMini({
   );
 }
 
-function StatusBadge({ label }: { label: string }) {
-  const normalized = label.toLowerCase();
-
-  const styles =
-    normalized === "completed" || normalized === "passed"
-      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-      : normalized === "attempted" || normalized === "not passed"
-      ? "bg-amber-50 text-amber-700 ring-amber-200"
-      : "bg-blue-50 text-blue-700 ring-blue-200";
-
+function CoachingList({
+  title,
+  items,
+}: {
+  title: string;
+  items: string[];
+}) {
   return (
-    <span
-      className={[
-        "rounded-full px-3 py-1 text-xs font-semibold capitalize ring-1",
-        styles,
-      ].join(" ")}
-    >
-      {label}
-    </span>
+    <div className="rounded-2xl bg-white/70 p-4 ring-1 ring-blue-100">
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </div>
+
+      <ul className="mt-3 space-y-2 text-sm text-slate-700">
+        {items.length === 0 ? (
+          <li>No items.</li>
+        ) : (
+          items.map((item, index) => <li key={index}>• {item}</li>)
+        )}
+      </ul>
+    </div>
   );
 }
 

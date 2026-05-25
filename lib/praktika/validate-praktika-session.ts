@@ -9,6 +9,8 @@ import {
 const PRAKTIKA_APP_BASE_URL =
   process.env.PRAKTIKA_APP_BASE_URL || "https://praktika.praktika.net.au";
 
+const PRAKTIKA_PRACTICE_ID = process.env.PRAKTIKA_PRACTICE_ID || "1181";
+
 type ValidateResult =
   | {
       connected: true;
@@ -17,7 +19,13 @@ type ValidateResult =
     }
   | {
       connected: false;
-      status: "not_started" | "expired" | "error";
+      status:
+        | "not_started"
+        | "expired"
+        | "error"
+        | "refresh_requested"
+        | "refreshing"
+        | "waiting_for_mfa";
       reason: string;
       message: string;
     };
@@ -66,17 +74,17 @@ export async function validatePraktikaSession(
   const session = await getPraktikaSession(mode);
 
   if (
-  session.status === "waiting_for_mfa" ||
-  session.status === "refresh_requested" ||
-  session.status === "refreshing"
-) {
-  return {
-    connected: false,
-    status: session.status as any,
-    reason: session.status,
-    message: session.message || "Praktika reconnect is in progress.",
-  };
-}
+    session.status === "waiting_for_mfa" ||
+    session.status === "refresh_requested" ||
+    session.status === "refreshing"
+  ) {
+    return {
+      connected: false,
+      status: session.status,
+      reason: session.status,
+      message: session.message || "Praktika reconnect is in progress.",
+    };
+  }
 
   if (!session.cookie) {
     await updatePraktikaSession(mode, {
@@ -96,6 +104,15 @@ export async function validatePraktikaSession(
   }
 
   try {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const body = new URLSearchParams();
+    body.append("sReportName", "appointments");
+    body.append("bByCreationTime", "false");
+    body.append("iPracticeIds[]", PRAKTIKA_PRACTICE_ID);
+    body.append("sFromDate", today);
+    body.append("sToDate", today);
+
     const response = await fetch(
       `${PRAKTIKA_APP_BASE_URL}/php/json/db_reportingDataWarehouse.php`,
       {
@@ -105,14 +122,12 @@ export async function validatePraktikaSession(
           "Content-Type": "application/x-www-form-urlencoded",
           Cookie: session.cookie,
           Origin: PRAKTIKA_APP_BASE_URL,
-          Referer: `${PRAKTIKA_APP_BASE_URL}/`,
+          Referer: `${PRAKTIKA_APP_BASE_URL}/v2/reports/appointments`,
           "X-Requested-With": "XMLHttpRequest",
           "User-Agent":
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
         },
-        body: new URLSearchParams({
-          validateOnly: "1",
-        }).toString(),
+        body: body.toString(),
         cache: "no-store",
       },
     );
@@ -140,14 +155,16 @@ export async function validatePraktikaSession(
     } catch {
       await updatePraktikaSession(mode, {
         status: "expired",
-        message: "Praktika returned non-JSON during validation.",
+        message:
+          "Praktika validation returned non-JSON. The saved cookie may be stale.",
       });
 
       return {
         connected: false,
         status: "expired",
         reason: "non_json",
-        message: "Praktika returned non-JSON during validation.",
+        message:
+          "Praktika validation returned non-JSON. The saved cookie may be stale.",
       };
     }
 
@@ -167,6 +184,20 @@ export async function validatePraktikaSession(
         status: "expired",
         reason: "expired",
         message,
+      };
+    }
+
+    if (!Array.isArray(data)) {
+      await updatePraktikaSession(mode, {
+        status: "error",
+        message: "Praktika validation returned unexpected data.",
+      });
+
+      return {
+        connected: false,
+        status: "error",
+        reason: "unexpected_response",
+        message: "Praktika validation returned unexpected data.",
       };
     }
 

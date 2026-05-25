@@ -7,17 +7,6 @@ import PraktikaSessionPanel from "@/components/PraktikaSessionPanel"
 import OpenAIDictationBox from "@/components/report-writing/OpenAIDictationBox"
 import SmartDictateBox from "@/components/report-writing/SmartDictateBox"
 
-// Drop-in replacement for:
-// app/report-writing/provider/ProviderReportClient.tsx
-//
-// Adds:
-// - cleaner provider approval inbox
-// - clear status/action cards
-// - original AI vs current edited comparison
-// - provider approval learning saved through /api/report-writing/update-draft
-// - safer API JSON handling
-// - better empty states and counters
-
 type ReportTypeOption = {
   value: string
   label: string
@@ -55,6 +44,8 @@ type PraktikaCandidate = {
   matchReason: string
 }
 
+type PatientGender = "male" | "female" | "neutral"
+
 type PatientAndReferrerFieldsProps = {
   patientFirstName: string
   setPatientFirstName: (value: string) => void
@@ -62,6 +53,8 @@ type PatientAndReferrerFieldsProps = {
   setPatientLastName: (value: string) => void
   patientDob: string
   setPatientDob: (value: string) => void
+  patientGender: PatientGender
+  setPatientGender: (value: PatientGender) => void
   reportType: string
   setReportType: (value: string) => void
   reportTypes: ReportTypeOption[]
@@ -86,6 +79,8 @@ function PatientAndReferrerFields({
   setPatientLastName,
   patientDob,
   setPatientDob,
+  patientGender,
+  setPatientGender,
   reportType,
   setReportType,
   reportTypes,
@@ -137,6 +132,16 @@ function PatientAndReferrerFields({
           onChange={(e) => setPatientDob(e.target.value)}
         />
       </div>
+
+      <select
+        className="rounded-xl border border-slate-300 p-3"
+        value={patientGender}
+        onChange={(e) => setPatientGender(e.target.value as PatientGender)}
+      >
+        <option value="neutral">Gender/pronouns: Neutral</option>
+        <option value="female">Gender/pronouns: Female</option>
+        <option value="male">Gender/pronouns: Male</option>
+      </select>
 
       <select
         className="rounded-xl border border-slate-300 p-3"
@@ -234,8 +239,7 @@ function PatientAndReferrerFields({
                       {candidate.firstName} {candidate.lastName}
                     </div>
                     <div className="text-sm text-slate-600">
-                      DOB: {candidate.dob || "Not shown"} | Praktika ID:{" "}
-                      {candidate.id}
+                      DOB: {candidate.dob || "Not shown"} | Praktika ID: {candidate.id}
                     </div>
                     <div className="mt-1 text-xs text-slate-500">
                       {candidate.matchReason}
@@ -313,6 +317,7 @@ export default function ProviderReportClient({
   const [patientFirstName, setPatientFirstName] = useState("")
   const [patientLastName, setPatientLastName] = useState("")
   const [patientDob, setPatientDob] = useState("")
+  const [patientGender, setPatientGender] = useState<PatientGender>("neutral")
   const [referrerName, setReferrerName] = useState("")
   const [referrerAddress, setReferrerAddress] = useState("")
   const [reportType, setReportType] = useState("consultation_report")
@@ -320,19 +325,14 @@ export default function ProviderReportClient({
   const [generatedReport, setGeneratedReport] = useState("")
   const [originalGeneratedReport, setOriginalGeneratedReport] = useState("")
   const [dictatedLetter, setDictatedLetter] = useState("")
-  const [selectedPraktikaPatientId, setSelectedPraktikaPatientId] =
-    useState("")
-  const [praktikaCandidates, setPraktikaCandidates] = useState<
-    PraktikaCandidate[]
-  >([])
+  const [selectedPraktikaPatientId, setSelectedPraktikaPatientId] = useState("")
+  const [praktikaCandidates, setPraktikaCandidates] = useState<PraktikaCandidate[]>([])
   const [matchingPatient, setMatchingPatient] = useState(false)
 
   const [approvalDrafts, setApprovalDrafts] = useState<Draft[]>([])
   const [approvedDrafts, setApprovedDrafts] = useState<Draft[]>([])
-  const [selectedApprovalDraft, setSelectedApprovalDraft] =
-    useState<Draft | null>(null)
-  const [selectedApprovedDraft, setSelectedApprovedDraft] =
-    useState<Draft | null>(null)
+  const [selectedApprovalDraft, setSelectedApprovalDraft] = useState<Draft | null>(null)
+  const [selectedApprovedDraft, setSelectedApprovedDraft] = useState<Draft | null>(null)
 
   const [loading, setLoading] = useState(false)
   const [savedMessage, setSavedMessage] = useState("")
@@ -396,9 +396,7 @@ export default function ProviderReportClient({
       const drafts: Draft[] = data.drafts || []
 
       setApprovalDrafts(
-        drafts.filter(
-          (draft: Draft) => draft.status === "awaiting_provider_approval"
-        )
+        drafts.filter((draft: Draft) => draft.status === "awaiting_provider_approval")
       )
 
       setApprovedDrafts(
@@ -499,6 +497,7 @@ export default function ProviderReportClient({
           patientName,
           patientFirstName,
           patientDob,
+          patientGender,
           referrerName,
           referrerAddress,
           reportType,
@@ -507,6 +506,9 @@ export default function ProviderReportClient({
       })
 
       const data = await readJsonSafely(response)
+
+      console.log("Provider generation debug:", data.debug)
+      console.log("Provider clinical scenario:", data.clinicalScenario)
 
       if (!data.success) {
         alert(data.error || "Failed to generate report")
@@ -674,11 +676,7 @@ export default function ProviderReportClient({
         return
       }
 
-      alert(
-        hasEditedAiText
-          ? "Letter approved and learning saved."
-          : "Letter approved."
-      )
+      alert(hasEditedAiText ? "Letter approved and learning saved." : "Letter approved.")
 
       setSelectedApprovalDraft(null)
       setActiveTab("approved")
@@ -727,9 +725,7 @@ export default function ProviderReportClient({
     if (!draft) return
 
     const confirmed = confirm(
-      `Delete this temporary report for ${
-        draft.patient_name || "this patient"
-      }? This cannot be undone.`
+      `Delete this temporary report for ${draft.patient_name || "this patient"}? This cannot be undone.`
     )
 
     if (!confirmed) return
@@ -779,6 +775,8 @@ export default function ProviderReportClient({
       setPatientLastName={setPatientLastName}
       patientDob={patientDob}
       setPatientDob={setPatientDob}
+      patientGender={patientGender}
+      setPatientGender={setPatientGender}
       reportType={reportType}
       setReportType={setReportType}
       reportTypes={reportTypes}
@@ -797,77 +795,73 @@ export default function ProviderReportClient({
 
   return (
     <div className="space-y-6">
-      <PraktikaSessionPanel />
+      <PraktikaSessionPanel scope="user" title="My Praktika Session" />
 
       <div className="flex justify-end">
         <SyncReferrersButton />
       </div>
 
-<div className="space-y-4">
-  <div className="rounded-2xl border bg-white p-4 shadow-sm">
-    <h2 className="mb-3 text-lg font-bold text-slate-900">
-      Create a Letter
-    </h2>
+      <div className="space-y-4">
+        <div className="rounded-2xl border bg-white p-4 shadow-sm">
+          <h2 className="mb-3 text-lg font-bold text-slate-900">Create a Letter</h2>
 
-    <div className="grid gap-3 md:grid-cols-3">
-      {[
-        ["dictate", "Dictate"],
-        ["smart", "Smart Dictate"],
-        ["notes", "Generate Letter From Notes"],
-      ].map(([key, label]) => (
-        <button
-          key={key}
-          onClick={() => {
-            setActiveTab(key as ActiveTab)
-            loadReportTypes()
-          }}
-          className={[
-            "rounded-2xl px-5 py-4 text-sm font-semibold shadow-sm",
-            activeTab === key
-              ? "bg-slate-950 text-white"
-              : "border bg-white text-slate-700 hover:bg-slate-50",
-          ].join(" ")}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {[
+              ["dictate", "Dictate"],
+              ["smart", "Smart Dictate"],
+              ["notes", "Generate Letter From Notes"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => {
+                  setActiveTab(key as ActiveTab)
+                  loadReportTypes()
+                }}
+                className={[
+                  "rounded-2xl px-5 py-4 text-sm font-semibold shadow-sm",
+                  activeTab === key
+                    ? "bg-slate-950 text-white"
+                    : "border bg-white text-slate-700 hover:bg-slate-50",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
 
-  <div className="rounded-2xl border bg-slate-50 p-4 shadow-sm">
-    <div className="mb-3">
-      <h2 className="text-lg font-bold text-slate-900">
-        Review Centre
-      </h2>
-      <p className="text-sm text-slate-500">
-        Review letters awaiting approval or view recently approved letters.
-      </p>
-    </div>
+        <div className="rounded-2xl border bg-slate-50 p-4 shadow-sm">
+          <div className="mb-3">
+            <h2 className="text-lg font-bold text-slate-900">Review Centre</h2>
+            <p className="text-sm text-slate-500">
+              Review letters awaiting approval or view recently approved letters.
+            </p>
+          </div>
 
-    <div className="grid gap-3 md:grid-cols-2">
-      {[
-        ["approval", `Approval Inbox (${approvalDrafts.length})`],
-        ["approved", `Approved Letters (${approvedDrafts.length})`],
-      ].map(([key, label]) => (
-        <button
-          key={key}
-          onClick={() => {
-            setActiveTab(key as ActiveTab)
-            loadDrafts()
-          }}
-          className={[
-            "rounded-2xl px-5 py-4 text-sm font-semibold shadow-sm",
-            activeTab === key
-              ? "bg-blue-600 text-white"
-              : "border bg-white text-slate-700 hover:bg-slate-50",
-          ].join(" ")}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  </div>
-</div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {[
+              ["approval", `Approval Inbox (${approvalDrafts.length})`],
+              ["approved", `Approved Letters (${approvedDrafts.length})`],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => {
+                  setActiveTab(key as ActiveTab)
+                  loadDrafts()
+                }}
+                className={[
+                  "rounded-2xl px-5 py-4 text-sm font-semibold shadow-sm",
+                  activeTab === key
+                    ? "bg-blue-600 text-white"
+                    : "border bg-white text-slate-700 hover:bg-slate-50",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
 
       {savedMessage ? (
         <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
@@ -876,60 +870,58 @@ export default function ProviderReportClient({
       ) : null}
 
       {activeTab === "smart" ? (
-  <div className="space-y-6">
-    {sharedPatientFields}
+        <div className="space-y-6">
+          {sharedPatientFields}
 
-    <div className="space-y-6 rounded-2xl border bg-white p-5">
-      <SmartDictateBox
-        providerId={providerId}
-        patientFirstName={patientFirstName}
-        patientLastName={patientLastName}
-        patientDob={patientDob}
-        disabled={
-          !patientFirstName.trim() || !patientLastName.trim()
-        }
-        reportTypes={reportTypes}
-        selectedReportType={reportType}
-        onReportTypeChange={setReportType}
-        onResult={(result) => {
-          setClinicalNotes(result.clinicalNotes || "")
-          setGeneratedReport(result.report || "")
-          setOriginalGeneratedReport(result.report || "")
-          setSavedMessage("")
-        }}
-      />
+          <div className="space-y-6 rounded-2xl border bg-white p-5">
+            <SmartDictateBox
+              providerId={providerId}
+              patientFirstName={patientFirstName}
+              patientLastName={patientLastName}
+              patientDob={patientDob}
+              disabled={!patientFirstName.trim() || !patientLastName.trim()}
+              reportTypes={reportTypes}
+              selectedReportType={reportType}
+              onReportTypeChange={setReportType}
+              onResult={(result) => {
+                setClinicalNotes(result.clinicalNotes || "")
+                setGeneratedReport(result.report || "")
+                setOriginalGeneratedReport(result.report || "")
+                setSavedMessage("")
+              }}
+            />
 
-      <textarea
-        className="h-96 w-full rounded-xl border border-slate-300 p-4"
-        placeholder="Smart Dictate generated report..."
-        value={generatedReport}
-        onChange={(e) => setGeneratedReport(e.target.value)}
-      />
+            <textarea
+              className="h-96 w-full rounded-xl border border-slate-300 p-4"
+              placeholder="Smart Dictate generated report..."
+              value={generatedReport}
+              onChange={(e) => setGeneratedReport(e.target.value)}
+            />
 
-      <button
-        onClick={saveNotesDraft}
-        disabled={loading}
-        className="rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
-      >
-        Save Smart Dictate Report As Approved Draft
-      </button>
-    </div>
-  </div>
-) : null}
+            <button
+              onClick={saveNotesDraft}
+              disabled={loading}
+              className="rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
+            >
+              Save Smart Dictate Report As Approved Draft
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {activeTab === "dictate" ? (
         <div className="space-y-6 rounded-2xl border bg-white p-5">
           {sharedPatientFields}
 
           <OpenAIDictationBox
-  providerId={providerId}
-  patientFirstName={patientFirstName}
-  patientLastName={patientLastName}
-  disabled={!patientFirstName.trim() || !patientLastName.trim()}
-  onFinished={(text) => {
-    setDictatedLetter(text)
-  }}
-/>
+            providerId={providerId}
+            patientFirstName={patientFirstName}
+            patientLastName={patientLastName}
+            disabled={!patientFirstName.trim() || !patientLastName.trim()}
+            onFinished={(text) => {
+              setDictatedLetter(text)
+            }}
+          />
 
           <textarea
             className="h-96 w-full rounded-xl border border-slate-300 p-4"
@@ -991,9 +983,7 @@ export default function ProviderReportClient({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h2 className="text-xl font-bold">Approval Inbox</h2>
-                  <p className="text-sm text-slate-500">
-                    Letters awaiting provider review.
-                  </p>
+                  <p className="text-sm text-slate-500">Letters awaiting provider review.</p>
                 </div>
                 <button
                   onClick={loadDrafts}
@@ -1031,12 +1021,8 @@ export default function ProviderReportClient({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="font-semibold">
-                      {draft.patient_name || "Unnamed patient"}
-                    </div>
-                    <div className="mt-1 text-sm text-slate-500">
-                      {draft.report_type}
-                    </div>
+                    <div className="font-semibold">{draft.patient_name || "Unnamed patient"}</div>
+                    <div className="mt-1 text-sm text-slate-500">{draft.report_type}</div>
                     <div className="mt-1 text-xs text-slate-400">
                       Created: {formatDateTime(draft.created_at)}
                     </div>
@@ -1089,21 +1075,6 @@ export default function ProviderReportClient({
                         ? "Learning will be saved"
                         : "No edit-learning change"}
                     </span>
-                  </div>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div className="rounded-xl border bg-slate-50 p-3 text-sm">
-                    <div className="font-semibold text-slate-900">Step 1</div>
-                    <div className="mt-1 text-slate-600">Review and edit the letter.</div>
-                  </div>
-                  <div className="rounded-xl border bg-slate-50 p-3 text-sm">
-                    <div className="font-semibold text-slate-900">Step 2</div>
-                    <div className="mt-1 text-slate-600">Approve or return to typist.</div>
-                  </div>
-                  <div className="rounded-xl border bg-slate-50 p-3 text-sm">
-                    <div className="font-semibold text-slate-900">Step 3</div>
-                    <div className="mt-1 text-slate-600">Approved edits improve future drafts.</div>
                   </div>
                 </div>
 
@@ -1228,9 +1199,7 @@ export default function ProviderReportClient({
                     : "border-slate-200",
                 ].join(" ")}
               >
-                <div className="font-semibold">
-                  {draft.patient_name || "Unnamed patient"}
-                </div>
+                <div className="font-semibold">{draft.patient_name || "Unnamed patient"}</div>
                 <div className="mt-1 text-sm text-green-600">Approved</div>
                 <div className="mt-1 text-xs text-slate-400">
                   {formatDateTime(draft.provider_approved_at || draft.created_at)}

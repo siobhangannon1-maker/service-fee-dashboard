@@ -36,6 +36,9 @@ export type ScenarioScoreResult = {
   escalation_score: number;
   strengths: string[];
   improvements: string[];
+  recommended_actions: string[];
+  coaching_summary: string;
+  priority: "low" | "medium" | "high";
   summary: string;
 };
 
@@ -143,6 +146,9 @@ Return ONLY valid JSON with this exact shape:
   "escalation_score": number,
   "strengths": string[],
   "improvements": string[],
+  "recommended_actions": string[],
+  "coaching_summary": string,
+  "priority": "low" | "medium" | "high",
   "summary": string
 }
 
@@ -169,7 +175,7 @@ ${formatPracticeRules(params.practiceRules ?? [])}
             content: JSON.stringify(params.messages, null, 2),
           },
         ],
-        max_output_tokens: 700,
+        max_output_tokens: 900,
       }),
     });
 
@@ -230,8 +236,22 @@ function normalizeScore(value: any): ScenarioScoreResult {
     improvements: Array.isArray(value.improvements)
       ? value.improvements.map(String)
       : [],
+    recommended_actions: Array.isArray(value.recommended_actions)
+      ? value.recommended_actions.map(String)
+      : [],
+    coaching_summary: String(value.coaching_summary || value.summary || ""),
+    priority: normalizePriority(value.priority, value.score),
     summary: String(value.summary || "Scenario completed."),
   };
+}
+
+function normalizePriority(value: any, score: any): "low" | "medium" | "high" {
+  if (value === "low" || value === "medium" || value === "high") return value;
+
+  const numericScore = Number(score);
+  if (!Number.isNaN(numericScore) && numericScore < 65) return "high";
+  if (!Number.isNaN(numericScore) && numericScore < 80) return "medium";
+  return "low";
 }
 
 function clampScore(value: any) {
@@ -286,12 +306,14 @@ function scoreScenarioFallback(messages: ScenarioMessage[]): ScenarioScoreResult
   let score = 50;
   const strengths: string[] = [];
   const improvements: string[] = [];
+  const recommended_actions: string[] = [];
 
   if (joined.includes("understand") || joined.includes("appreciate")) {
     score += 10;
     strengths.push("Acknowledged the patient's concern.");
   } else {
     improvements.push("Use clearer empathy statements.");
+    recommended_actions.push("Practise opening with acknowledgement before explaining solutions.");
   }
 
   if (joined.includes("next step") || joined.includes("help")) {
@@ -299,6 +321,7 @@ function scoreScenarioFallback(messages: ScenarioMessage[]): ScenarioScoreResult
     strengths.push("Provided clear next steps.");
   } else {
     improvements.push("Explain the next step more clearly.");
+    recommended_actions.push("Use one clear next-step sentence at the end of the conversation.");
   }
 
   if (
@@ -310,6 +333,7 @@ function scoreScenarioFallback(messages: ScenarioMessage[]): ScenarioScoreResult
     strengths.push("Recognised when clinician input may be appropriate.");
   } else {
     improvements.push("Escalate clinical uncertainty rather than guessing.");
+    recommended_actions.push("Practise phrases for escalating clinical questions safely.");
   }
 
   if (staffMessages.length >= 3) {
@@ -317,6 +341,7 @@ function scoreScenarioFallback(messages: ScenarioMessage[]): ScenarioScoreResult
     strengths.push("Sustained the conversation over multiple turns.");
   } else {
     improvements.push("Continue the scenario for longer before finishing.");
+    recommended_actions.push("Ask at least one follow-up question before closing.");
   }
 
   score = clampScore(score);
@@ -329,6 +354,12 @@ function scoreScenarioFallback(messages: ScenarioMessage[]): ScenarioScoreResult
     escalation_score: score,
     strengths,
     improvements,
+    recommended_actions,
+    coaching_summary:
+      score >= 80
+        ? "Strong communication performance. Continue practising natural, patient-centred wording."
+        : "This scenario shows opportunities for targeted coaching and repeat practice.",
+    priority: score < 65 ? "high" : score < 80 ? "medium" : "low",
     summary:
       score >= 80
         ? "Strong scenario performance."

@@ -142,6 +142,66 @@ const navGroups: NavGroup[] = [
   label: "Practice Rules",
   description: "Manage approved wording and practice-specific guidance",
 },
+{
+  href: "/communication-excellence/coaching",
+  label: "Coaching",
+  description: "Review personalised coaching feedback",
+},
+{
+  href: "/communication-excellence/admin/microlearning-templates",
+  label: "Microlearning Templates",
+  description: "Manage automatic remediation templates",
+},
+{
+  href: "/communication-excellence/admin/intelligence",
+  label: "Intelligence",
+  description: "Practice-wide communication insights",
+},
+{
+  href: "/communication-excellence/admin/trends",
+  label: "Competency Trends",
+  description: "Historical competency scoring",
+},
+{
+  href: "/communication-excellence/admin/manager-summary",
+  label: "Manager Summaries",
+  description: "Generate AI practice communication summaries",
+},
+{
+  href: "/communication-excellence/call-reviews",
+  label: "Call Reviews",
+  description: "AI voice communication QA",
+},
+{
+  href: "/communication-excellence/admin/integrations/maxotel",
+  label: "MaxoTel",
+  description: "Manage call review integration settings",
+},
+{
+  href: "/communication-excellence/admin/integrations/maxotel/locations",
+  label: "MaxoTel Locations",
+  description: "Map MaxoTel phones to practice locations",
+},
+{
+  href: "/communication-excellence/admin/integrations/maxotel/sync",
+  label: "MaxoTel Sync",
+  description: "Test and monitor call sync runs",
+},
+{
+  href: "/communication-excellence/admin/call-queue",
+  label: "Call Queue",
+  description: "Manage call review follow-up",
+},
+{
+  href: "/communication-excellence/admin/call-rubric",
+  label: "Call Rubric",
+  description: "Manage AI call scoring standards",
+},
+{
+  href: "/communication-excellence/admin/scenario-library",
+  label: "Scenario Library",
+  description: "Create and edit AI roleplay scenarios",
+},
   ],
 },
   {

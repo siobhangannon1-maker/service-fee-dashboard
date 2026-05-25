@@ -1,38 +1,38 @@
-import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-import { Resend } from "resend"
-import fs from "fs/promises"
-import os from "os"
-import path from "path"
-import { execFile } from "child_process"
-import { promisify } from "util"
-import { formatDobPassword } from "@/lib/report-writing/pdf-password"
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { Resend } from "resend";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { formatDobPassword } from "@/lib/report-writing/pdf-password";
 import {
   createReportAuditEvent,
   getAuditActor,
-} from "@/lib/report-writing/audit"
-import { generatePeriodontalChartPdf } from "@/lib/praktika/periodontal-chart"
+} from "@/lib/report-writing/audit";
+import { generatePeriodontalChartPdf } from "@/lib/praktika/periodontal-chart";
 
-export const runtime = "nodejs"
+export const runtime = "nodejs";
 
-const execFileAsync = promisify(execFile)
-const resend = new Resend(process.env.RESEND_API_KEY)
+const execFileAsync = promisify(execFile);
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
 
 type EmailAttachment = {
-  filename: string
-  content: string
-}
+  filename: string;
+  content: string;
+};
 
 function safeFileName(name: string | null | undefined) {
   return String(name || "Patient")
     .trim()
     .replace(/[^a-z0-9]+/gi, "_")
-    .replace(/^_+|_+$/g, "")
+    .replace(/^_+|_+$/g, "");
 }
 
 function escapeHtml(value: string) {
@@ -41,15 +41,30 @@ function escapeHtml(value: string) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;")
+    .replaceAll("'", "&#039;");
+}
+
+function normaliseEmailList(value: unknown) {
+  const rawValues = Array.isArray(value) ? value : [value];
+
+  return rawValues
+    .flatMap((item) => String(item || "").split(/[;,]/))
+    .map((email) => email.trim())
+    .filter(Boolean);
+}
+
+function findInvalidEmail(emails: string[]) {
+  return (
+    emails.find((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) || null
+  );
 }
 
 async function encryptPdf(inputBuffer: Buffer, password: string) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "secure-report-"))
-  const inputPath = path.join(tempDir, "input.pdf")
-  const outputPath = path.join(tempDir, "output.pdf")
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "secure-report-"));
+  const inputPath = path.join(tempDir, "input.pdf");
+  const outputPath = path.join(tempDir, "output.pdf");
 
-  await fs.writeFile(inputPath, inputBuffer)
+  await fs.writeFile(inputPath, inputBuffer);
 
   await execFileAsync("qpdf", [
     "--encrypt",
@@ -59,19 +74,19 @@ async function encryptPdf(inputBuffer: Buffer, password: string) {
     "--",
     inputPath,
     outputPath,
-  ])
+  ]);
 
-  const encryptedBuffer = await fs.readFile(outputPath)
-  await fs.rm(tempDir, { recursive: true, force: true })
+  const encryptedBuffer = await fs.readFile(outputPath);
+  await fs.rm(tempDir, { recursive: true, force: true });
 
-  return encryptedBuffer
+  return encryptedBuffer;
 }
 
 function buildProfessionalSignatureHtml() {
-  const logoUrl = process.env.EMAIL_SIGNATURE_LOGO_URL || ""
-  const afterpayUrl = process.env.EMAIL_SIGNATURE_AFTERPAY_URL || ""
-  const zipUrl = process.env.EMAIL_SIGNATURE_ZIP_URL || ""
-  const hummUrl = process.env.EMAIL_SIGNATURE_HUMM_URL || ""
+  const logoUrl = process.env.EMAIL_SIGNATURE_LOGO_URL || "";
+  const afterpayUrl = process.env.EMAIL_SIGNATURE_AFTERPAY_URL || "";
+  const zipUrl = process.env.EMAIL_SIGNATURE_ZIP_URL || "";
+  const hummUrl = process.env.EMAIL_SIGNATURE_HUMM_URL || "";
 
   return `
     <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:28px;font-family:Arial,sans-serif;">
@@ -139,7 +154,7 @@ function buildProfessionalSignatureHtml() {
         </td>
       </tr>
     </table>
-  `
+  `;
 }
 
 function buildDisclaimerHtml() {
@@ -155,7 +170,7 @@ function buildDisclaimerHtml() {
       <br><br>
       Any views expressed in this email are those of the author unless otherwise stated.
     </div>
-  `
+  `;
 }
 
 async function getAppointmentDateForDraft(draftId: string) {
@@ -165,16 +180,18 @@ async function getAppointmentDateForDraft(draftId: string) {
     .eq("report_draft_id", draftId)
     .order("appointment_time", { ascending: false })
     .limit(1)
-    .maybeSingle()
+    .maybeSingle();
 
-  return data?.appointment_time ? String(data.appointment_time).slice(0, 10) : null
+  return data?.appointment_time
+    ? String(data.appointment_time).slice(0, 10)
+    : null;
 }
 
 async function updatePerioStatus(params: {
-  draftId: string
-  attachedAt?: string | null
-  attachmentName?: string | null
-  error?: string | null
+  draftId: string;
+  attachedAt?: string | null;
+  attachmentName?: string | null;
+  error?: string | null;
 }) {
   await supabase
     .from("report_drafts")
@@ -184,52 +201,90 @@ async function updatePerioStatus(params: {
       periodontal_chart_attachment_error: params.error || null,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", params.draftId)
+    .eq("id", params.draftId);
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json()
-    const actor = await getAuditActor()
+    const body = await req.json();
+    console.log("EMAIL PERIO DEBUG", {
+      attachPeriodontalChart: body.attachPeriodontalChart,
+      draftId: body.draftId,
+    });
+    const actor = await getAuditActor();
 
-    const draftId = body.draftId
+    const draftId = body.draftId;
     const manualEmail =
       body.toEmail ||
       body.email ||
       body.overrideEmail ||
       body.recipientEmail ||
       body.referrerEmail ||
-      ""
+      "";
 
-    const subject = body.subject
-    const message = body.message
+    const ccEmails = normaliseEmailList(
+      body.ccEmails || body.ccEmail || body.cc || body.ccEmailAddresses || "",
+    );
+    const invalidCcEmail = findInvalidEmail(ccEmails);
+
+    if (invalidCcEmail) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Invalid CC email address: ${invalidCcEmail}`,
+        },
+        { status: 400 },
+      );
+    }
+
+    const subject = body.subject;
+    const message = body.message;
 
     /*
       Periodontal chart attachment is opt-in.
       The frontend sends this as true only when the user ticks
       "Attach periodontal chart" before sending.
     */
-    const attachPeriodontalChart = Boolean(body.attachPeriodontalChart)
+    const attachPeriodontalChart = Boolean(body.attachPeriodontalChart);
+    const requestedPraktikaPatientId = String(
+      body.praktikaPatientId ||
+        body.praktika_patient_id ||
+        body.patientId ||
+        "",
+    ).trim();
 
     if (!draftId) {
       return NextResponse.json(
         { success: false, error: "Missing draftId." },
-        { status: 400 }
-      )
+        { status: 400 },
+      );
     }
 
     const { data: draft, error: draftError } = await supabase
       .from("report_drafts")
       .select("*")
       .eq("id", draftId)
-      .single()
+      .single();
 
     if (draftError || !draft) {
       return NextResponse.json(
         { success: false, error: "Draft not found." },
-        { status: 404 }
-      )
+        { status: 404 },
+      );
     }
+
+    const finalPraktikaPatientId =
+      requestedPraktikaPatientId ||
+      String(draft.praktika_patient_id || "").trim();
+
+    console.log("EMAIL PERIO DRAFT DEBUG", {
+      attachPeriodontalChart,
+      requestedPraktikaPatientId,
+      draftPraktikaPatientId: draft.praktika_patient_id,
+      finalPraktikaPatientId,
+      draftId: draft.id,
+      patientName: draft.patient_name,
+    });
 
     if (!draft.patient_dob) {
       return NextResponse.json(
@@ -237,136 +292,187 @@ export async function POST(req: Request) {
           success: false,
           error: "Patient DOB is required to password-protect the PDF.",
         },
-        { status: 400 }
-      )
+        { status: 400 },
+      );
     }
 
-    let finalToEmail = String(manualEmail || "").trim()
+    let finalToEmail = String(manualEmail || "").trim();
 
     if (!finalToEmail && draft.referrer_name) {
       const { data: referrer } = await supabase
         .from("report_referrers")
         .select("email")
         .eq("name", draft.referrer_name)
-        .maybeSingle()
+        .maybeSingle();
 
-      finalToEmail = String(referrer?.email || "").trim()
+      finalToEmail = String(referrer?.email || "").trim();
     }
 
     if (!finalToEmail) {
       return NextResponse.json(
         { success: false, error: "No referrer email address found." },
-        { status: 400 }
-      )
+        { status: 400 },
+      );
     }
 
-    const password = formatDobPassword(draft.patient_dob)
+    const password = formatDobPassword(draft.patient_dob);
 
     if (!password) {
       return NextResponse.json(
-        { success: false, error: "Could not create password from patient DOB." },
-        { status: 400 }
-      )
+        {
+          success: false,
+          error: "Could not create password from patient DOB.",
+        },
+        { status: 400 },
+      );
     }
 
-    const origin = new URL(req.url).origin
+    const origin = new URL(req.url).origin;
 
-    const pdfResponse = await fetch(`${origin}/api/report-writing/generate-pdf`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ draftId }),
-    })
+    const pdfResponse = await fetch(
+      `${origin}/api/report-writing/generate-pdf`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draftId }),
+      },
+    );
 
     if (!pdfResponse.ok) {
       return NextResponse.json(
         { success: false, error: "Failed to generate PDF before email." },
-        { status: 500 }
-      )
+        { status: 500 },
+      );
     }
 
-    const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer())
-    const encryptedPdf = await encryptPdf(pdfBuffer, password)
+    const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
+    const encryptedPdf = await encryptPdf(pdfBuffer, password);
 
-    const patientName = draft.patient_name || "Patient"
+    const patientName = draft.patient_name || "Patient";
 
     const fileName = `${new Date().toISOString().slice(0, 10)} ${safeFileName(
-      patientName
-    )} Letter.pdf`
+      patientName,
+    )} Letter.pdf`;
 
     const attachments: EmailAttachment[] = [
       {
         filename: fileName,
         content: encryptedPdf.toString("base64"),
       },
-    ]
+    ];
 
-    let periodontalChartAttached = false
-    let periodontalChartAttachmentName: string | null = null
-    let periodontalChartError: string | null = null
+    let periodontalChartAttached = false;
+    let periodontalChartAttachmentName: string | null = null;
+    let periodontalChartError: string | null = null;
 
     if (attachPeriodontalChart) {
-      if (draft.praktika_patient_id) {
+      if (finalPraktikaPatientId) {
         try {
-          const appointmentDate = await getAppointmentDateForDraft(draft.id)
+          const appointmentDate = await getAppointmentDateForDraft(draft.id);
 
-          const perioChart = await generatePeriodontalChartPdf({
-            patientId: draft.praktika_patient_id,
+          console.log("EMAIL PERIO ATTACHMENT REQUESTED", {
+            draftId: draft.id,
+            finalPraktikaPatientId,
+            appointmentDate,
+            patientName,
+          });
+
+          let perioChart = await generatePeriodontalChartPdf({
+            patientId: finalPraktikaPatientId,
             appointmentDate,
             patientName,
             providerName: actor.actorFullName || null,
-          })
+          });
+
+          /*
+            If the draft came from a queue item, appointmentDate may be set.
+            If there is no perio exam exactly on that date, fall back to the
+            most recent perio exam for the linked Praktika patient.
+          */
+          if (!perioChart && appointmentDate) {
+            console.log("EMAIL PERIO DATE MATCH FAILED - TRYING MOST RECENT", {
+              draftId: draft.id,
+              finalPraktikaPatientId,
+              appointmentDate,
+            });
+
+            perioChart = await generatePeriodontalChartPdf({
+              patientId: finalPraktikaPatientId,
+              appointmentDate: null,
+              patientName,
+              providerName: actor.actorFullName || null,
+            });
+          }
 
           if (perioChart) {
             attachments.push({
               filename: perioChart.fileName,
               content: perioChart.buffer.toString("base64"),
-            })
+            });
 
-            periodontalChartAttached = true
-            periodontalChartAttachmentName = perioChart.fileName
+            periodontalChartAttached = true;
+            periodontalChartAttachmentName = perioChart.fileName;
+
+            console.log("EMAIL PERIO ATTACHED", {
+              draftId: draft.id,
+              fileName: perioChart.fileName,
+              attachmentCount: attachments.length,
+            });
 
             await updatePerioStatus({
               draftId: draft.id,
               attachedAt: new Date().toISOString(),
               attachmentName: perioChart.fileName,
               error: null,
-            })
+            });
           } else {
             periodontalChartError =
-              "No periodontal chart found for the linked patient."
+              "Periodontal chart was requested, but no periodontal chart was found for the linked patient.";
+
+            console.warn("EMAIL PERIO NOT FOUND", {
+              draftId: draft.id,
+              finalPraktikaPatientId,
+              appointmentDate,
+            });
 
             await updatePerioStatus({
               draftId: draft.id,
               attachedAt: null,
               attachmentName: null,
               error: periodontalChartError,
-            })
+            });
           }
         } catch (perioError) {
           periodontalChartError =
             perioError instanceof Error
               ? perioError.message
-              : "Failed to generate periodontal chart."
+              : "Failed to generate periodontal chart.";
 
-          console.warn("Periodontal chart attachment skipped:", perioError)
+          console.warn("Periodontal chart attachment skipped:", perioError);
 
           await updatePerioStatus({
             draftId: draft.id,
             attachedAt: null,
             attachmentName: null,
             error: periodontalChartError,
-          })
+          });
         }
       } else {
         periodontalChartError =
-          "Periodontal chart was requested, but no Praktika patient ID is linked."
+          "Periodontal chart was requested, but no Praktika patient ID is linked.";
+
+        console.warn("EMAIL PERIO REQUESTED WITHOUT PATIENT ID", {
+          draftId: draft.id,
+          requestedPraktikaPatientId,
+          draftPraktikaPatientId: draft.praktika_patient_id,
+        });
 
         await updatePerioStatus({
           draftId: draft.id,
           attachedAt: null,
           attachmentName: null,
           error: periodontalChartError,
-        })
+        });
       }
     } else {
       /*
@@ -378,20 +484,20 @@ export async function POST(req: Request) {
         attachedAt: null,
         attachmentName: null,
         error: null,
-      })
+      });
     }
 
     const baseSubject =
       String(subject || "").trim() ||
-      "Secure correspondence from Focus Dental Specialists"
+      "Secure correspondence from Focus Dental Specialists";
 
     const finalSubject = baseSubject.includes(patientName)
       ? baseSubject
-      : `${baseSubject} - ${patientName}`
+      : `${baseSubject} - ${patientName}`;
 
     const finalMessage =
       String(message || "").trim() ||
-      `You have received secure correspondence from Focus Dental Specialists regarding ${patientName}. The attached PDF is password encrypted with the patient DOB (DDMMYYYY).`
+      `You have received secure correspondence from Focus Dental Specialists regarding ${patientName}. The attached PDF is password encrypted with the patient DOB (DDMMYYYY).`;
 
     const emailHtml = `
       <div style="font-family:Arial,sans-serif;font-size:15px;color:#222;line-height:1.6;">
@@ -399,21 +505,22 @@ export async function POST(req: Request) {
         ${buildProfessionalSignatureHtml()}
         ${buildDisclaimerHtml()}
       </div>
-    `
+    `;
 
     const resendResponse = await resend.emails.send({
       from: process.env.RESEND_FROM_EMAIL!,
       to: finalToEmail,
       subject: finalSubject,
       html: emailHtml,
+      cc: ccEmails.length > 0 ? ccEmails : undefined,
       attachments,
-    })
+    });
 
     if (resendResponse.error) {
       return NextResponse.json(
         { success: false, error: resendResponse.error.message },
-        { status: 500 }
-      )
+        { status: 500 },
+      );
     }
 
     await supabase
@@ -429,7 +536,7 @@ export async function POST(req: Request) {
         emailed_by_name: actor.actorFullName,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", draftId)
+      .eq("id", draftId);
 
     await createReportAuditEvent({
       reportDraftId: draft.id,
@@ -438,30 +545,34 @@ export async function POST(req: Request) {
       action: "Secure PDF emailed to referrer",
       details: {
         email: finalToEmail,
+        ccEmails,
         resendId: resendResponse.data?.id || null,
         subject: finalSubject,
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
         periodontalChartRequested: attachPeriodontalChart,
+        periodontalChartPatientId: finalPraktikaPatientId || null,
         periodontalChartAttached,
         periodontalChartAttachmentName,
         periodontalChartError,
         attachmentCount: attachments.length,
       },
-    })
+    });
 
     return NextResponse.json({
       success: true,
       email: finalToEmail,
+      ccEmails,
       resendId: resendResponse.data?.id || null,
       subject: finalSubject,
       periodontalChartRequested: attachPeriodontalChart,
+      periodontalChartPatientId: finalPraktikaPatientId || null,
       periodontalChartAttached,
       periodontalChartAttachmentName,
       periodontalChartError,
-    })
+    });
   } catch (error) {
-    console.error("Secure email failed:", error)
+    console.error("Secure email failed:", error);
 
     return NextResponse.json(
       {
@@ -471,7 +582,7 @@ export async function POST(req: Request) {
             ? error.message
             : "Failed to email secure PDF.",
       },
-      { status: 500 }
-    )
+      { status: 500 },
+    );
   }
 }
