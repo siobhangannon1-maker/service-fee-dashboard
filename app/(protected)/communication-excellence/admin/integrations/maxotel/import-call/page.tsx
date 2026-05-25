@@ -2,7 +2,10 @@ import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import PageLayout from "@/components/ui/PageLayout";
 import { requireRole } from "@/lib/auth";
-import { reviewCommunicationCall } from "@/lib/communication-excellence/call-review-ai";
+import {
+  getActiveCallScoringRubric,
+  reviewCommunicationCall,
+} from "@/lib/communication-excellence/call-review-ai";
 import { transcribeAudioFile } from "@/lib/communication-excellence/transcribe-audio";
 
 type ProfileRow = {
@@ -58,7 +61,12 @@ async function importMaxotelCall(formData: FormData) {
     throw new Error("Please provide either a transcript or an audio file.");
   }
 
-  const result = await reviewCommunicationCall({ transcript });
+  const rubricText = await getActiveCallScoringRubric(supabase);
+
+  const result = await reviewCommunicationCall({
+    transcript,
+    rubricText,
+  });
 
   const { data, error } = await supabase
     .from("communication_call_reviews")
@@ -79,6 +87,7 @@ async function importMaxotelCall(formData: FormData) {
       metadata: {
         source: "maxotel_manual",
         imported_manually: true,
+        rubric_used: Boolean(rubricText),
       },
 
       overall_score: result.overall_score,
@@ -115,6 +124,7 @@ async function importMaxotelCall(formData: FormData) {
       duration_seconds: durationSeconds,
       consent_disclaimer_confirmed: consentDisclaimerConfirmed,
       overall_score: result.overall_score,
+      rubric_used: Boolean(rubricText),
     },
   });
 
@@ -181,6 +191,7 @@ export default async function MaxotelManualImportPage() {
         <p className="mt-2 text-sm leading-6 text-slate-700">
           Use this page to test MaxoTel-style call metadata, staff mapping,
           transcription, AI review and coaching before connecting the real API.
+          The active call scoring rubric will be used when scoring this call.
         </p>
       </section>
 

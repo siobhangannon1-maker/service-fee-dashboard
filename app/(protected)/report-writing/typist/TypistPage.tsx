@@ -1610,7 +1610,13 @@ export default function TypistPage() {
     }
   }
 
-  async function saveNewDraft(status: "draft" | "approved" = "draft") {
+  async function saveNewDraft(
+    status:
+      | "draft"
+      | "edited_by_typist"
+      | "awaiting_provider_approval"
+      | "approved" = "draft",
+  ) {
     if (!selectedProviderId) {
       alert("Please select a provider first.");
       return;
@@ -1678,7 +1684,9 @@ export default function TypistPage() {
       alert(
         status === "approved"
           ? "Letter approved."
-          : "Draft saved for provider.",
+          : status === "awaiting_provider_approval"
+            ? "Letter sent to provider approval."
+            : "Draft saved for provider.",
       );
 
       if (activeQueueItemId) {
@@ -2535,7 +2543,9 @@ export default function TypistPage() {
               <select
                 className="rounded-xl border p-3"
                 value={patientGender}
-                onChange={(e) => setPatientGender(e.target.value as PatientGender)}
+                onChange={(e) =>
+                  setPatientGender(e.target.value as PatientGender)
+                }
               >
                 <option value="neutral">Gender/pronouns: Neutral</option>
                 <option value="female">Gender/pronouns: Female</option>
@@ -2662,7 +2672,8 @@ export default function TypistPage() {
                   PDF cc line after signature, optional
                 </div>
                 <div className="mt-1 text-xs text-indigo-900">
-                  Type the doctor name and address. The PDF will show this under the signature as italic.
+                  Type the doctor name and address. The PDF will show this under
+                  the signature as italic.
                 </div>
                 <input
                   className="mt-2 w-full rounded-xl border border-indigo-200 bg-white p-3 text-sm"
@@ -2862,18 +2873,24 @@ export default function TypistPage() {
                   disabled={loading}
                   className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
                 >
-                  Save Draft For Provider
+                  Save Draft
                 </button>
 
-                {mounted ? (
-                  <button
-                    onClick={() => saveNewDraft("approved")}
-                    disabled={loading}
-                    className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                  >
-                    Approve Draft
-                  </button>
-                ) : null}
+                <button
+                  onClick={() => saveNewDraft("approved")}
+                  disabled={loading}
+                  className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Typist Approval
+                </button>
+
+                <button
+                  onClick={() => saveNewDraft("awaiting_provider_approval")}
+                  disabled={loading}
+                  className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Send to Provider For Approval
+                </button>
               </>
             ) : (
               <>
@@ -2882,23 +2899,23 @@ export default function TypistPage() {
                   disabled={loading}
                   className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
                 >
-                  Save Edit
+                  Save Draft
                 </button>
 
                 <button
-                  onClick={() =>
-                    updateExistingDraft(
-                      selectedProviderRequiresApproval
-                        ? "awaiting_provider_approval"
-                        : "approved",
-                    )
-                  }
+                  onClick={() => updateExistingDraft("approved")}
+                  disabled={loading}
+                  className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Typist Approval
+                </button>
+
+                <button
+                  onClick={() => updateExistingDraft("awaiting_provider_approval")}
                   disabled={loading}
                   className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                 >
-                  {selectedProviderRequiresApproval
-                    ? "Send To Provider Approval"
-                    : "Mark Approved"}
+                  Send to Provider For Approval
                 </button>
 
                 {selectedDraftCanComplete ? (

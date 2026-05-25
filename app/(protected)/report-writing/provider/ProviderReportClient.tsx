@@ -1141,14 +1141,6 @@ export default function ProviderReportClient({
                   </button>
 
                   <button
-                    onClick={returnToTypist}
-                    disabled={loading}
-                    className="rounded-xl bg-amber-500 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                  >
-                    Return To Typist
-                  </button>
-
-                  <button
                     onClick={() => deleteDraft(selectedApprovalDraft)}
                     disabled={loading}
                     className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
