@@ -2,108 +2,212 @@ import Link from "next/link";
 import PageLayout from "@/components/ui/PageLayout";
 import { requireRole } from "@/lib/auth";
 
+type PageProps = {
+  searchParams?: Promise<{
+    category?: string;
+    difficulty?: string;
+  }>;
+};
+
 type ScenarioRow = {
   id: string;
   title: string;
   description: string | null;
-  is_active: boolean;
-  is_published: boolean;
-  created_at: string;
+  category: string | null;
+  difficulty: string | null;
+  estimated_minutes: number | null;
 };
 
-export default async function ScenarioAdminPage() {
-  const { supabase } = await requireRole(["super_admin"]);
+type AttemptRow = {
+  scenario_id: string;
+  score: number | null;
+  status: string;
+  completed_at: string | null;
+};
 
-  const { data, error } = await supabase
+const CATEGORY_OPTIONS = [
+  { value: "all", label: "All categories" },
+  { value: "nervous_patients", label: "Nervous Patients" },
+  { value: "cost_conversations", label: "Cost Conversations" },
+  { value: "complaints", label: "Complaints" },
+  { value: "referrals", label: "Referrals" },
+  { value: "emergencies", label: "Emergencies" },
+  { value: "phone_skills", label: "Phone Skills" },
+  { value: "surgical_communication", label: "Surgical Communication" },
+  { value: "general", label: "General" },
+];
+
+const DIFFICULTY_OPTIONS = [
+  { value: "all", label: "All difficulties" },
+  { value: "beginner", label: "Beginner" },
+  { value: "intermediate", label: "Intermediate" },
+  { value: "advanced", label: "Advanced" },
+];
+
+export default async function ScenariosPage({ searchParams }: PageProps) {
+  const resolvedSearchParams = await searchParams;
+  const selectedCategory = resolvedSearchParams?.category || "all";
+  const selectedDifficulty = resolvedSearchParams?.difficulty || "all";
+
+  const { supabase, user } = await requireRole([
+    "super_admin",
+    "admin",
+    "practice_manager",
+    "billing_staff",
+    "typist",
+    "provider_readonly",
+  ]);
+
+  let query = supabase
     .from("communication_scenarios")
-    .select("id, title, description, is_active, is_published, created_at")
+    .select("id, title, description, category, difficulty, estimated_minutes")
+    .eq("is_active", true)
     .order("created_at", { ascending: false });
 
-  if (error) throw new Error(error.message);
+  if (selectedCategory !== "all") {
+    query = query.eq("category", selectedCategory);
+  }
 
-  const scenarios = (data ?? []) as ScenarioRow[];
+  if (selectedDifficulty !== "all") {
+    query = query.eq("difficulty", selectedDifficulty);
+  }
+
+  const [scenariosResult, attemptsResult] = await Promise.all([
+    query,
+    supabase
+      .from("communication_scenario_attempts")
+      .select("scenario_id, score, status, completed_at")
+      .eq("user_id", user.id)
+      .order("started_at", { ascending: false }),
+  ]);
+
+  if (scenariosResult.error) throw new Error(scenariosResult.error.message);
+  if (attemptsResult.error) throw new Error(attemptsResult.error.message);
+
+  const scenarios = (scenariosResult.data ?? []) as ScenarioRow[];
+  const attempts = (attemptsResult.data ?? []) as AttemptRow[];
+
+  function latestAttempt(scenarioId: string) {
+    return attempts.find((attempt) => attempt.scenario_id === scenarioId);
+  }
 
   return (
     <PageLayout
       eyebrow="Communication Excellence"
-      title="Scenario Admin"
-      description="Create and manage text-based AI patient communication scenarios."
+      title="Scenario Practice"
+      description="Practise patient communication scenarios using text chat or voice roleplay."
     >
       <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">
-              Scenarios
-            </h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Build roleplay scenarios now. Voice can use the same scenarios later.
-            </p>
-          </div>
+        <form method="get" className="grid gap-4 md:grid-cols-[1fr_1fr_auto]">
+          <label className="block">
+            <div className="mb-2 text-sm font-medium text-slate-700">
+              Category
+            </div>
+            <select
+              name="category"
+              defaultValue={selectedCategory}
+              className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm"
+            >
+              {CATEGORY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
 
-          <Link
-            href="/communication-excellence/admin/scenarios/new"
-            className="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
-          >
-            New scenario
-          </Link>
+          <label className="block">
+            <div className="mb-2 text-sm font-medium text-slate-700">
+              Difficulty
+            </div>
+            <select
+              name="difficulty"
+              defaultValue={selectedDifficulty}
+              className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm"
+            >
+              {DIFFICULTY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button className="self-end rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white">
+            Apply filters
+          </button>
+        </form>
+      </section>
+
+      {scenarios.length === 0 ? (
+        <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-8 text-sm text-slate-600">
+          No active scenarios match these filters.
         </div>
+      ) : (
+        <section className="grid gap-4 md:grid-cols-2">
+          {scenarios.map((scenario) => {
+            const attempt = latestAttempt(scenario.id);
 
-        <div className="mt-6 space-y-3">
-          {scenarios.length === 0 ? (
-            <EmptyState text="No scenarios created yet." />
-          ) : (
-            scenarios.map((scenario) => (
+            return (
               <div
                 key={scenario.id}
-                className="rounded-2xl border border-slate-200 p-5"
+                className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
               >
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
-                    <Link
-                      href={`/communication-excellence/admin/scenarios/${scenario.id}`}
-                      className="font-semibold text-slate-950 underline-offset-4 hover:underline"
-                    >
-                      {scenario.title}
-                    </Link>
+                <div className="flex flex-wrap gap-2">
+                  <Badge label={formatLabel(scenario.category || "general")} />
+                  <Badge label={formatLabel(scenario.difficulty || "beginner")} />
+                  <Badge label={`${scenario.estimated_minutes || 5} min`} />
+                </div>
 
-                    <p className="mt-1 text-sm leading-6 text-slate-500">
-                      {scenario.description || "No description added."}
-                    </p>
+                <div className="mt-4 text-lg font-semibold text-slate-950">
+                  {scenario.title}
+                </div>
 
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Badge label={scenario.is_published ? "Published" : "Draft"} />
-                      <Badge label={scenario.is_active ? "Active" : "Inactive"} />
-                    </div>
-                  </div>
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  {scenario.description || "No description added."}
+                </p>
 
+                <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
+                  Latest score:{" "}
+                  <span className="font-semibold text-slate-950">
+                    {attempt?.score !== null && attempt?.score !== undefined
+                      ? `${attempt.score}%`
+                      : "—"}
+                  </span>
+                </div>
+
+                <div className="mt-5 flex flex-wrap gap-3">
                   <Link
                     href={`/communication-excellence/scenarios/${scenario.id}`}
-                    className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                    className="inline-flex rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900"
                   >
-                    Preview
+                    Start text chat
+                  </Link>
+
+                  <Link
+                    href={`/communication-excellence/scenarios/${scenario.id}/voice`}
+                    className="inline-flex rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+                  >
+                    Start voice roleplay
                   </Link>
                 </div>
               </div>
-            ))
-          )}
-        </div>
-      </section>
+            );
+          })}
+        </section>
+      )}
     </PageLayout>
   );
 }
 
-function Badge({ label }: { label: string }) {
-  return (
-    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-      {label}
-    </span>
-  );
+function formatLabel(value: string) {
+  return value.replaceAll("_", " ");
 }
 
-function EmptyState({ text }: { text: string }) {
+function Badge({ label }: { label: string }) {
   return (
-    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-      {text}
-    </div>
+    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold capitalize text-slate-600">
+      {label}
+    </span>
   );
 }

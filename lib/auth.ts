@@ -11,6 +11,7 @@ export type AppRole =
 
 export async function requireUser() {
   const supabase = await createClient();
+
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -29,11 +30,35 @@ export async function requireRole(allowedRoles: AppRole[]) {
     .from("user_roles")
     .select("role")
     .eq("user_id", user.id)
-    .single();
+    .maybeSingle();
 
-  if (error || !data || !allowedRoles.includes(data.role as AppRole)) {
+  console.log("AUTH USER ID:", user.id);
+  console.log("AUTH USER EMAIL:", user.email);
+  console.log("AUTH USER PHONE:", user.phone);
+  console.log("ROLE DATA:", data);
+  console.log("ROLE ERROR:", error);
+  console.log("ALLOWED ROLES:", allowedRoles);
+
+  if (error) {
+    console.error("Role lookup error:", error);
     redirect("/unauthorized");
   }
 
-  return { supabase, user, role: data.role as AppRole };
+  if (!data) {
+    console.error("No role found for user:", user.id);
+    redirect("/unauthorized");
+  }
+
+  const userRole = data.role as AppRole;
+
+  if (!allowedRoles.includes(userRole)) {
+    console.error("User role not allowed:", {
+      userRole,
+      allowedRoles,
+    });
+
+    redirect("/unauthorized");
+  }
+
+  return { supabase, user, role: userRole };
 }

@@ -75,7 +75,6 @@ export default async function ScenariosPage({ searchParams }: PageProps) {
 
   const [scenariosResult, attemptsResult] = await Promise.all([
     query,
-
     supabase
       .from("communication_scenario_attempts")
       .select("scenario_id, score, status, completed_at")
@@ -97,7 +96,7 @@ export default async function ScenariosPage({ searchParams }: PageProps) {
     <PageLayout
       eyebrow="Communication Excellence"
       title="Scenario Practice"
-      description="Practise patient communication scenarios using text-based roleplay."
+      description="Practise patient communication scenarios using text chat or voice roleplay."
     >
       <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <form method="get" className="grid gap-4 md:grid-cols-[1fr_1fr_auto]">
@@ -166,7 +165,7 @@ export default async function ScenariosPage({ searchParams }: PageProps) {
                 </div>
 
                 <p className="mt-2 text-sm leading-6 text-slate-500">
-                  {scenario.description}
+                  {scenario.description || "No description added."}
                 </p>
 
                 <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
@@ -178,12 +177,21 @@ export default async function ScenariosPage({ searchParams }: PageProps) {
                   </span>
                 </div>
 
-                <Link
-                  href={`/communication-excellence/scenarios/${scenario.id}`}
-                  className="mt-5 inline-flex rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
-                >
-                  Start scenario
-                </Link>
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <Link
+                    href={`/communication-excellence/scenarios/${scenario.id}`}
+                    className="inline-flex rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900"
+                  >
+                    Start text chat
+                  </Link>
+
+                  <Link
+                    href={`/communication-excellence/scenarios/${scenario.id}/voice`}
+                    className="inline-flex rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+                  >
+                    Start voice roleplay
+                  </Link>
+                </div>
               </div>
             );
           })}

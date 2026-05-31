@@ -11,7 +11,8 @@ type Role =
   | "practice_manager"
   | "billing_staff"
   | "typist"
-  | "provider_readonly";
+  | "provider_readonly"
+  | "staff";
 
 type InviteMethod = "email" | "sms";
 
@@ -45,7 +46,7 @@ const emptyInviteForm: InviteForm = {
   email: "",
   phone: "",
   full_name: "",
-  role: "billing_staff",
+  role: "staff",
 };
 
 export default function UsersClient() {
@@ -614,6 +615,8 @@ export default function UsersClient() {
                 <option value="billing_staff">billing_staff</option>
                 <option value="provider_readonly">provider_readonly</option>
                 <option value="typist">typist</option>
+                <option value="staff">staff</option>
+
               </select>
             </div>
 
@@ -748,6 +751,7 @@ export default function UsersClient() {
                         <option value="billing_staff">billing_staff</option>
                         <option value="provider_readonly">provider_readonly</option>
                         <option value="typist">typist</option>
+                        <option value="staff">staff</option>
                       </select>
                     </div>
 

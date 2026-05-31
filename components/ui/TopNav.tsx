@@ -11,7 +11,9 @@ type UserRole =
   | "provider_readonly"
   | "billing_staff"
   | "practice_manager"
-  | "admin";
+  | "admin"
+  | "typist"
+  | "staff";
 
 type NavItem = {
   href: string;
@@ -41,21 +43,54 @@ const navGroups: NavGroup[] = [
     label: "AI Reception",
     roles: ["super_admin"],
     items: [
-      { href: "/ai-reception/workbench", label: "AI Workbench", description: "Start to finish AI workflows" },
-      { href: "/ai-reception/inbox", label: "AI Inbox", description: "Manage correspondence and referrals" },
-      { href: "/ai-reception/provider-trello-settings", label: "Provider Trello Settings", description: "Manage provider trello boards and lists" },
-      { href: "/ai-reception/approval-queue", label: "Approval Queue", description: "Review AI-classified referrals and correspondence" },
-      { href: "/ai-reception/upload", label: "Upload Correspondence", description: "Upload referrals, letters, x-rays and documents" },
-      { href: "/ai-reception/response-templates", label: "Response Templates", description: "Manage approved AI email response templates" },
-      { href: "/ai/brain", label: "AI Brain", description: "AI Brain" },
-      { href: "/ai/feedback", label: "AI Feedback", description: "AI Feedback" },
-      { href: "/ai/insights", label: "AI Insights", description: "AI Insights" },
-      { href: "/ai/learning-rules", label: "AI Learning Rules", description: "AI Learning Rules" },
-      { href: "/ai/examples", label: "AI Examples", description: "Upload existing email correspondence to train the AI brain" },
-      { href: "/ai/examples/new", label: "AI New Examples", description: "Upload existing email correspondence to train the AI brain" },
-      { href: "/ai-reception/manual-email", label: "Manual Email", description: "Paste emails for AI processing" },
+      {
+        href: "/ai-reception/workbench",
+        label: "Workbench",
+        description: "Start-to-finish AI reception workflows",
+      },
+      {
+        href: "/ai-reception/inbox",
+        label: "Inbox",
+        description: "Manage correspondence and referrals",
+      },
+        {
+        href: "/ai-reception/upload",
+        label: "Upload",
+        description: "Upload referrals, letters, x-rays and documents",
+      },
+      {
+        href: "/ai-reception/approval-queue",
+        label: "Approval Queue",
+        description: "Review AI-classified referrals and correspondence",
+      },
+      {
+        href: "/ai/brain",
+        label: "AI Training & Rules",
+        description: "Manage AI brain, examples, feedback and learning rules",
+      },
     ],
   },
+  {
+  label: "Staff",
+  roles: ["staff"],
+  items: [
+    {
+      href: "/patient-entries",
+      label: "Lab Bills & Patient Entries",
+      description: "Enter lab bills, materials, and patient adjustments",
+    },
+    {
+      href: "/communication-excellence/my-hub",
+      label: "My Training",
+      description: "Complete assigned training and review coaching",
+    },
+    {
+      href: "/communication-excellence/scenarios",
+      label: "Practice Scenarios",
+      description: "Practise patient conversations",
+    },
+  ],
+},
   {
     label: "Service Fees",
     roles: ["admin", "super_admin"],
@@ -66,7 +101,7 @@ const navGroups: NavGroup[] = [
   },
   {
     label: "Billing",
-    roles: ["billing_staff", "practice_manager", "admin", "super_admin", "provider_readonly"],
+    roles: ["staff", "billing_staff", "practice_manager", "admin", "super_admin"],
     items: [
       { href: "/patient-entries", label: "Consumables & Incorrect Payments", description: "Enter Consumables / Incorrect Payments" },
       { href: "/billing-details", label: "Merchant Fees", description: "Enter Merchant Fees" },
@@ -74,136 +109,46 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-  label: "Communication Excellence",
-  roles: ["super_admin"],
-  items: [
-    {
-      href: "/communication-excellence",
-      label: "Dashboard",
-      description: "Communication training overview",
-    },
-    {
-      href: "/communication-excellence/my-hub",
-      label: "My Hub",
-      description: "Personalised training, scores and microlearning",
-    },
-    {
-      href: "/communication-excellence/training",
-      label: "Training",
-      description: "Complete assigned training modules",
-    },
-    {
-      href: "/communication-excellence/voice-practice",
-      label: "Voice Practice",
-      description: "Voice coaching foundation",
-    },
-    {
-      href: "/communication-excellence/admin",
-      label: "Admin",
-      description: "Manage modules, assignments and audit",
-    },
-    {
-  href: "/communication-excellence/admin/audit",
-  label: "Audit",
-  description: "Review Communication Excellence history",
-},
-{
-  href: "/communication-excellence/microlearning",
-  label: "Microlearning",
-  description: "Short personalised learning tasks",
-},
-{
-  href: "/communication-excellence/scenarios",
-  label: "Scenarios",
-  description: "Practice patient conversations",
-},
-{
-  href: "/communication-excellence/admin/scenarios",
-  label: "Scenario Admin",
-  description: "Create AI roleplay scenarios",
-},
-{
-  href: "/communication-excellence/admin/competencies",
-  label: "Competencies",
-  description: "Manage competency scoring categories",
-},
-{
-  href: "/communication-excellence/scenarios/history",
-  label: "Scenario History",
-  description: "Review your previous scenario attempts",
-},
-{
-  href: "/communication-excellence/admin/scenario-analytics",
-  label: "Scenario Analytics",
-  description: "Review scenario performance across staff",
-},
-{
-  href: "/communication-excellence/admin/practice-rules",
-  label: "Practice Rules",
-  description: "Manage approved wording and practice-specific guidance",
-},
-{
-  href: "/communication-excellence/coaching",
-  label: "Coaching",
-  description: "Review personalised coaching feedback",
-},
-{
-  href: "/communication-excellence/admin/microlearning-templates",
-  label: "Microlearning Templates",
-  description: "Manage automatic remediation templates",
-},
-{
-  href: "/communication-excellence/admin/intelligence",
-  label: "Intelligence",
-  description: "Practice-wide communication insights",
-},
-{
-  href: "/communication-excellence/admin/trends",
-  label: "Competency Trends",
-  description: "Historical competency scoring",
-},
-{
-  href: "/communication-excellence/admin/manager-summary",
-  label: "Manager Summaries",
-  description: "Generate AI practice communication summaries",
-},
-{
-  href: "/communication-excellence/call-reviews",
-  label: "Call Reviews",
-  description: "AI voice communication QA",
-},
-{
-  href: "/communication-excellence/admin/integrations/maxotel",
-  label: "MaxoTel",
-  description: "Manage call review integration settings",
-},
-{
-  href: "/communication-excellence/admin/integrations/maxotel/locations",
-  label: "MaxoTel Locations",
-  description: "Map MaxoTel phones to practice locations",
-},
-{
-  href: "/communication-excellence/admin/integrations/maxotel/sync",
-  label: "MaxoTel Sync",
-  description: "Test and monitor call sync runs",
-},
-{
-  href: "/communication-excellence/admin/call-queue",
-  label: "Call Queue",
-  description: "Manage call review follow-up",
-},
-{
-  href: "/communication-excellence/admin/call-rubric",
-  label: "Call Rubric",
-  description: "Manage AI call scoring standards",
-},
-{
-  href: "/communication-excellence/admin/scenario-library",
-  label: "Scenario Library",
-  description: "Create and edit AI roleplay scenarios",
-},
-  ],
-},
+    label: "Communication Excellence",
+    roles: ["super_admin"],
+    items: [
+      {
+        href: "/communication-excellence",
+        label: "Dashboard",
+        description: "Communication training overview",
+      },
+      {
+        href: "/communication-excellence/my-hub",
+        label: "My Training",
+        description: "Training, microlearning, scores and coaching",
+      },
+      {
+        href: "/communication-excellence/scenarios",
+        label: "Practice Scenarios",
+        description: "Text and voice patient conversation practice",
+      },
+      {
+        href: "/communication-excellence/call-reviews",
+        label: "Call Reviews",
+        description: "Review and coach real call communication",
+      },
+      {
+        href: "/communication-excellence/admin",
+        label: "Training Admin",
+        description: "Manage modules, scenarios, rubrics and rules",
+      },
+      {
+        href: "/communication-excellence/admin/intelligence",
+        label: "Analytics",
+        description: "Communication insights, trends and manager summaries",
+      },
+      {
+        href: "/communication-excellence/admin/integrations/maxotel",
+        label: "Integrations",
+        description: "Manage MaxoTel call review integration",
+      },
+    ],
+  },
   {
     label: "Practice Manager",
     roles: ["practice_manager", "admin", "super_admin"],
@@ -224,8 +169,20 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
+  label: "Operations",
+  roles: ["admin", "super_admin"],
+  items: [
+    { href: "/admin/reports", label: "Service Fee Reports", description: "Centralised reporting of service fees" },
+    { href: "/benchmark/referrals", label: "Referrals", description: "Analyse metrics of referrals received" },
+    { href: "/benchmark/referrer-performance", label: "Top Referrers", description: "Analysis of top referrer metrics" },
+    { href: "/benchmark/referral-opportunities", label: "Referrer Opportunities", description: "Analysis of non referring clinics" },
+    { href: "/admin/provider-dashboard", label: "Provider Dashboard", description: "Analysis of provider clinical and financial metrics" },
+    { href: "/benchmark/expense-reports", label: "Expense Reports", description: "Analysis of practice benchmarks" },
+  ],
+},
+  {
     label: "Typist",
-    roles: ["provider_readonly", "practice_manager", "admin", "super_admin", "billing_staff"],
+    roles: ["practice_manager", "admin", "super_admin", "typist"],
     items: [
       { href: "/report-writing/typist", label: "Letter Generation", description: "Generate, approve and edit, upload and email provider's letters and upload to Praktika" },
       { href: "/report-writing/history", label: "Report History", description: "Search details of previous letters" },
@@ -234,22 +191,16 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    label: "Admin",
-    roles: ["admin", "super_admin"],
-    items: [
-      { href: "/admin", label: "Admin", description: "Admin settings and configuration" },
-      { href: "/admin/reports", label: "Service Fee Reports", description: "Centralised reporting of service fees" },
-      { href: "/benchmark/referrals", label: "Referrals", description: "Analyse metrics of referrals received" },
-      { href: "/benchmark/referrer-performance", label: "Top Referrers", description: "Analysis of top referrer metrics" },
-      { href: "/benchmark/referral-opportunities", label: "Referrer Opportunities", description: "Analysis of non referring clinics" },
-      { href: "/admin/provider-dashboard", label: "Provider Dashboard", description: "Analysis of provider clinical and financial metrics" },
-      { href: "/admin/provider-imports", label: "Imports and Syncs", description: "Import and sync Praktika reports" },
-      { href: "/benchmark/expense-reports", label: "Expense Reports", description: "Analysis of practice benchmarks" },
-      { href: "/benchmarks/edit", label: "Edit Benchmarks", description: "Edit benchmarks for KPI categories" },
-      { href: "/report-writing/admin/universal-rules", label: "Letter Universal Rules", description: "Create and edit universal rules for AI letter writing" },
-      { href: "/report-writing/admin/provider-examples", label: "Provider Letter Examples", description: "Upload examples of letters for AI training" },
-    ],
-  },
+  label: "Admin",
+  roles: ["admin", "super_admin"],
+  items: [
+    { href: "/admin", label: "Admin", description: "User roles, providers, settings and configuration" },
+    { href: "/admin/provider-imports", label: "Imports and Syncs", description: "Import and sync Praktika reports" },
+    { href: "/benchmarks/edit", label: "Edit Benchmarks", description: "Edit benchmarks for KPI categories" },
+    { href: "/report-writing/admin/universal-rules", label: "Letter Universal Rules", description: "Create and edit universal rules for AI letter writing" },
+    { href: "/report-writing/admin/provider-examples", label: "Provider Letter Examples", description: "Upload examples of letters for AI training" },
+  ],
+},
 ];
 
 function isUserRole(value: unknown): value is UserRole {
@@ -258,7 +209,9 @@ function isUserRole(value: unknown): value is UserRole {
     value === "provider_readonly" ||
     value === "billing_staff" ||
     value === "practice_manager" ||
-    value === "admin"
+    value === "admin" ||
+    value === "typist" ||
+    value === "staff"
   );
 }
 
