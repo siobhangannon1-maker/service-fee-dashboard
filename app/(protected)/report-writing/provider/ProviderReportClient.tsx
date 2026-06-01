@@ -2,8 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react"
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox"
-import SyncReferrersButton from "@/components/report-writing/SyncReferrersButton"
-import PraktikaSessionPanel from "@/components/PraktikaSessionPanel"
 import OpenAIDictationBox from "@/components/report-writing/OpenAIDictationBox"
 import SmartDictateBox from "@/components/report-writing/SmartDictateBox"
 
@@ -35,15 +33,6 @@ type ProviderReportClientProps = {
   providerId: string
 }
 
-type PraktikaCandidate = {
-  id: string
-  firstName: string
-  lastName: string
-  dob: string
-  matchScore: number | null
-  matchReason: string
-}
-
 type PatientGender = "male" | "female" | "neutral"
 
 type PatientAndReferrerFieldsProps = {
@@ -62,12 +51,6 @@ type PatientAndReferrerFieldsProps = {
   setReferrerName: (value: string) => void
   referrerAddress: string
   setReferrerAddress: (value: string) => void
-  selectedPraktikaPatientId: string
-  setSelectedPraktikaPatientId: (value: string) => void
-  praktikaCandidates: PraktikaCandidate[]
-  setPraktikaCandidates: (value: PraktikaCandidate[]) => void
-  matchingPatient: boolean
-  onSearchPraktikaPatient: () => void
 }
 
 type ActiveTab = "smart" | "dictate" | "notes" | "approval" | "approved"
@@ -88,12 +71,6 @@ function PatientAndReferrerFields({
   setReferrerName,
   referrerAddress,
   setReferrerAddress,
-  selectedPraktikaPatientId,
-  setSelectedPraktikaPatientId,
-  praktikaCandidates,
-  setPraktikaCandidates,
-  matchingPatient,
-  onSearchPraktikaPatient,
 }: PatientAndReferrerFieldsProps) {
   const [dobFocused, setDobFocused] = useState(false)
 
@@ -175,82 +152,6 @@ function PatientAndReferrerFields({
         value={referrerAddress}
         onChange={(e) => setReferrerAddress(e.target.value)}
       />
-
-      <section className="space-y-3 rounded-2xl border border-indigo-200 bg-indigo-50 p-4 md:col-span-2">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="font-bold text-indigo-950">Praktika Patient Match</h3>
-            <p className="mt-1 text-sm text-indigo-900">
-              Search Praktika and select the patient this letter applies to.
-              This ID is saved with the draft for the typist upload workflow.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={onSearchPraktikaPatient}
-            disabled={matchingPatient || !patientFirstName.trim() || !patientLastName.trim()}
-            className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            {matchingPatient ? "Searching..." : "Search Praktika"}
-          </button>
-        </div>
-
-        {selectedPraktikaPatientId ? (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
-            <div className="font-semibold">Selected Praktika patient</div>
-            <div className="mt-1">Patient ID: {selectedPraktikaPatientId}</div>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedPraktikaPatientId("")
-                setPraktikaCandidates([])
-              }}
-              className="mt-2 rounded-lg border border-emerald-300 bg-white px-3 py-1 text-xs font-semibold text-emerald-800"
-            >
-              Clear match
-            </button>
-          </div>
-        ) : null}
-
-        {praktikaCandidates.length > 0 ? (
-          <div className="space-y-2">
-            {praktikaCandidates.map((candidate) => (
-              <label
-                key={candidate.id}
-                className={[
-                  "block cursor-pointer rounded-xl border bg-white p-3",
-                  selectedPraktikaPatientId === candidate.id
-                    ? "border-indigo-600 ring-2 ring-indigo-200"
-                    : "border-slate-200",
-                ].join(" ")}
-              >
-                <div className="flex items-start gap-3">
-                  <input
-                    type="radio"
-                    name="providerPraktikaPatient"
-                    checked={selectedPraktikaPatientId === candidate.id}
-                    onChange={() => setSelectedPraktikaPatientId(candidate.id)}
-                    className="mt-1"
-                  />
-
-                  <div>
-                    <div className="font-semibold text-slate-950">
-                      {candidate.firstName} {candidate.lastName}
-                    </div>
-                    <div className="text-sm text-slate-600">
-                      DOB: {candidate.dob || "Not shown"} | Praktika ID: {candidate.id}
-                    </div>
-                    <div className="mt-1 text-xs text-slate-500">
-                      {candidate.matchReason}
-                    </div>
-                  </div>
-                </div>
-              </label>
-            ))}
-          </div>
-        ) : null}
-      </section>
     </div>
   )
 }
@@ -308,7 +209,7 @@ async function readJsonSafely(response: Response) {
 export default function ProviderReportClient({
   providerId,
 }: ProviderReportClientProps) {
-  const [activeTab, setActiveTab] = useState<ActiveTab>("smart")
+  const [activeTab, setActiveTab] = useState<ActiveTab>("dictate")
 
   const [reportTypes, setReportTypes] = useState<ReportTypeOption[]>([
     { value: "consultation_report", label: "Consultation Report" },
@@ -325,9 +226,6 @@ export default function ProviderReportClient({
   const [generatedReport, setGeneratedReport] = useState("")
   const [originalGeneratedReport, setOriginalGeneratedReport] = useState("")
   const [dictatedLetter, setDictatedLetter] = useState("")
-  const [selectedPraktikaPatientId, setSelectedPraktikaPatientId] = useState("")
-  const [praktikaCandidates, setPraktikaCandidates] = useState<PraktikaCandidate[]>([])
-  const [matchingPatient, setMatchingPatient] = useState(false)
 
   const [approvalDrafts, setApprovalDrafts] = useState<Draft[]>([])
   const [approvedDrafts, setApprovedDrafts] = useState<Draft[]>([])
@@ -420,59 +318,11 @@ export default function ProviderReportClient({
     return true
   }
 
-  async function searchPraktikaPatientMatch() {
-    if (!validatePatientName()) return
-
-    setMatchingPatient(true)
-    setPraktikaCandidates([])
-    setSelectedPraktikaPatientId("")
-    setSavedMessage("")
-
-    try {
-      const response = await fetch("/api/report-writing/match-praktika-patient", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          patientName,
-          patientDob,
-        }),
-      })
-
-      const data = await readJsonSafely(response)
-
-      if (!data.success) {
-        alert(data.error || "Failed to search Praktika.")
-        return
-      }
-
-      const candidates: PraktikaCandidate[] = data.candidates || []
-      setPraktikaCandidates(candidates)
-
-      if (candidates.length === 1) {
-        setSelectedPraktikaPatientId(candidates[0].id)
-      }
-
-      if (candidates.length === 0) {
-        setSavedMessage("No Praktika patient matches found.")
-      }
-    } finally {
-      setMatchingPatient(false)
-    }
-  }
-
-  function clearPatientMatch() {
-    setSelectedPraktikaPatientId("")
-    setPraktikaCandidates([])
-  }
-
   function clearGeneratedForm() {
     setGeneratedReport("")
     setOriginalGeneratedReport("")
     setClinicalNotes("")
     setSavedMessage("")
-    clearPatientMatch()
   }
 
   async function handleGenerateFromNotes() {
@@ -564,7 +414,7 @@ export default function ProviderReportClient({
           learningSource: "provider_direct_generation_approval",
           sourceType: "clinical_notes",
           status: "approved",
-          praktikaPatientId: selectedPraktikaPatientId || null,
+          praktikaPatientId: null,
         }),
       })
 
@@ -617,7 +467,7 @@ export default function ProviderReportClient({
           sourceType: "dictation",
           status: "approved",
           learnFromEdits: false,
-          praktikaPatientId: selectedPraktikaPatientId || null,
+          praktikaPatientId: null,
         }),
       })
 
@@ -784,84 +634,97 @@ export default function ProviderReportClient({
       setReferrerName={setReferrerName}
       referrerAddress={referrerAddress}
       setReferrerAddress={setReferrerAddress}
-      selectedPraktikaPatientId={selectedPraktikaPatientId}
-      setSelectedPraktikaPatientId={setSelectedPraktikaPatientId}
-      praktikaCandidates={praktikaCandidates}
-      setPraktikaCandidates={setPraktikaCandidates}
-      matchingPatient={matchingPatient}
-      onSearchPraktikaPatient={searchPraktikaPatientMatch}
     />
   )
 
   return (
-    <div className="space-y-6">
-      <PraktikaSessionPanel scope="user" title="My Praktika Session" />
-
-      <div className="flex justify-end">
-        <SyncReferrersButton />
-      </div>
-
-      <div className="space-y-4">
-        <div className="rounded-2xl border bg-white p-4 shadow-sm">
-          <h2 className="mb-3 text-lg font-bold text-slate-900">Create a Letter</h2>
-
-          <div className="grid gap-3 md:grid-cols-3">
-            {[
-              ["dictate", "Dictate"],
-              ["smart", "Smart Dictate"],
-              ["notes", "Generate Letter From Notes"],
-            ].map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => {
-                  setActiveTab(key as ActiveTab)
-                  loadReportTypes()
-                }}
-                className={[
-                  "rounded-2xl px-5 py-4 text-sm font-semibold shadow-sm",
-                  activeTab === key
-                    ? "bg-slate-950 text-white"
-                    : "border bg-white text-slate-700 hover:bg-slate-50",
-                ].join(" ")}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border bg-slate-50 p-4 shadow-sm">
-          <div className="mb-3">
-            <h2 className="text-lg font-bold text-slate-900">Review Centre</h2>
-            <p className="text-sm text-slate-500">
-              Review letters awaiting approval or view recently approved letters.
+    <div className="mx-auto max-w-6xl space-y-6">
+      <section className="rounded-3xl border bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">
+              AI Reports
+            </p>
+            <h1 className="mt-1 text-2xl font-bold text-slate-950">Create a Letter</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Dictate, smart dictate, generate from notes, or review existing letters.
             </p>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2">
-            {[
-              ["approval", `Approval Inbox (${approvalDrafts.length})`],
-              ["approved", `Approved Letters (${approvedDrafts.length})`],
-            ].map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => {
-                  setActiveTab(key as ActiveTab)
-                  loadDrafts()
-                }}
-                className={[
-                  "rounded-2xl px-5 py-4 text-sm font-semibold shadow-sm",
-                  activeTab === key
-                    ? "bg-blue-600 text-white"
-                    : "border bg-white text-slate-700 hover:bg-slate-50",
-                ].join(" ")}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="space-y-4">
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Create Letter
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ["dictate", "Dictate"],
+                  ["smart", "Smart Dictate"],
+                  ["notes", "Generate Letter From Clinical Notes"],
+                ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(key as ActiveTab)
+                      loadReportTypes()
+                    }}
+                    className={[
+                      "rounded-full px-4 py-2 text-sm font-semibold transition",
+                      activeTab === key
+                        ? "bg-slate-950 text-white"
+                        : "border bg-white text-slate-700 hover:bg-slate-50",
+                    ].join(" ")}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Review Centre
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab("approval")
+                    loadDrafts()
+                  }}
+                  className={[
+                    "rounded-full px-4 py-2 text-sm font-semibold transition",
+                    activeTab === "approval"
+                      ? "bg-red-600 text-white"
+                      : "border bg-white text-red-700 hover:bg-red-50",
+                  ].join(" ")}
+                >
+                  Approval Required ({approvalDrafts.length})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab("approved")
+                    loadDrafts()
+                  }}
+                  className={[
+                    "rounded-full px-4 py-2 text-sm font-semibold transition",
+                    activeTab === "approved"
+                      ? "bg-green-600 text-white"
+                      : "border bg-white text-green-700 hover:bg-green-50",
+                  ].join(" ")}
+                >
+                  Approved ({approvedDrafts.length})
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
 
       {savedMessage ? (
         <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
@@ -1225,7 +1088,7 @@ export default function ProviderReportClient({
 
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
                   This letter is approved. The typist portal is used to add
-                  images, generate the branded PDF, upload to Praktika, and send
+                  images, generate the branded PDF, complete the final upload, and send
                   secure email correspondence.
                 </div>
 

@@ -421,6 +421,7 @@ export default function TypistPage() {
     (provider) => provider.id === selectedProviderId,
   );
   const [mounted, setMounted] = useState(false);
+  const [showPraktikaDetails, setShowPraktikaDetails] = useState(false);
 
   const selectedProviderRequiresApproval =
     selectedProvider?.typist_letters_require_approval !== false;
@@ -2109,23 +2110,79 @@ export default function TypistPage() {
   return (
     <>
       <div className="grid h-screen grid-cols-12 bg-slate-100">
-        <div className="col-span-3 overflow-y-auto border-r bg-white">
+        <div className="col-span-2 overflow-y-auto border-r bg-white">
           <div className="border-b p-4">
-            <h1 className="text-2xl font-bold">Typist Portal</h1>
+            <h1 className="text-2xl font-bold text-slate-950">Typist Portal</h1>
             <p className="mt-1 text-sm text-slate-500">
-              Queue, create, edit, image-format, export, and upload reports.
+              Queue, draft, approve, export, upload, and email letters.
             </p>
 
-            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-              <div className="mb-2 text-xs font-semibold uppercase text-slate-500">
-                Praktika Session
+            <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+              <label className="text-xs font-bold uppercase tracking-wider text-blue-900">
+                Selected provider
+              </label>
+              <select
+                value={selectedProviderId}
+                onChange={(e) => setSelectedProviderId(e.target.value)}
+                className="mt-2 w-full rounded-xl border border-blue-300 bg-white p-3 text-sm font-semibold text-blue-950 shadow-sm"
+              >
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.name}
+                  </option>
+                ))}
+              </select>
+
+              <div className="mt-2 text-xs text-blue-800">
+                {selectedProvider?.typist_letters_require_approval === false
+                  ? "Typist can approve this provider's letters."
+                  : "Provider approval required before final upload/email."}
               </div>
-              <PraktikaSessionPanel scope="user" title="My Praktika Session" />
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Praktika
+                  </div>
+                  <div className="mt-1 text-sm font-semibold text-slate-900">
+                    Session tools
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowPraktikaDetails((current) => !current)}
+                  className="rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  {showPraktikaDetails ? "Hide" : "Show"}
+                </button>
+              </div>
+
+              {showPraktikaDetails ? (
+                <div className="mt-3 rounded-xl border bg-white p-3">
+                  <PraktikaSessionPanel scope="user" title="My Praktika Session" />
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-slate-500">
+                  Open only when reconnecting or checking the live Praktika session.
+                </p>
+              )}
             </div>
 
             <div className="mt-3">
               <SyncReferrersButton />
             </div>
+          </div>
+
+          <div className="border-b bg-slate-50 p-3">
+            <div className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Providers
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Use the selector above for day-to-day switching.
+            </p>
           </div>
 
           <div className="space-y-2 p-3">
@@ -2134,24 +2191,24 @@ export default function TypistPage() {
                 key={provider.id}
                 onClick={() => setSelectedProviderId(provider.id)}
                 className={[
-                  "w-full rounded-xl border p-3 text-left text-sm font-semibold",
+                  "w-full rounded-xl border p-3 text-left text-sm font-semibold transition",
                   selectedProviderId === provider.id
-                    ? "border-blue-600 bg-blue-50 text-blue-900"
-                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-100",
+                    ? "border-blue-600 bg-blue-50 text-blue-950 shadow-sm ring-2 ring-blue-100"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
                 ].join(" ")}
               >
                 <div>{provider.name}</div>
                 <div className="mt-1 text-xs font-normal text-slate-500">
                   {provider.typist_letters_require_approval === false
                     ? "Typist can approve"
-                    : "Provider approval required"}
+                    : "Approval required"}
                 </div>
               </button>
             ))}
           </div>
         </div>
 
-        <div className="col-span-3 overflow-y-auto border-r bg-slate-50">
+        <div className="col-span-4 overflow-y-auto border-r bg-slate-50">
           <div className="border-b bg-white p-4">
             <h2 className="font-semibold">
               {selectedProvider?.name || "Provider"} Letters
@@ -2179,9 +2236,13 @@ export default function TypistPage() {
                   }}
                   className={[
                     "rounded-xl border px-3 py-2 text-xs font-semibold",
-                    listTab === key
-                      ? "border-blue-600 bg-blue-50 text-blue-900"
-                      : "bg-white text-slate-600",
+                    listTab === key && key === "awaiting"
+                      ? "border-red-600 bg-red-50 text-red-800"
+                      : listTab === key && key === "completed"
+                        ? "border-green-600 bg-green-50 text-green-800"
+                        : listTab === key
+                          ? "border-blue-600 bg-blue-50 text-blue-900"
+                          : "bg-white text-slate-600",
                   ].join(" ")}
                 >
                   {label}
@@ -2233,22 +2294,22 @@ export default function TypistPage() {
 
           {listTab === "queue" ? (
             <div className="space-y-3 p-3">
-              <div className="rounded-2xl border bg-white p-3">
-                <div className="mb-3">
-                  <h3 className="text-sm font-bold text-slate-900">
-                    Sync Praktika Letter Queue
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Pull appointments with the Typist Letter icon for a single
-                    day or date range. Completed items appear in Completed /
-                    Sent.
-                  </p>
+              <div className="rounded-2xl border bg-white p-3 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Sync Queue
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Pull Praktika letter-icon appointments.
+                    </p>
+                  </div>
                 </div>
 
-                <div className="space-y-2">
+                <div className="mt-3 grid grid-cols-2 gap-2">
                   <label className="block">
                     <div className="mb-1 text-xs font-semibold text-slate-500">
-                      From Date
+                      From
                     </div>
                     <input
                       type="date"
@@ -2260,7 +2321,7 @@ export default function TypistPage() {
 
                   <label className="block">
                     <div className="mb-1 text-xs font-semibold text-slate-500">
-                      To Date
+                      To
                     </div>
                     <input
                       type="date"
@@ -2269,15 +2330,15 @@ export default function TypistPage() {
                       className="w-full rounded-xl border p-2 text-sm"
                     />
                   </label>
-
-                  <button
-                    onClick={syncQueueRange}
-                    disabled={loading}
-                    className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
-                  >
-                    {loading ? "Syncing..." : "Sync Queue"}
-                  </button>
                 </div>
+
+                <button
+                  onClick={syncQueueRange}
+                  disabled={loading}
+                  className="mt-3 w-full rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {loading ? "Syncing..." : "Sync Queue"}
+                </button>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
