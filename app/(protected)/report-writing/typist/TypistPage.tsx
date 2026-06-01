@@ -87,6 +87,18 @@ type PraktikaCandidate = {
   matchReason: string;
 };
 
+type LatestPraktikaReferral = {
+  referralId: string | number;
+  referralDate: string;
+  createdDate: string;
+  referrerName: string;
+  referrerAddress: string;
+  providerId: string | number | null;
+  providerNumber: string;
+  clinicId: string | number | null;
+  reason: string;
+};
+
 type PatientGender = "male" | "female" | "neutral";
 
 function splitPatientName(name: string | null) {
@@ -380,6 +392,11 @@ export default function TypistPage() {
 
   const [referrerName, setReferrerName] = useState("");
   const [referrerAddress, setReferrerAddress] = useState("");
+  const [latestPraktikaReferral, setLatestPraktikaReferral] =
+    useState<LatestPraktikaReferral | null>(null);
+  const [referralAutoFillStatus, setReferralAutoFillStatus] = useState<
+    "idle" | "loading" | "found" | "not_found" | "error"
+  >("idle");
   const [reportType, setReportType] = useState("consultation_report");
   const [clinicalNotes, setClinicalNotes] = useState("");
   const [letterText, setLetterText] = useState("");
@@ -1247,6 +1264,8 @@ export default function TypistPage() {
     setDobFocused(false);
     setReferrerName("");
     setReferrerAddress("");
+    setLatestPraktikaReferral(null);
+    setReferralAutoFillStatus("idle");
     setReportType("consultation_report");
     setPreferredExampleId("");
     setClinicalNotes("");
@@ -1272,6 +1291,8 @@ export default function TypistPage() {
     setPatientGender("neutral");
     setReferrerName(draft.referrer_name || "");
     setReferrerAddress(draft.referrer_address || "");
+    setLatestPraktikaReferral(null);
+    setReferralAutoFillStatus("idle");
     setReportType(draft.report_type);
     setPreferredExampleId("");
 
@@ -1289,6 +1310,61 @@ export default function TypistPage() {
     setAutoGenerateStatus("idle");
     setPraktikaCandidates([]);
     setSelectedPraktikaPatientId(draft.praktika_patient_id || "");
+  }
+
+  async function autoFillReferrerFromLatestPraktikaReferral(
+    praktikaPatientId: string,
+  ) {
+    if (!praktikaPatientId) {
+      setLatestPraktikaReferral(null);
+      setReferralAutoFillStatus("idle");
+      return;
+    }
+
+    setLatestPraktikaReferral(null);
+    setReferralAutoFillStatus("loading");
+
+    try {
+      const response = await fetch(
+        "/api/report-writing/praktika-referrals/latest",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            patientId: praktikaPatientId,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!data.success) {
+        console.warn("Praktika referral lookup failed:", data);
+        setReferralAutoFillStatus("error");
+        return;
+      }
+
+      const referral = data.referral as LatestPraktikaReferral | null;
+
+      if (!referral?.referrerName) {
+        setReferralAutoFillStatus("not_found");
+        return;
+      }
+
+      setReferrerName(referral.referrerName);
+
+      if (referral.referrerAddress) {
+        setReferrerAddress(referral.referrerAddress);
+      }
+
+      setLatestPraktikaReferral(referral);
+      setReferralAutoFillStatus("found");
+    } catch (error) {
+      console.error("Praktika referral lookup error:", error);
+      setReferralAutoFillStatus("error");
+    }
   }
 
   async function startLetterFromQueue(item: QueueItem) {
@@ -1321,6 +1397,8 @@ export default function TypistPage() {
     setPatientGender("neutral");
     setReferrerName("");
     setReferrerAddress("");
+    setLatestPraktikaReferral(null);
+    setReferralAutoFillStatus(linkedPraktikaPatientId ? "loading" : "idle");
     setReportType(inferredReportType);
     setPreferredExampleId("");
 
@@ -1341,6 +1419,7 @@ export default function TypistPage() {
       setPdfCcText("");
       setPraktikaCandidates([]);
       setSelectedPraktikaPatientId(linkedPraktikaPatientId);
+      await autoFillReferrerFromLatestPraktikaReferral(linkedPraktikaPatientId);
       setAutoGenerateStatus("ready");
       return;
     }
@@ -1360,6 +1439,7 @@ export default function TypistPage() {
     setPdfCcText("");
     setPraktikaCandidates([]);
     setSelectedPraktikaPatientId(linkedPraktikaPatientId);
+    await autoFillReferrerFromLatestPraktikaReferral(linkedPraktikaPatientId);
 
     let sameDayClinicalNotes = "";
 
@@ -2162,11 +2242,15 @@ export default function TypistPage() {
 
               {showPraktikaDetails ? (
                 <div className="mt-3 rounded-xl border bg-white p-3">
-                  <PraktikaSessionPanel scope="user" title="My Praktika Session" />
+                  <PraktikaSessionPanel
+                    scope="user"
+                    title="My Praktika Session"
+                  />
                 </div>
               ) : (
                 <p className="mt-2 text-xs text-slate-500">
-                  Open only when reconnecting or checking the live Praktika session.
+                  Open only when reconnecting or checking the live Praktika
+                  session.
                 </p>
               )}
             </div>
@@ -2648,12 +2732,45 @@ export default function TypistPage() {
                 </div>
               ) : null}
 
-              <ReferrerSearchBox
-                onSelect={(referrer) => {
-                  setReferrerName(referrer.name);
-                  setReferrerAddress(referrer.address || "");
-                }}
-              />
+              <div className="space-y-2">
+                <ReferrerSearchBox
+                  onSelect={(referrer) => {
+                    setReferrerName(referrer.name);
+                    setReferrerAddress(referrer.address || "");
+                    setReferralAutoFillStatus("idle");
+                  }}
+                />
+
+                {referralAutoFillStatus === "loading" ? (
+                  <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                    Looking for the most recent Praktika referral...
+                  </div>
+                ) : null}
+
+                {referralAutoFillStatus === "found" &&
+                latestPraktikaReferral ? (
+                  <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                    Auto-filled from most recent Praktika referral:{" "}
+                    {latestPraktikaReferral.referrerName}
+                    {latestPraktikaReferral.referralDate
+                      ? ` (${latestPraktikaReferral.referralDate})`
+                      : ""}
+                  </div>
+                ) : null}
+
+                {referralAutoFillStatus === "not_found" ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                    No Praktika referral found. Use manual referrer search.
+                  </div>
+                ) : null}
+
+                {referralAutoFillStatus === "error" ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Could not auto-fill from Praktika. Use manual referrer
+                    search.
+                  </div>
+                ) : null}
+              </div>
 
               <input
                 className="rounded-xl border p-3"
@@ -2972,7 +3089,9 @@ export default function TypistPage() {
                 </button>
 
                 <button
-                  onClick={() => updateExistingDraft("awaiting_provider_approval")}
+                  onClick={() =>
+                    updateExistingDraft("awaiting_provider_approval")
+                  }
                   disabled={loading}
                   className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                 >
