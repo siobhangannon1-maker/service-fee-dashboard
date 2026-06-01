@@ -50,18 +50,36 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { data: message } = await supabaseAdmin
-      .from("reception_messages")
-      .insert({
-        conversation_id: conversation.id,
-        direction: "inbound",
-        body,
-        twilio_message_sid: messageSid,
-        twilio_status: "received",
-        message_source: "sms",
-      })
-      .select("*")
-      .single();
+ const { data: message, error: messageError } = await supabaseAdmin
+  .from("reception_messages")
+  .insert({
+    conversation_id: conversation.id,
+    direction: "inbound",
+    body,
+    twilio_message_sid: messageSid,
+    twilio_status: "received",
+    message_source: "sms",
+  })
+  .select("*")
+  .single();
+
+if (messageError || !message) {
+  console.error("Could not insert inbound SMS", {
+    error: messageError,
+    conversationId: conversation.id,
+    from,
+    body,
+    messageSid,
+  });
+
+  return new Response(
+    '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+    {
+      status: 200,
+      headers: { "Content-Type": "text/xml" },
+    }
+  );
+}
 
     await supabaseAdmin
       .from("reception_conversations")
