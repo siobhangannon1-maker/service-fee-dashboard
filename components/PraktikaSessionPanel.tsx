@@ -29,43 +29,22 @@ type SessionState = {
   mfaCodeUpdatedAt?: string | null;
 };
 
-const STALE_AFTER_MS = 60 * 60 * 1000;
+const AUTO_VALIDATE_AFTER_MS = 5 * 60 * 1000;
+const STATUS_POLL_MS = 7000;
+const RECONNECT_STATUSES: SessionStatus[] = ["refresh_requested", "refreshing"];
 
-const statusLabelMap: Record<string, string> = {
-  not_started: "Not Started",
-  connected: "Last Known Connected",
-  refreshing: "Refreshing",
-  waiting_for_credentials: "Credentials Needed",
-  waiting_for_mfa: "MFA Needed",
-  refresh_requested: "Refresh Requested",
-  expired: "Expired",
-  error: "Connection Problem",
-};
+function isReconnectStatus(status: SessionStatus) {
+  return RECONNECT_STATUSES.includes(status);
+}
 
-function getFriendlyMessage(state: SessionState, liveStatus: LiveStatus, scope: SessionScope) {
-  if (liveStatus === "checking") return "Checking Praktika live connection...";
-  if (liveStatus === "connected") return "Live check passed. Praktika is connected.";
-  if (liveStatus === "expired") return "Live check failed. Praktika needs reconnection.";
-  if (liveStatus === "error") return "Live check could not confirm the Praktika connection.";
-
-  if (state.status === "connected") {
-    return "Praktika was last known to be connected. Use Check Session for a live check.";
-  }
-
-  if (state.status === "refreshing") return "Checking Praktika connection...";
-  if (state.status === "refresh_requested") return "Connection refresh requested. This should update shortly.";
-
-  if (state.status === "waiting_for_credentials") {
-    return scope === "user"
-      ? "Enter your Praktika username and password to reconnect."
-      : "Practice Praktika credentials are needed.";
-  }
-
-  if (state.status === "waiting_for_mfa") return "Praktika requires an MFA code. Enter the code below.";
-  if (state.status === "expired") return "Your Praktika session has expired. Reconnect to continue.";
-  if (state.status === "error") return state.message || "There was a problem connecting to Praktika.";
-
-  return state.message || "Checking Praktika session...";
+function isActionNeededStatus(status: SessionStatus) {
+  return (
+    status === "waiting_for_credentials" ||
+    status === "waiting_for_mfa" ||
+    status === "not_started" ||
+    status === "expired" ||
+    status === "error"
+  );
 }
 
 async function safeJson(res: Response) {
@@ -84,24 +63,109 @@ function formatDate(value?: string | null) {
   if (!value) return "Never";
 
   try {
-    return new Date(value).toLocaleString();
+    return new Date(value).toLocaleString("en-AU");
   } catch {
     return value;
   }
 }
 
-function isStale(value?: string | null) {
-  if (!value) return true;
+function minutesSince(value?: string | null) {
+  if (!value) return null;
 
   const time = new Date(value).getTime();
-  if (!Number.isFinite(time)) return true;
+  if (!Number.isFinite(time)) return null;
 
-  return Date.now() - time > STALE_AFTER_MS;
+  return Math.max(0, Math.round((Date.now() - time) / 60_000));
+}
+
+function friendlyRelativeTime(value?: string | null) {
+  const minutes = minutesSince(value);
+  if (minutes === null) return "Not yet";
+  if (minutes < 1) return "Just now";
+  if (minutes === 1) return "1 minute ago";
+  if (minutes < 60) return `${minutes} minutes ago`;
+
+  const hours = Math.round(minutes / 60);
+  if (hours === 1) return "1 hour ago";
+  if (hours < 24) return `${hours} hours ago`;
+
+  const days = Math.round(hours / 24);
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
+}
+
+function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
+  if (liveStatus === "checking" || isReconnectStatus(state.status)) {
+    return {
+      label: "Reconnecting",
+      tone: "border-blue-200 bg-blue-50 text-blue-950",
+      dot: "bg-blue-500",
+      headline: "Reconnecting to Praktika",
+      message:
+        state.message ||
+        "DocuDental is reconnecting to Praktika automatically. Keep the helper browser open.",
+    };
+  }
+
+  if (state.status === "waiting_for_mfa") {
+    return {
+      label: "MFA needed",
+      tone: "border-amber-200 bg-amber-50 text-amber-950",
+      dot: "bg-amber-500",
+      headline: "Praktika needs an MFA code",
+      message: "Enter the code from Praktika below. DocuDental will finish reconnecting automatically.",
+    };
+  }
+
+  if (
+    state.status === "waiting_for_credentials" ||
+    state.status === "not_started" ||
+    state.status === "expired"
+  ) {
+    return {
+      label: "Login needed",
+      tone: "border-amber-200 bg-amber-50 text-amber-950",
+      dot: "bg-amber-500",
+      headline: "Praktika login needed",
+      message:
+        state.status === "expired"
+          ? "Your Praktika session has expired. Enter your login details to reconnect."
+          : "Enter your Praktika username and password to connect.",
+    };
+  }
+
+  if (state.status === "error" || liveStatus === "error" || liveStatus === "expired") {
+    return {
+      label: "Attention needed",
+      tone: "border-red-200 bg-red-50 text-red-950",
+      dot: "bg-red-500",
+      headline: "Praktika needs attention",
+      message: state.message || "DocuDental could not confirm the Praktika connection.",
+    };
+  }
+
+  if (state.status === "connected" || liveStatus === "connected") {
+    return {
+      label: "Connected",
+      tone: "border-emerald-200 bg-emerald-50 text-emerald-950",
+      dot: "bg-emerald-500",
+      headline: "Praktika connected",
+      message: "DocuDental can use your Praktika connection.",
+    };
+  }
+
+  return {
+    label: "Checking",
+    tone: "border-slate-200 bg-slate-50 text-slate-950",
+    dot: "bg-slate-400",
+    headline: "Checking Praktika",
+    message: state.message || "Checking your Praktika connection.",
+  };
 }
 
 export default function PraktikaSessionPanel({
-  scope = "practice",
-  title,
+  scope = "user",
+  title = "My Praktika Session",
 }: {
   scope?: SessionScope;
   title?: string;
@@ -120,8 +184,10 @@ export default function PraktikaSessionPanel({
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [validating, setValidating] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const autoCheckedRef = useRef(false);
+  const lastAutoValidateRef = useRef<number>(0);
+  const mountedRef = useRef(true);
 
   async function loadStatus() {
     try {
@@ -144,20 +210,27 @@ export default function PraktikaSessionPanel({
         mfaCodeUpdatedAt: json.mfaCodeUpdatedAt || null,
       };
 
+      if (!mountedRef.current) return;
+
       setState(nextState);
 
-      const lastActivity = nextState.lastUsedAt || nextState.refreshedAt;
+      if (nextState.status === "connected") {
+        const lastActivity = nextState.lastUsedAt || nextState.refreshedAt;
+        const lastActivityTime = lastActivity ? new Date(lastActivity).getTime() : 0;
+        const autoValidateDue =
+          Number.isFinite(lastActivityTime) &&
+          Date.now() - Math.max(lastActivityTime, lastAutoValidateRef.current) >
+            AUTO_VALIDATE_AFTER_MS;
 
-      if (
-        !autoCheckedRef.current &&
-        nextState.status === "connected" &&
-        isStale(lastActivity)
-      ) {
-        autoCheckedRef.current = true;
-        validateSession({ requestRefresh: false });
+        if (autoValidateDue && !validating && !busy) {
+          lastAutoValidateRef.current = Date.now();
+          validateSession({ requestRefresh: true, silent: true });
+        }
       }
     } catch (error: any) {
       console.error("Praktika session status failed:", error);
+
+      if (!mountedRef.current) return;
 
       setState({
         status: "error",
@@ -168,12 +241,17 @@ export default function PraktikaSessionPanel({
   }
 
   useEffect(() => {
-    autoCheckedRef.current = false;
+    mountedRef.current = true;
+    lastAutoValidateRef.current = 0;
     loadStatus();
 
-    const timer = setInterval(loadStatus, 5000);
+    const timer = window.setInterval(loadStatus, STATUS_POLL_MS);
 
-    return () => clearInterval(timer);
+    return () => {
+      mountedRef.current = false;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope]);
 
   async function refreshSession() {
@@ -195,25 +273,33 @@ export default function PraktikaSessionPanel({
       }
 
       setLiveStatus("not_checked");
-      setLiveMessage("Refresh requested. Live check will update after reconnect.");
+      setLiveMessage("Reconnect requested. DocuDental will update shortly.");
       await loadStatus();
     } catch (error: any) {
       console.error("Praktika refresh failed:", error);
 
-      setState({
+      setState((current) => ({
+        ...current,
         status: "error",
         message: error?.message || "Failed to refresh Praktika session.",
         updatedAt: new Date().toISOString(),
-      });
+      }));
     } finally {
       setBusy(false);
     }
   }
 
-  async function validateSession(options: { requestRefresh?: boolean } = {}) {
+  async function validateSession(
+    options: { requestRefresh?: boolean; silent?: boolean } = {},
+  ) {
+    if (validating) return;
+
     setValidating(true);
-    setLiveStatus("checking");
-    setLiveMessage("Checking live Praktika connection...");
+
+    if (!options.silent) {
+      setLiveStatus("checking");
+      setLiveMessage("Checking live Praktika connection...");
+    }
 
     try {
       const res = await fetch("/api/praktika/session/validate", {
@@ -239,14 +325,12 @@ export default function PraktikaSessionPanel({
       if (json.connected) {
         setLiveStatus("connected");
         setLiveMessage(json.message || "Live Praktika connection confirmed.");
+      } else if (json.refreshRequested) {
+        setLiveStatus("checking");
+        setLiveMessage("Praktika reconnect requested automatically.");
       } else {
         setLiveStatus("expired");
-        setLiveMessage(
-          json.message ||
-            (json.refreshRequested
-              ? "Praktika is not connected. Refresh requested."
-              : "Praktika is not connected."),
-        );
+        setLiveMessage(json.message || "Praktika is not connected.");
       }
 
       await loadStatus();
@@ -293,23 +377,26 @@ export default function PraktikaSessionPanel({
       }
 
       setPassword("");
-      setLiveStatus("not_checked");
-      setLiveMessage("Credentials submitted. Waiting for reconnect.");
+      setLiveStatus("checking");
+      setLiveMessage("Login details received. Reconnecting to Praktika...");
       await loadStatus();
     } catch (error: any) {
       console.error("Praktika credential submit failed:", error);
 
-      setState({
+      setState((current) => ({
+        ...current,
         status: "error",
         message: error?.message || "Failed to submit Praktika login details.",
         updatedAt: new Date().toISOString(),
-      });
+      }));
     } finally {
       setBusy(false);
     }
   }
 
-  async function submitMfaCode() {
+  async function submitMfaCode(event: React.FormEvent) {
+    event.preventDefault();
+
     if (!mfaCode.trim()) return;
 
     setBusy(true);
@@ -330,86 +417,164 @@ export default function PraktikaSessionPanel({
       }
 
       setMfaCode("");
-      setLiveStatus("not_checked");
-      setLiveMessage("MFA submitted. Waiting for reconnect.");
+      setLiveStatus("checking");
+      setLiveMessage("MFA submitted. Finishing Praktika reconnect...");
       await loadStatus();
     } catch (error: any) {
       console.error("Praktika MFA failed:", error);
 
-      setState({
+      setState((current) => ({
+        ...current,
         status: "error",
         message: error?.message || "Failed to submit MFA code.",
         updatedAt: new Date().toISOString(),
-      });
+      }));
     } finally {
       setBusy(false);
     }
   }
 
-  const effectiveHealthy = state.status === "connected" && liveStatus !== "expired" && liveStatus !== "error";
-
-  const tone =
-    effectiveHealthy
-      ? "border-green-200 bg-green-50 text-green-900"
-      : state.status === "error" || state.status === "expired" || liveStatus === "expired" || liveStatus === "error"
-        ? "border-red-200 bg-red-50 text-red-900"
-        : state.status === "waiting_for_mfa" ||
-            state.status === "waiting_for_credentials" ||
-            state.status === "refresh_requested" ||
-            state.status === "refreshing" ||
-            liveStatus === "checking"
-          ? "border-amber-200 bg-amber-50 text-amber-950"
-          : "border-gray-200 bg-gray-50 text-gray-900";
+  const display = getDisplayState(state, liveStatus);
 
   const showCredentials =
     scope === "user" &&
-    (state.status !== "connected" || liveStatus === "expired") &&
-    state.status !== "refreshing" &&
-    state.status !== "refresh_requested" &&
-    state.status !== "waiting_for_mfa";
+    (state.status === "waiting_for_credentials" ||
+      state.status === "not_started" ||
+      state.status === "expired") &&
+    !isReconnectStatus(state.status) &&
+    liveStatus !== "checking";
 
   const showMfa = state.status === "waiting_for_mfa";
-  const friendlyMessage = getFriendlyMessage(state, liveStatus, scope);
+  const isConnected = state.status === "connected" && liveStatus !== "expired" && liveStatus !== "error";
+  const isBusyState = busy || validating || isReconnectStatus(state.status) || liveStatus === "checking";
 
   return (
-    <section className={`rounded-2xl border p-4 shadow-sm ${tone}`}>
+    <section className={`rounded-2xl border p-4 shadow-sm ${display.tone}`}>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold uppercase tracking-[0.14em]">
-            {title || (scope === "practice" ? "Practice Praktika Session" : "My Praktika Session")}
-          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-sm font-semibold uppercase tracking-[0.14em]">
+              {title}
+            </div>
 
-          <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-semibold shadow-sm">
-              {statusLabelMap[state.status] || state.status}
-            </span>
-
-            <span className="rounded-full bg-white/60 px-3 py-1 text-xs">
-              {scope === "practice" ? "Practice mode" : "User mode"}
-            </span>
-
-            <span className="rounded-full bg-white/70 px-3 py-1 text-xs">
-              Live:{" "}
-              {liveStatus === "not_checked"
-                ? "Not checked"
-                : liveStatus === "checking"
-                  ? "Checking"
-                  : liveStatus === "connected"
-                    ? "Connected"
-                    : liveStatus === "expired"
-                      ? "Expired"
-                      : "Error"}
+              <span className={`mr-2 inline-block h-2 w-2 rounded-full ${display.dot}`} />
+              {display.label}
             </span>
           </div>
 
-          <div className="mt-3 text-sm">
-            <strong>Connected as:</strong>{" "}
-            {state.praktikaUsername ? state.praktikaUsername : "Not connected"}
-          </div>
-
-          <p className="mt-2 break-words text-sm">{friendlyMessage}</p>
+          <h2 className="mt-3 text-lg font-bold">{display.headline}</h2>
+          <p className="mt-1 break-words text-sm leading-6">{display.message}</p>
 
           <div className="mt-3 grid gap-2 text-xs opacity-80 md:grid-cols-2">
+            <div>
+              <strong>Logged in as:</strong>{" "}
+              {state.praktikaUsername ? state.praktikaUsername : "Not connected"}
+            </div>
+            <div>
+              <strong>Last successful connection:</strong>{" "}
+              {friendlyRelativeTime(state.refreshedAt || state.lastUsedAt)}
+            </div>
+          </div>
+
+          {isConnected ? (
+            <p className="mt-3 text-xs leading-5 opacity-80">
+              Keep the local Praktika helper browser open during the day for the most stable connection.
+            </p>
+          ) : null}
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row lg:flex-col">
+          {isActionNeededStatus(state.status) && !showCredentials && !showMfa ? (
+            <button
+              type="button"
+              onClick={refreshSession}
+              disabled={isBusyState}
+              className="rounded-lg bg-slate-950 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {isBusyState ? "Reconnecting..." : "Reconnect Praktika"}
+            </button>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((current) => !current)}
+            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm ring-1 ring-inset ring-slate-300"
+          >
+            {showAdvanced ? "Hide details" : "Details"}
+          </button>
+        </div>
+      </div>
+
+      {showCredentials ? (
+        <form onSubmit={submitCredentials} className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="block">
+              <div className="mb-1 text-xs font-medium">Praktika username</div>
+              <input
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                autoComplete="username"
+                className="w-full rounded-lg border border-amber-300 px-3 py-2 text-sm text-slate-900"
+                placeholder="Your Praktika username"
+              />
+            </label>
+
+            <label className="block">
+              <div className="mb-1 text-xs font-medium">Praktika password</div>
+              <input
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                type="password"
+                className="w-full rounded-lg border border-amber-300 px-3 py-2 text-sm text-slate-900"
+                placeholder="Your Praktika password"
+              />
+            </label>
+          </div>
+
+          <button
+            type="submit"
+            disabled={busy || !username.trim() || !password}
+            className="mt-3 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {busy ? "Connecting..." : "Connect Praktika"}
+          </button>
+        </form>
+      ) : null}
+
+      {showMfa ? (
+        <form onSubmit={submitMfaCode} className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
+          <label className="block">
+            <div className="mb-1 text-xs font-medium">MFA code</div>
+            <input
+              value={mfaCode}
+              onChange={(event) => setMfaCode(event.target.value)}
+              placeholder="Enter MFA code"
+              inputMode="numeric"
+              className="w-full rounded-lg border border-amber-300 px-3 py-2 text-sm text-slate-900"
+            />
+          </label>
+
+          <button
+            type="submit"
+            disabled={busy || !mfaCode.trim()}
+            className="mt-3 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {busy ? "Submitting..." : "Submit MFA code"}
+          </button>
+        </form>
+      ) : null}
+
+      {showAdvanced ? (
+        <div className="mt-4 rounded-xl border border-white/70 bg-white/60 p-3 text-xs text-slate-800">
+          <div className="grid gap-2 md:grid-cols-2">
+            <div>
+              <strong>Raw status:</strong> {state.status}
+            </div>
+            <div>
+              <strong>Live status:</strong> {liveStatus}
+            </div>
             <div>
               <strong>Last refreshed:</strong> {formatDate(state.refreshedAt)}
             </div>
@@ -424,100 +589,33 @@ export default function PraktikaSessionPanel({
             </div>
           </div>
 
-          {liveStatus === "error" || liveStatus === "expired" ? (
-            <p className="mt-3 text-xs leading-5 opacity-90">{liveMessage}</p>
+          {state.currentUrl ? (
+            <div className="mt-2 break-words">
+              <strong>Helper URL:</strong> {state.currentUrl}
+            </div>
           ) : null}
 
-          {scope === "user" && showCredentials ? (
-            <p className="mt-3 text-xs leading-5 opacity-80">
-              Your password is encrypted temporarily, used only to reconnect, and cleared after login.
-            </p>
-          ) : null}
-        </div>
+          {liveMessage ? <p className="mt-2 break-words opacity-80">{liveMessage}</p> : null}
 
-        <div className="flex flex-col gap-2 sm:flex-row lg:flex-col">
-          <button
-            type="button"
-            onClick={() => validateSession({ requestRefresh: true })}
-            disabled={busy || validating || state.status === "refreshing"}
-            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 disabled:opacity-50"
-          >
-            {validating ? "Checking..." : "Check Live"}
-          </button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => validateSession({ requestRefresh: true })}
+              disabled={isBusyState}
+              className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-900 ring-1 ring-inset ring-slate-300 disabled:opacity-50"
+            >
+              {validating ? "Checking..." : "Check now"}
+            </button>
 
-          <button
-            type="button"
-            onClick={refreshSession}
-            disabled={busy || state.status === "refreshing"}
-            className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {busy || state.status === "refreshing"
-              ? "Refreshing..."
-              : state.status === "connected"
-                ? "Reconnect"
-                : "Request Refresh"}
-          </button>
-        </div>
-      </div>
-
-      {showCredentials ? (
-        <form onSubmit={submitCredentials} className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
-          <div className="grid gap-3 md:grid-cols-2">
-            <label className="block">
-              <div className="mb-1 text-xs font-medium">Praktika username</div>
-              <input
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                autoComplete="username"
-                className="w-full rounded-lg border border-amber-300 px-3 py-2 text-sm text-gray-900"
-                placeholder="Your Praktika username"
-              />
-            </label>
-
-            <label className="block">
-              <div className="mb-1 text-xs font-medium">Praktika password</div>
-              <input
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete="current-password"
-                type="password"
-                className="w-full rounded-lg border border-amber-300 px-3 py-2 text-sm text-gray-900"
-                placeholder="Your Praktika password"
-              />
-            </label>
+            <button
+              type="button"
+              onClick={refreshSession}
+              disabled={isBusyState}
+              className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              {busy || isReconnectStatus(state.status) ? "Reconnecting..." : "Force reconnect"}
+            </button>
           </div>
-
-          <button
-            type="submit"
-            disabled={busy || !username.trim() || !password}
-            className="mt-3 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            Reconnect Praktika
-          </button>
-        </form>
-      ) : null}
-
-      {showMfa ? (
-        <div className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
-          <label className="block">
-            <div className="mb-1 text-xs font-medium">MFA code</div>
-            <input
-              value={mfaCode}
-              onChange={(event) => setMfaCode(event.target.value)}
-              placeholder="Enter MFA code"
-              inputMode="numeric"
-              className="w-full rounded-lg border border-amber-300 px-3 py-2 text-sm text-gray-900"
-            />
-          </label>
-
-          <button
-            type="button"
-            onClick={submitMfaCode}
-            disabled={busy || !mfaCode.trim()}
-            className="mt-3 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            Submit MFA code
-          </button>
         </div>
       ) : null}
     </section>

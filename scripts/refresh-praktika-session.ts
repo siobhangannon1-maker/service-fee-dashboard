@@ -1,7 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import dotenv from "dotenv";
-import { chromium } from "playwright";
+import { chromium, type BrowserContext, type Page } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 
 dotenv.config({ path: ".env.local" });
@@ -14,8 +14,16 @@ const HEADLESS =
   "false";
 
 const KEEP_BROWSER_OPEN =
-  String(process.env.PRAKTIKA_KEEP_BROWSER_OPEN ?? "false").toLowerCase() ===
-  "true";
+  String(process.env.PRAKTIKA_KEEP_BROWSER_OPEN ?? "true").toLowerCase() !==
+  "false";
+
+const KEEP_ALIVE_INTERVAL_MS = Number(
+  process.env.PRAKTIKA_KEEP_ALIVE_INTERVAL_MS || 60_000,
+);
+
+const LOGIN_TIMEOUT_MS = Number(
+  process.env.PRAKTIKA_LOGIN_TIMEOUT_MS || 10 * 60 * 1000,
+);
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -32,6 +40,8 @@ type SessionRow = {
   scope: "practice" | "user";
   app_user_id: string | null;
   status: string;
+  message: string | null;
+  cookie: string | null;
   mfa_code: string | null;
   pending_praktika_username: string | null;
   pending_praktika_password: string | null;
@@ -40,6 +50,10 @@ type SessionRow = {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function decryptTemporaryCredential(value: string | null | undefined) {
@@ -150,7 +164,7 @@ async function getAndClearMfaCode() {
   return code;
 }
 
-async function safePageUrl(page: any) {
+async function safePageUrl(page: Page) {
   try {
     return page.url();
   } catch {
@@ -158,7 +172,7 @@ async function safePageUrl(page: any) {
   }
 }
 
-async function pageHasPasswordInput(page: any) {
+async function pageHasVisiblePasswordInput(page: Page) {
   const inputs = page.locator('input[type="password"]');
   const count = await inputs.count().catch(() => 0);
 
@@ -171,7 +185,7 @@ async function pageHasPasswordInput(page: any) {
   return false;
 }
 
-async function pageHasMfaInput(page: any) {
+async function pageHasMfaInput(page: Page) {
   const selectors = [
     'input[inputmode="numeric"]',
     'input[name*="code" i]',
@@ -202,7 +216,27 @@ async function pageHasMfaInput(page: any) {
   );
 }
 
-async function isLoggedIn(page: any) {
+async function dismissBlockingDialogs(page: Page) {
+  const dialogButtons = page.locator(
+    '.v-dialog__content--active button:has-text("OK"), .v-dialog__content--active button:has-text("Ok"), .v-dialog__content--active button:has-text("Close"), .v-dialog__content--active button:has-text("Continue"), button:has-text("OK"), button:has-text("Ok")',
+  );
+
+  const count = await dialogButtons.count().catch(() => 0);
+
+  for (let i = 0; i < Math.min(count, 3); i++) {
+    const button = dialogButtons.nth(i);
+    const visible = await button.isVisible().catch(() => false);
+
+    if (visible) {
+      await button.click({ force: true, timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(500);
+    }
+  }
+}
+
+async function isLoggedIn(page: Page) {
+  await dismissBlockingDialogs(page);
+
   const url = page.url().toLowerCase();
 
   if (
@@ -218,7 +252,7 @@ async function isLoggedIn(page: any) {
     return false;
   }
 
-  if (await pageHasPasswordInput(page)) {
+  if (await pageHasVisiblePasswordInput(page)) {
     return false;
   }
 
@@ -236,12 +270,13 @@ async function isLoggedIn(page: any) {
   return url.includes(PRAKTIKA_BASE_URL.toLowerCase());
 }
 
-async function hasExistingBrowserSession(page: any) {
+async function hasExistingBrowserSession(page: Page) {
   await page.goto(`${PRAKTIKA_BASE_URL}/v2/`, {
     waitUntil: "domcontentloaded",
   });
 
   await page.waitForTimeout(3000);
+  await dismissBlockingDialogs(page);
 
   if (await isLoggedIn(page)) return true;
 
@@ -250,11 +285,12 @@ async function hasExistingBrowserSession(page: any) {
   });
 
   await page.waitForTimeout(3000);
+  await dismissBlockingDialogs(page);
 
   return await isLoggedIn(page);
 }
 
-async function fillLoginIfCredentialsAvailable(page: any) {
+async function fillLoginIfCredentialsAvailable(page: Page) {
   const session = await getSession();
 
   let username = session.pending_praktika_username || "";
@@ -278,13 +314,17 @@ async function fillLoginIfCredentialsAvailable(page: any) {
   }
 
   if (!username || !password) {
+    const hasSavedCookie = Boolean(session.cookie);
+
     await updateSession({
-      status: "waiting_for_credentials",
-      message:
-        session.scope === "user"
+      status: hasSavedCookie ? "connected" : "waiting_for_credentials",
+      message: hasSavedCookie
+        ? "Helper browser could not reuse the saved browser login, but a Praktika cookie is still saved. The app will keep using the saved cookie until it fails."
+        : session.scope === "user"
           ? "Enter your Praktika username and password in DocuDental."
           : "Practice credentials are missing. Enter credentials or configure environment variables.",
       current_url: await safePageUrl(page),
+      refresh_requested_at: null,
     });
 
     return false;
@@ -298,9 +338,10 @@ async function fillLoginIfCredentialsAvailable(page: any) {
       'button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Log in"), button:has-text("Sign in"), button:has-text("Continue")',
     )
     .first()
-    .click();
+    .click({ force: true });
 
   await page.waitForTimeout(4000);
+  await dismissBlockingDialogs(page);
 
   if (session.scope === "user") {
     await clearTemporaryPassword({
@@ -314,7 +355,7 @@ async function fillLoginIfCredentialsAvailable(page: any) {
   return true;
 }
 
-async function submitMfaCodeIfAvailable(page: any) {
+async function submitMfaCodeIfAvailable(page: Page) {
   if (!(await pageHasMfaInput(page))) return false;
 
   const code = await getAndClearMfaCode();
@@ -329,6 +370,8 @@ async function submitMfaCodeIfAvailable(page: any) {
     return false;
   }
 
+  await dismissBlockingDialogs(page);
+
   const codeInput = page
     .locator(
       'input[inputmode="numeric"], input[name*="code" i], input[id*="code" i], input[name*="mfa" i], input[id*="mfa" i], input[name*="otp" i], input[id*="otp" i], input[type="tel"], input[type="text"]',
@@ -338,12 +381,14 @@ async function submitMfaCodeIfAvailable(page: any) {
   await codeInput.waitFor({ timeout: 15000 });
   await codeInput.fill(code);
 
+  await dismissBlockingDialogs(page);
+
   await page
     .locator(
       'button[type="submit"], input[type="submit"], button:has-text("Verify"), button:has-text("Continue"), button:has-text("Submit"), button:has-text("Login")',
     )
     .first()
-    .click();
+    .click({ force: true });
 
   await updateSession({
     status: "refreshing",
@@ -352,11 +397,12 @@ async function submitMfaCodeIfAvailable(page: any) {
   });
 
   await page.waitForTimeout(5000);
+  await dismissBlockingDialogs(page);
 
   return true;
 }
 
-async function saveCookies(context: any, page: any) {
+async function saveCookies(context: BrowserContext, page: Page, message?: string) {
   const cookies = await context.cookies(PRAKTIKA_BASE_URL);
 
   if (!cookies.length) {
@@ -364,12 +410,12 @@ async function saveCookies(context: any, page: any) {
   }
 
   const cookieHeader = cookies
-    .filter((cookie: any) => cookie.name && cookie.value)
-    .map((cookie: any) => `${cookie.name}=${cookie.value}`)
+    .filter((cookie) => cookie.name && cookie.value)
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join("; ");
 
-  const hasPhpSession = cookies.some((cookie: any) => cookie.name === "PHPSESSID");
-  const hasUat = cookies.some((cookie: any) => cookie.name === "UAT");
+  const hasPhpSession = cookies.some((cookie) => cookie.name === "PHPSESSID");
+  const hasUat = cookies.some((cookie) => cookie.name === "UAT");
 
   if (!hasPhpSession || !hasUat) {
     throw new Error("Could not find required Praktika PHPSESSID and UAT cookies.");
@@ -382,46 +428,71 @@ async function saveCookies(context: any, page: any) {
     session.praktika_username ||
     (session.scope === "practice" ? process.env.PRAKTIKA_USERNAME || null : null);
 
+  const now = nowIso();
+
   await clearTemporaryCredentialsAfterSuccess({
     cookie: cookieHeader,
     status: "connected",
-    message: KEEP_BROWSER_OPEN
-      ? "Praktika session connected. Full browser cookies saved from open helper browser."
-      : "Praktika session refreshed successfully.",
+    message:
+      message ||
+      (KEEP_BROWSER_OPEN
+        ? "Praktika session connected. Helper browser is open and refreshing cookies."
+        : "Praktika session refreshed successfully."),
     current_url: await safePageUrl(page),
     praktika_username: usernameToDisplay,
     mfa_code: null,
     mfa_code_updated_at: null,
     refresh_requested_at: null,
-    refreshed_at: nowIso(),
-    last_used_at: nowIso(),
+    refreshed_at: now,
+    last_used_at: now,
   });
 }
 
-async function keepBrowserOpenForever(context: any, page: any) {
+async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
   console.log(
-    "Praktika browser left open. Helper will keep saving fresh cookies every 60 seconds.",
+    `Praktika browser left open. Helper will refresh cookies every ${Math.round(
+      KEEP_ALIVE_INTERVAL_MS / 1000,
+    )} seconds.`,
   );
 
   while (true) {
     try {
-      if (await isLoggedIn(page)) {
-        await saveCookies(context, page);
+      const session = await getSession();
 
-        await updateSession({
-          status: "connected",
-          message:
-            "Praktika browser is still open and connected. Cookies refreshed from live browser.",
-          current_url: await safePageUrl(page),
-          refresh_requested_at: null,
-          last_used_at: nowIso(),
-        });
+      if (session.mfa_code && (await pageHasMfaInput(page))) {
+        await submitMfaCodeIfAvailable(page);
+      }
+
+      if (await isLoggedIn(page)) {
+        await saveCookies(
+          context,
+          page,
+          "Praktika browser is still open and connected. Cookies refreshed from live browser.",
+        );
+      } else if (await pageHasMfaInput(page)) {
+        await submitMfaCodeIfAvailable(page);
+      } else if (await pageHasVisiblePasswordInput(page)) {
+        const hasNewCredentials = Boolean(
+          session.pending_praktika_username && session.pending_praktika_password,
+        );
+
+        if (hasNewCredentials) {
+          await fillLoginIfCredentialsAvailable(page);
+        } else {
+          await updateSession({
+            status: session.cookie ? "connected" : "waiting_for_credentials",
+            message: session.cookie
+              ? "Helper browser is not logged in, but a saved Praktika cookie remains available."
+              : "Praktika helper browser is open but needs login details.",
+            current_url: await safePageUrl(page),
+            refresh_requested_at: null,
+          });
+        }
       } else {
-        await updateSession({
-          status: "expired",
-          message: "Praktika helper browser is open but no longer logged in.",
-          current_url: await safePageUrl(page),
-        });
+        await page.goto(`${PRAKTIKA_BASE_URL}/v2/`, {
+          waitUntil: "domcontentloaded",
+          timeout: 30_000,
+        }).catch(() => {});
       }
     } catch (error: any) {
       await updateSession({
@@ -432,7 +503,7 @@ async function keepBrowserOpenForever(context: any, page: any) {
       });
     }
 
-    await page.waitForTimeout(60_000);
+    await sleep(KEEP_ALIVE_INTERVAL_MS);
   }
 }
 
@@ -492,12 +563,12 @@ async function refreshOnce() {
     });
 
     await page.waitForTimeout(2500);
+    await dismissBlockingDialogs(page);
 
     const startedAt = Date.now();
-    const timeoutMs = 10 * 60 * 1000;
     let attemptedCredentials = false;
 
-    while (Date.now() - startedAt < timeoutMs) {
+    while (Date.now() - startedAt < LOGIN_TIMEOUT_MS) {
       if (await isLoggedIn(page)) {
         await page.waitForTimeout(3000);
         await saveCookies(context, page);
@@ -521,13 +592,8 @@ async function refreshOnce() {
         continue;
       }
 
-      if (await pageHasPasswordInput(page)) {
-        await updateSession({
-          status: "waiting_for_credentials",
-          message: "Enter your Praktika username and password in DocuDental.",
-          current_url: await safePageUrl(page),
-        });
-
+      if (await pageHasVisiblePasswordInput(page)) {
+        await fillLoginIfCredentialsAvailable(page);
         await page.waitForTimeout(2500);
         continue;
       }
