@@ -5,6 +5,13 @@ function normalizePhone(value: string) {
   return value.replace(/\s+/g, "");
 }
 
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    message: "Twilio inbound webhook is live. SMS replies must POST here.",
+  });
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -58,7 +65,7 @@ export async function POST(request: NextRequest) {
     body,
     twilio_message_sid: messageSid,
     twilio_status: "received",
-    message_source: "sms",
+    message_source: "manual",
   })
   .select("*")
   .single();
