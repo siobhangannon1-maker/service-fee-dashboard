@@ -397,6 +397,7 @@ export default function TypistPage() {
   const [referralAutoFillStatus, setReferralAutoFillStatus] = useState<
     "idle" | "loading" | "found" | "not_found" | "error"
   >("idle");
+  const [referralAutoFillError, setReferralAutoFillError] = useState("");
   const [reportType, setReportType] = useState("consultation_report");
   const [clinicalNotes, setClinicalNotes] = useState("");
   const [letterText, setLetterText] = useState("");
@@ -1316,12 +1317,28 @@ export default function TypistPage() {
     praktikaPatientId: string,
   ) {
     if (!praktikaPatientId) {
+      console.warn("Auto-referrer lookup skipped: no Praktika patient ID", {
+        activeQueueItemId,
+        selectedDraftId: selectedDraft?.id,
+        selectedDraftPraktikaPatientId: selectedDraft?.praktika_patient_id,
+        patientName,
+      });
       setLatestPraktikaReferral(null);
-      setReferralAutoFillStatus("idle");
+      setReferralAutoFillError("No Praktika patient ID is linked to this queue item or draft.");
+      setReferralAutoFillStatus("not_found");
       return;
     }
 
+    console.log("Auto-referrer lookup starting", {
+      praktikaPatientId,
+      activeQueueItemId,
+      selectedDraftId: selectedDraft?.id,
+      selectedDraftPraktikaPatientId: selectedDraft?.praktika_patient_id,
+      patientName,
+    });
+
     setLatestPraktikaReferral(null);
+    setReferralAutoFillError("");
     setReferralAutoFillStatus("loading");
 
     try {
@@ -1338,17 +1355,42 @@ export default function TypistPage() {
         },
       );
 
-      const data = await response.json();
+      const text = await response.text();
+      let data: any = {};
 
-      if (!data.success) {
-        console.warn("Praktika referral lookup failed:", data);
+      try {
+        data = text.trim() ? JSON.parse(text) : {};
+      } catch {
+        data = {
+          success: false,
+          error: `Referral API returned non-JSON response: ${text.slice(0, 300)}`,
+        };
+      }
+
+      if (!response.ok || !data.success) {
+        const message =
+          data?.error ||
+          `Referral API failed with status ${response.status}. Check the server logs.`;
+
+        console.warn("Praktika referral lookup failed:", {
+          status: response.status,
+          data,
+        });
+
+        setReferralAutoFillError(message);
         setReferralAutoFillStatus("error");
         return;
       }
 
+      console.log("Auto-referrer lookup response", data);
+
       const referral = data.referral as LatestPraktikaReferral | null;
 
       if (!referral?.referrerName) {
+        setReferralAutoFillError(
+          data?.debug?.message ||
+            "No referral with a provider name was found for this patient.",
+        );
         setReferralAutoFillStatus("not_found");
         return;
       }
@@ -1360,9 +1402,16 @@ export default function TypistPage() {
       }
 
       setLatestPraktikaReferral(referral);
+      setReferralAutoFillError("");
       setReferralAutoFillStatus("found");
     } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Praktika referral lookup failed.";
+
       console.error("Praktika referral lookup error:", error);
+      setReferralAutoFillError(message);
       setReferralAutoFillStatus("error");
     }
   }
@@ -2737,6 +2786,7 @@ export default function TypistPage() {
                   onSelect={(referrer) => {
                     setReferrerName(referrer.name);
                     setReferrerAddress(referrer.address || "");
+                    setReferralAutoFillError("");
                     setReferralAutoFillStatus("idle");
                   }}
                 />
@@ -2760,7 +2810,8 @@ export default function TypistPage() {
 
                 {referralAutoFillStatus === "not_found" ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                    No Praktika referral found. Use manual referrer search.
+                    {referralAutoFillError ||
+                      "No Praktika referral found. Use manual referrer search."}
                   </div>
                 ) : null}
 
@@ -2768,6 +2819,11 @@ export default function TypistPage() {
                   <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                     Could not auto-fill from Praktika. Use manual referrer
                     search.
+                    {referralAutoFillError ? (
+                      <div className="mt-1 font-mono text-[11px] text-amber-900">
+                        {referralAutoFillError}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

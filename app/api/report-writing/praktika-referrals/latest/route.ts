@@ -1,4 +1,18 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+
+import {
+  getCurrentUserPraktikaSessionMode,
+  getPraktikaCookie,
+  type PraktikaSessionMode,
+} from "@/lib/praktika/hybrid-session-store";
+
+import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const PRAKTIKA_FORM_DATA_URL =
+  "https://praktika.praktika.net.au/php/forms/db_getFormData.php";
 
 type PraktikaReferral = {
   id?: string | number;
@@ -16,12 +30,8 @@ type PraktikaReferral = {
       providerNumber?: string;
     };
   };
+  [key: string]: unknown;
 };
-
-const PRAKTIKA_FORM_DATA_URL =
-  "https://praktika.praktika.net.au/php/forms/db_getFormData.php";
-
-const PRAKTIKA_PRACTICE_ID = Number(process.env.PRAKTIKA_PRACTICE_ID || 1181);
 
 function clean(value: unknown) {
   return String(value ?? "").trim();
@@ -42,105 +52,176 @@ function formatProviderName(referral: PraktikaReferral) {
     .join(" ");
 }
 
-function getPraktikaCookieFromRequest(request: NextRequest) {
-  // Development fallback only.
-  // Example env value:
-  // PRAKTIKA_COOKIE="PHPSESSID=...; UAT=..."
-  if (process.env.PRAKTIKA_COOKIE) {
-    return process.env.PRAKTIKA_COOKIE;
+function extractPatientReferrals(parsed: any): PraktikaReferral[] {
+  const found: PraktikaReferral[] = [];
+
+  function walk(value: any) {
+    if (!value) return;
+
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+
+    if (typeof value !== "object") return;
+
+    if (Array.isArray(value.patient_referrals)) {
+      found.push(...value.patient_referrals);
+    }
+
+    for (const nested of Object.values(value)) {
+      if (nested && typeof nested === "object") walk(nested);
+    }
   }
 
-  // Optional proxy fallback if you already pass a Praktika cookie internally.
-  // Do not expose this publicly to browsers.
-  return request.headers.get("x-praktika-cookie") || "";
+  walk(parsed);
+
+  const unique = new Map<string, PraktikaReferral>();
+
+  for (const referral of found) {
+    const key = clean(referral.id) || JSON.stringify(referral).slice(0, 300);
+
+    if (!unique.has(key)) {
+      unique.set(key, referral);
+    }
+  }
+
+  return Array.from(unique.values());
 }
 
-export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const patientId = clean(body.patientId);
+async function fetchReferralsFromPraktika({
+  patientId,
+  practiceId,
+  mode,
+}: {
+  patientId: string;
+  practiceId: string;
+  mode: PraktikaSessionMode;
+}) {
+  return withPraktikaAutoRefresh(
+    async () => {
+      const cookie = await getPraktikaCookie(mode);
 
-    if (!patientId) {
-      return NextResponse.json(
-        { success: false, error: "Missing patientId." },
-        { status: 400 },
-      );
-    }
-
-    const praktikaCookie = getPraktikaCookieFromRequest(request);
-
-    if (!praktikaCookie) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "No Praktika session cookie available. Wire this route into the same Praktika session/auth helper used by your existing Praktika clinical-notes endpoint.",
-        },
-        { status: 401 },
-      );
-    }
-
-    const praktikaResponse = await fetch(PRAKTIKA_FORM_DATA_URL, {
-      method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        Cookie: praktikaCookie,
-        Origin: "https://praktika.praktika.net.au",
-        Referer: "https://praktika.praktika.net.au/v2/scheduler",
-      },
-      body: JSON.stringify([
+      const payload = [
         {
           parameters: [
             {
-              practice_id: PRAKTIKA_PRACTICE_ID,
+              practice_id: Number(practiceId),
               patient_id: Number(patientId),
             },
           ],
           fields: ["patient_referrals"],
         },
-      ]),
-      cache: "no-store",
+      ];
+
+      const response = await fetch(PRAKTIKA_FORM_DATA_URL, {
+        method: "POST",
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/json",
+          Cookie: cookie,
+          Origin: "https://praktika.praktika.net.au",
+          Referer:
+            "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
+          "X-Requested-With": "XMLHttpRequest",
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
+        },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      });
+
+      const text = await response.text();
+
+      if (!text.trim()) return null;
+
+      if (!response.ok) {
+        throw new Error(
+          `Praktika referral request failed: ${response.status}. ${text.slice(
+            0,
+            500,
+          )}`,
+        );
+      }
+
+      if (text.trim().startsWith("<")) {
+        throw new Error(
+          "Praktika returned HTML instead of JSON. Session may be expired.",
+        );
+      }
+
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(
+          `Praktika returned non-JSON referral response. ${text.slice(0, 500)}`,
+        );
+      }
+    },
+    {
+      mode,
+    },
+  );
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json().catch(() => ({}));
+    const patientId = clean(body.patientId);
+
+    if (!patientId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Missing patientId. The selected queue item may not have a Praktika patient ID linked.",
+        },
+        { status: 400 },
+      );
+    }
+
+    const mode = await getCurrentUserPraktikaSessionMode();
+    const practiceId = clean(process.env.PRAKTIKA_PRACTICE_ID) || "1181";
+
+    const parsed = await fetchReferralsFromPraktika({
+      patientId,
+      practiceId,
+      mode,
     });
 
-    const text = await praktikaResponse.text();
-
-    let data: any;
-
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Praktika returned a non-JSON response.",
-          preview: text.slice(0, 300),
+    if (!parsed) {
+      return NextResponse.json({
+        success: true,
+        referral: null,
+        debug: {
+          patientId,
+          practiceId,
+          referralCount: 0,
+          message: "Praktika returned an empty response.",
         },
-        { status: 502 },
-      );
+      });
     }
 
-    if (!praktikaResponse.ok) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Praktika request failed with status ${praktikaResponse.status}.`,
-          data,
-        },
-        { status: 502 },
-      );
-    }
-
-    const referrals = Array.isArray(data?.patient_referrals)
-      ? (data.patient_referrals as PraktikaReferral[])
-      : [];
+    const referrals = extractPatientReferrals(parsed);
 
     const latestReferral = referrals
       .filter((referral) => formatProviderName(referral))
       .sort((a, b) => getReferralSortDate(b) - getReferralSortDate(a))[0];
 
     if (!latestReferral) {
-      return NextResponse.json({ success: true, referral: null });
+      return NextResponse.json({
+        success: true,
+        referral: null,
+        debug: {
+          patientId,
+          practiceId,
+          referralCount: referrals.length,
+          message:
+            referrals.length > 0
+              ? "Referral records were found, but none had a provider name."
+              : "No patient_referrals records were found in the Praktika response.",
+        },
+      });
     }
 
     const provider = latestReferral.party?.provider;
@@ -157,6 +238,14 @@ export async function POST(request: NextRequest) {
         providerNumber: provider?.providerNumber || "",
         clinicId: latestReferral.party?.clinicId || null,
         reason: latestReferral.reason || "",
+      },
+      debug: {
+        patientId,
+        practiceId,
+        referralCount: referrals.length,
+        selectedReferralId: latestReferral.id || null,
+        selectedReferralDate:
+          latestReferral.createdDate || latestReferral.date || null,
       },
     });
   } catch (error) {

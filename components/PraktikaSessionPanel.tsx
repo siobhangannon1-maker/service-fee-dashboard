@@ -103,7 +103,7 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
       headline: "Reconnecting to Praktika",
       message:
         state.message ||
-        "DocuDental is reconnecting to Praktika automatically. Keep the helper browser open.",
+        "Reconnecting to Praktika automatically. Keep the helper browser open.",
     };
   }
 
@@ -113,7 +113,7 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
       tone: "border-amber-200 bg-amber-50 text-amber-950",
       dot: "bg-amber-500",
       headline: "Praktika needs an MFA code",
-      message: "Enter the code from Praktika below. DocuDental will finish reconnecting automatically.",
+      message: "Enter the code from Authenticator below and reconnection will continue automatically.",
     };
   }
 
@@ -140,7 +140,7 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
       tone: "border-red-200 bg-red-50 text-red-950",
       dot: "bg-red-500",
       headline: "Praktika needs attention",
-      message: state.message || "DocuDental could not confirm the Praktika connection.",
+      message: state.message || "Could not confirm the Praktika connection.",
     };
   }
 
@@ -150,7 +150,7 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
       tone: "border-emerald-200 bg-emerald-50 text-emerald-950",
       dot: "bg-emerald-500",
       headline: "Praktika connected",
-      message: "DocuDental can use your Praktika connection.",
+      message: "Praktika successfully connected.",
     };
   }
 
@@ -273,7 +273,7 @@ export default function PraktikaSessionPanel({
       }
 
       setLiveStatus("not_checked");
-      setLiveMessage("Reconnect requested. DocuDental will update shortly.");
+      setLiveMessage("Reconnect requested. Status will update shortly");
       await loadStatus();
     } catch (error: any) {
       console.error("Praktika refresh failed:", error);

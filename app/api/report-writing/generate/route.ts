@@ -47,12 +47,19 @@ type ClinicalScenario = {
 
 type PatientGender = "male" | "female" | "neutral"
 
+function cleanString(value: unknown) {
+  return String(value ?? "").trim()
+}
+
 async function getProviderTraining(
   providerId: string | null,
   reportType: string,
   scenarioTags: string[] = [],
   preferredExampleId: string | null = null
 ): Promise<TrainingData> {
+  const safeScenarioTags = Array.isArray(scenarioTags) ? scenarioTags : []
+  const safePreferredExampleId = cleanString(preferredExampleId)
+
   const universalRulesResult = await supabase
     .from("universal_report_rules")
     .select("report_type, rule_text")
@@ -137,11 +144,11 @@ async function getProviderTraining(
       const tags: string[] = Array.isArray(example.scenario_tags)
         ? example.scenario_tags
         : []
-      const tagMatches = scenarioTags.filter((tag: string) => tags.includes(tag)).length
+      const tagMatches = safeScenarioTags.filter((tag: string) => tags.includes(tag)).length
 
       let relevanceScore = 0
 
-      if (preferredExampleId && example.id === preferredExampleId) {
+      if (safePreferredExampleId && example.id === safePreferredExampleId) {
         relevanceScore += 1000
       }
 
@@ -151,8 +158,8 @@ async function getProviderTraining(
 
       relevanceScore += tagMatches * 10
 
-      if (scenarioTags.length > 0 && tags.length > 0) {
-        const extraTags = tags.filter((tag: string) => !scenarioTags.includes(tag)).length
+      if (safeScenarioTags.length > 0 && tags.length > 0) {
+        const extraTags = tags.filter((tag: string) => !safeScenarioTags.includes(tag)).length
         relevanceScore -= extraTags
       }
 
@@ -170,7 +177,7 @@ async function getProviderTraining(
       const bDate = b.created_at ? new Date(b.created_at).getTime() : 0
       return bDate - aDate
     })
-    .slice(0, preferredExampleId ? 6 : 5)
+    .slice(0, safePreferredExampleId ? 6 : 5)
 
   const examplesText =
     scoredExamples.length > 0
@@ -255,6 +262,43 @@ function safeJsonParse<T>(text: string, fallback: T): T {
   }
 }
 
+
+function normaliseStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+}
+
+function normaliseClinicalScenario(value: Partial<ClinicalScenario> | null | undefined, reportType: string): ClinicalScenario {
+  return {
+    summary: cleanString(value?.summary) || "No structured scenario detected.",
+    procedure_category: cleanString(value?.procedure_category) || reportType,
+    implant_count:
+      typeof value?.implant_count === "number" && Number.isFinite(value.implant_count)
+        ? value.implant_count
+        : null,
+    implant_sites: normaliseStringArray(value?.implant_sites),
+    guided_surgery:
+      typeof value?.guided_surgery === "boolean" ? value.guided_surgery : null,
+    grafting_performed:
+      typeof value?.grafting_performed === "boolean" ? value.grafting_performed : null,
+    immediate_implant:
+      typeof value?.immediate_implant === "boolean" ? value.immediate_implant : null,
+    extraction_performed:
+      typeof value?.extraction_performed === "boolean" ? value.extraction_performed : null,
+    sinus_lift:
+      typeof value?.sinus_lift === "boolean" ? value.sinus_lift : null,
+    membrane_used:
+      typeof value?.membrane_used === "boolean" ? value.membrane_used : null,
+    provisionalisation:
+      typeof value?.provisionalisation === "boolean" ? value.provisionalisation : null,
+    key_clinical_features: normaliseStringArray(value?.key_clinical_features),
+    missing_or_unclear_details: normaliseStringArray(value?.missing_or_unclear_details),
+  }
+}
+
 async function detectClinicalScenario(
   clinicalNotes: string,
   reportType: string
@@ -326,7 +370,9 @@ ${clinicalNotes}
 
   const content = completion.choices[0]?.message?.content || ""
 
-  return safeJsonParse<ClinicalScenario>(content, fallback)
+  const parsed = safeJsonParse<Partial<ClinicalScenario>>(content, fallback)
+
+  return normaliseClinicalScenario(parsed, reportType)
 }
 
 function formatClinicalScenario(scenario: ClinicalScenario) {
@@ -424,20 +470,18 @@ export async function POST(req: Request) {
       )
     }
 
-    const body = await req.json()
+    const body = await req.json().catch(() => ({}))
 
-    const {
-      providerId,
-      patientName,
-      patientFirstName,
-      patientDob,
-      patientGender,
-      referrerName,
-      referrerAddress,
-      reportType,
-      clinicalNotes,
-      preferredExampleId,
-    } = body
+    const providerId = cleanString(body.providerId)
+    const patientName = cleanString(body.patientName)
+    const patientFirstName = cleanString(body.patientFirstName)
+    const patientDob = cleanString(body.patientDob)
+    const patientGender = body.patientGender
+    const referrerName = cleanString(body.referrerName)
+    const referrerAddress = cleanString(body.referrerAddress)
+    const reportType = cleanString(body.reportType)
+    const clinicalNotes = cleanString(body.clinicalNotes)
+    const preferredExampleId = cleanString(body.preferredExampleId)
 
     if (!patientName) {
       return NextResponse.json(

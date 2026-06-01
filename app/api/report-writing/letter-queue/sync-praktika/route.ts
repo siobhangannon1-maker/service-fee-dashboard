@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import {
   getCurrentUserPraktikaSessionMode,
   getPraktikaCookie,
   type PraktikaSessionMode,
 } from "@/lib/praktika/hybrid-session-store";
 import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,8 +27,11 @@ type PraktikaAppointmentRow = {
   vchIconLabel2?: string;
   vchIconLabel3?: string;
   vchIconLabel4?: string;
+  vchPatientTitle?: string;
   [key: string]: unknown;
 };
+
+type PatientGender = "male" | "female" | "neutral";
 
 function clean(value: unknown) {
   return String(value ?? "").trim();
@@ -49,6 +52,42 @@ function hasTypistLetterIcon(row: PraktikaAppointmentRow) {
     row.vchIconLabel3,
     row.vchIconLabel4,
   ].some((label) => clean(label).toLowerCase() === "typist letter");
+}
+
+function normalisePraktikaGender(value: unknown): PatientGender {
+  const gender = clean(value).toLowerCase();
+
+  if (["m", "male"].includes(gender)) {
+    return "male";
+  }
+
+  if (["f", "female"].includes(gender)) {
+    return "female";
+  }
+
+  // Praktika shows "Other"; for letter-writing we keep this as neutral
+  // so the generation prompt avoids gendered pronouns.
+  if (["o", "other", "neutral", "unknown", "unspecified"].includes(gender)) {
+    return "neutral";
+  }
+
+  return "neutral";
+}
+
+function inferPatientGenderFromTitle(row: PraktikaAppointmentRow): PatientGender {
+  const title = clean(row.vchPatientTitle)
+    .toLowerCase()
+    .replace(/\./g, "");
+
+  if (["mr", "mister", "master"].includes(title)) {
+    return "male";
+  }
+
+  if (["miss", "ms", "mrs", "madam", "madame"].includes(title)) {
+    return "female";
+  }
+
+  return "neutral";
 }
 
 async function fetchAppointmentRowsFromPraktika({
@@ -96,7 +135,10 @@ async function fetchAppointmentRowsFromPraktika({
 
       if (!response.ok) {
         throw new Error(
-          `Praktika request failed: ${response.status}. ${responseText.slice(0, 500)}`,
+          `Praktika appointment request failed: ${response.status}. ${responseText.slice(
+            0,
+            500,
+          )}`,
         );
       }
 
@@ -112,13 +154,19 @@ async function fetchAppointmentRowsFromPraktika({
         parsedRows = JSON.parse(responseText);
       } catch {
         throw new Error(
-          `Praktika returned non-JSON response. ${responseText.slice(0, 500)}`,
+          `Praktika returned non-JSON appointment response. ${responseText.slice(
+            0,
+            500,
+          )}`,
         );
       }
 
       if (!Array.isArray(parsedRows)) {
         throw new Error(
-          `Praktika did not return a valid appointment array. ${responseText.slice(0, 500)}`,
+          `Praktika did not return a valid appointment array. ${responseText.slice(
+            0,
+            500,
+          )}`,
         );
       }
 
@@ -126,6 +174,147 @@ async function fetchAppointmentRowsFromPraktika({
     },
     { mode },
   );
+}
+
+async function fetchPatientGenderFromPraktika({
+  patientId,
+  practiceId,
+  mode,
+}: {
+  patientId: string;
+  practiceId: string;
+  mode: PraktikaSessionMode;
+}): Promise<PatientGender | null> {
+  if (!patientId) return null;
+
+  return withPraktikaAutoRefresh(
+    async () => {
+      const cookie = await getPraktikaCookie(mode);
+
+      const params = new URLSearchParams();
+      params.append("practice_id", practiceId);
+      params.append("form_id", "389");
+      params.append("patient_id", patientId);
+      params.append("init_stage", "false");
+
+      const response = await fetch(
+        "https://praktika.praktika.net.au/php/forms/db_getCustomerForm.php",
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json, text/javascript, */*; q=0.01",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            Cookie: cookie,
+            Origin: "https://praktika.praktika.net.au",
+            Referer: `https://praktika.praktika.net.au/php/forms/getFormFile.php?sFileName=PersonalDetailsDesktop.html?iFormId=389&iCustomerId=480&iPracticeId=${practiceId}&iPatientId=${patientId}&isDialog=true`,
+            "X-Requested-With": "XMLHttpRequest",
+            "User-Agent":
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
+          },
+          body: params.toString(),
+          cache: "no-store",
+        },
+      );
+
+      const responseText = await response.text();
+
+      if (!response.ok) {
+        throw new Error(
+          `Praktika patient gender request failed: ${response.status}. ${responseText.slice(
+            0,
+            500,
+          )}`,
+        );
+      }
+
+      if (!responseText.trim()) {
+        return null;
+      }
+
+      if (responseText.trim().startsWith("<")) {
+        throw new Error(
+          "Praktika returned HTML instead of JSON while fetching patient gender. The Praktika session is probably expired.",
+        );
+      }
+
+      let parsed: any;
+
+      try {
+        parsed = JSON.parse(responseText);
+      } catch {
+        throw new Error(
+          `Praktika returned non-JSON patient form response. ${responseText.slice(
+            0,
+            500,
+          )}`,
+        );
+      }
+
+      return normalisePraktikaGender(parsed?.patient_gender);
+    },
+    { mode },
+  );
+}
+
+async function addPatientGenderToRows({
+  rows,
+  practiceId,
+  mode,
+}: {
+  rows: Array<{
+    provider_id: string | null;
+    praktika_patient_id: string | null;
+    patient_first_name: string | null;
+    patient_last_name: string | null;
+    patient_dob: string | null;
+    appointment_id: string;
+    appointment_time: string | null;
+    queue_reason: string;
+    raw_json: PraktikaAppointmentRow;
+    updated_at: string;
+  }>;
+  practiceId: string;
+  mode: PraktikaSessionMode;
+}) {
+  const genderCache = new Map<string, PatientGender | null>();
+
+  const rowsWithGender = [];
+
+  for (const row of rows) {
+    const patientId = clean(row.praktika_patient_id);
+    let patientGender: PatientGender | null = null;
+
+    if (patientId) {
+      if (genderCache.has(patientId)) {
+        patientGender = genderCache.get(patientId) || null;
+      } else {
+        try {
+          patientGender = await fetchPatientGenderFromPraktika({
+            patientId,
+            practiceId,
+            mode,
+          });
+
+          genderCache.set(patientId, patientGender);
+        } catch (error) {
+          console.warn(
+            `Could not fetch explicit Praktika gender for patient ${patientId}. Falling back to title/neutral.`,
+            error,
+          );
+
+          genderCache.set(patientId, null);
+        }
+      }
+    }
+
+    rowsWithGender.push({
+      ...row,
+      patient_gender:
+        patientGender || inferPatientGenderFromTitle(row.raw_json) || "neutral",
+    });
+  }
+
+  return rowsWithGender;
 }
 
 export async function POST(req: Request) {
@@ -190,7 +379,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const incomingQueueRows = parsedRows
+    const incomingQueueRowsWithoutGender = parsedRows
       .filter(hasTypistLetterIcon)
       .map((row) => {
         const rawProviderName = clean(row.vchProviderName);
@@ -212,7 +401,7 @@ export async function POST(req: Request) {
       })
       .filter((row) => row.appointment_id);
 
-    if (incomingQueueRows.length === 0) {
+    if (incomingQueueRowsWithoutGender.length === 0) {
       return NextResponse.json({
         success: true,
         totalRows: parsedRows.length,
@@ -222,6 +411,12 @@ export async function POST(req: Request) {
         message: "No appointments with Typist Letter icon found.",
       });
     }
+
+    const incomingQueueRows = await addPatientGenderToRows({
+      rows: incomingQueueRowsWithoutGender,
+      practiceId,
+      mode,
+    });
 
     const appointmentIds = incomingQueueRows.map((row) => row.appointment_id);
 
@@ -254,6 +449,15 @@ export async function POST(req: Request) {
     const matchedProviders = rowsToUpsert.filter((row) => row.provider_id).length;
     const unmatchedProviders = rowsToUpsert.filter((row) => !row.provider_id).length;
 
+    const genderCounts = rowsToUpsert.reduce(
+      (counts, row) => {
+        const gender = row.patient_gender || "neutral";
+        counts[gender] = (counts[gender] || 0) + 1;
+        return counts;
+      },
+      {} as Record<string, number>,
+    );
+
     const { data, error } = await supabase
       .from("report_letter_queue")
       .upsert(rowsToUpsert, {
@@ -275,6 +479,7 @@ export async function POST(req: Request) {
       queued: data?.length || 0,
       matchedProviders,
       unmatchedProviders,
+      genderCounts,
       fromDate,
       toDate,
       queue: data || [],
