@@ -33,6 +33,48 @@ type CropAreaPixels = {
   height: number
 }
 
+const IMAGE_SIZE_PRESETS = [
+  {
+    label: "Small",
+    value: 35,
+    description: "about 56 mm wide",
+    helper: "Good for small intraoral photos.",
+  },
+  {
+    label: "Medium",
+    value: 55,
+    description: "about 88 mm wide",
+    helper: "Best default size for most clinical photos.",
+  },
+  {
+    label: "Large",
+    value: 75,
+    description: "about 119 mm wide",
+    helper: "Good when the image needs more detail.",
+  },
+  {
+    label: "Full width",
+    value: 100,
+    description: "about 159 mm wide",
+    helper: "Best for OPGs, CBCT screenshots, charts, or wide images.",
+  },
+]
+
+function getApproxWidthMm(percent: number) {
+  // The PDF route uses about 159.2 mm as the usable letter body width.
+  return Math.round(159.2 * (percent / 100))
+}
+
+function getPresetLabel(percent: number) {
+  const preset = IMAGE_SIZE_PRESETS.find((item) => item.value === percent)
+
+  if (preset) {
+    return `${preset.label} — ${preset.description}`
+  }
+
+  return `Custom — about ${getApproxWidthMm(percent)} mm wide`
+}
+
 async function normaliseImageFile(file: File): Promise<File> {
   const bitmap = await createImageBitmap(file)
   const canvas = document.createElement("canvas")
@@ -70,7 +112,7 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
   const [cropAreaPixels, setCropAreaPixels] =
     useState<CropAreaPixels | null>(null)
 
-  const [displayWidthPercent, setDisplayWidthPercent] = useState(60)
+  const [displayWidthPercent, setDisplayWidthPercent] = useState(55)
   const [displayAlignment, setDisplayAlignment] = useState("center")
   const [displayPageBreakBefore, setDisplayPageBreakBefore] = useState(false)
 
@@ -228,7 +270,12 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
   return (
     <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Clinical Images / X-rays</h3>
+        <div>
+          <h3 className="text-lg font-semibold">Clinical Images / X-rays</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            Upload images, then click each image to crop, caption, and choose its final PDF size.
+          </p>
+        </div>
 
         <label className="cursor-pointer rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">
           {uploading ? "Uploading..." : "Upload Images"}
@@ -257,30 +304,45 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {images.map((image) => (
-            <button
-              key={image.id}
-              type="button"
-              onClick={() => openPreview(image)}
-              className="overflow-hidden rounded-2xl border border-slate-200 bg-white text-left hover:border-blue-400"
-            >
-              <img
-                src={image.publicUrl}
-                alt={image.original_filename || "Clinical image"}
-                className="h-64 w-full bg-black object-contain"
-              />
+          {images.map((image, index) => {
+            const imageNumber = index + 1
+            const savedWidth = Number(image.display_width_percent ?? 60)
 
-              <div className="space-y-1 border-t border-slate-100 p-3">
-                <div className="text-sm font-medium text-slate-700">
-                  {image.original_filename}
+            return (
+              <button
+                key={image.id}
+                type="button"
+                onClick={() => openPreview(image)}
+                className="overflow-hidden rounded-2xl border border-slate-200 bg-white text-left hover:border-blue-400"
+              >
+                <div className="relative">
+                  <img
+                    src={image.publicUrl}
+                    alt={image.original_filename || "Clinical image"}
+                    className="h-64 w-full bg-black object-contain"
+                  />
+
+                  <div className="absolute left-3 top-3 rounded-full bg-white/95 px-3 py-1 text-xs font-bold text-slate-900 shadow">
+                    Image {imageNumber}
+                  </div>
                 </div>
 
-                <div className="text-xs text-slate-500">
-                  {image.caption || "No caption yet"}
+                <div className="space-y-1 border-t border-slate-100 p-3">
+                  <div className="text-sm font-medium text-slate-700">
+                    {image.original_filename}
+                  </div>
+
+                  <div className="text-xs text-slate-500">
+                    {image.caption || "No caption yet"}
+                  </div>
+
+                  <div className="mt-2 rounded-lg bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-800">
+                    PDF size: {getPresetLabel(savedWidth)}
+                  </div>
                 </div>
-              </div>
-            </button>
-          ))}
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -309,6 +371,17 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
 
             <div className="mt-5 grid gap-6 lg:grid-cols-[1.4fr_0.9fr]">
               <div>
+                <div className="mb-3 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-900">
+                  <div className="font-bold">Approximate final PDF size</div>
+                  <div className="mt-1">
+                    {displayWidthPercent}% width ≈{" "}
+                    <span className="font-bold">
+                      {getApproxWidthMm(displayWidthPercent)} mm wide
+                    </span>
+                    . Height depends on the crop shape and image proportions.
+                  </div>
+                </div>
+
                 <div className="relative h-[520px] overflow-hidden rounded-2xl bg-black">
                   <Cropper
                     image={selectedImage.publicUrl}
@@ -394,23 +467,60 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
                   />
                 </label>
 
-                <label className="block">
-                  <div className="mb-2 text-sm font-semibold text-slate-700">
-                    Report image width: {displayWidthPercent}%
+                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4">
+                  <div className="text-sm font-bold text-blue-950">
+                    Final PDF image size
+                  </div>
+                  <div className="mt-1 text-xs text-blue-800">
+                    Choose a simple size. Medium is usually best for letters.
                   </div>
 
-                  <input
-                    type="range"
-                    min="30"
-                    max="100"
-                    step="5"
-                    value={displayWidthPercent}
-                    onChange={(e) =>
-                      setDisplayWidthPercent(Number(e.target.value))
-                    }
-                    className="w-full"
-                  />
-                </label>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {IMAGE_SIZE_PRESETS.map((preset) => {
+                      const selected = displayWidthPercent === preset.value
+
+                      return (
+                        <button
+                          key={preset.value}
+                          type="button"
+                          onClick={() => setDisplayWidthPercent(preset.value)}
+                          className={[
+                            "rounded-xl border p-3 text-left text-sm transition",
+                            selected
+                              ? "border-blue-600 bg-white text-blue-950 ring-2 ring-blue-100"
+                              : "border-blue-100 bg-white/70 text-slate-700 hover:bg-white",
+                          ].join(" ")}
+                        >
+                          <div className="font-bold">{preset.label}</div>
+                          <div className="mt-1 text-xs">
+                            {preset.description}
+                          </div>
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            {preset.helper}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  <label className="mt-4 block">
+                    <div className="mb-2 text-xs font-semibold text-blue-900">
+                      Custom size: {displayWidthPercent}% ≈{" "}
+                      {getApproxWidthMm(displayWidthPercent)} mm wide
+                    </div>
+                    <input
+                      type="range"
+                      min="30"
+                      max="100"
+                      step="5"
+                      value={displayWidthPercent}
+                      onChange={(e) =>
+                        setDisplayWidthPercent(Number(e.target.value))
+                      }
+                      className="w-full"
+                    />
+                  </label>
+                </div>
 
                 <label className="block">
                   <div className="mb-2 text-sm font-semibold text-slate-700">
@@ -457,7 +567,7 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
                       setCropRotation(0)
                       setCropAspect("landscape")
                       setCropAreaPixels(null)
-                      setDisplayWidthPercent(60)
+                      setDisplayWidthPercent(55)
                       setDisplayAlignment("center")
                       setDisplayPageBreakBefore(false)
                     }}

@@ -13,6 +13,11 @@ function clean(value: unknown) {
   return String(value ?? "").trim()
 }
 
+function cleanOrNull(value: unknown) {
+  const cleaned = clean(value)
+  return cleaned || null
+}
+
 async function saveLearningExample(params: {
   providerId: string
   draftId: string
@@ -33,6 +38,40 @@ async function saveLearningExample(params: {
     final_text: params.finalText,
     source: params.source,
   })
+}
+
+async function updateLinkedQueueItem(params: {
+  queueId?: string | null
+  draftId: string
+  status: string
+  referrerName: string | null
+  referrerAddress: string | null
+  sourceText: string | null
+  praktikaPatientId: string | null
+}) {
+  const queueId = clean(params.queueId)
+
+  if (!queueId) return
+
+  const queueUpdate: Record<string, unknown> = {
+    report_draft_id: params.draftId,
+    status: params.status === "approved" ? "completed" : "started",
+    updated_at: new Date().toISOString(),
+  }
+
+  if (params.referrerName) queueUpdate.referrer_name = params.referrerName
+  if (params.referrerAddress) queueUpdate.referrer_address = params.referrerAddress
+  if (params.sourceText) queueUpdate.source_clinical_notes = params.sourceText
+  if (params.praktikaPatientId) queueUpdate.praktika_patient_id = params.praktikaPatientId
+
+  const { error } = await supabase
+    .from("report_letter_queue")
+    .update(queueUpdate)
+    .eq("id", queueId)
+
+  if (error) {
+    console.warn("Draft saved, but linked queue item could not be updated:", error)
+  }
 }
 
 export async function POST(req: Request) {
@@ -57,6 +96,7 @@ export async function POST(req: Request) {
       sourceType,
       status,
       praktikaPatientId,
+      queueId,
     } = body
 
     if (!providerId) {
@@ -68,6 +108,11 @@ export async function POST(req: Request) {
 
     const finalStatus = status || "draft"
     const finalReportType = reportType || "consultation_report"
+    const finalReferrerName = cleanOrNull(referrerName)
+    const finalReferrerAddress = cleanOrNull(referrerAddress)
+    const finalSourceText = cleanOrNull(clinicalNotes)
+    const finalPraktikaPatientId = cleanOrNull(praktikaPatientId)
+
     const aiText = clean(originalAiText) || clean(generatedReport)
     const finalText =
       clean(finalApprovedText) || clean(editedText) || clean(generatedReport)
@@ -75,17 +120,17 @@ export async function POST(req: Request) {
     const insertPayload: Record<string, unknown> = {
       provider_id: providerId,
       created_by: providerId,
-      patient_name: patientName || null,
-      patient_dob: patientDob || null,
-      referrer_name: referrerName || null,
-      referrer_address: referrerAddress || null,
+      patient_name: cleanOrNull(patientName),
+      patient_dob: cleanOrNull(patientDob),
+      referrer_name: finalReferrerName,
+      referrer_address: finalReferrerAddress,
       report_type: finalReportType,
       source_type: sourceType || "clinical_notes",
-      source_text: clinicalNotes || null,
+      source_text: finalSourceText,
       ai_generated_text: aiText,
       edited_text: finalText,
       status: finalStatus,
-      praktika_patient_id: praktikaPatientId || null,
+      praktika_patient_id: finalPraktikaPatientId,
       drafted_by_initials: actor.actorInitials,
       drafted_by_name: actor.actorFullName,
       provider_approved_at:
@@ -110,6 +155,16 @@ export async function POST(req: Request) {
       )
     }
 
+    await updateLinkedQueueItem({
+      queueId,
+      draftId: data.id,
+      status: finalStatus,
+      referrerName: finalReferrerName,
+      referrerAddress: finalReferrerAddress,
+      sourceText: finalSourceText,
+      praktikaPatientId: finalPraktikaPatientId,
+    })
+
     if (finalStatus === "approved" && learnFromEdits) {
       await saveLearningExample({
         providerId,
@@ -133,6 +188,9 @@ export async function POST(req: Request) {
         reportType: finalReportType,
         sourceType: sourceType || "clinical_notes",
         status: finalStatus,
+        referrerNameSaved: Boolean(finalReferrerName),
+        referrerAddressSaved: Boolean(finalReferrerAddress),
+        linkedQueueId: clean(queueId) || null,
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
         learningSaved:
@@ -150,7 +208,11 @@ export async function POST(req: Request) {
     console.error(error)
 
     return NextResponse.json(
-      { success: false, error: "Failed to save draft" },
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to save draft",
+      },
       { status: 500 }
     )
   }

@@ -13,6 +13,11 @@ function clean(value: unknown) {
   return String(value ?? "").trim()
 }
 
+function cleanOrNull(value: unknown) {
+  const cleaned = clean(value)
+  return cleaned || null
+}
+
 async function saveLearningExample(params: {
   providerId: string
   draftId: string
@@ -35,6 +40,36 @@ async function saveLearningExample(params: {
   })
 }
 
+async function updateLinkedQueueRows(params: {
+  draftId: string
+  referrerName?: string | null
+  referrerAddress?: string | null
+  sourceText?: string | null
+  praktikaPatientId?: string | null
+  status?: string | null
+}) {
+  const queueUpdate: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  }
+
+  if (params.referrerName !== undefined) queueUpdate.referrer_name = params.referrerName
+  if (params.referrerAddress !== undefined) queueUpdate.referrer_address = params.referrerAddress
+  if (params.sourceText !== undefined) queueUpdate.source_clinical_notes = params.sourceText
+  if (params.praktikaPatientId !== undefined) queueUpdate.praktika_patient_id = params.praktikaPatientId
+  if (params.status === "approved") queueUpdate.status = "completed"
+
+  if (Object.keys(queueUpdate).length <= 1) return
+
+  const { error } = await supabase
+    .from("report_letter_queue")
+    .update(queueUpdate)
+    .eq("report_draft_id", params.draftId)
+
+  if (error) {
+    console.warn("Draft updated, but linked queue row could not be updated:", error)
+  }
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json()
@@ -49,6 +84,12 @@ export async function POST(req: Request) {
       learnFromEdits,
       learningSource,
       praktikaPatientId,
+      referrerName,
+      referrerAddress,
+      clinicalNotes,
+      patientDob,
+      patientName,
+      reportType,
     } = body
 
     if (!draftId) {
@@ -75,14 +116,35 @@ export async function POST(req: Request) {
       updated_at: new Date().toISOString(),
     }
 
-    if (typeof editedText === "string") {
-      updatePayload.edited_text = editedText
+    if (typeof editedText === "string") updatePayload.edited_text = editedText
+
+    if (Object.prototype.hasOwnProperty.call(body, "referrerName")) {
+      updatePayload.referrer_name = cleanOrNull(referrerName)
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "referrerAddress")) {
+      updatePayload.referrer_address = cleanOrNull(referrerAddress)
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "clinicalNotes")) {
+      updatePayload.source_text = cleanOrNull(clinicalNotes)
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "patientDob")) {
+      updatePayload.patient_dob = cleanOrNull(patientDob)
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "patientName")) {
+      updatePayload.patient_name = cleanOrNull(patientName)
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "reportType")) {
+      updatePayload.report_type =
+        cleanOrNull(reportType) || existingDraft.report_type || "consultation_report"
     }
 
     if (Object.prototype.hasOwnProperty.call(body, "praktikaPatientId")) {
-      updatePayload.praktika_patient_id = praktikaPatientId
-        ? String(praktikaPatientId)
-        : null
+      updatePayload.praktika_patient_id = cleanOrNull(praktikaPatientId)
     }
 
     if (typeof status === "string" && status.trim()) {
@@ -116,6 +178,23 @@ export async function POST(req: Request) {
       )
     }
 
+    await updateLinkedQueueRows({
+      draftId: data.id,
+      referrerName: Object.prototype.hasOwnProperty.call(body, "referrerName")
+        ? cleanOrNull(referrerName)
+        : undefined,
+      referrerAddress: Object.prototype.hasOwnProperty.call(body, "referrerAddress")
+        ? cleanOrNull(referrerAddress)
+        : undefined,
+      sourceText: Object.prototype.hasOwnProperty.call(body, "clinicalNotes")
+        ? cleanOrNull(clinicalNotes)
+        : undefined,
+      praktikaPatientId: Object.prototype.hasOwnProperty.call(body, "praktikaPatientId")
+        ? cleanOrNull(praktikaPatientId)
+        : undefined,
+      status: typeof status === "string" ? status : null,
+    })
+
     const aiText =
       clean(originalAiText) ||
       clean(existingDraft.ai_generated_text) ||
@@ -148,6 +227,8 @@ export async function POST(req: Request) {
       details: {
         status: data.status,
         praktikaPatientId: data.praktika_patient_id || null,
+        referrerNameSaved: Boolean(data.referrer_name),
+        referrerAddressSaved: Boolean(data.referrer_address),
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
         learningSaved:

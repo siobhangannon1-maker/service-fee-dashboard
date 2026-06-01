@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 type SessionScope = "practice" | "user";
 
@@ -29,8 +29,7 @@ type SessionState = {
   mfaCodeUpdatedAt?: string | null;
 };
 
-const AUTO_VALIDATE_AFTER_MS = 5 * 60 * 1000;
-const STATUS_POLL_MS = 7000;
+const STATUS_POLL_MS =30000;
 const RECONNECT_STATUSES: SessionStatus[] = ["refresh_requested", "refreshing"];
 
 function isReconnectStatus(status: SessionStatus) {
@@ -113,7 +112,8 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
       tone: "border-amber-200 bg-amber-50 text-amber-950",
       dot: "bg-amber-500",
       headline: "Praktika needs an MFA code",
-      message: "Enter the code from Authenticator below and reconnection will continue automatically.",
+      message:
+        "Enter the code from Authenticator below and reconnection will continue automatically.",
     };
   }
 
@@ -186,9 +186,6 @@ export default function PraktikaSessionPanel({
   const [validating, setValidating] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const lastAutoValidateRef = useRef<number>(0);
-  const mountedRef = useRef(true);
-
   async function loadStatus() {
     try {
       const res = await fetch(`/api/praktika/session/status?scope=${scope}`, {
@@ -210,45 +207,41 @@ export default function PraktikaSessionPanel({
         mfaCodeUpdatedAt: json.mfaCodeUpdatedAt || null,
       };
 
-      if (!mountedRef.current) return;
-
       setState(nextState);
 
       if (nextState.status === "connected") {
-        const lastActivity = nextState.lastUsedAt || nextState.refreshedAt;
-        const lastActivityTime = lastActivity ? new Date(lastActivity).getTime() : 0;
-        const autoValidateDue =
-          Number.isFinite(lastActivityTime) &&
-          Date.now() - Math.max(lastActivityTime, lastAutoValidateRef.current) >
-            AUTO_VALIDATE_AFTER_MS;
+        setLiveStatus("connected");
+        setLiveMessage(
+          nextState.message || "Praktika browser and API are connected.",
+        );
+      }
 
-        if (autoValidateDue && !validating && !busy) {
-          lastAutoValidateRef.current = Date.now();
-          validateSession({ requestRefresh: true, silent: true });
-        }
+      if (
+        nextState.status === "waiting_for_credentials" ||
+        nextState.status === "waiting_for_mfa" ||
+        nextState.status === "expired" ||
+        nextState.status === "error"
+      ) {
+        setLiveStatus("not_checked");
       }
     } catch (error: any) {
       console.error("Praktika session status failed:", error);
 
-      if (!mountedRef.current) return;
-
       setState({
         status: "error",
-        message: error?.message || "Could not connect to Praktika session service.",
+        message:
+          error?.message || "Could not connect to Praktika session service.",
         updatedAt: new Date().toISOString(),
       });
     }
   }
 
   useEffect(() => {
-    mountedRef.current = true;
-    lastAutoValidateRef.current = 0;
     loadStatus();
 
     const timer = window.setInterval(loadStatus, STATUS_POLL_MS);
 
     return () => {
-      mountedRef.current = false;
       window.clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -268,12 +261,14 @@ export default function PraktikaSessionPanel({
 
       if (!res.ok) {
         throw new Error(
-          json?.message || json?.error || `Refresh request failed with status ${res.status}.`,
+          json?.message ||
+            json?.error ||
+            `Refresh request failed with status ${res.status}.`,
         );
       }
 
-      setLiveStatus("not_checked");
-      setLiveMessage("Reconnect requested. Status will update shortly");
+      setLiveStatus("checking");
+      setLiveMessage("Reconnect requested. Status will update shortly.");
       await loadStatus();
     } catch (error: any) {
       console.error("Praktika refresh failed:", error);
@@ -307,7 +302,7 @@ export default function PraktikaSessionPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           scope,
-          requestRefresh: options.requestRefresh ?? true,
+          requestRefresh: options.requestRefresh ?? false,
         }),
       });
 
@@ -315,19 +310,20 @@ export default function PraktikaSessionPanel({
 
       if (!res.ok) {
         throw new Error(
-          json?.message || json?.error || `Validation failed with status ${res.status}.`,
+          json?.message ||
+            json?.error ||
+            `Validation failed with status ${res.status}.`,
         );
       }
 
-      const checkedAt = new Date().toISOString();
-      setLiveCheckedAt(checkedAt);
+      setLiveCheckedAt(new Date().toISOString());
 
       if (json.connected) {
         setLiveStatus("connected");
         setLiveMessage(json.message || "Live Praktika connection confirmed.");
       } else if (json.refreshRequested) {
         setLiveStatus("checking");
-        setLiveMessage("Praktika reconnect requested automatically.");
+        setLiveMessage("Praktika reconnect requested.");
       } else {
         setLiveStatus("expired");
         setLiveMessage(json.message || "Praktika is not connected.");
@@ -412,7 +408,9 @@ export default function PraktikaSessionPanel({
 
       if (!res.ok) {
         throw new Error(
-          json?.message || json?.error || `MFA code submission failed with status ${res.status}.`,
+          json?.message ||
+            json?.error ||
+            `MFA code submission failed with status ${res.status}.`,
         );
       }
 
@@ -440,13 +438,23 @@ export default function PraktikaSessionPanel({
     scope === "user" &&
     (state.status === "waiting_for_credentials" ||
       state.status === "not_started" ||
-      state.status === "expired") &&
+      state.status === "expired" ||
+      state.status === "error") &&
     !isReconnectStatus(state.status) &&
     liveStatus !== "checking";
 
   const showMfa = state.status === "waiting_for_mfa";
-  const isConnected = state.status === "connected" && liveStatus !== "expired" && liveStatus !== "error";
-  const isBusyState = busy || validating || isReconnectStatus(state.status) || liveStatus === "checking";
+
+  const isConnected =
+    state.status === "connected" &&
+    liveStatus !== "expired" &&
+    liveStatus !== "error";
+
+  const isBusyState =
+    busy ||
+    validating ||
+    isReconnectStatus(state.status) ||
+    liveStatus === "checking";
 
   return (
     <section className={`rounded-2xl border p-4 shadow-sm ${display.tone}`}>
@@ -507,7 +515,10 @@ export default function PraktikaSessionPanel({
       </div>
 
       {showCredentials ? (
-        <form onSubmit={submitCredentials} className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
+        <form
+          onSubmit={submitCredentials}
+          className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3"
+        >
           <div className="grid gap-3 md:grid-cols-2">
             <label className="block">
               <div className="mb-1 text-xs font-medium">Praktika username</div>
@@ -544,7 +555,10 @@ export default function PraktikaSessionPanel({
       ) : null}
 
       {showMfa ? (
-        <form onSubmit={submitMfaCode} className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3">
+        <form
+          onSubmit={submitMfaCode}
+          className="mt-4 rounded-xl border border-amber-300 bg-white/70 p-3"
+        >
           <label className="block">
             <div className="mb-1 text-xs font-medium">MFA code</div>
             <input
@@ -600,7 +614,7 @@ export default function PraktikaSessionPanel({
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => validateSession({ requestRefresh: true })}
+              onClick={() => validateSession({ requestRefresh: false })}
               disabled={isBusyState}
               className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-900 ring-1 ring-inset ring-slate-300 disabled:opacity-50"
             >

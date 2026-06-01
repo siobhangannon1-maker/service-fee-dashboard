@@ -129,6 +129,201 @@ function getDearLine(referrerName: string | null | undefined) {
   return `Dear Dr ${lastName},`;
 }
 
+
+function normaliseForMatch(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^dr\s+/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatReferrerAddressWithPractice(params: {
+  practiceName?: string | null;
+  address?: string | null;
+}) {
+  const practiceName = String(params.practiceName || "").trim();
+  const address = String(params.address || "").trim();
+
+  if (!practiceName) return address || null;
+  if (!address) return practiceName;
+
+  const firstAddressLine = address.split(/\n+/)[0]?.trim().toLowerCase();
+
+  if (firstAddressLine === practiceName.toLowerCase()) {
+    return address;
+  }
+
+  return [practiceName, address].filter(Boolean).join("\n");
+}
+
+function getPossibleReferrerNames(draft: any) {
+  const rawJson = draft?.raw_json || {};
+  const sourceText = String(
+    draft?.source_text ||
+      draft?.clinical_notes ||
+      draft?.source_clinical_notes ||
+      "",
+  );
+
+  const appointmentReferrerMatch = sourceText.match(
+    /(?:^|\n)\s*Referrer\s*:\s*([^\n\r]+)/i,
+  );
+
+  const names = [
+    draft?.referrer_name,
+    rawJson?.referrer_name,
+    rawJson?.referrerName,
+    rawJson?.vchReferrer,
+    rawJson?.vchReferralProvider,
+    rawJson?.vchProvider,
+    appointmentReferrerMatch?.[1],
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(names));
+}
+
+function getInlineImageMarker(paragraph: string) {
+  const match = String(paragraph || "")
+    .trim()
+    .match(/^\[\[\s*IMAGE\s*:?\s*(\d+)\s*\]\]$/i);
+
+  if (!match) return null;
+
+  const imageNumber = Number(match[1]);
+
+  if (!Number.isFinite(imageNumber) || imageNumber < 1) {
+    return null;
+  }
+
+  return imageNumber;
+}
+
+async function resolveDraftReferrer(draft: any) {
+  const existingName = String(draft?.referrer_name || "").trim();
+  const existingAddress = String(draft?.referrer_address || "").trim();
+
+  const { data: linkedQueueRows, error: queueError } = await supabase
+    .from("report_letter_queue")
+    .select("referrer_name, referrer_address, raw_json")
+    .eq("report_draft_id", draft.id)
+    .limit(1);
+
+  if (queueError) {
+    console.warn("Could not look up linked report_letter_queue row:", queueError);
+  }
+
+  const linkedQueue = linkedQueueRows?.[0] || null;
+  const queueName = String(linkedQueue?.referrer_name || "").trim();
+  const queueAddress = String(linkedQueue?.referrer_address || "").trim();
+
+  const possibleNames = [
+    ...getPossibleReferrerNames(draft),
+    queueName,
+    linkedQueue?.raw_json?.referrer_name,
+    linkedQueue?.raw_json?.referrerName,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  const fallbackName = existingName || queueName || possibleNames[0] || null;
+  const fallbackAddress = existingAddress || queueAddress || null;
+
+  if (possibleNames.length === 0) {
+    return {
+      referrerName: fallbackName,
+      referrerAddress: fallbackAddress,
+      source: fallbackName || fallbackAddress ? "draft_or_queue" : "empty",
+    };
+  }
+
+  const { data: referrers, error } = await supabase
+    .from("report_referrers")
+    .select("name, practice_name, address, raw_json")
+    .limit(10000);
+
+  if (error) {
+    console.warn("Could not look up report_referrers for PDF fallback:", error);
+    return {
+      referrerName: fallbackName,
+      referrerAddress: fallbackAddress,
+      source: "lookup_error",
+    };
+  }
+
+  const candidates = possibleNames.map(normaliseForMatch).filter(Boolean);
+
+  let bestReferrer: any = null;
+  let bestScore = 0;
+
+  for (const referrer of referrers || []) {
+    const raw = referrer.raw_json || {};
+    const fields = [
+      referrer.name,
+      referrer.practice_name,
+      raw.vchProvider,
+      raw.vchClinic,
+    ]
+      .map(normaliseForMatch)
+      .filter(Boolean);
+
+    let score = 0;
+
+    for (const candidate of candidates) {
+      const candidateWords = new Set(
+        candidate.split(" ").filter((word) => word.length > 2),
+      );
+
+      for (const field of fields) {
+        if (candidate === field) score = Math.max(score, 120);
+        if (candidate.includes(field)) score = Math.max(score, 90);
+        if (field.includes(candidate)) score = Math.max(score, 80);
+
+        const fieldWords = new Set(
+          field.split(" ").filter((word) => word.length > 2),
+        );
+        const overlap = [...candidateWords].filter((word) =>
+          fieldWords.has(word),
+        ).length;
+
+        score = Math.max(score, overlap * 20);
+      }
+    }
+
+    if (score > bestScore) {
+      bestReferrer = referrer;
+      bestScore = score;
+    }
+  }
+
+  if (!bestReferrer || bestScore < 40) {
+    return {
+      referrerName: fallbackName,
+      referrerAddress: fallbackAddress,
+      source: "no_match",
+    };
+  }
+
+  return {
+    referrerName: fallbackName || bestReferrer.name || null,
+    referrerAddress: fallbackAddress
+      ? formatReferrerAddressWithPractice({
+          practiceName: bestReferrer.practice_name,
+          address: fallbackAddress,
+        })
+      : formatReferrerAddressWithPractice({
+          practiceName: bestReferrer.practice_name,
+          address: bestReferrer.address,
+        }),
+    source: "report_referrers",
+  };
+}
+
+
 function getImageAspect(aspect: string | null | undefined) {
   if (aspect === "square") return 1;
   if (aspect === "portrait") return 3 / 4;
@@ -283,6 +478,10 @@ export async function POST(req: Request) {
     }
 
     const images = (imageRows || []) as DraftImage[];
+
+    const resolvedReferrer = await resolveDraftReferrer(draft);
+    const pdfReferrerName = resolvedReferrer.referrerName;
+    const pdfReferrerAddress = resolvedReferrer.referrerAddress;
 
     const letterheadBytes = await downloadStorageFile(
       "letterhead/focus-letterhead.png",
@@ -450,6 +649,94 @@ export async function POST(req: Request) {
       drawInlineRuns(parseBoldMarkdown(text));
     }
 
+    const usedInlineImageIds = new Set<string>();
+
+    async function drawImageBlock(image: DraftImage) {
+      const embeddedImage = await embedStorageImage(pdfDoc, image);
+
+      const displayWidthPercent = Number(image.display_width_percent ?? 60);
+
+      const imageWidth =
+        (contentWidth * Math.min(Math.max(displayWidthPercent, 30), 100)) /
+        100;
+
+      const embeddedDims = embeddedImage.scale(1);
+      const actualAspectRatio = embeddedDims.width / embeddedDims.height;
+
+      const frameWidth = imageWidth;
+      const frameHeight = frameWidth / actualAspectRatio;
+
+      const captionLines = image.caption ? wrapText(image.caption, 75) : [];
+
+      const captionHeight =
+        captionLines.length > 0 ? captionLines.length * 12 + 10 : 0;
+
+      const totalImageBlockHeight = frameHeight + captionHeight + 28;
+
+      if (
+        image.display_page_break_before ||
+        y - totalImageBlockHeight < bottomLimit
+      ) {
+        y = newPage();
+      }
+
+      const x = getAlignedX({
+        alignment: image.display_alignment,
+        marginLeft,
+        contentWidth,
+        imageWidth: frameWidth,
+      });
+
+      const frameY = y - frameHeight;
+
+      page.pushOperators(
+        pushGraphicsState(),
+        moveTo(x, frameY),
+        lineTo(x + frameWidth, frameY),
+        lineTo(x + frameWidth, frameY + frameHeight),
+        lineTo(x, frameY + frameHeight),
+        closePath(),
+        clip(),
+        endPath(),
+      );
+
+      page.drawImage(embeddedImage, {
+        x,
+        y: frameY,
+        width: frameWidth,
+        height: frameHeight,
+      });
+
+      page.pushOperators(popGraphicsState());
+
+      y = frameY - 12;
+
+      if (captionLines.length > 0) {
+        for (const captionLine of captionLines) {
+          if (y < bottomLimit) {
+            y = newPage();
+          }
+
+          const captionWidth = boldFont.widthOfTextAtSize(captionLine, 9);
+          const captionX = x + frameWidth / 2 - captionWidth / 2;
+
+          page.drawText(captionLine, {
+            x: captionX,
+            y,
+            size: 9,
+            font: boldFont,
+            color: rgb(0, 0, 0),
+          });
+
+          y -= 12;
+        }
+
+        y -= 8;
+      } else {
+        y -= 8;
+      }
+    }
+
     drawLetterhead();
 
     const today = new Date().toLocaleDateString("en-AU");
@@ -457,12 +744,12 @@ export async function POST(req: Request) {
 
     y -= lineHeight;
 
-    if (draft.referrer_name) {
-      drawLine(draft.referrer_name);
+    if (pdfReferrerName) {
+      drawLine(pdfReferrerName);
     }
 
-    if (draft.referrer_address) {
-      const addressLines = String(draft.referrer_address).split(/\n+/);
+    if (pdfReferrerAddress) {
+      const addressLines = String(pdfReferrerAddress).split(/\n+/);
 
       for (const addressLine of addressLines) {
         if (addressLine.trim()) {
@@ -473,7 +760,7 @@ export async function POST(req: Request) {
 
     y -= lineHeight;
 
-    drawLine(getDearLine(draft.referrer_name));
+    drawLine(getDearLine(pdfReferrerName));
 
     y -= lineHeight;
 
@@ -496,6 +783,19 @@ export async function POST(req: Request) {
       const cleanParagraph = paragraph.trim();
 
       if (!cleanParagraph) continue;
+
+      const inlineImageNumber = getInlineImageMarker(cleanParagraph);
+
+      if (inlineImageNumber) {
+        const image = images[inlineImageNumber - 1];
+
+        if (image) {
+          await drawImageBlock(image);
+          usedInlineImageIds.add(image.id);
+        }
+
+        continue;
+      }
 
       const isHeading =
         cleanParagraph.endsWith(":") && cleanParagraph.length < 60;
@@ -557,97 +857,17 @@ export async function POST(req: Request) {
       y -= lineHeight;
     }
 
-    if (images.length > 0) {
+    const unusedImages = images.filter((image) => !usedInlineImageIds.has(image.id));
+
+    if (unusedImages.length > 0) {
       y -= 12;
 
       drawLine("Clinical Images:", { bold: true });
 
       y -= 4;
 
-      for (const image of images) {
-        const embeddedImage = await embedStorageImage(pdfDoc, image);
-
-        const displayWidthPercent = Number(image.display_width_percent ?? 60);
-
-        const imageWidth =
-          (contentWidth * Math.min(Math.max(displayWidthPercent, 30), 100)) /
-          100;
-
-        const embeddedDims = embeddedImage.scale(1);
-        const actualAspectRatio = embeddedDims.width / embeddedDims.height;
-
-        const frameWidth = imageWidth;
-        const frameHeight = frameWidth / actualAspectRatio;
-
-        const captionLines = image.caption ? wrapText(image.caption, 75) : [];
-
-        const captionHeight =
-          captionLines.length > 0 ? captionLines.length * 12 + 10 : 0;
-
-        const totalImageBlockHeight = frameHeight + captionHeight + 28;
-
-        if (
-          image.display_page_break_before ||
-          y - totalImageBlockHeight < bottomLimit
-        ) {
-          y = newPage();
-        }
-
-        const x = getAlignedX({
-          alignment: image.display_alignment,
-          marginLeft,
-          contentWidth,
-          imageWidth: frameWidth,
-        });
-
-        const frameY = y - frameHeight;
-
-        page.pushOperators(
-          pushGraphicsState(),
-          moveTo(x, frameY),
-          lineTo(x + frameWidth, frameY),
-          lineTo(x + frameWidth, frameY + frameHeight),
-          lineTo(x, frameY + frameHeight),
-          closePath(),
-          clip(),
-          endPath(),
-        );
-
-        page.drawImage(embeddedImage, {
-          x,
-          y: frameY,
-          width: frameWidth,
-          height: frameHeight,
-        });
-
-        page.pushOperators(popGraphicsState());
-
-        y = frameY - 12;
-
-        if (captionLines.length > 0) {
-          for (const captionLine of captionLines) {
-            if (y < bottomLimit) {
-              y = newPage();
-            }
-
-            const captionWidth = boldFont.widthOfTextAtSize(captionLine, 9);
-            const captionX = x + frameWidth / 2 - captionWidth / 2;
-
-            page.drawText(captionLine, {
-              x: captionX,
-              y,
-              size: 9,
-              font: boldFont,
-              color: rgb(0, 0, 0),
-            });
-
-            y -= 12;
-          }
-
-          y -= 8;
-        } else {
-          y -= 8;
-        }
+      for (const image of unusedImages) {
+        await drawImageBlock(image);
       }
     }
 

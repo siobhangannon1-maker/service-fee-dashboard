@@ -60,9 +60,15 @@ function isLikelySessionProblem(error: any) {
     message.includes("user session is logged-out") ||
     message.includes("user session is logged out") ||
     message.includes("dbunauthorisedexception") ||
-    message.includes("fisisloggedin") ||
+    message.includes("fisloggedin") ||
     message.includes("fisloggedin")
   );
+}
+
+function timeValue(value?: string | null) {
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 async function markSessionExpired(mode: PraktikaSessionMode, message: string) {
@@ -74,25 +80,40 @@ async function markSessionExpired(mode: PraktikaSessionMode, message: string) {
 
 export async function waitForPraktikaConnected(
   mode: PraktikaSessionMode = { scope: "practice" },
-  { timeoutMs = 300_000, intervalMs = 3_000 }: WaitOptions = {},
+  {
+    timeoutMs = 90_000,
+    intervalMs = 2_000,
+  }: WaitOptions = {},
+  requiredRefreshAfter?: string
 ) {
   const startedAt = Date.now();
+  const requiredRefreshTime = timeValue(requiredRefreshAfter);
 
   while (Date.now() - startedAt < timeoutMs) {
     const session = await getPraktikaSession(mode);
 
-    if (session.status === "connected" && session.cookie) {
+    const refreshedTime = timeValue(session.refreshed_at);
+
+    const refreshIsNewEnough =
+      !requiredRefreshTime || refreshedTime >= requiredRefreshTime;
+
+    if (
+      session.status === "connected" &&
+      session.cookie &&
+      refreshIsNewEnough
+    ) {
       return session.cookie;
     }
 
-   if (session.status === "waiting_for_mfa") {
-  await sleep(intervalMs);
-  continue;
-}
+    if (session.status === "waiting_for_mfa") {
+      throw new PraktikaNeedsMfaError(
+        "Praktika needs an MFA code. Enter the MFA code in the Praktika Session panel, then try again."
+      );
+    }
 
     if (session.status === "waiting_for_credentials") {
       throw new PraktikaNeedsCredentialsError(
-        "Praktika needs username/password entry in the Praktika Session panel.",
+        "Praktika needs username/password entry in the Praktika Session panel."
       );
     }
 
@@ -104,17 +125,13 @@ export async function waitForPraktikaConnected(
   }
 
   throw new PraktikaRefreshTimeoutError(
-    "Praktika refresh was requested but did not complete in time. Check that the local helper machine is running.",
+    "Praktika refresh did not complete quickly enough. Check the Praktika Session panel and make sure the local helper is running."
   );
-  
-  throw new PraktikaRefreshTimeoutError(
-  "Praktika refresh did not complete. If Praktika is asking for MFA, enter the code in the Praktika Session panel and try again.",
-);
 }
 
 export async function withPraktikaAutoRefresh<T>(
   action: () => Promise<T>,
-  options: WaitOptions & { mode?: PraktikaSessionMode } = {},
+  options: WaitOptions & { mode?: PraktikaSessionMode } = {}
 ): Promise<T> {
   const mode = options.mode || { scope: "practice" as const };
 
@@ -124,20 +141,29 @@ export async function withPraktikaAutoRefresh<T>(
     console.log("Hybrid Praktika wrapper caught error:", error?.message);
 
     if (!isLikelySessionProblem(error)) {
-      console.log("Hybrid Praktika wrapper decided this is NOT a session problem.");
       throw error;
     }
+
+    const refreshRequestedAt = new Date().toISOString();
 
     await markSessionExpired(
       mode,
       error?.message ||
-        "Praktika session expired. A refresh has been requested.",
+        "Praktika session expired. A refresh has been requested."
     );
 
     console.log("Hybrid Praktika wrapper requesting refresh.");
 
     await markPraktikaRefreshRequested(mode);
-    await waitForPraktikaConnected(mode, options);
+
+    await waitForPraktikaConnected(
+      mode,
+      {
+        timeoutMs: options.timeoutMs ?? 90_000,
+        intervalMs: options.intervalMs ?? 2_000,
+      },
+      refreshRequestedAt
+    );
 
     console.log("Hybrid Praktika wrapper retrying original request.");
 

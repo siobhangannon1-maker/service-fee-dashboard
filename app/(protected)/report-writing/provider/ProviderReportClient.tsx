@@ -135,7 +135,7 @@ function PatientAndReferrerFields({
       <ReferrerSearchBox
         onSelect={(referrer) => {
           setReferrerName(referrer.name)
-          setReferrerAddress(referrer.address || "")
+          setReferrerAddress(formatManualReferrerAddress(referrer))
         }}
       />
 
@@ -188,6 +188,33 @@ function learningWillBeSaved(draft: Draft | null) {
   return Boolean(original && final && original !== final)
 }
 
+
+function formatManualReferrerAddress(referrer: any) {
+  const practiceName = String(
+    referrer?.practice_name ||
+      referrer?.practiceName ||
+      referrer?.clinic_name ||
+      referrer?.clinicName ||
+      referrer?.practice ||
+      referrer?.raw_json?.vchClinic ||
+      ""
+  ).trim();
+
+  const address = String(referrer?.address || "").trim();
+
+  if (!practiceName) return address;
+  if (!address) return practiceName;
+
+  const firstAddressLine = address.split(/\n+/)[0]?.trim().toLowerCase();
+
+  if (firstAddressLine === practiceName.toLowerCase()) {
+    return address;
+  }
+
+  return [practiceName, address].filter(Boolean).join("\n");
+}
+
+
 async function readJsonSafely(response: Response) {
   const text = await response.text()
 
@@ -234,6 +261,9 @@ export default function ProviderReportClient({
 
   const [loading, setLoading] = useState(false)
   const [savedMessage, setSavedMessage] = useState("")
+  const [showSavedToast, setShowSavedToast] = useState(false)
+  const [savedToastTitle, setSavedToastTitle] = useState("Letter saved")
+  const [savedToastText, setSavedToastText] = useState("")
   const [approvalSearch, setApprovalSearch] = useState("")
   const [approvedSearch, setApprovedSearch] = useState("")
   const [showOriginal, setShowOriginal] = useState(false)
@@ -318,11 +348,20 @@ export default function ProviderReportClient({
     return true
   }
 
+  function showSavedConfirmation(title: string, message: string) {
+    setSavedToastTitle(title)
+    setSavedToastText(message)
+    setShowSavedToast(true)
+
+    window.setTimeout(() => {
+      setShowSavedToast(false)
+    }, 4500)
+  }
+
   function clearGeneratedForm() {
     setGeneratedReport("")
     setOriginalGeneratedReport("")
     setClinicalNotes("")
-    setSavedMessage("")
   }
 
   async function handleGenerateFromNotes() {
@@ -425,11 +464,12 @@ export default function ProviderReportClient({
         return
       }
 
-      setSavedMessage(
-        hasEditedAiText
-          ? "Report saved, approved, and edits saved for learning."
-          : "Report saved and automatically approved."
-      )
+      const successMessage = hasEditedAiText
+        ? "Report saved, approved, and edits saved for learning."
+        : "Report saved and automatically approved."
+
+      setSavedMessage(successMessage)
+      showSavedConfirmation("Letter saved", successMessage)
       clearGeneratedForm()
       await loadDrafts()
     } finally {
@@ -478,7 +518,10 @@ export default function ProviderReportClient({
         return
       }
 
-      setSavedMessage("Dictated letter saved and automatically approved.")
+      const successMessage = "Dictated letter saved and automatically approved."
+
+      setSavedMessage(successMessage)
+      showSavedConfirmation("Letter saved", successMessage)
       setDictatedLetter("")
       await loadDrafts()
     } finally {
@@ -639,6 +682,29 @@ export default function ProviderReportClient({
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
+      {showSavedToast ? (
+        <div className="fixed bottom-6 right-6 z-50 w-[22rem] max-w-[calc(100vw-3rem)] rounded-2xl border border-green-200 bg-white p-5 shadow-2xl">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-green-100 text-lg font-bold text-green-700">
+              ✓
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <div className="font-bold text-slate-950">{savedToastTitle}</div>
+              <div className="mt-1 text-sm text-slate-600">{savedToastText}</div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowSavedToast(false)}
+              className="rounded-full px-2 py-1 text-sm font-semibold text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              aria-label="Close saved message"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      ) : null}
       <section className="rounded-3xl border bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>

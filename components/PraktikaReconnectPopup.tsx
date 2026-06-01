@@ -83,7 +83,7 @@ export default function PraktikaReconnectPopup() {
   useEffect(() => {
     loadStatus();
 
-    const timer = window.setInterval(loadStatus, 5000);
+    const timer = window.setInterval(loadStatus, 30000);
 
     return () => window.clearInterval(timer);
   }, [dismissedForStatus]);

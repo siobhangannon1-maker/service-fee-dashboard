@@ -19,7 +19,7 @@ const KEEP_BROWSER_OPEN =
   "false";
 
 const KEEP_ALIVE_INTERVAL_MS = Number(
-  process.env.PRAKTIKA_KEEP_ALIVE_INTERVAL_MS || 60_000,
+  process.env.PRAKTIKA_KEEP_ALIVE_INTERVAL_MS || 30_000,
 );
 
 const LOGIN_TIMEOUT_MS = Number(
@@ -381,6 +381,7 @@ async function isBrowserUiLoggedIn(page: Page) {
 async function hasExistingBrowserSession(page: Page) {
   await page.goto(`${PRAKTIKA_BASE_URL}/v2/`, {
     waitUntil: "domcontentloaded",
+    timeout: 90_000,
   });
 
   await page.waitForTimeout(3000);
@@ -390,6 +391,7 @@ async function hasExistingBrowserSession(page: Page) {
 
   await page.goto(`${PRAKTIKA_BASE_URL}/`, {
     waitUntil: "domcontentloaded",
+    timeout: 90_000,
   });
 
   await page.waitForTimeout(3000);
@@ -422,13 +424,10 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
   }
 
   if (!username || !password) {
-    const hasSavedCookie = Boolean(session.cookie);
-
     await updateSession({
-      status: hasSavedCookie ? "expired" : "waiting_for_credentials",
-      message: hasSavedCookie
-        ? "Praktika browser is not API-connected. Enter credentials if automatic reconnect does not complete."
-        : session.scope === "user"
+      status: "waiting_for_credentials",
+      message:
+        session.scope === "user"
           ? "Enter your Praktika username and password in DocuDental."
           : "Practice credentials are missing. Enter credentials or configure environment variables.",
       current_url: await safePageUrl(page),
@@ -529,21 +528,12 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
     throw new Error("Could not find required Praktika PHPSESSID and UAT cookies.");
   }
 
-  const apiValidation = await validateCookieWithPraktikaApi(cookieHeader);
-
-  if (!apiValidation.ok) {
-    await updateSession({
-      status: "expired",
-      message:
-        "Praktika browser is open, but the Praktika API session is logged out. Reconnect may be required.",
-      current_url: await safePageUrl(page),
-      refresh_requested_at: null,
-      last_used_at: nowIso(),
-    });
-
-    console.warn("Praktika API validation failed:", apiValidation.reason);
-    return false;
-  }
+  // Important:
+  // Do not validate these cookies with a separate server-side fetch here.
+  // Praktika can reject copied browser cookies as "Hijacked or expired session"
+  // even while the live helper browser is genuinely logged in. For this helper,
+  // the visible Playwright browser session is the source of truth.
+  console.log("Skipping server-side Praktika API validation; trusting live helper browser session.");
 
   const session = await getSession();
 
@@ -620,11 +610,31 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         await page
           .goto(`${PRAKTIKA_BASE_URL}/v2/`, {
             waitUntil: "domcontentloaded",
-            timeout: 30_000,
+            timeout: 90_000,
           })
           .catch(() => {});
       }
     } catch (error: any) {
+      const message = String(error?.message || "");
+
+      if (
+        message.includes("Target page, context or browser has been closed") ||
+        message.includes("browser has been closed") ||
+        message.includes("context or browser has been closed") ||
+        message.includes("Target closed")
+      ) {
+        await updateSession({
+          status: "connected",
+          message:
+            "Praktika was connected recently, but the local helper browser is no longer open. Start the helper again to keep cookies refreshed.",
+          refresh_requested_at: null,
+          last_used_at: nowIso(),
+        });
+
+        console.warn("Praktika helper browser/context closed. Exiting helper.");
+        process.exit(0);
+      }
+
       await updateSession({
         status: "error",
         message:
@@ -672,11 +682,17 @@ async function refreshOnce() {
     if (await hasExistingBrowserSession(page)) {
       const saved = await saveCookies(context, page);
 
-      if (KEEP_BROWSER_OPEN) {
-        await keepBrowserOpenForever(context, page);
+      if (saved) {
+        if (KEEP_BROWSER_OPEN) {
+          await keepBrowserOpenForever(context, page);
+        }
+
+        return;
       }
 
-      if (saved) return;
+      console.log(
+        "Browser UI looked logged in, but API validation failed. Continuing to real login.",
+      );
     }
 
     await updateSession({
@@ -688,8 +704,9 @@ async function refreshOnce() {
       current_url: await safePageUrl(page),
     });
 
-    await page.goto(`${PRAKTIKA_BASE_URL}/login/`, {
+    await page.goto(`${PRAKTIKA_BASE_URL}/v2/login`, {
       waitUntil: "domcontentloaded",
+      timeout: 90_000,
     });
 
     await page.waitForTimeout(2500);
