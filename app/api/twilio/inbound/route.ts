@@ -38,40 +38,81 @@ function isHelpMessage(body: string) {
 
 function isYesConfirmation(body: string) {
   const clean = body.trim().toUpperCase();
-
-  return ["Y", "YES", "CONFIRM", "CONFIRMED"].includes(clean);
+  return /^(Y|YES|YEP|YEAH|CONFIRM|CONFIRMED|OK|OKAY|👍)$/.test(clean);
 }
 
-function extensionFromContentType(contentType: string) {
-  if (contentType.includes("jpeg")) return "jpg";
-  if (contentType.includes("png")) return "png";
-  if (contentType.includes("gif")) return "gif";
-  if (contentType.includes("webp")) return "webp";
-  if (contentType.includes("pdf")) return "pdf";
-  return "file";
+async function findPendingConfirmationRequests(conversationId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("reception_messages")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .eq("direction", "outbound")
+    .eq("confirmation_intent", "appointment_confirmation_request")
+    .eq("confirmation_response_detected", false)
+    .not("praktika_appointment_id", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  if (error) {
+    console.error("Could not search pending confirmation requests", error);
+    return [];
+  }
+
+  return data || [];
 }
 
-async function downloadTwilioMedia(mediaUrl: string) {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
+async function markConfirmationAsConfirmed({
+  conversationId,
+  inboundMessageId,
+  pendingRequest,
+}: {
+  conversationId: string;
+  inboundMessageId: string;
+  pendingRequest: any;
+}) {
+  const confirmedAt = new Date().toISOString();
+  const appointmentId = String(pendingRequest.praktika_appointment_id);
 
-  if (!accountSid || !authToken) {
-    throw new Error("Missing Twilio credentials for inbound media download.");
+  const { error: messageUpdateError } = await supabaseAdmin
+    .from("reception_messages")
+    .update({
+      confirmation_response_detected: true,
+      confirmation_response_message_id: inboundMessageId,
+      confirmation_response_at: confirmedAt,
+    })
+    .eq("id", pendingRequest.id);
+
+  if (messageUpdateError) {
+    console.error("Could not mark confirmation request as responded", {
+      error: messageUpdateError,
+      pendingRequestId: pendingRequest.id,
+    });
   }
 
-  const response = await fetch(mediaUrl, {
-    headers: {
-      Authorization:
-        "Basic " + Buffer.from(`${accountSid}:${authToken}`).toString("base64"),
-    },
-  });
+  const { data: updatedConversation, error: conversationUpdateError } =
+    await supabaseAdmin
+      .from("reception_conversations")
+      .update({
+        praktika_appointment_id: appointmentId,
+        appointment_confirmation_status: "confirmed",
+        appointment_confirmed_at: confirmedAt,
+        updated_at: confirmedAt,
+      })
+      .eq("id", conversationId)
+      .select("id, appointment_confirmation_status, appointment_confirmed_at, praktika_appointment_id")
+      .single();
 
-  if (!response.ok) {
-    throw new Error(`Could not download Twilio media: ${response.status}`);
+  if (conversationUpdateError || !updatedConversation) {
+    console.error("Could not update conversation confirmation status", {
+      error: conversationUpdateError,
+      conversationId,
+      appointmentId,
+    });
+  } else {
+    console.log("Conversation marked confirmed", updatedConversation);
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+  return confirmedAt;
 }
 
 export async function GET() {
@@ -90,7 +131,7 @@ export async function POST(request: NextRequest) {
     const messageSid = String(formData.get("MessageSid") || "");
     const numMedia = Number(formData.get("NumMedia") || 0);
 
-    console.log("Inbound SMS/MMS", {
+    console.log("Inbound SMS", {
       from,
       body,
       messageSid,
@@ -101,7 +142,7 @@ export async function POST(request: NextRequest) {
       return twimlEmptyResponse();
     }
 
-    let { data: conversation, error: conversationError } = await supabaseAdmin
+    let { data: conversation } = await supabaseAdmin
       .from("reception_conversations")
       .select("*")
       .eq("patient_mobile", from)
@@ -110,21 +151,15 @@ export async function POST(request: NextRequest) {
       .limit(1)
       .maybeSingle();
 
-    if (conversationError) {
-      console.error("Could not find open conversation", {
-        error: conversationError,
-        from,
-      });
-
-      return twimlEmptyResponse();
-    }
-
     if (!conversation) {
       const { data: createdConversation, error: createError } =
         await supabaseAdmin
           .from("reception_conversations")
           .insert({
             status: "open",
+            workflow_status: "general",
+            is_urgent: false,
+            unread_count: 0,
             patient_first_name: null,
             patient_last_name: null,
             patient_mobile: from,
@@ -134,13 +169,12 @@ export async function POST(request: NextRequest) {
             assigned_display_name: null,
             last_message_preview: body || "Message received",
             last_message_at: new Date().toISOString(),
-            unread_count: 0,
           })
           .select("*")
           .single();
 
       if (createError || !createdConversation) {
-        console.error("Could not create conversation for unknown inbound SMS", {
+        console.error("Could not create unknown inbound conversation", {
           error: createError,
           from,
           body,
@@ -162,10 +196,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const messageBody = body || (numMedia > 0 ? "Attachment received" : "");
-    const stopRequested = isStopMessage(body);
-    const helpRequested = isHelpMessage(body);
-    const yesConfirmation = isYesConfirmation(body);
+    const messageBody = body || "Message received";
 
     const { data: message, error: messageError } = await supabaseAdmin
       .from("reception_messages")
@@ -192,88 +223,11 @@ export async function POST(request: NextRequest) {
       return twimlEmptyResponse();
     }
 
-    const savedAttachments: any[] = [];
-
-    for (let index = 0; index < numMedia; index++) {
-      const mediaUrl = String(formData.get(`MediaUrl${index}`) || "");
-      const mediaContentType = String(
-        formData.get(`MediaContentType${index}`) || "application/octet-stream"
-      );
-
-      if (!mediaUrl) continue;
-
-      try {
-        const fileBuffer = await downloadTwilioMedia(mediaUrl);
-        const extension = extensionFromContentType(mediaContentType);
-        const fileName = `incoming-${messageSid}-${index}.${extension}`;
-        const storagePath = `${conversation.id}/${Date.now()}-${fileName}`;
-
-        const { error: uploadError } = await supabaseAdmin.storage
-          .from("reception-message-attachments")
-          .upload(storagePath, fileBuffer, {
-            contentType: mediaContentType,
-            upsert: false,
-          });
-
-        if (uploadError) {
-          console.error("Could not upload inbound media to Supabase", {
-            uploadError,
-            mediaUrl,
-            mediaContentType,
-          });
-          continue;
-        }
-
-        const { data: publicUrlData } = supabaseAdmin.storage
-          .from("reception-message-attachments")
-          .getPublicUrl(storagePath);
-
-        const publicUrl = publicUrlData.publicUrl;
-
-        const attachmentPayload = {
-          message_id: message.id,
-          conversation_id: conversation.id,
-          file_name: fileName,
-          file_type: mediaContentType,
-          file_size: fileBuffer.length,
-          storage_path: storagePath,
-          public_url: publicUrl,
-        };
-
-        const { data: savedAttachment, error: attachmentError } =
-          await supabaseAdmin
-            .from("reception_message_attachments")
-            .insert(attachmentPayload)
-            .select("*")
-            .single();
-
-        if (attachmentError) {
-          console.error("Could not save inbound attachment row", {
-            attachmentError,
-            attachmentPayload,
-          });
-          continue;
-        }
-
-        savedAttachments.push(savedAttachment);
-      } catch (mediaError) {
-        console.error("Inbound media processing failed", {
-          mediaError,
-          index,
-          messageSid,
-        });
-      }
-    }
-
     await supabaseAdmin
       .from("reception_conversations")
       .update({
         status: "open",
-        last_message_preview:
-          body.slice(0, 160) ||
-          (savedAttachments.length > 0
-            ? "Attachment received"
-            : "Message received"),
+        last_message_preview: messageBody.slice(0, 160),
         last_message_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         unread_count: (conversation.unread_count || 0) + 1,
@@ -289,11 +243,89 @@ export async function POST(request: NextRequest) {
         body,
         twilio_message_sid: messageSid,
         num_media: numMedia,
-        saved_attachments: savedAttachments,
       },
     });
 
-    if (stopRequested) {
+    if (isYesConfirmation(body)) {
+      const pendingRequests = await findPendingConfirmationRequests(
+        conversation.id
+      );
+
+      if (pendingRequests.length === 1) {
+        const pendingRequest = pendingRequests[0];
+        const confirmedAt = await markConfirmationAsConfirmed({
+          conversationId: conversation.id,
+          inboundMessageId: message.id,
+          pendingRequest,
+        });
+
+        await supabaseAdmin.from("reception_audit_logs").insert({
+          conversation_id: conversation.id,
+          message_id: message.id,
+          action: "appointment_confirmation_reply_detected",
+          details: {
+            from,
+            body,
+            confirmation_request_message_id: pendingRequest.id,
+            confirmation_patient_name:
+              pendingRequest.confirmation_patient_name,
+            confirmation_appointment_label:
+              pendingRequest.confirmation_appointment_label,
+            praktika_appointment_id:
+              pendingRequest.praktika_appointment_id,
+            confirmed_at: confirmedAt,
+            note: "Safe confirmation. One pending confirmation request existed.",
+          },
+        });
+      } else if (pendingRequests.length > 1) {
+        const { error: ambiguousError } = await supabaseAdmin
+          .from("reception_conversations")
+          .update({
+            appointment_confirmation_status: "ambiguous",
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", conversation.id);
+
+        if (ambiguousError) {
+          console.error("Could not mark conversation as ambiguous", {
+            error: ambiguousError,
+            conversationId: conversation.id,
+          });
+        }
+
+        await supabaseAdmin.from("reception_audit_logs").insert({
+          conversation_id: conversation.id,
+          message_id: message.id,
+          action: "ambiguous_confirmation_reply_received",
+          details: {
+            from,
+            body,
+            pending_confirmation_count: pendingRequests.length,
+            pending_requests: pendingRequests.map((request) => ({
+              message_id: request.id,
+              praktika_appointment_id: request.praktika_appointment_id,
+              confirmation_patient_name: request.confirmation_patient_name,
+              confirmation_appointment_label:
+                request.confirmation_appointment_label,
+            })),
+            note: "Multiple pending confirmation requests exist for this mobile number. Staff must manually choose the appointment.",
+          },
+        });
+      } else {
+        await supabaseAdmin.from("reception_audit_logs").insert({
+          conversation_id: conversation.id,
+          message_id: message.id,
+          action: "yes_reply_received_without_pending_confirmation",
+          details: {
+            from,
+            body,
+            note: "YES was not treated as appointment confirmation because no pending confirmation request was found.",
+          },
+        });
+      }
+    }
+
+    if (isStopMessage(body)) {
       await supabaseAdmin.from("reception_sms_consent").upsert(
         {
           phone_number: from,
@@ -320,7 +352,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    if (helpRequested) {
+    if (isHelpMessage(body)) {
       await supabaseAdmin.from("reception_audit_logs").insert({
         conversation_id: conversation.id,
         message_id: message.id,
@@ -328,20 +360,6 @@ export async function POST(request: NextRequest) {
         details: {
           from,
           body,
-        },
-      });
-    }
-
-    if (yesConfirmation) {
-      await supabaseAdmin.from("reception_audit_logs").insert({
-        conversation_id: conversation.id,
-        message_id: message.id,
-        action: "appointment_confirmation_reply_detected",
-        details: {
-          from,
-          body,
-          praktika_appointment_id: conversation.praktika_appointment_id,
-          note: "Next step: connect this to Praktika appointment response update.",
         },
       });
     }

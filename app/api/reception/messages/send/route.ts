@@ -29,6 +29,23 @@ function isMmsFriendlyImage(attachment: OutboundAttachment) {
   );
 }
 
+function isAppointmentConfirmationRequest(body: string) {
+  const clean = body.toLowerCase();
+
+  const mentionsAppointment =
+    clean.includes("appointment") ||
+    clean.includes("appt") ||
+    clean.includes("booking");
+
+  const asksToConfirm =
+    clean.includes("confirm") ||
+    clean.includes("confirmation") ||
+    clean.includes("reply y") ||
+    clean.includes("reply yes");
+
+  return mentionsAppointment && asksToConfirm;
+}
+
 async function sendTwilioSms({
   to,
   body,
@@ -66,7 +83,7 @@ async function sendTwilioSms({
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: params,
-    }
+    },
   );
 
   const result = await response.json();
@@ -105,7 +122,7 @@ export async function POST(request: NextRequest) {
     if (!conversationId || (!cleanBody && attachments.length === 0)) {
       return NextResponse.json(
         { error: "Message body or attachment is required." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -118,7 +135,7 @@ export async function POST(request: NextRequest) {
     if (conversationError || !conversation) {
       return NextResponse.json(
         { error: "Conversation not found." },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
@@ -131,26 +148,51 @@ export async function POST(request: NextRequest) {
     if (consent?.status === "unsubscribed") {
       return NextResponse.json(
         { error: "This patient has unsubscribed from SMS." },
-        { status: 403 }
+        { status: 403 },
       );
     }
+
+    const { data: linkedAppointment } = conversation.praktika_appointment_id
+      ? await supabaseAdmin
+          .from("praktika_appointments")
+          .select("*")
+          .eq("praktika_appointment_id", conversation.praktika_appointment_id)
+          .maybeSingle()
+      : { data: null };
 
     const staff = await getStaffDisplayInfo(user.id);
 
     const imageAttachments = attachments.filter(isMmsFriendlyImage);
     const linkAttachments = attachments.filter(
-      (attachment) => !isMmsFriendlyImage(attachment)
+      (attachment) => !isMmsFriendlyImage(attachment),
     );
 
     const mediaUrls = imageAttachments
       .map((attachment) => attachment.publicUrl)
       .filter(Boolean);
 
-    const messageBodyBeforeLinks = cleanBody || "Attachment";
+    const firstMessageBody = cleanBody || "Attachment";
+
+    const isConfirmationRequest =
+      Boolean(conversation.praktika_appointment_id) &&
+      isAppointmentConfirmationRequest(firstMessageBody);
+
+    const patientName = [
+      conversation.patient_first_name,
+      conversation.patient_last_name,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    const appointmentLabel = linkedAppointment
+      ? `${linkedAppointment.appointment_day || ""} ${
+          linkedAppointment.appointment_date || ""
+        } at ${linkedAppointment.appointment_time || ""}`.trim()
+      : null;
 
     const twilio = await sendTwilioSms({
       to: conversation.patient_mobile,
-      body: messageBodyBeforeLinks,
+      body: firstMessageBody,
       mediaUrls,
     });
 
@@ -159,7 +201,7 @@ export async function POST(request: NextRequest) {
       .insert({
         conversation_id: conversationId,
         direction: "outbound",
-        body: messageBodyBeforeLinks,
+        body: firstMessageBody,
         twilio_message_sid: twilio.sid,
         twilio_status: twilio.status,
         sent_by_user_id: user.id,
@@ -167,6 +209,17 @@ export async function POST(request: NextRequest) {
         staff_display_name: staff.displayName,
         staff_initials: staff.initials,
         message_source: "manual",
+        confirmation_intent: isConfirmationRequest
+          ? "appointment_confirmation_request"
+          : null,
+        praktika_appointment_id: isConfirmationRequest
+          ? conversation.praktika_appointment_id
+          : null,
+        confirmation_code: null,
+        confirmation_patient_name: isConfirmationRequest ? patientName : null,
+        confirmation_appointment_label: isConfirmationRequest
+          ? appointmentLabel
+          : null,
       })
       .select("*")
       .single();
@@ -174,7 +227,7 @@ export async function POST(request: NextRequest) {
     if (error || !message) {
       return NextResponse.json(
         { error: error?.message || "Could not save message." },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
@@ -193,7 +246,7 @@ export async function POST(request: NextRequest) {
               file_size: attachment.fileSize,
               storage_path: attachment.storagePath,
               public_url: attachment.publicUrl,
-            }))
+            })),
           )
           .select("*");
 
@@ -207,17 +260,19 @@ export async function POST(request: NextRequest) {
     const brandedLinks = savedAttachments
       .filter((attachment) => {
         const original = linkAttachments.find(
-          (item) => item.storagePath === attachment.storage_path
+          (item) => item.storagePath === attachment.storage_path,
         );
 
         return Boolean(original);
       })
       .map(
         (attachment) =>
-          `${attachment.file_name}: ${getAppBaseUrl()}/reception/file/${attachment.id}`
+          `${attachment.file_name}: ${getAppBaseUrl()}/reception/file/${
+            attachment.id
+          }`,
       );
 
-    let finalMessageBody = messageBodyBeforeLinks;
+    let finalMessageBody = firstMessageBody;
 
     if (brandedLinks.length > 0) {
       finalMessageBody = `${cleanBody || "Please view the attached file below."}
@@ -242,6 +297,9 @@ ${brandedLinks.join("\n")}`;
       .from("reception_conversations")
       .update({
         status: "open",
+        appointment_confirmation_status: isConfirmationRequest
+          ? "confirmation_requested"
+          : conversation.appointment_confirmation_status || null,
         last_message_preview: finalMessageBody.slice(0, 160),
         last_message_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -253,13 +311,18 @@ ${brandedLinks.join("\n")}`;
       message_id: message.id,
       actor_user_id: user.id,
       actor_display_name: staff.displayName,
-      action: "message_sent",
+      action: isConfirmationRequest
+        ? "appointment_confirmation_request_sent"
+        : "message_sent",
       details: {
         twilio_sid: twilio.sid,
         twilio_status: twilio.status,
         body: finalMessageBody,
-        image_attachments_sent_as_mms: imageAttachments,
-        link_attachments_sent_as_branded_links: brandedLinks,
+        praktika_appointment_id: isConfirmationRequest
+          ? conversation.praktika_appointment_id
+          : null,
+        patient_name: patientName,
+        appointment_label: appointmentLabel,
       },
     });
 
@@ -270,7 +333,7 @@ ${brandedLinks.join("\n")}`;
         error:
           error instanceof Error ? error.message : "Could not send message.",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

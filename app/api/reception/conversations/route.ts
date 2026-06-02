@@ -12,6 +12,7 @@ export async function GET(request: NextRequest) {
     .from("reception_conversations")
     .select("*")
     .eq("status", status)
+    .order("is_urgent", { ascending: false })
     .order("last_message_at", { ascending: false, nullsFirst: false })
     .order("updated_at", { ascending: false });
 
@@ -117,6 +118,9 @@ export async function POST(request: NextRequest) {
     .from("reception_conversations")
     .insert({
       status: "open",
+      workflow_status: "general",
+      is_urgent: false,
+      unread_count: 0,
       praktika_patient_id: praktikaPatientId,
       praktika_appointment_id: praktikaAppointmentId,
       patient_first_name: firstName,

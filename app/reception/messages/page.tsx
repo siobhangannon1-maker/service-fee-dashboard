@@ -5,6 +5,8 @@ import PraktikaSessionPanel from "@/components/PraktikaSessionPanel";
 import PraktikaSyncPanel from "@/components/reception/PraktikaSyncPanel";
 import { displayPhone } from "@/lib/reception/phone";
 import { createClient } from "@/lib/supabase/client";
+import ConversationNotesPanel from "@/components/reception/ConversationNotesPanel";
+import ConversationWorkflowPanel from "@/components/reception/ConversationWorkflowPanel";
 
 type Conversation = {
   id: string;
@@ -19,6 +21,10 @@ type Conversation = {
   last_message_at: string | null;
   created_at: string;
   unread_count: number;
+  workflow_status: string | null;
+  is_urgent: boolean | null;
+  appointment_confirmation_status?: string | null;
+  appointment_confirmed_at?: string | null;
 };
 
 type Attachment = {
@@ -51,6 +57,8 @@ type Audit = {
   action: string;
   actor_display_name: string | null;
   created_at: string;
+  message_id?: string | null;
+  details?: any;
 };
 
 type PatientSearchResult = {
@@ -121,6 +129,113 @@ function StaffBadge({
   );
 }
 
+function workflowStatusLabel(value: string | null | undefined) {
+  if (value === "waiting_on_patient") return "Waiting on patient";
+  if (value === "waiting_on_practice") return "Waiting on practice";
+  if (value === "needs_follow_up") return "Needs follow-up";
+  return "General";
+}
+
+function workflowStatusClass(value: string | null | undefined) {
+  if (value === "waiting_on_patient") {
+    return "bg-amber-100 text-amber-800";
+  }
+
+  if (value === "waiting_on_practice") {
+    return "bg-purple-100 text-purple-800";
+  }
+
+  if (value === "needs_follow_up") {
+    return "bg-blue-100 text-blue-800";
+  }
+
+  return "bg-slate-100 text-slate-600";
+}
+
+function formatDateDdMmYyyy(value: string | null | undefined) {
+  if (!value) return "";
+  const [year, month, day] = value.split("-");
+  if (!year || !month || !day) return value;
+  return `${day}-${month}-${year}`;
+}
+
+function confirmationStatusLabel(value: string | null | undefined) {
+  if (value === "confirmed") return "Confirmed";
+  if (value === "confirmation_requested") return "Confirmation requested";
+  if (value === "ambiguous" || value === "ambiguous_response") {
+    return "Needs staff review";
+  }
+  return "Not sent";
+}
+
+function confirmationStatusClass(value: string | null | undefined) {
+  if (value === "confirmed") return "bg-emerald-100 text-emerald-700";
+  if (value === "confirmation_requested") return "bg-amber-100 text-amber-700";
+  if (value === "ambiguous" || value === "ambiguous_response") {
+    return "bg-red-100 text-red-700";
+  }
+  return "bg-slate-100 text-slate-600";
+}
+
+function conversationMarkerLabel(action: string) {
+  if (action === "conversation_closed") return "Conversation closed";
+  if (action === "conversation_opened") return "Conversation reopened";
+  if (action === "appointment_confirmed") return "Appointment confirmed";
+  if (action === "appointment_confirmation_reply_detected") {
+    return "Appointment confirmation reply received";
+  }
+  if (action === "appointment_confirmation_manually_resolved") {
+    return "Appointment confirmation manually resolved";
+  }
+  if (action === "patient_file_uploaded") return "Patient uploaded a file";
+  return action.replaceAll("_", " ");
+}
+
+function isConversationMarkerAudit(audit: Audit) {
+  return (
+    audit.action === "conversation_closed" ||
+    audit.action === "conversation_opened" ||
+    audit.action === "appointment_confirmed" ||
+    audit.action === "appointment_confirmation_reply_detected" ||
+    audit.action === "appointment_confirmation_manually_resolved" ||
+    audit.action === "patient_file_uploaded"
+  );
+}
+
+function latestConfirmationAuditForAppointment(
+  audits: Audit[],
+  appointmentId: string,
+) {
+  return audits
+    .filter((audit) =>
+      [
+        "appointment_confirmation_request_sent_from_queue",
+        "appointment_confirmation_request_resent",
+        "appointment_confirmation_request_sent",
+        "appointment_confirmation_reply_detected",
+        "appointment_confirmation_manually_resolved",
+      ].includes(audit.action),
+    )
+    .filter(
+      (audit) =>
+        String(audit.details?.praktika_appointment_id || "") ===
+        String(appointmentId),
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    )[0];
+}
+
+function getLatestAmbiguousAudit(audits: Audit[]) {
+  return audits
+    .filter((audit) => audit.action === "ambiguous_confirmation_reply_received")
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    )[0];
+}
+
 export default function ReceptionMessagesPage() {
   const [status, setStatus] = useState<"open" | "closed">("open");
   const [search, setSearch] = useState("");
@@ -136,6 +251,12 @@ export default function ReceptionMessagesPage() {
 
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
+  const [confirmationSendingId, setConfirmationSendingId] = useState<
+    string | null
+  >(null);
+  const [manualResolvingId, setManualResolvingId] = useState<string | null>(
+    null,
+  );
 
   const [templates, setTemplates] = useState<Template[]>([]);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
@@ -146,18 +267,38 @@ export default function ReceptionMessagesPage() {
 
   const [patientSearch, setPatientSearch] = useState("");
   const [patientResults, setPatientResults] = useState<PatientSearchResult[]>(
-    []
+    [],
   );
   const [creating, setCreating] = useState(false);
+  const [showAuditTrail, setShowAuditTrail] = useState(false);
+  const [showPraktikaTools, setShowPraktikaTools] = useState(false);
 
   async function loadConversations() {
-    const response = await fetch(
-      `/api/reception/conversations?status=${status}&search=${encodeURIComponent(
-        search
-      )}`
-    );
-    const data = await response.json();
-    setConversations(data.conversations || []);
+    try {
+      const response = await fetch(
+        `/api/reception/conversations?status=${status}&search=${encodeURIComponent(
+          search,
+        )}`,
+      );
+
+      if (!response.ok) {
+        console.error("Could not load conversations", response.status);
+        return;
+      }
+
+      const text = await response.text();
+
+      if (!text) {
+        console.error("Conversation API returned empty response.");
+        return;
+      }
+
+      const data = JSON.parse(text);
+
+      setConversations(data.conversations || []);
+    } catch (error) {
+      console.error("Conversation list failed to load", error);
+    }
   }
 
   async function loadConversation(id: string) {
@@ -240,7 +381,7 @@ export default function ReceptionMessagesPage() {
     }
 
     const response = await fetch(
-      `/api/praktika/patient-search?q=${encodeURIComponent(value)}`
+      `/api/praktika/patient-search?q=${encodeURIComponent(value)}`,
     );
 
     const data = await response.json();
@@ -411,48 +552,150 @@ export default function ReceptionMessagesPage() {
     setConsent(data.consent);
   }
 
+  async function linkAppointment(appointmentId: string) {
+    if (!conversation) return;
+
+    const response = await fetch(`/api/reception/conversations/${conversation.id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        praktikaAppointmentId: appointmentId,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      alert(data.error || "Could not link appointment.");
+      return;
+    }
+
+    await loadConversation(conversation.id);
+    await loadConversations();
+  }
+
+  async function sendAppointmentConfirmation(
+    appointmentId: string,
+    forceResend = false,
+  ) {
+    if (!conversation) return;
+
+    const promptText = forceResend
+      ? "Resend appointment confirmation SMS for this appointment?"
+      : "Send appointment confirmation SMS for this appointment?";
+
+    if (!confirm(promptText)) return;
+
+    setConfirmationSendingId(appointmentId);
+
+    const response = await fetch("/api/reception/appointment-confirmation-queue", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        appointmentIds: [appointmentId],
+        forceResend,
+      }),
+    });
+
+    const data = await response.json();
+
+    setConfirmationSendingId(null);
+
+    if (!response.ok || data.failedCount > 0) {
+      const error =
+        data?.results?.[0]?.error ||
+        data.error ||
+        "Could not send confirmation.";
+      alert(error);
+      return;
+    }
+
+    await loadConversation(conversation.id);
+    await loadConversations();
+  }
+
+  async function manuallyResolveConfirmation(appointmentId: string) {
+    if (!conversation) return;
+
+    if (!confirm("Mark this appointment as confirmed from the patient's YES reply?")) {
+      return;
+    }
+
+    const ambiguousAudit = getLatestAmbiguousAudit(audits);
+
+    setManualResolvingId(appointmentId);
+
+    const response = await fetch(
+      "/api/reception/appointment-confirmation-manual-confirm",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          conversationId: conversation.id,
+          praktikaAppointmentId: appointmentId,
+          inboundMessageId: ambiguousAudit?.message_id || null,
+        }),
+      },
+    );
+
+    const data = await response.json();
+
+    setManualResolvingId(null);
+
+    if (!response.ok) {
+      alert(data.error || "Could not confirm appointment.");
+      return;
+    }
+
+    await loadConversation(conversation.id);
+    await loadConversations();
+  }
+
   function applyMacros(templateBody: string) {
     const nextAppointment = appointments?.[0];
 
     return templateBody
       .replaceAll(
         "{{first_name}}",
-        patient?.first_name || conversation?.patient_first_name || ""
+        patient?.first_name || conversation?.patient_first_name || "",
       )
       .replaceAll(
         "{{preferred_name}}",
         patient?.preferred_name ||
           patient?.first_name ||
           conversation?.patient_first_name ||
-          ""
+          "",
       )
       .replaceAll(
         "{{last_name}}",
-        patient?.last_name || conversation?.patient_last_name || ""
+        patient?.last_name || conversation?.patient_last_name || "",
       )
-      .replaceAll(
-        "{{patient_number}}",
-        patient?.praktika_patient_number || ""
-      )
+      .replaceAll("{{patient_number}}", patient?.praktika_patient_number || "")
       .replaceAll(
         "{{next_appointment_date}}",
-        nextAppointment?.appointment_date || ""
+        formatDateDdMmYyyy(nextAppointment?.appointment_date),
       )
       .replaceAll(
         "{{next_appointment_time}}",
-        nextAppointment?.appointment_time || ""
+        nextAppointment?.appointment_time || "",
       )
       .replaceAll(
         "{{next_appointment_day}}",
-        nextAppointment?.appointment_day || ""
+        nextAppointment?.appointment_day || "",
       )
       .replaceAll(
         "{{next_appointment_type}}",
-        nextAppointment?.tx_type || nextAppointment?.tx_label || ""
+        nextAppointment?.tx_type || nextAppointment?.tx_label || "",
       )
       .replaceAll(
         "{{location}}",
-        nextAppointment?.mapped_location || nextAppointment?.location || ""
+        nextAppointment?.mapped_location || nextAppointment?.location || "",
       );
   }
 
@@ -469,12 +712,43 @@ export default function ReceptionMessagesPage() {
       .join(" ");
   }, [conversation]);
 
+  const timelineItems = useMemo(() => {
+    const messageItems = messages.map((message) => ({
+      type: "message" as const,
+      id: `message-${message.id}`,
+      created_at: message.created_at,
+      message,
+      audit: null,
+    }));
+
+    const markerItems = audits
+      .filter(isConversationMarkerAudit)
+      .map((audit) => ({
+        type: "marker" as const,
+        id: `audit-${audit.id}`,
+        created_at: audit.created_at,
+        message: null,
+        audit,
+      }));
+
+    return [...messageItems, ...markerItems].sort(
+      (a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    );
+  }, [messages, audits]);
+
+  const ambiguousAudit = useMemo(() => getLatestAmbiguousAudit(audits), [audits]);
+  const ambiguousRequests = ambiguousAudit?.details?.pending_requests || [];
+  const isAmbiguousConfirmation =
+    conversation?.appointment_confirmation_status === "ambiguous" ||
+    conversation?.appointment_confirmation_status === "ambiguous_response";
+
   return (
-    <main className="h-screen bg-slate-100">
-      <div className="grid h-full grid-cols-[380px_1fr_360px]">
+    <main className="h-screen overflow-hidden bg-slate-100">
+      <div className="grid h-full min-h-0 grid-cols-[380px_1fr_360px]">
         <aside className="min-h-0 overflow-y-auto border-r border-slate-200 bg-white">
-          <div className="sticky top-0 z-10 border-b bg-white p-4">
-            <div className="mb-3 flex items-center justify-between">
+          <div className="sticky top-0 z-10 border-b bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
               <div>
                 <h1 className="text-lg font-semibold text-slate-900">
                   Messages
@@ -482,19 +756,40 @@ export default function ReceptionMessagesPage() {
                 <p className="text-xs text-slate-500">Reception SMS inbox</p>
               </div>
 
-              <div className="rounded-xl bg-slate-100 p-1 text-sm">
+              <div className="flex items-center gap-2">
+                <a
+                  href="/reception/appointment-confirmations"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Confirmations
+                </a>
+                <a
+                  href="/reception/templates"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Templates
+                </a>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl bg-slate-100 p-1 text-sm">
+              <div className="grid grid-cols-2 gap-1">
                 <button
                   onClick={() => setStatus("open")}
-                  className={`rounded-lg px-3 py-1 ${
-                    status === "open" ? "bg-slate-950 text-white" : ""
+                  className={`rounded-xl px-3 py-2 font-semibold transition ${
+                    status === "open"
+                      ? "bg-slate-950 text-white shadow-sm"
+                      : "text-slate-600 hover:bg-white"
                   }`}
                 >
                   Open
                 </button>
                 <button
                   onClick={() => setStatus("closed")}
-                  className={`rounded-lg px-3 py-1 ${
-                    status === "closed" ? "bg-slate-950 text-white" : ""
+                  className={`rounded-xl px-3 py-2 font-semibold transition ${
+                    status === "closed"
+                      ? "bg-slate-950 text-white shadow-sm"
+                      : "text-slate-600 hover:bg-white"
                   }`}
                 >
                   Closed
@@ -504,19 +799,16 @@ export default function ReceptionMessagesPage() {
           </div>
 
           <div className="space-y-3 border-b p-3">
-            <PraktikaSessionPanel scope="user" title="Praktika" />
-            <PraktikaSyncPanel />
-
-            <div>
-              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Start new chat
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-500">
+                New conversation
               </label>
 
               <input
                 value={patientSearch}
                 onChange={(e) => searchPatients(e.target.value)}
                 placeholder="Search patient name..."
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               />
 
               {patientResults.length > 0 && (
@@ -568,7 +860,7 @@ export default function ReceptionMessagesPage() {
                 .join(" ");
 
               const initials = initialsFromName(
-                name || displayPhone(item.patient_mobile)
+                name || displayPhone(item.patient_mobile),
               );
 
               return (
@@ -616,6 +908,30 @@ export default function ReceptionMessagesPage() {
                       {item.last_message_preview || "No messages yet"}
                     </div>
 
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      {item.is_urgent && (
+                        <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">
+                          Urgent
+                        </span>
+                      )}
+
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${workflowStatusClass(
+                          item.workflow_status,
+                        )}`}
+                      >
+                        {workflowStatusLabel(item.workflow_status)}
+                      </span>
+
+                      {(item.appointment_confirmation_status === "ambiguous" ||
+                        item.appointment_confirmation_status ===
+                          "ambiguous_response") && (
+                        <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">
+                          Review YES
+                        </span>
+                      )}
+                    </div>
+
                     {item.assigned_display_name && (
                       <div className="mt-1 text-xs text-slate-400">
                         Assigned to {item.assigned_display_name}
@@ -628,10 +944,10 @@ export default function ReceptionMessagesPage() {
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-col bg-white">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-white">
           {conversation ? (
             <>
-              <div className="flex items-center justify-between border-b px-5 py-3">
+              <div className="shrink-0 flex items-center justify-between border-b px-5 py-3">
                 <div>
                   <div className="text-lg font-semibold text-slate-900">
                     {selectedName || displayPhone(conversation.patient_mobile)}
@@ -661,119 +977,141 @@ export default function ReceptionMessagesPage() {
                 </div>
               </div>
 
-              <div className="flex-1 space-y-4 overflow-y-auto bg-slate-50 p-5">
-                {messages.length === 0 && (
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-slate-50 p-5 pb-8">
+                {timelineItems.length === 0 && (
                   <div className="py-12 text-center text-sm text-slate-500">
                     No messages yet.
                   </div>
                 )}
-
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex ${
-                      message.direction === "outbound"
-                        ? "justify-end"
-                        : "justify-start"
-                    }`}
-                  >
-                    <div className="max-w-[75%]">
+                {timelineItems.map((item) => {
+                  if (item.type === "marker" && item.audit) {
+                    return (
                       <div
-                        className={`rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${
-                          message.direction === "outbound"
-                            ? "bg-blue-100 text-slate-900"
-                            : "bg-white text-slate-900"
-                        }`}
+                        key={item.id}
+                        className="flex items-center justify-center py-2"
                       >
-                        {message.body}
-
-                        {message.attachments &&
-                          message.attachments.length > 0 && (
-                            <div className="mt-3 space-y-2">
-                              {message.attachments.map((attachment, index) => {
-                                const url = getAttachmentUrl(attachment);
-                                const type = getAttachmentType(attachment);
-                                const name = getAttachmentName(attachment);
-                                const size = getAttachmentSize(attachment);
-                                const isImage = type.startsWith("image/");
-
-                                return (
-                                  <a
-                                    key={`${url}-${index}`}
-                                    href={url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="block rounded-xl border border-slate-200 bg-white/80 p-2 text-xs hover:bg-white"
-                                  >
-                                    {isImage && url ? (
-                                      <img
-                                        src={url}
-                                        alt={name}
-                                        className="mb-2 max-h-48 rounded-lg object-contain"
-                                      />
-                                    ) : (
-                                      <div className="mb-2 flex h-16 items-center justify-center rounded-lg bg-slate-100 text-2xl">
-                                        📎
-                                      </div>
-                                    )}
-
-                                    <div className="font-semibold text-slate-800">
-                                      {name}
-                                    </div>
-                                    <div className="text-slate-500">
-                                      {readableFileSize(size)}
-                                    </div>
-                                  </a>
-                                );
-                              })}
-                            </div>
-                          )}
+                        <div className="w-full max-w-md text-center">
+                          <div className="mb-2 border-t border-slate-300" />
+                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            {conversationMarkerLabel(item.audit.action)}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-400">
+                            {item.audit.actor_display_name
+                              ? `by ${item.audit.actor_display_name}`
+                              : "by System"}{" "}
+                            ·{" "}
+                            {new Date(item.audit.created_at).toLocaleString(
+                              "en-AU",
+                            )}
+                          </div>
+                          <div className="mt-2 border-t border-slate-300" />
+                        </div>
                       </div>
+                    );
+                  }
 
-                      <div
-                        className={`mt-1 flex items-center gap-2 text-xs text-slate-500 ${
-                          message.direction === "outbound"
-                            ? "justify-end"
-                            : "justify-start"
-                        }`}
-                      >
-                        {message.direction === "outbound" && (
-                          <StaffBadge
-                            initials={message.staff_initials}
-                            name={message.staff_display_name}
-                          />
-                        )}
+                  if (!item.message) return null;
 
-                        <span>
-                          {new Date(message.created_at).toLocaleString("en-AU")}
-                          {message.twilio_status
-                            ? ` · ${message.twilio_status}`
-                            : ""}
-                        </span>
+                  const message = item.message;
+
+                  return (
+                    <div
+                      key={message.id}
+                      className={`flex ${
+                        message.direction === "outbound"
+                          ? "justify-end"
+                          : "justify-start"
+                      }`}
+                    >
+                      <div className="max-w-[75%]">
+                        <div
+                          className={`rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${
+                            message.direction === "outbound"
+                              ? "bg-blue-100 text-slate-900"
+                              : "bg-white text-slate-900"
+                          }`}
+                        >
+                          {message.body}
+
+                          {message.attachments &&
+                            message.attachments.length > 0 && (
+                              <div className="mt-3 space-y-2">
+                                {message.attachments.map(
+                                  (attachment, index) => {
+                                    const url = getAttachmentUrl(attachment);
+                                    const type = getAttachmentType(attachment);
+                                    const name = getAttachmentName(attachment);
+                                    const size = getAttachmentSize(attachment);
+                                    const isImage = type.startsWith("image/");
+
+                                    return (
+                                      <a
+                                        key={`${url}-${index}`}
+                                        href={url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="block rounded-xl border border-slate-200 bg-white/80 p-2 text-xs hover:bg-white"
+                                      >
+                                        {isImage && url ? (
+                                          <img
+                                            src={url}
+                                            alt={name}
+                                            className="mb-2 max-h-48 rounded-lg object-contain"
+                                          />
+                                        ) : (
+                                          <div className="mb-2 flex h-16 items-center justify-center rounded-lg bg-slate-100 text-2xl">
+                                            📎
+                                          </div>
+                                        )}
+
+                                        <div className="font-semibold text-slate-800">
+                                          {name}
+                                        </div>
+                                        <div className="text-slate-500">
+                                          {readableFileSize(size)}
+                                        </div>
+                                      </a>
+                                    );
+                                  },
+                                )}
+                              </div>
+                            )}
+                        </div>
+
+                        <div
+                          className={`mt-1 flex items-center gap-2 text-xs text-slate-500 ${
+                            message.direction === "outbound"
+                              ? "justify-end"
+                              : "justify-start"
+                          }`}
+                        >
+                          {message.direction === "outbound" && (
+                            <StaffBadge
+                              initials={message.staff_initials}
+                              name={message.staff_display_name}
+                            />
+                          )}
+
+                          <span>
+                            {new Date(message.created_at).toLocaleString(
+                              "en-AU",
+                            )}
+                            {message.twilio_status
+                              ? ` · ${message.twilio_status}`
+                              : ""}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-
-                {audits.map((audit) => (
-                  <div
-                    key={audit.id}
-                    className="text-center text-xs text-slate-500"
-                  >
-                    {audit.action.replaceAll("_", " ")}
-                    {audit.actor_display_name
-                      ? ` by ${audit.actor_display_name}`
-                      : ""}{" "}
-                    · {new Date(audit.created_at).toLocaleString("en-AU")}
-                  </div>
-                ))}
+                  );
+                })}{" "}
               </div>
 
-              <div className="border-t bg-white p-4">
+              <div className="shrink-0 border-t bg-white p-4 shadow-[0_-6px_20px_rgba(15,23,42,0.06)]">
                 {consent?.status === "unsubscribed" && (
                   <div className="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                    This patient has unsubscribed from SMS. Outbound messages are
-                    blocked.
+                    This patient has unsubscribed from SMS. Outbound messages
+                    are blocked.
                   </div>
                 )}
 
@@ -814,8 +1152,8 @@ export default function ReceptionMessagesPage() {
                               onClick={() =>
                                 setAttachments((current) =>
                                   current.filter(
-                                    (_, itemIndex) => itemIndex !== index
-                                  )
+                                    (_, itemIndex) => itemIndex !== index,
+                                  ),
                                 )
                               }
                               className="font-bold text-red-500"
@@ -903,20 +1241,22 @@ export default function ReceptionMessagesPage() {
                               body: JSON.stringify({
                                 conversationId: selectedId,
                               }),
-                            }
+                            },
                           );
 
                           const data = await response.json();
 
                           if (!response.ok) {
-                            alert(data.error || "Could not create upload link.");
+                            alert(
+                              data.error || "Could not create upload link.",
+                            );
                             return;
                           }
 
                           setComposer((current) =>
                             current
                               ? `${current}\n\nPlease upload your photo or file here:\n${data.url}`
-                              : `Please upload your photo or file here:\n${data.url}`
+                              : `Please upload your photo or file here:\n${data.url}`,
                           );
                         }}
                         className="rounded-lg px-2 py-1 text-lg hover:bg-white"
@@ -1048,7 +1388,7 @@ export default function ReceptionMessagesPage() {
                   {displayPhone(conversation.patient_mobile)}
                 </div>
 
-                <div className="mt-3">
+                <div className="mt-3 flex flex-wrap gap-2">
                   {consent?.status === "unsubscribed" ? (
                     <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
                       Unsubscribed
@@ -1058,7 +1398,26 @@ export default function ReceptionMessagesPage() {
                       Subscribed
                     </span>
                   )}
+
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${confirmationStatusClass(
+                      conversation.appointment_confirmation_status,
+                    )}`}
+                  >
+                    {confirmationStatusLabel(
+                      conversation.appointment_confirmation_status,
+                    )}
+                  </span>
                 </div>
+
+                {conversation.appointment_confirmed_at && (
+                  <div className="mt-2 text-xs text-slate-500">
+                    Confirmed{" "}
+                    {new Date(
+                      conversation.appointment_confirmed_at,
+                    ).toLocaleString("en-AU")}
+                  </div>
+                )}
 
                 <div className="mt-4 flex gap-2">
                   {consent?.status === "unsubscribed" ? (
@@ -1078,6 +1437,67 @@ export default function ReceptionMessagesPage() {
                   )}
                 </div>
               </div>
+
+              {isAmbiguousConfirmation && (
+                <div className="border-b border-red-100 bg-red-50 p-5">
+                  <h3 className="font-semibold text-red-800">
+                    Shared mobile confirmation needs review
+                  </h3>
+                  <p className="mt-1 text-sm text-red-700">
+                    The patient replied YES, but more than one pending
+                    appointment confirmation exists for this phone number.
+                    Choose the correct appointment below.
+                  </p>
+
+                  <div className="mt-3 space-y-2">
+                    {ambiguousRequests.length === 0 && (
+                      <div className="rounded-xl bg-white p-3 text-sm text-red-700">
+                        No pending requests were found in the audit details.
+                        You can still confirm using the appointment cards below.
+                      </div>
+                    )}
+
+                    {ambiguousRequests.map((request: any) => (
+                      <button
+                        key={`${request.message_id}-${request.praktika_appointment_id}`}
+                        type="button"
+                        disabled={
+                          manualResolvingId ===
+                          String(request.praktika_appointment_id)
+                        }
+                        onClick={() =>
+                          manuallyResolveConfirmation(
+                            String(request.praktika_appointment_id),
+                          )
+                        }
+                        className="block w-full rounded-xl border border-red-200 bg-white p-3 text-left text-sm hover:bg-red-50 disabled:opacity-50"
+                      >
+                        <div className="font-semibold text-slate-900">
+                          Confirm{" "}
+                          {request.confirmation_patient_name ||
+                            "this patient"}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          {request.confirmation_appointment_label ||
+                            `Appointment ${request.praktika_appointment_id}`}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <ConversationWorkflowPanel
+                conversationId={conversation.id}
+                workflowStatus={conversation.workflow_status}
+                isUrgent={conversation.is_urgent}
+                onUpdated={() => {
+                  loadConversation(conversation.id);
+                  loadConversations();
+                }}
+              />
+
+              <ConversationNotesPanel conversationId={conversation.id} />
 
               <div className="border-b p-5">
                 <h3 className="font-semibold text-slate-900">
@@ -1101,40 +1521,150 @@ export default function ReceptionMessagesPage() {
               </div>
 
               <div className="border-b p-5">
-                <h3 className="font-semibold text-slate-900">
-                  Upcoming appointments
-                </h3>
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="font-semibold text-slate-900">
+                    Upcoming appointments
+                  </h3>
+                  <a
+                    href="/reception/appointment-confirmations"
+                    className="text-xs font-semibold text-blue-600 hover:underline"
+                  >
+                    Open queue
+                  </a>
+                </div>
 
                 <div className="mt-3 space-y-2">
-                  {appointments.map((appointment) => (
-                    <div
-                      key={appointment.id}
-                      className={`rounded-xl border p-3 text-sm ${
-                        appointment.praktika_appointment_id ===
-                        conversation.praktika_appointment_id
-                          ? "border-blue-300 bg-blue-50"
-                          : "border-slate-200"
-                      }`}
-                    >
-                      <div className="font-medium text-slate-900">
-                        {appointment.appointment_day}{" "}
-                        {appointment.appointment_date} ·{" "}
-                        {appointment.appointment_time}
-                      </div>
+                  {appointments.map((appointment) => {
+                    const appointmentId = String(
+                      appointment.praktika_appointment_id,
+                    );
+                    const isLinked =
+                      appointmentId ===
+                      String(conversation.praktika_appointment_id || "");
+                    const latestAudit = latestConfirmationAuditForAppointment(
+                      audits,
+                      appointmentId,
+                    );
+                    const wasSent = Boolean(latestAudit);
+                    const isConfirmed =
+                      isLinked &&
+                      conversation.appointment_confirmation_status ===
+                        "confirmed";
 
-                      <div className="text-slate-500">
-                        {appointment.tx_type || appointment.tx_label || "—"}
-                      </div>
+                    return (
+                      <div
+                        key={appointment.id}
+                        className={`rounded-xl border p-3 text-sm ${
+                          isLinked
+                            ? "border-blue-300 bg-blue-50"
+                            : "border-slate-200"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="font-semibold text-slate-900">
+                              {appointment.appointment_day}{" "}
+                              {formatDateDdMmYyyy(
+                                appointment.appointment_date,
+                              )}{" "}
+                              · {appointment.appointment_time}
+                            </div>
 
-                      <div className="text-slate-500">
-                        {appointment.mapped_location || "—"}
-                      </div>
+                            <div className="mt-1 text-slate-600">
+                              {appointment.tx_label ||
+                                appointment.tx_type ||
+                                "—"}
+                            </div>
 
-                      <div className="mt-1 text-xs text-slate-400">
-                        Response ID: {appointment.patient_response_id || "—"}
+                            <div className="text-slate-500">
+                              {appointment.mapped_location || "—"}
+                            </div>
+                          </div>
+
+                          {isLinked && (
+                            <span
+                              className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${confirmationStatusClass(
+                                conversation.appointment_confirmation_status,
+                              )}`}
+                            >
+                              {confirmationStatusLabel(
+                                conversation.appointment_confirmation_status,
+                              )}
+                            </span>
+                          )}
+                        </div>
+
+                        {latestAudit && (
+                          <div className="mt-2 rounded-lg bg-white/70 p-2 text-xs text-slate-500">
+                            Last confirmation event:{" "}
+                            {latestAudit.action.replaceAll("_", " ")} ·{" "}
+                            {new Date(latestAudit.created_at).toLocaleString(
+                              "en-AU",
+                            )}
+                          </div>
+                        )}
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {!isLinked && (
+                            <button
+                              type="button"
+                              onClick={() => linkAppointment(appointmentId)}
+                              className="rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                            >
+                              Link this appointment
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            disabled={
+                              confirmationSendingId === appointmentId ||
+                              consent?.status === "unsubscribed"
+                            }
+                            onClick={() =>
+                              sendAppointmentConfirmation(appointmentId, false)
+                            }
+                            className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                          >
+                            {confirmationSendingId === appointmentId
+                              ? "Sending..."
+                              : "Send confirmation"}
+                          </button>
+
+                          {wasSent && !isConfirmed && (
+                            <button
+                              type="button"
+                              disabled={
+                                confirmationSendingId === appointmentId ||
+                                consent?.status === "unsubscribed"
+                              }
+                              onClick={() =>
+                                sendAppointmentConfirmation(appointmentId, true)
+                              }
+                              className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                            >
+                              Resend
+                            </button>
+                          )}
+
+                          {isAmbiguousConfirmation && (
+                            <button
+                              type="button"
+                              disabled={manualResolvingId === appointmentId}
+                              onClick={() =>
+                                manuallyResolveConfirmation(appointmentId)
+                              }
+                              className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800 hover:bg-red-100 disabled:opacity-50"
+                            >
+                              {manualResolvingId === appointmentId
+                                ? "Confirming..."
+                                : "Confirm this one"}
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
                   {appointments.length === 0 && (
                     <div className="text-sm text-slate-500">
@@ -1145,28 +1675,51 @@ export default function ReceptionMessagesPage() {
               </div>
 
               <div className="p-5">
-                <h3 className="font-semibold text-slate-900">Audit trail</h3>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold text-slate-900">
+                      Audit trail
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500">
+                      System history for this conversation. Hidden by default to
+                      keep the inbox clean.
+                    </p>
+                  </div>
 
-                <div className="mt-3 space-y-2 text-sm">
-                  {audits.length === 0 && (
-                    <div className="text-sm text-slate-500">
-                      No audit events yet.
-                    </div>
-                  )}
-
-                  {audits.map((audit) => (
-                    <div key={audit.id} className="rounded-xl bg-slate-50 p-3">
-                      <div className="font-medium text-slate-900">
-                        {audit.action.replaceAll("_", " ")}
-                      </div>
-
-                      <div className="text-xs text-slate-500">
-                        {audit.actor_display_name || "System"} ·{" "}
-                        {new Date(audit.created_at).toLocaleString("en-AU")}
-                      </div>
-                    </div>
-                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setShowAuditTrail((current) => !current)}
+                    className="shrink-0 rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    {showAuditTrail ? "Hide" : "Show"}
+                  </button>
                 </div>
+
+                {showAuditTrail && (
+                  <div className="mt-3 space-y-2 text-sm">
+                    {audits.length === 0 && (
+                      <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">
+                        No audit events yet.
+                      </div>
+                    )}
+
+                    {audits.map((audit) => (
+                      <div
+                        key={audit.id}
+                        className="rounded-xl bg-slate-50 p-3"
+                      >
+                        <div className="font-medium text-slate-900">
+                          {audit.action.replaceAll("_", " ")}
+                        </div>
+
+                        <div className="text-xs text-slate-500">
+                          {audit.actor_display_name || "System"} ·{" "}
+                          {new Date(audit.created_at).toLocaleString("en-AU")}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ) : (
@@ -1175,6 +1728,57 @@ export default function ReceptionMessagesPage() {
             </div>
           )}
         </aside>
+      </div>
+
+      <div className="fixed bottom-5 right-5 z-50">
+        {showPraktikaTools && (
+          <div className="mb-3 w-[420px] max-w-[calc(100vw-2rem)] rounded-3xl border border-slate-200 bg-white p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold text-slate-900">
+                  Praktika tools
+                </div>
+                <div className="text-xs text-slate-500">
+                  Session, patient sync and appointment sync.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPraktikaTools(false)}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <PraktikaSessionPanel scope="user" title="Praktika" />
+              <PraktikaSyncPanel />
+              <div className="flex flex-wrap gap-2 text-xs font-semibold">
+                <a
+                  href="/reception/location-rules"
+                  className="rounded-xl border border-slate-200 px-3 py-2 text-blue-600 hover:bg-slate-50"
+                >
+                  Location mapping
+                </a>
+                <a
+                  href="/reception/appointment-confirmations"
+                  className="rounded-xl border border-slate-200 px-3 py-2 text-blue-600 hover:bg-slate-50"
+                >
+                  Confirmations
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setShowPraktikaTools((current) => !current)}
+          className="rounded-full bg-slate-950 px-5 py-3 text-sm font-bold text-white shadow-2xl hover:bg-slate-800"
+        >
+          Praktika tools
+        </button>
       </div>
     </main>
   );
