@@ -5,6 +5,75 @@ function normalizePhone(value: string) {
   return value.replace(/\s+/g, "");
 }
 
+function twimlEmptyResponse() {
+  return new Response(
+    '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/xml",
+      },
+    }
+  );
+}
+
+function isStopMessage(body: string) {
+  const clean = body.trim().toUpperCase();
+
+  return [
+    "STOP",
+    "STOPALL",
+    "UNSUBSCRIBE",
+    "CANCEL",
+    "END",
+    "QUIT",
+    "OPT OUT",
+    "OPTOUT",
+  ].includes(clean);
+}
+
+function isHelpMessage(body: string) {
+  return body.trim().toUpperCase() === "HELP";
+}
+
+function isYesConfirmation(body: string) {
+  const clean = body.trim().toUpperCase();
+
+  return ["Y", "YES", "CONFIRM", "CONFIRMED"].includes(clean);
+}
+
+function extensionFromContentType(contentType: string) {
+  if (contentType.includes("jpeg")) return "jpg";
+  if (contentType.includes("png")) return "png";
+  if (contentType.includes("gif")) return "gif";
+  if (contentType.includes("webp")) return "webp";
+  if (contentType.includes("pdf")) return "pdf";
+  return "file";
+}
+
+async function downloadTwilioMedia(mediaUrl: string) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+  if (!accountSid || !authToken) {
+    throw new Error("Missing Twilio credentials for inbound media download.");
+  }
+
+  const response = await fetch(mediaUrl, {
+    headers: {
+      Authorization:
+        "Basic " + Buffer.from(`${accountSid}:${authToken}`).toString("base64"),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Could not download Twilio media: ${response.status}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
 export async function GET() {
   return NextResponse.json({
     ok: true,
@@ -16,120 +85,235 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
 
-    const from = normalizePhone(
-      String(formData.get("From") || "")
-    );
+    const from = normalizePhone(String(formData.get("From") || ""));
+    const body = String(formData.get("Body") || "").trim();
+    const messageSid = String(formData.get("MessageSid") || "");
+    const numMedia = Number(formData.get("NumMedia") || 0);
 
-    const body = String(
-      formData.get("Body") || ""
-    ).trim();
-
-    const messageSid = String(
-      formData.get("MessageSid") || ""
-    );
-
-    console.log("Inbound SMS", {
+    console.log("Inbound SMS/MMS", {
       from,
       body,
       messageSid,
+      numMedia,
     });
 
-    const { data: conversation } = await supabaseAdmin
+    if (!from || (!body && numMedia === 0)) {
+      console.log("Inbound SMS ignored because From, Body and media were missing.");
+      return twimlEmptyResponse();
+    }
+
+    const { data: conversation, error: conversationError } = await supabaseAdmin
       .from("reception_conversations")
       .select("*")
       .eq("patient_mobile", from)
+      .eq("status", "open")
+      .order("last_message_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
+    if (conversationError) {
+      console.error("Could not find conversation for inbound SMS", {
+        error: conversationError,
+        from,
+      });
+
+      return twimlEmptyResponse();
+    }
+
     if (!conversation) {
-      console.log(
-        "No conversation found for",
-        from
+      console.log("No open conversation found for inbound SMS", {
+        from,
+        body,
+        numMedia,
+      });
+
+      return twimlEmptyResponse();
+    }
+
+    const messageBody = body || (numMedia > 0 ? "Attachment received" : "");
+    const stopRequested = isStopMessage(body);
+    const helpRequested = isHelpMessage(body);
+    const yesConfirmation = isYesConfirmation(body);
+
+    const { data: message, error: messageError } = await supabaseAdmin
+      .from("reception_messages")
+      .insert({
+        conversation_id: conversation.id,
+        direction: "inbound",
+        body: messageBody,
+        twilio_message_sid: messageSid,
+        twilio_status: "received",
+        message_source: "manual",
+      })
+      .select("*")
+      .single();
+
+    if (messageError || !message) {
+      console.error("Could not insert inbound SMS", {
+        error: messageError,
+        conversationId: conversation.id,
+        from,
+        body,
+        messageSid,
+      });
+
+      return twimlEmptyResponse();
+    }
+
+    const savedAttachments: any[] = [];
+
+    for (let index = 0; index < numMedia; index++) {
+      const mediaUrl = String(formData.get(`MediaUrl${index}`) || "");
+      const mediaContentType = String(
+        formData.get(`MediaContentType${index}`) || "application/octet-stream"
       );
 
-      return new Response(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>",
-        {
-          status: 200,
-          headers: {
-            "Content-Type": "text/xml",
-          },
+      if (!mediaUrl) continue;
+
+      try {
+        const fileBuffer = await downloadTwilioMedia(mediaUrl);
+        const extension = extensionFromContentType(mediaContentType);
+        const fileName = `incoming-${messageSid}-${index}.${extension}`;
+        const storagePath = `${conversation.id}/${Date.now()}-${fileName}`;
+
+        const { error: uploadError } = await supabaseAdmin.storage
+          .from("reception-message-attachments")
+          .upload(storagePath, fileBuffer, {
+            contentType: mediaContentType,
+            upsert: false,
+          });
+
+        if (uploadError) {
+          console.error("Could not upload inbound media to Supabase", {
+            uploadError,
+            mediaUrl,
+            mediaContentType,
+          });
+          continue;
         }
-      );
+
+        const { data: publicUrlData } = supabaseAdmin.storage
+          .from("reception-message-attachments")
+          .getPublicUrl(storagePath);
+
+        const publicUrl = publicUrlData.publicUrl;
+
+        const attachmentPayload = {
+          message_id: message.id,
+          conversation_id: conversation.id,
+          file_name: fileName,
+          file_type: mediaContentType,
+          file_size: fileBuffer.length,
+          storage_path: storagePath,
+          public_url: publicUrl,
+        };
+
+        const { data: savedAttachment, error: attachmentError } =
+          await supabaseAdmin
+            .from("reception_message_attachments")
+            .insert(attachmentPayload)
+            .select("*")
+            .single();
+
+        if (attachmentError) {
+          console.error("Could not save inbound attachment row", {
+            attachmentError,
+            attachmentPayload,
+          });
+          continue;
+        }
+
+        savedAttachments.push(savedAttachment);
+      } catch (mediaError) {
+        console.error("Inbound media processing failed", {
+          mediaError,
+          index,
+          messageSid,
+        });
+      }
     }
-
- const { data: message, error: messageError } = await supabaseAdmin
-  .from("reception_messages")
-  .insert({
-    conversation_id: conversation.id,
-    direction: "inbound",
-    body,
-    twilio_message_sid: messageSid,
-    twilio_status: "received",
-    message_source: "manual",
-  })
-  .select("*")
-  .single();
-
-if (messageError || !message) {
-  console.error("Could not insert inbound SMS", {
-    error: messageError,
-    conversationId: conversation.id,
-    from,
-    body,
-    messageSid,
-  });
-
-  return new Response(
-    '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-    {
-      status: 200,
-      headers: { "Content-Type": "text/xml" },
-    }
-  );
-}
 
     await supabaseAdmin
       .from("reception_conversations")
       .update({
         status: "open",
-        last_message_preview: body.slice(0, 160),
+        last_message_preview:
+          body.slice(0, 160) ||
+          (savedAttachments.length > 0 ? "Attachment received" : "Message received"),
         last_message_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq("id", conversation.id);
 
-    await supabaseAdmin
-      .from("reception_audit_logs")
-      .insert({
+    await supabaseAdmin.from("reception_audit_logs").insert({
+      conversation_id: conversation.id,
+      message_id: message.id,
+      action: "message_received",
+      details: {
+        from,
+        body,
+        twilio_message_sid: messageSid,
+        num_media: numMedia,
+        saved_attachments: savedAttachments,
+      },
+    });
+
+    if (stopRequested) {
+      await supabaseAdmin.from("reception_sms_consent").upsert(
+        {
+          phone_number: from,
+          praktika_patient_id: conversation.praktika_patient_id,
+          status: "unsubscribed",
+          source: "patient_sms_reply",
+          reason: `Patient replied: ${body}`,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "phone_number",
+        }
+      );
+
+      await supabaseAdmin.from("reception_audit_logs").insert({
         conversation_id: conversation.id,
         message_id: message.id,
-        action: "message_received",
+        action: "patient_unsubscribed",
+        details: {
+          from,
+          body,
+          source: "twilio_inbound_webhook",
+        },
+      });
+    }
+
+    if (helpRequested) {
+      await supabaseAdmin.from("reception_audit_logs").insert({
+        conversation_id: conversation.id,
+        message_id: message.id,
+        action: "patient_requested_sms_help",
         details: {
           from,
           body,
         },
       });
+    }
 
-    return new Response(
-      "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>",
-      {
-        status: 200,
-        headers: {
-          "Content-Type": "text/xml",
+    if (yesConfirmation) {
+      await supabaseAdmin.from("reception_audit_logs").insert({
+        conversation_id: conversation.id,
+        message_id: message.id,
+        action: "appointment_confirmation_reply_detected",
+        details: {
+          from,
+          body,
+          praktika_appointment_id: conversation.praktika_appointment_id,
+          note: "Next step: connect this to Praktika appointment response update.",
         },
-      }
-    );
+      });
+    }
+
+    return twimlEmptyResponse();
   } catch (error) {
-    console.error(error);
-
-    return new Response(
-      "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>",
-      {
-        status: 200,
-        headers: {
-          "Content-Type": "text/xml",
-        },
-      }
-    );
+    console.error("Twilio inbound webhook failed", error);
+    return twimlEmptyResponse();
   }
 }

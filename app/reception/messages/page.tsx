@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import PraktikaSessionPanel from "@/components/PraktikaSessionPanel";
 import PraktikaSyncPanel from "@/components/reception/PraktikaSyncPanel";
 import { displayPhone } from "@/lib/reception/phone";
+import { createClient } from "@/lib/supabase/client";
 
 type Conversation = {
   id: string;
@@ -19,6 +20,20 @@ type Conversation = {
   created_at: string;
 };
 
+type Attachment = {
+  id?: string;
+  file_name?: string;
+  file_type?: string;
+  file_size?: number;
+  storage_path?: string;
+  public_url?: string;
+  fileName?: string;
+  fileType?: string;
+  fileSize?: number;
+  storagePath?: string;
+  publicUrl?: string;
+};
+
 type Message = {
   id: string;
   direction: "inbound" | "outbound";
@@ -27,6 +42,7 @@ type Message = {
   staff_initials: string | null;
   staff_display_name: string | null;
   created_at: string;
+  attachments?: Attachment[];
 };
 
 type Audit = {
@@ -46,15 +62,42 @@ type PatientSearchResult = {
   dob: string | null;
 };
 
+type Template = {
+  id: string;
+  name: string;
+  category: string | null;
+  body: string;
+};
+
 function initialsFromName(name: string | null | undefined) {
   if (!name) return "?";
-
   const parts = name.trim().split(/\s+/).filter(Boolean);
-
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-
   return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+}
+
+function readableFileSize(size?: number) {
+  if (!size) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function getAttachmentUrl(attachment: Attachment) {
+  return attachment.public_url || attachment.publicUrl || "";
+}
+
+function getAttachmentName(attachment: Attachment) {
+  return attachment.file_name || attachment.fileName || "Attachment";
+}
+
+function getAttachmentType(attachment: Attachment) {
+  return attachment.file_type || attachment.fileType || "";
+}
+
+function getAttachmentSize(attachment: Attachment) {
+  return attachment.file_size || attachment.fileSize || 0;
 }
 
 function StaffBadge({
@@ -93,6 +136,13 @@ export default function ReceptionMessagesPage() {
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
 
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [templateModalOpen, setTemplateModalOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+
   const [patientSearch, setPatientSearch] = useState("");
   const [patientResults, setPatientResults] = useState<PatientSearchResult[]>(
     []
@@ -105,13 +155,16 @@ export default function ReceptionMessagesPage() {
         search
       )}`
     );
-
     const data = await response.json();
     setConversations(data.conversations || []);
   }
 
   async function loadConversation(id: string) {
+  try {
     const response = await fetch(`/api/reception/conversations/${id}`);
+
+    if (!response.ok) return;
+
     const data = await response.json();
 
     setConversation(data.conversation || null);
@@ -120,12 +173,25 @@ export default function ReceptionMessagesPage() {
     setPatient(data.patient || null);
     setAppointments(data.appointments || []);
     setConsent(data.consent || null);
+  } catch {
+    // Ignore cancelled fetches during navigation or hot reload.
+  }
+}
+
+  async function loadTemplates() {
+    const response = await fetch("/api/reception/templates");
+    const data = await response.json();
+    setTemplates(data.templates || []);
   }
 
   useEffect(() => {
     loadConversations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
+
+  useEffect(() => {
+    loadTemplates();
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -139,8 +205,22 @@ export default function ReceptionMessagesPage() {
   useEffect(() => {
     if (selectedId) {
       loadConversation(selectedId);
+      setAttachments([]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+
+    const timer = window.setInterval(() => {
+      loadConversation(selectedId);
+      loadConversations();
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, status, search]);
 
   async function searchPatients(value: string) {
     setPatientSearch(value);
@@ -172,7 +252,6 @@ export default function ReceptionMessagesPage() {
     });
 
     const data = await response.json();
-
     setCreating(false);
 
     if (!response.ok) {
@@ -186,8 +265,63 @@ export default function ReceptionMessagesPage() {
     setSelectedId(data.conversation.id);
   }
 
+  async function uploadAttachment(file: File) {
+    if (!selectedId) {
+      alert("Please select a conversation first.");
+      return;
+    }
+
+    const maxSize = 5 * 1024 * 1024;
+
+    if (file.size > maxSize) {
+      alert("Please choose a file smaller than 5MB.");
+      return;
+    }
+
+    setUploading(true);
+
+    try {
+      const supabase = createClient();
+      const fileExt = file.name.split(".").pop() || "file";
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+      const storagePath = `${selectedId}/${Date.now()}-${safeName}`;
+
+      const { error } = await supabase.storage
+        .from("reception-message-attachments")
+        .upload(storagePath, file, {
+          cacheControl: "3600",
+          upsert: false,
+        });
+
+      if (error) {
+        alert(error.message);
+        setUploading(false);
+        return;
+      }
+
+      const { data } = supabase.storage
+        .from("reception-message-attachments")
+        .getPublicUrl(storagePath);
+
+      setAttachments((current) => [
+        ...current,
+        {
+          fileName: file.name,
+          fileType: file.type || `application/${fileExt}`,
+          fileSize: file.size,
+          storagePath,
+          publicUrl: data.publicUrl,
+        },
+      ]);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not upload file.");
+    }
+
+    setUploading(false);
+  }
+
   async function sendMessage() {
-    if (!selectedId || !composer.trim()) return;
+    if (!selectedId || (!composer.trim() && attachments.length === 0)) return;
 
     setSending(true);
 
@@ -199,6 +333,7 @@ export default function ReceptionMessagesPage() {
       body: JSON.stringify({
         conversationId: selectedId,
         body: composer,
+        attachments,
       }),
     });
 
@@ -211,6 +346,7 @@ export default function ReceptionMessagesPage() {
     }
 
     setComposer("");
+    setAttachments([]);
     await loadConversation(selectedId);
     await loadConversations();
   }
@@ -266,6 +402,56 @@ export default function ReceptionMessagesPage() {
     setConsent(data.consent);
   }
 
+  function applyMacros(templateBody: string) {
+    const nextAppointment = appointments?.[0];
+
+    return templateBody
+      .replaceAll(
+        "{{first_name}}",
+        patient?.first_name || conversation?.patient_first_name || ""
+      )
+      .replaceAll(
+        "{{preferred_name}}",
+        patient?.preferred_name ||
+          patient?.first_name ||
+          conversation?.patient_first_name ||
+          ""
+      )
+      .replaceAll(
+        "{{last_name}}",
+        patient?.last_name || conversation?.patient_last_name || ""
+      )
+      .replaceAll(
+        "{{patient_number}}",
+        patient?.praktika_patient_number || ""
+      )
+      .replaceAll(
+        "{{next_appointment_date}}",
+        nextAppointment?.appointment_date || ""
+      )
+      .replaceAll(
+        "{{next_appointment_time}}",
+        nextAppointment?.appointment_time || ""
+      )
+      .replaceAll(
+        "{{next_appointment_day}}",
+        nextAppointment?.appointment_day || ""
+      )
+      .replaceAll(
+        "{{next_appointment_type}}",
+        nextAppointment?.tx_type || nextAppointment?.tx_label || ""
+      )
+      .replaceAll(
+        "{{location}}",
+        nextAppointment?.mapped_location || nextAppointment?.location || ""
+      );
+  }
+
+  function insertEmoji(emoji: string) {
+    setComposer((current) => `${current}${emoji}`);
+    setEmojiOpen(false);
+  }
+
   const selectedName = useMemo(() => {
     if (!conversation) return "";
 
@@ -284,9 +470,7 @@ export default function ReceptionMessagesPage() {
                 <h1 className="text-lg font-semibold text-slate-900">
                   Messages
                 </h1>
-                <p className="text-xs text-slate-500">
-                  Reception SMS inbox
-                </p>
+                <p className="text-xs text-slate-500">Reception SMS inbox</p>
               </div>
 
               <div className="rounded-xl bg-slate-100 p-1 text-sm">
@@ -312,7 +496,6 @@ export default function ReceptionMessagesPage() {
 
           <div className="space-y-3 border-b p-3">
             <PraktikaSessionPanel scope="user" title="Praktika" />
-
             <PraktikaSyncPanel />
 
             <div>
@@ -340,7 +523,7 @@ export default function ReceptionMessagesPage() {
                         {p.preferredName || p.firstName} {p.lastName}
                       </div>
                       <div className="text-xs text-slate-500">
-                        {p.mobile || "No mobile"} · #{p.patientNumber || "—"} ·{" "}
+                        {p.mobile || "No mobile"} · #{p.patientNumber || "—"} ·
                         DOB {p.dob || "—"}
                       </div>
                     </button>
@@ -474,6 +657,48 @@ export default function ReceptionMessagesPage() {
                         }`}
                       >
                         {message.body}
+
+                        {message.attachments &&
+                          message.attachments.length > 0 && (
+                            <div className="mt-3 space-y-2">
+                              {message.attachments.map((attachment, index) => {
+                                const url = getAttachmentUrl(attachment);
+                                const type = getAttachmentType(attachment);
+                                const name = getAttachmentName(attachment);
+                                const size = getAttachmentSize(attachment);
+                                const isImage = type.startsWith("image/");
+
+                                return (
+                                  <a
+                                    key={`${url}-${index}`}
+                                    href={url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="block rounded-xl border border-slate-200 bg-white/80 p-2 text-xs hover:bg-white"
+                                  >
+                                    {isImage && url ? (
+                                      <img
+                                        src={url}
+                                        alt={name}
+                                        className="mb-2 max-h-48 rounded-lg object-contain"
+                                      />
+                                    ) : (
+                                      <div className="mb-2 flex h-16 items-center justify-center rounded-lg bg-slate-100 text-2xl">
+                                        📎
+                                      </div>
+                                    )}
+
+                                    <div className="font-semibold text-slate-800">
+                                      {name}
+                                    </div>
+                                    <div className="text-slate-500">
+                                      {readableFileSize(size)}
+                                    </div>
+                                  </a>
+                                );
+                              })}
+                            </div>
+                          )}
                       </div>
 
                       <div
@@ -523,32 +748,253 @@ export default function ReceptionMessagesPage() {
                   </div>
                 )}
 
-                <textarea
-                  value={composer}
-                  onChange={(e) => setComposer(e.target.value)}
-                  placeholder={`Message ${
-                    selectedName || displayPhone(conversation.patient_mobile)
-                  }...`}
-                  className="h-28 w-full resize-none rounded-2xl border border-slate-300 p-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                />
-
-                <div className="mt-2 flex items-center justify-between">
-                  <div className="text-xs text-slate-500">
-                    {composer.length} / 1600 characters
-                  </div>
-
+                <div className="relative rounded-2xl border border-slate-300 bg-white shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100">
                   <button
-                    onClick={sendMessage}
-                    disabled={
-                      sending ||
-                      !composer.trim() ||
-                      consent?.status === "unsubscribed"
-                    }
-                    className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
+                    type="button"
+                    onClick={() => setTemplateModalOpen(true)}
+                    className="absolute right-0 top-0 z-20 flex h-9 w-9 items-center justify-center rounded-bl-xl rounded-tr-2xl bg-emerald-600 text-sm font-black text-white shadow-sm hover:bg-emerald-700"
+                    title="Insert template"
                   >
-                    {sending ? "Sending..." : "Send"}
+                    T
                   </button>
+
+                  <textarea
+                    value={composer}
+                    onChange={(e) => setComposer(e.target.value)}
+                    placeholder={`Message ${
+                      selectedName || displayPhone(conversation.patient_mobile)
+                    }...`}
+                    className="h-28 w-full resize-none rounded-t-2xl border-0 p-3 pr-12 text-sm outline-none"
+                  />
+
+                  {attachments.length > 0 && (
+                    <div className="border-t px-3 py-2">
+                      <div className="flex flex-wrap gap-2">
+                        {attachments.map((attachment, index) => (
+                          <div
+                            key={`${getAttachmentName(attachment)}-${index}`}
+                            className="flex items-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-700"
+                          >
+                            <span>📎</span>
+                            <span>{getAttachmentName(attachment)}</span>
+                            <span className="text-slate-400">
+                              {readableFileSize(getAttachmentSize(attachment))}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setAttachments((current) =>
+                                  current.filter(
+                                    (_, itemIndex) => itemIndex !== index
+                                  )
+                                )
+                              }
+                              className="font-bold text-red-500"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between border-t bg-slate-50 px-3 py-2">
+                    <div className="relative flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEmojiOpen((current) => !current)}
+                        className="rounded-lg px-2 py-1 text-lg hover:bg-white"
+                        title="Emoji"
+                      >
+                        😊
+                      </button>
+
+                      {emojiOpen && (
+                        <div className="absolute bottom-10 left-0 z-40 grid w-56 grid-cols-8 gap-1 rounded-2xl border bg-white p-3 shadow-xl">
+                          {[
+                            "😀",
+                            "😊",
+                            "😂",
+                            "😍",
+                            "👍",
+                            "🙏",
+                            "🎉",
+                            "❤️",
+                            "🦷",
+                            "📅",
+                            "⏰",
+                            "✅",
+                            "❌",
+                            "📍",
+                            "📞",
+                            "💬",
+                          ].map((emoji) => (
+                            <button
+                              key={emoji}
+                              type="button"
+                              onClick={() => insertEmoji(emoji)}
+                              className="rounded-lg p-1 text-lg hover:bg-slate-100"
+                            >
+                              {emoji}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <label
+                        className="cursor-pointer rounded-lg px-2 py-1 text-lg hover:bg-white"
+                        title="Attach file"
+                      >
+                        📎
+                        <input
+                          type="file"
+                          className="hidden"
+                          accept="image/*,.pdf,.doc,.docx"
+                          onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            if (file) uploadAttachment(file);
+                            event.target.value = "";
+                          }}
+                        />
+                      </label>
+
+                      <button
+  type="button"
+  onClick={async () => {
+    if (!selectedId) return;
+
+    const response = await fetch("/api/reception/upload-links", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        conversationId: selectedId,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      alert(data.error || "Could not create upload link.");
+      return;
+    }
+
+    setComposer((current) =>
+      current
+        ? `${current}\n\nPlease upload your photo or file here:\n${data.url}`
+        : `Please upload your photo or file here:\n${data.url}`
+    );
+  }}
+  className="rounded-lg px-2 py-1 text-lg hover:bg-white"
+  title="Create patient upload link"
+>
+  📝
+</button>
+
+                      <a
+                        href="/reception/templates"
+                        className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-white"
+                      >
+                        Templates
+                      </a>
+
+                      {uploading && (
+                        <span className="text-xs text-slate-500">
+                          Uploading...
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <div className="text-xs text-slate-500">
+                        {composer.length} / 1600
+                      </div>
+
+                      <button
+                        onClick={sendMessage}
+                        disabled={
+                          sending ||
+                          uploading ||
+                          (!composer.trim() && attachments.length === 0) ||
+                          consent?.status === "unsubscribed"
+                        }
+                        className="rounded-xl bg-slate-950 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40"
+                      >
+                        {sending ? "Sending..." : "Send"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
+
+                {templateModalOpen && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                    <div className="max-h-[80vh] w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+                      <div className="flex items-center justify-between border-b p-4">
+                        <div>
+                          <h2 className="text-lg font-semibold text-slate-900">
+                            Message templates
+                          </h2>
+                          <p className="text-sm text-slate-500">
+                            Select a template to insert into the message box.
+                          </p>
+                        </div>
+
+                        <button
+                          onClick={() => setTemplateModalOpen(false)}
+                          className="rounded-xl px-3 py-2 text-sm hover:bg-slate-100"
+                        >
+                          Close
+                        </button>
+                      </div>
+
+                      <div className="max-h-[55vh] overflow-y-auto p-4">
+                        <div className="mb-4">
+                          <a
+                            href="/reception/templates"
+                            className="text-sm font-semibold text-blue-600 hover:underline"
+                          >
+                            Manage templates →
+                          </a>
+                        </div>
+
+                        <div className="space-y-3">
+                          {templates.map((template) => (
+                            <button
+                              key={template.id}
+                              type="button"
+                              onClick={() => {
+                                setComposer(applyMacros(template.body));
+                                setTemplateModalOpen(false);
+                              }}
+                              className="block w-full rounded-xl border p-3 text-left hover:bg-slate-50"
+                            >
+                              <div className="font-semibold text-slate-900">
+                                {template.name}
+                              </div>
+
+                              <div className="text-xs text-slate-500">
+                                {template.category || "No category"}
+                              </div>
+
+                              <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                                {template.body}
+                              </div>
+                            </button>
+                          ))}
+
+                          {templates.length === 0 && (
+                            <div className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-500">
+                              No templates yet. Use “Manage templates” to create
+                              your first one.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           ) : (
@@ -609,7 +1055,9 @@ export default function ReceptionMessagesPage() {
                 {patient ? (
                   <div className="mt-2 space-y-1 text-sm text-slate-600">
                     <div>Patient ID: {patient.praktika_patient_id}</div>
-                    <div>Patient #: {patient.praktika_patient_number || "—"}</div>
+                    <div>
+                      Patient #: {patient.praktika_patient_number || "—"}
+                    </div>
                     <div>DOB: {patient.dob || "—"}</div>
                     <div>Mobile: {displayPhone(patient.mobile)}</div>
                   </div>

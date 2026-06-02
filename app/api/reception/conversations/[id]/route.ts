@@ -22,47 +22,74 @@ export async function GET(
     );
   }
 
-  const [{ data: messages }, { data: audits }, { data: consent }, { data: patient }, { data: appointments }] =
-    await Promise.all([
-      supabaseAdmin
-        .from("reception_messages")
-        .select("*")
-        .eq("conversation_id", id)
-        .order("created_at", { ascending: true }),
+  const [
+    { data: messages },
+    { data: audits },
+    { data: consent },
+    { data: patient },
+    { data: appointments },
+    { data: attachments },
+  ] = await Promise.all([
+    supabaseAdmin
+      .from("reception_messages")
+      .select("*")
+      .eq("conversation_id", id)
+      .order("created_at", { ascending: true }),
 
-      supabaseAdmin
-        .from("reception_audit_logs")
-        .select("*")
-        .eq("conversation_id", id)
-        .order("created_at", { ascending: true }),
+    supabaseAdmin
+      .from("reception_audit_logs")
+      .select("*")
+      .eq("conversation_id", id)
+      .order("created_at", { ascending: true }),
 
-      supabaseAdmin
-        .from("reception_sms_consent")
-        .select("*")
-        .eq("phone_number", conversation.patient_mobile)
-        .maybeSingle(),
+    supabaseAdmin
+      .from("reception_sms_consent")
+      .select("*")
+      .eq("phone_number", conversation.patient_mobile)
+      .maybeSingle(),
 
-      conversation.praktika_patient_id
-        ? supabaseAdmin
-            .from("praktika_patients")
-            .select("*")
-            .eq("praktika_patient_id", conversation.praktika_patient_id)
-            .maybeSingle()
-        : Promise.resolve({ data: null }),
+    conversation.praktika_patient_id
+      ? supabaseAdmin
+          .from("praktika_patients")
+          .select("*")
+          .eq("praktika_patient_id", conversation.praktika_patient_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
 
-      conversation.praktika_patient_id
-        ? supabaseAdmin
-            .from("praktika_appointments")
-            .select("*")
-            .eq("praktika_patient_id", conversation.praktika_patient_id)
-            .order("appointment_datetime", { ascending: true })
-            .limit(10)
-        : Promise.resolve({ data: [] }),
-    ]);
+    conversation.praktika_patient_id
+      ? supabaseAdmin
+          .from("praktika_appointments")
+          .select("*")
+          .eq("praktika_patient_id", conversation.praktika_patient_id)
+          .order("appointment_datetime", { ascending: true })
+          .limit(10)
+      : Promise.resolve({ data: [] }),
+
+    supabaseAdmin
+      .from("reception_message_attachments")
+      .select("*")
+      .eq("conversation_id", id)
+      .order("created_at", { ascending: true }),
+  ]);
+
+  const attachmentsByMessageId = new Map<string, any[]>();
+
+  for (const attachment of attachments || []) {
+    if (!attachment.message_id) continue;
+
+    const current = attachmentsByMessageId.get(attachment.message_id) || [];
+    current.push(attachment);
+    attachmentsByMessageId.set(attachment.message_id, current);
+  }
+
+  const messagesWithAttachments = (messages || []).map((message) => ({
+    ...message,
+    attachments: attachmentsByMessageId.get(message.id) || [],
+  }));
 
   return NextResponse.json({
     conversation,
-    messages: messages || [],
+    messages: messagesWithAttachments,
     audits: audits || [],
     consent,
     patient,
