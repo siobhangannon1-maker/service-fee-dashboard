@@ -833,6 +833,12 @@ export default function ReceptionMessagesPage() {
                   Post-op
                 </a>
                 <a
+                  href="/reception/questionnaire-templates"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Q forms
+                </a>
+                <a
                   href="/reception/templates"
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                 >
@@ -1852,6 +1858,12 @@ export default function ReceptionMessagesPage() {
                   className="rounded-xl border border-slate-200 px-3 py-2 text-blue-600 hover:bg-slate-50"
                 >
                   Post-op questionnaires
+                </a>
+                <a
+                  href="/reception/questionnaire-templates"
+                  className="rounded-xl border border-slate-200 px-3 py-2 text-blue-600 hover:bg-slate-50"
+                >
+                  Questionnaire templates
                 </a>
               </div>
             </div>

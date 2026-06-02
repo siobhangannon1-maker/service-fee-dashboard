@@ -97,19 +97,33 @@ export async function POST(
   const summary = buildSummary(questions, answers);
   const now = new Date().toISOString();
 
+  const responsePayload: any = {
+    queue_id: queueItem.id,
+    token,
+    answers,
+    is_urgent: urgency.isUrgent,
+    urgent_reasons: urgency.urgentReasons,
+    submitted_at: now,
+    patient_mobile: queueItem.patient_mobile || "unknown",
+    patient_first_name: queueItem.patient_first_name || null,
+    patient_last_name: queueItem.patient_last_name || null,
+    praktika_patient_id: queueItem.praktika_patient_id || null,
+    praktika_appointment_id: queueItem.praktika_appointment_id || null,
+    response_summary: summary,
+  };
+
   const { data: response, error: responseError } = await supabaseAdmin
     .from("reception_questionnaire_responses")
-    .insert({
-      queue_id: queueItem.id,
-      token,
-      answers,
-      is_urgent: urgency.isUrgent,
-      urgent_reasons: urgency.urgentReasons,
-    })
+    .insert(responsePayload)
     .select("*")
     .single();
 
   if (responseError || !response) {
+    console.error("Could not save questionnaire response", {
+      error: responseError,
+      responsePayload,
+    });
+
     return NextResponse.json(
       { error: responseError?.message || "Could not save questionnaire." },
       { status: 500 }
@@ -131,7 +145,9 @@ export async function POST(
     await supabaseAdmin
       .from("reception_conversations")
       .update({
-        workflow_status: urgency.isUrgent ? "needs_follow_up" : "waiting_on_practice",
+        workflow_status: urgency.isUrgent
+          ? "needs_follow_up"
+          : "waiting_on_practice",
         is_urgent: urgency.isUrgent,
         last_message_preview: urgency.isUrgent
           ? "Post-op questionnaire completed - review needed"
@@ -150,6 +166,7 @@ export async function POST(
         questionnaire_queue_id: queueItem.id,
         response_id: response.id,
         praktika_appointment_id: queueItem.praktika_appointment_id,
+        patient_mobile: queueItem.patient_mobile,
         is_urgent: urgency.isUrgent,
         urgent_reasons: urgency.urgentReasons,
         summary,
