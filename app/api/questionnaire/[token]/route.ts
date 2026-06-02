@@ -39,6 +39,28 @@ function buildSummary(questions: any[], answers: Record<string, any>) {
     .join("\n");
 }
 
+function buildChatBody({
+  templateName,
+  summary,
+  isUrgent,
+  urgentReasons,
+}: {
+  templateName: string;
+  summary: string;
+  isUrgent: boolean;
+  urgentReasons: string[];
+}) {
+  return [
+    `Questionnaire completed: ${templateName}`,
+    "",
+    summary,
+    "",
+    isUrgent ? `⚠ Review needed: ${urgentReasons.join("; ")}` : "No urgent flags detected.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export async function GET(
   _request: NextRequest,
   context: { params: Promise<{ token: string }> }
@@ -142,6 +164,25 @@ export async function POST(
     .eq("id", queueItem.id);
 
   if (queueItem.conversation_id) {
+    const chatBody = buildChatBody({
+      templateName: queueItem.template?.name || "Questionnaire",
+      summary,
+      isUrgent: urgency.isUrgent,
+      urgentReasons: urgency.urgentReasons,
+    });
+
+    const { data: message } = await supabaseAdmin
+      .from("reception_messages")
+      .insert({
+        conversation_id: queueItem.conversation_id,
+        direction: "inbound",
+        body: chatBody,
+        twilio_status: "received",
+        message_source: "questionnaire",
+      })
+      .select("*")
+      .single();
+
     await supabaseAdmin
       .from("reception_conversations")
       .update({
@@ -159,6 +200,7 @@ export async function POST(
 
     await supabaseAdmin.from("reception_audit_logs").insert({
       conversation_id: queueItem.conversation_id,
+      message_id: message?.id || null,
       action: urgency.isUrgent
         ? "urgent_post_op_questionnaire_completed"
         : "post_op_questionnaire_completed",

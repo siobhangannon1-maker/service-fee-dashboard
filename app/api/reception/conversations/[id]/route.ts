@@ -3,6 +3,135 @@ import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { getStaffDisplayInfo } from "@/lib/reception/staff-display";
 
+function formatMessageLine(message: any) {
+  const direction = message.direction === "outbound" ? "Staff" : "Patient";
+  const time = message.created_at
+    ? new Date(message.created_at).toLocaleString("en-AU")
+    : "";
+
+  return `[${time}] ${direction}: ${message.body || ""}`;
+}
+
+function formatAuditLine(audit: any) {
+  const time = audit.created_at
+    ? new Date(audit.created_at).toLocaleString("en-AU")
+    : "";
+
+  return `[${time}] Event: ${String(audit.action || "").replaceAll("_", " ")}`;
+}
+
+async function createConversationClinicalNoteExport({
+  conversationId,
+  closedAt,
+  closedBy,
+}: {
+  conversationId: string;
+  closedAt: string;
+  closedBy: string;
+}) {
+  const { data: conversation } = await supabaseAdmin
+    .from("reception_conversations")
+    .select("*")
+    .eq("id", conversationId)
+    .single();
+
+  if (!conversation) return null;
+
+  const { data: messages } = await supabaseAdmin
+    .from("reception_messages")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true });
+
+  const { data: audits } = await supabaseAdmin
+    .from("reception_audit_logs")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true });
+
+  const openedAudit = (audits || [])
+    .filter((audit) => audit.action === "conversation_opened")
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )[0];
+
+  const startAt = openedAudit?.created_at || conversation.created_at;
+
+  const relevantMessages = (messages || []).filter(
+    (message) =>
+      !startAt || new Date(message.created_at).getTime() >= new Date(startAt).getTime()
+  );
+
+  const relevantAudits = (audits || []).filter(
+    (audit) =>
+      !startAt || new Date(audit.created_at).getTime() >= new Date(startAt).getTime()
+  );
+
+  const patientName = [conversation.patient_first_name, conversation.patient_last_name]
+    .filter(Boolean)
+    .join(" ");
+
+  const noteBody = [
+    "Reception SMS conversation summary",
+    "",
+    `Patient: ${patientName || "Unknown patient"}`,
+    `Mobile: ${conversation.patient_mobile || "Unknown"}`,
+    `Conversation opened: ${
+      startAt ? new Date(startAt).toLocaleString("en-AU") : "Unknown"
+    }`,
+    `Conversation closed: ${new Date(closedAt).toLocaleString("en-AU")}`,
+    `Closed by: ${closedBy || "Unknown staff member"}`,
+    "",
+    "Messages:",
+    relevantMessages.length > 0
+      ? relevantMessages.map(formatMessageLine).join("\n")
+      : "No messages in this conversation period.",
+    "",
+    "Events:",
+    relevantAudits.length > 0
+      ? relevantAudits.map(formatAuditLine).join("\n")
+      : "No events in this conversation period.",
+  ].join("\n");
+
+  const { data: exportRow, error } = await supabaseAdmin
+    .from("reception_praktika_general_note_exports")
+    .insert({
+      conversation_id: conversationId,
+      praktika_patient_id: conversation.praktika_patient_id,
+      praktika_appointment_id: conversation.praktika_appointment_id,
+      note_title: "Reception SMS conversation summary",
+      note_body: noteBody,
+      status: conversation.praktika_patient_id ? "pending" : "no_praktika_patient",
+      updated_at: new Date().toISOString(),
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("Could not create Praktika general note export", {
+      error,
+      conversationId,
+    });
+
+    return null;
+  }
+
+  await supabaseAdmin.from("reception_audit_logs").insert({
+    conversation_id: conversationId,
+    action: "general_clinical_note_export_created",
+    details: {
+      export_id: exportRow.id,
+      status: exportRow.status,
+      note_title: exportRow.note_title,
+      note_preview: noteBody.slice(0, 500),
+      note: "Created when the conversation was closed. Praktika write-back can be connected after the create-note endpoint is confirmed.",
+    },
+  });
+
+  return exportRow;
+}
+
 export async function GET(
   _request: NextRequest,
   context: { params: Promise<{ id: string }> }
@@ -139,8 +268,10 @@ export async function PATCH(
     );
   }
 
+  const now = new Date().toISOString();
+
   const updatePayload: any = {
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   };
 
   let action = "conversation_updated";
@@ -150,7 +281,7 @@ export async function PATCH(
 
     if (body.status === "closed") {
       updatePayload.closed_by_user_id = user.id;
-      updatePayload.closed_at = new Date().toISOString();
+      updatePayload.closed_at = now;
       updatePayload.close_summary = body.closeSummary || null;
       action = "conversation_closed";
     }
@@ -175,7 +306,9 @@ export async function PATCH(
 
   if (typeof body.isUrgent === "boolean") {
     updatePayload.is_urgent = body.isUrgent;
-    action = body.isUrgent ? "conversation_marked_urgent" : "conversation_unmarked_urgent";
+    action = body.isUrgent
+      ? "conversation_marked_urgent"
+      : "conversation_unmarked_urgent";
   }
 
   if (body.praktikaAppointmentId !== undefined) {
@@ -219,6 +352,17 @@ export async function PATCH(
       ...body,
     },
   });
+
+  if (
+    existingConversation.status !== "closed" &&
+    body.status === "closed"
+  ) {
+    await createConversationClinicalNoteExport({
+      conversationId: id,
+      closedAt: now,
+      closedBy: staff.displayName,
+    });
+  }
 
   return NextResponse.json({ conversation });
 }
