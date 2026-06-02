@@ -18,6 +18,7 @@ type Conversation = {
   last_message_preview: string | null;
   last_message_at: string | null;
   created_at: string;
+  unread_count: number;
 };
 
 type Attachment = {
@@ -160,23 +161,23 @@ export default function ReceptionMessagesPage() {
   }
 
   async function loadConversation(id: string) {
-  try {
-    const response = await fetch(`/api/reception/conversations/${id}`);
+    try {
+      const response = await fetch(`/api/reception/conversations/${id}`);
 
-    if (!response.ok) return;
+      if (!response.ok) return;
 
-    const data = await response.json();
+      const data = await response.json();
 
-    setConversation(data.conversation || null);
-    setMessages(data.messages || []);
-    setAudits(data.audits || []);
-    setPatient(data.patient || null);
-    setAppointments(data.appointments || []);
-    setConsent(data.consent || null);
-  } catch {
-    // Ignore cancelled fetches during navigation or hot reload.
+      setConversation(data.conversation || null);
+      setMessages(data.messages || []);
+      setAudits(data.audits || []);
+      setPatient(data.patient || null);
+      setAppointments(data.appointments || []);
+      setConsent(data.consent || null);
+    } catch {
+      // Ignore cancelled fetches during navigation or hot reload.
+    }
   }
-}
 
   async function loadTemplates() {
     const response = await fetch("/api/reception/templates");
@@ -211,16 +212,24 @@ export default function ReceptionMessagesPage() {
   }, [selectedId]);
 
   useEffect(() => {
-    if (!selectedId) return;
-
     const timer = window.setInterval(() => {
-      loadConversation(selectedId);
       loadConversations();
     }, 5000);
 
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, status, search]);
+  }, [status, search]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+
+    const timer = window.setInterval(() => {
+      loadConversation(selectedId);
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   async function searchPatients(value: string) {
     setPatientSearch(value);
@@ -570,20 +579,40 @@ export default function ReceptionMessagesPage() {
                     selectedId === item.id ? "bg-blue-50" : ""
                   }`}
                 >
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">
-                    {initials}
+                  <div className="relative shrink-0">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">
+                      {initials}
+                    </div>
+
+                    {item.unread_count > 0 && (
+                      <div className="absolute -right-0.5 -top-0.5 h-3.5 w-3.5 rounded-full border-2 border-white bg-blue-600" />
+                    )}
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-semibold text-slate-900">
-                      {name || displayPhone(item.patient_mobile)}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="truncate font-semibold text-slate-900">
+                        {name || displayPhone(item.patient_mobile)}
+                      </div>
+
+                      {item.unread_count > 0 && (
+                        <div className="flex min-w-5 items-center justify-center rounded-full bg-blue-600 px-2 py-0.5 text-xs font-bold text-white">
+                          {item.unread_count}
+                        </div>
+                      )}
                     </div>
 
                     <div className="text-sm font-medium text-slate-700">
                       {displayPhone(item.patient_mobile)}
                     </div>
 
-                    <div className="mt-1 truncate text-xs text-slate-500">
+                    <div
+                      className={`mt-1 truncate text-xs ${
+                        item.unread_count > 0
+                          ? "font-semibold text-slate-800"
+                          : "text-slate-500"
+                      }`}
+                    >
                       {item.last_message_preview || "No messages yet"}
                     </div>
 
@@ -860,38 +889,41 @@ export default function ReceptionMessagesPage() {
                       </label>
 
                       <button
-  type="button"
-  onClick={async () => {
-    if (!selectedId) return;
+                        type="button"
+                        onClick={async () => {
+                          if (!selectedId) return;
 
-    const response = await fetch("/api/reception/upload-links", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        conversationId: selectedId,
-      }),
-    });
+                          const response = await fetch(
+                            "/api/reception/upload-links",
+                            {
+                              method: "POST",
+                              headers: {
+                                "Content-Type": "application/json",
+                              },
+                              body: JSON.stringify({
+                                conversationId: selectedId,
+                              }),
+                            }
+                          );
 
-    const data = await response.json();
+                          const data = await response.json();
 
-    if (!response.ok) {
-      alert(data.error || "Could not create upload link.");
-      return;
-    }
+                          if (!response.ok) {
+                            alert(data.error || "Could not create upload link.");
+                            return;
+                          }
 
-    setComposer((current) =>
-      current
-        ? `${current}\n\nPlease upload your photo or file here:\n${data.url}`
-        : `Please upload your photo or file here:\n${data.url}`
-    );
-  }}
-  className="rounded-lg px-2 py-1 text-lg hover:bg-white"
-  title="Create patient upload link"
->
-  📝
-</button>
+                          setComposer((current) =>
+                            current
+                              ? `${current}\n\nPlease upload your photo or file here:\n${data.url}`
+                              : `Please upload your photo or file here:\n${data.url}`
+                          );
+                        }}
+                        className="rounded-lg px-2 py-1 text-lg hover:bg-white"
+                        title="Create patient upload link"
+                      >
+                        📝
+                      </button>
 
                       <a
                         href="/reception/templates"

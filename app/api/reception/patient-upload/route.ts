@@ -4,14 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 export async function POST(request: NextRequest) {
   const body = await request.json();
 
-  const {
-    token,
-    fileName,
-    fileType,
-    fileSize,
-    storagePath,
-    publicUrl,
-  } = body;
+  const { token, fileName, fileType, fileSize, storagePath, publicUrl } = body;
 
   if (!token || !fileName || !storagePath || !publicUrl) {
     return NextResponse.json(
@@ -40,6 +33,12 @@ export async function POST(request: NextRequest) {
       { status: 410 }
     );
   }
+
+  const { data: conversation } = await supabaseAdmin
+    .from("reception_conversations")
+    .select("*")
+    .eq("id", uploadLink.conversation_id)
+    .single();
 
   const { data: message, error: messageError } = await supabaseAdmin
     .from("reception_messages")
@@ -86,6 +85,7 @@ export async function POST(request: NextRequest) {
       last_message_preview: "Patient uploaded a file",
       last_message_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      unread_count: (conversation?.unread_count || 0) + 1,
     })
     .eq("id", uploadLink.conversation_id);
 

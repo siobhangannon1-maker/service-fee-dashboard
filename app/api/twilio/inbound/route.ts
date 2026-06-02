@@ -98,11 +98,10 @@ export async function POST(request: NextRequest) {
     });
 
     if (!from || (!body && numMedia === 0)) {
-      console.log("Inbound SMS ignored because From, Body and media were missing.");
       return twimlEmptyResponse();
     }
 
-    const { data: conversation, error: conversationError } = await supabaseAdmin
+    let { data: conversation, error: conversationError } = await supabaseAdmin
       .from("reception_conversations")
       .select("*")
       .eq("patient_mobile", from)
@@ -112,7 +111,7 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
 
     if (conversationError) {
-      console.error("Could not find conversation for inbound SMS", {
+      console.error("Could not find open conversation", {
         error: conversationError,
         from,
       });
@@ -121,13 +120,46 @@ export async function POST(request: NextRequest) {
     }
 
     if (!conversation) {
-      console.log("No open conversation found for inbound SMS", {
-        from,
-        body,
-        numMedia,
-      });
+      const { data: createdConversation, error: createError } =
+        await supabaseAdmin
+          .from("reception_conversations")
+          .insert({
+            status: "open",
+            patient_first_name: null,
+            patient_last_name: null,
+            patient_mobile: from,
+            praktika_patient_id: null,
+            praktika_appointment_id: null,
+            assigned_user_id: null,
+            assigned_display_name: null,
+            last_message_preview: body || "Message received",
+            last_message_at: new Date().toISOString(),
+            unread_count: 0,
+          })
+          .select("*")
+          .single();
 
-      return twimlEmptyResponse();
+      if (createError || !createdConversation) {
+        console.error("Could not create conversation for unknown inbound SMS", {
+          error: createError,
+          from,
+          body,
+        });
+
+        return twimlEmptyResponse();
+      }
+
+      conversation = createdConversation;
+
+      await supabaseAdmin.from("reception_audit_logs").insert({
+        conversation_id: conversation.id,
+        action: "conversation_created_from_unknown_inbound_sms",
+        details: {
+          from,
+          body,
+          twilio_message_sid: messageSid,
+        },
+      });
     }
 
     const messageBody = body || (numMedia > 0 ? "Attachment received" : "");
@@ -239,9 +271,12 @@ export async function POST(request: NextRequest) {
         status: "open",
         last_message_preview:
           body.slice(0, 160) ||
-          (savedAttachments.length > 0 ? "Attachment received" : "Message received"),
+          (savedAttachments.length > 0
+            ? "Attachment received"
+            : "Message received"),
         last_message_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+        unread_count: (conversation.unread_count || 0) + 1,
       })
       .eq("id", conversation.id);
 

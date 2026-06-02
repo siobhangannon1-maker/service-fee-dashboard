@@ -87,8 +87,19 @@ export async function GET(
     attachments: attachmentsByMessageId.get(message.id) || [],
   }));
 
+  await supabaseAdmin
+    .from("reception_conversations")
+    .update({
+      unread_count: 0,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id);
+
   return NextResponse.json({
-    conversation,
+    conversation: {
+      ...conversation,
+      unread_count: 0,
+    },
     messages: messagesWithAttachments,
     audits: audits || [],
     consent,
