@@ -62,7 +62,7 @@ export async function GET(
           .select("*")
           .eq("praktika_patient_id", conversation.praktika_patient_id)
           .order("appointment_datetime", { ascending: true })
-          .limit(10)
+          .limit(20)
       : Promise.resolve({ data: [] }),
 
     supabaseAdmin
@@ -126,9 +126,24 @@ export async function PATCH(
   const staff = await getStaffDisplayInfo(user.id);
   const body = await request.json();
 
+  const { data: existingConversation } = await supabaseAdmin
+    .from("reception_conversations")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!existingConversation) {
+    return NextResponse.json(
+      { error: "Conversation not found." },
+      { status: 404 }
+    );
+  }
+
   const updatePayload: any = {
     updated_at: new Date().toISOString(),
   };
+
+  let action = "conversation_updated";
 
   if (body.status === "open" || body.status === "closed") {
     updatePayload.status = body.status;
@@ -137,11 +152,41 @@ export async function PATCH(
       updatePayload.closed_by_user_id = user.id;
       updatePayload.closed_at = new Date().toISOString();
       updatePayload.close_summary = body.closeSummary || null;
+      action = "conversation_closed";
     }
+
+    if (body.status === "open") {
+      updatePayload.closed_by_user_id = null;
+      updatePayload.closed_at = null;
+      updatePayload.close_summary = null;
+      action = "conversation_opened";
+    }
+  }
+
+  if (
+    body.workflowStatus === "general" ||
+    body.workflowStatus === "waiting_on_patient" ||
+    body.workflowStatus === "waiting_on_practice" ||
+    body.workflowStatus === "needs_follow_up"
+  ) {
+    updatePayload.workflow_status = body.workflowStatus;
+    action = "workflow_status_updated";
+  }
+
+  if (typeof body.isUrgent === "boolean") {
+    updatePayload.is_urgent = body.isUrgent;
+    action = body.isUrgent ? "conversation_marked_urgent" : "conversation_unmarked_urgent";
   }
 
   if (body.praktikaAppointmentId !== undefined) {
     updatePayload.praktika_appointment_id = body.praktikaAppointmentId || null;
+
+    if (!body.praktikaAppointmentId) {
+      updatePayload.appointment_confirmation_status = null;
+      updatePayload.appointment_confirmed_at = null;
+    }
+
+    action = "appointment_link_updated";
   }
 
   const { data: conversation, error } = await supabaseAdmin
@@ -152,6 +197,13 @@ export async function PATCH(
     .single();
 
   if (error) {
+    console.error("Could not update reception conversation", {
+      error,
+      id,
+      updatePayload,
+      body,
+    });
+
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
@@ -159,13 +211,13 @@ export async function PATCH(
     conversation_id: id,
     actor_user_id: user.id,
     actor_display_name: staff.displayName,
-    action:
-      body.status === "closed"
-        ? "conversation_closed"
-        : body.status === "open"
-        ? "conversation_opened"
-        : "conversation_updated",
-    details: body,
+    action,
+    details: {
+      previous_is_urgent: existingConversation.is_urgent,
+      previous_workflow_status: existingConversation.workflow_status,
+      previous_status: existingConversation.status,
+      ...body,
+    },
   });
 
   return NextResponse.json({ conversation });

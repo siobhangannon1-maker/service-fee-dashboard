@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 type ConversationWorkflowPanelProps = {
   conversationId: string;
   workflowStatus?: string | null;
@@ -13,23 +15,42 @@ export default function ConversationWorkflowPanel({
   isUrgent,
   onUpdated,
 }: ConversationWorkflowPanelProps) {
-  async function updateConversation(payload: any) {
-    const response = await fetch(`/api/reception/conversations/${conversationId}`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+  const [savingField, setSavingField] = useState<"workflow" | "urgent" | null>(
+    null
+  );
 
-    const data = await response.json();
+  async function updateConversation(
+    payload: Record<string, string | boolean | null>,
+    savingType: "workflow" | "urgent"
+  ) {
+    setSavingField(savingType);
 
-    if (!response.ok) {
-      alert(data.error || "Could not update conversation.");
-      return;
+    try {
+      const response = await fetch(`/api/reception/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Could not update conversation.");
+        return;
+      }
+
+      await onUpdated();
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Could not update conversation."
+      );
+    } finally {
+      setSavingField(null);
     }
-
-    onUpdated();
   }
 
   return (
@@ -43,12 +64,16 @@ export default function ConversationWorkflowPanel({
 
         <select
           value={workflowStatus || "general"}
+          disabled={savingField !== null}
           onChange={(event) =>
-            updateConversation({
-              workflowStatus: event.target.value,
-            })
+            updateConversation(
+              {
+                workflowStatus: event.target.value,
+              },
+              "workflow"
+            )
           }
-          className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
         >
           <option value="general">General</option>
           <option value="waiting_on_patient">Waiting on patient</option>
@@ -59,19 +84,34 @@ export default function ConversationWorkflowPanel({
 
       <button
         type="button"
+        disabled={savingField !== null}
         onClick={() =>
-          updateConversation({
-            isUrgent: !isUrgent,
-          })
+          updateConversation(
+            {
+              isUrgent: !Boolean(isUrgent),
+            },
+            "urgent"
+          )
         }
-        className={`mt-3 w-full rounded-xl px-4 py-2 text-sm font-semibold ${
+        className={`mt-3 w-full rounded-xl px-4 py-2 text-sm font-semibold disabled:opacity-50 ${
           isUrgent
-            ? "bg-red-600 text-white"
-            : "border border-red-200 bg-red-50 text-red-700"
+            ? "border border-red-600 bg-red-600 text-white hover:bg-red-700"
+            : "border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
         }`}
       >
-        {isUrgent ? "Urgent conversation" : "Mark urgent"}
+        {savingField === "urgent"
+          ? "Updating..."
+          : isUrgent
+          ? "Urgent conversation"
+          : "Mark urgent"}
       </button>
+
+      {isUrgent && (
+        <p className="mt-2 text-xs text-red-600">
+          This conversation is marked urgent and will appear with an urgent badge
+          in the inbox.
+        </p>
+      )}
     </div>
   );
 }

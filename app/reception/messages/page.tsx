@@ -86,6 +86,35 @@ function initialsFromName(name: string | null | undefined) {
   return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
 }
 
+function stableHash(value: string) {
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(index);
+    hash |= 0;
+  }
+
+  return Math.abs(hash);
+}
+
+function patientInitialCircleClass(value: string | null | undefined) {
+  const colours = [
+    "bg-emerald-500",
+    "bg-blue-500",
+    "bg-violet-500",
+    "bg-fuchsia-500",
+    "bg-rose-500",
+    "bg-orange-500",
+    "bg-cyan-500",
+    "bg-teal-500",
+    "bg-indigo-500",
+    "bg-lime-600",
+  ];
+
+  const key = value || "unknown";
+  return colours[stableHash(key) % colours.length];
+}
+
 function readableFileSize(size?: number) {
   if (!size) return "";
   if (size < 1024) return `${size} B`;
@@ -254,6 +283,8 @@ export default function ReceptionMessagesPage() {
   const [confirmationSendingId, setConfirmationSendingId] = useState<
     string | null
   >(null);
+  const [creatingQuestionnaireLink, setCreatingQuestionnaireLink] =
+    useState(false);
   const [manualResolvingId, setManualResolvingId] = useState<string | null>(
     null,
   );
@@ -618,6 +649,38 @@ export default function ReceptionMessagesPage() {
     await loadConversations();
   }
 
+  async function insertPostOpQuestionnaireLink() {
+    if (!conversation) return;
+
+    setCreatingQuestionnaireLink(true);
+
+    const response = await fetch("/api/reception/questionnaire-link", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        conversationId: conversation.id,
+        praktikaAppointmentId: conversation.praktika_appointment_id,
+      }),
+    });
+
+    const data = await response.json();
+
+    setCreatingQuestionnaireLink(false);
+
+    if (!response.ok) {
+      alert(data.error || "Could not create questionnaire link.");
+      return;
+    }
+
+    setComposer((current) =>
+      current.trim()
+        ? `${current.trim()}\n\n${data.smsBody}`
+        : data.smsBody
+    );
+  }
+
   async function manuallyResolveConfirmation(appointmentId: string) {
     if (!conversation) return;
 
@@ -764,6 +827,12 @@ export default function ReceptionMessagesPage() {
                   Confirmations
                 </a>
                 <a
+                  href="/reception/post-op-questionnaires"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Post-op
+                </a>
+                <a
                   href="/reception/templates"
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                 >
@@ -872,7 +941,7 @@ export default function ReceptionMessagesPage() {
                   }`}
                 >
                   <div className="relative shrink-0">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">
+                    <div className={`flex h-11 w-11 items-center justify-center rounded-full text-sm font-bold text-white ${patientInitialCircleClass(item.id || item.patient_mobile)}`}>
                       {initials}
                     </div>
 
@@ -1265,6 +1334,18 @@ export default function ReceptionMessagesPage() {
                         📝
                       </button>
 
+                      <button
+                        type="button"
+                        onClick={insertPostOpQuestionnaireLink}
+                        disabled={creatingQuestionnaireLink}
+                        className="rounded-lg px-2 py-1 text-xs font-semibold text-violet-700 hover:bg-white disabled:opacity-50"
+                        title="Insert post-op questionnaire link"
+                      >
+                        {creatingQuestionnaireLink
+                          ? "Creating..."
+                          : "Post-op questionnaire"}
+                      </button>
+
                       <a
                         href="/reception/templates"
                         className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-white"
@@ -1646,8 +1727,7 @@ export default function ReceptionMessagesPage() {
                               Resend
                             </button>
                           )}
-
-                          {isAmbiguousConfirmation && (
+{isAmbiguousConfirmation && (
                             <button
                               type="button"
                               disabled={manualResolvingId === appointmentId}
@@ -1766,6 +1846,12 @@ export default function ReceptionMessagesPage() {
                   className="rounded-xl border border-slate-200 px-3 py-2 text-blue-600 hover:bg-slate-50"
                 >
                   Confirmations
+                </a>
+                <a
+                  href="/reception/post-op-questionnaires"
+                  className="rounded-xl border border-slate-200 px-3 py-2 text-blue-600 hover:bg-slate-50"
+                >
+                  Post-op questionnaires
                 </a>
               </div>
             </div>
