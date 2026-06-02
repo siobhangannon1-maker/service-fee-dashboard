@@ -1,13 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { use, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 export default function PatientUploadPage({
   params,
 }: {
-  params: { token: string };
+  params: Promise<{ token: string }>;
 }) {
+  const { token } = use(params);
+
   const [uploading, setUploading] = useState(false);
   const [done, setDone] = useState(false);
   const [message, setMessage] = useState("");
@@ -20,7 +22,7 @@ export default function PatientUploadPage({
       const supabase = createClient();
 
       const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
-      const storagePath = `patient-upload/${params.token}/${Date.now()}-${safeName}`;
+      const storagePath = `patient-upload/${token}/${Date.now()}-${safeName}`;
 
       const { error: uploadError } = await supabase.storage
         .from("reception-message-attachments")
@@ -45,7 +47,7 @@ export default function PatientUploadPage({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          token: params.token,
+          token,
           fileName: file.name,
           fileType: file.type,
           fileSize: file.size,
@@ -75,9 +77,7 @@ export default function PatientUploadPage({
     <main className="flex min-h-screen items-center justify-center bg-slate-100 p-4">
       <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-sm">
         <div className="mb-6 text-center">
-          <h1 className="text-2xl font-bold text-slate-900">
-            Upload a file
-          </h1>
+          <h1 className="text-2xl font-bold text-slate-900">Upload a file</h1>
           <p className="mt-2 text-sm text-slate-500">
             Focus Dental Specialists
           </p>
