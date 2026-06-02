@@ -1,12 +1,27 @@
 import { NextResponse } from "next/server";
-import twilio from "twilio";
 
 export async function POST() {
-  const response = new twilio.twiml.VoiceResponse();
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial>+61730779620</Dial>
+</Response>`;
 
-  response.dial("+61730779620");
+  return new NextResponse(twiml, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/xml",
+    },
+  });
+}
 
-  return new NextResponse(response.toString(), {
+export async function GET() {
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial>+61730779620</Dial>
+</Response>`;
+
+  return new NextResponse(twiml, {
+    status: 200,
     headers: {
       "Content-Type": "text/xml",
     },
