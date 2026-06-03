@@ -1,4 +1,5 @@
-import { praktikaPost } from "@/lib/praktika/praktika-client";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
+import { praktikaHelperPost } from "@/lib/praktika/helper-job-client";
 
 type GetClinicalNotesResponse = {
   patient_clinicalnotes: any[];
@@ -17,9 +18,16 @@ export async function getPraktikaClinicalNotes({
   praktikaPatientId: string;
   practiceId?: number;
 }) {
-  return await praktikaPost<GetClinicalNotesResponse>({
+  const mode = await getCurrentUserPraktikaSessionMode();
+
+  return await praktikaHelperPost<GetClinicalNotesResponse>({
+    mode,
+    jobType: "get_clinical_notes",
     path: "/php/forms/db_getFormData.php",
     contentType: "json",
+    referer:
+      "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
+    priority: 30,
     body: [
       {
         parameters: [
@@ -39,9 +47,27 @@ export async function addPraktikaClinicalNote({
   noteText,
   practiceId = 1181,
 }: AddClinicalNoteInput) {
-  const existing = await getPraktikaClinicalNotes({
-    praktikaPatientId,
-    practiceId,
+  const mode = await getCurrentUserPraktikaSessionMode();
+
+  const existing = await praktikaHelperPost<GetClinicalNotesResponse>({
+    mode,
+    jobType: "get_clinical_notes_before_add",
+    path: "/php/forms/db_getFormData.php",
+    contentType: "json",
+    referer:
+      "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
+    priority: 30,
+    body: [
+      {
+        parameters: [
+          {
+            practice_id: practiceId,
+            patient_id: String(praktikaPatientId),
+          },
+        ],
+        fields: ["patient_clinicalnotes"],
+      },
+    ],
   });
 
   const currentNotes = existing.patient_clinicalnotes || [];
@@ -65,9 +91,14 @@ export async function addPraktikaClinicalNote({
 
   const requestId = `${Date.now()}_clinical_note_${praktikaPatientId}`;
 
-  const response = await praktikaPost<any>({
+  const response = await praktikaHelperPost<any>({
+    mode,
+    jobType: "add_clinical_note",
     path: "/php/forms/db_commitFormData.php",
     contentType: "json",
+    referer:
+      "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
+    priority: 20,
     body: [
       {
         request_id: requestId,

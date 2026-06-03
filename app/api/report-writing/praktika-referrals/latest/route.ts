@@ -2,17 +2,12 @@ import { NextResponse } from "next/server";
 
 import {
   getCurrentUserPraktikaSessionMode,
-  getPraktikaCookie,
   type PraktikaSessionMode,
 } from "@/lib/praktika/hybrid-session-store";
-
-import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { praktikaHelperPost } from "@/lib/praktika/helper-job-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const PRAKTIKA_FORM_DATA_URL =
-  "https://praktika.praktika.net.au/php/forms/db_getFormData.php";
 
 type PraktikaReferral = {
   id?: string | number;
@@ -98,70 +93,26 @@ async function fetchReferralsFromPraktika({
   practiceId: string;
   mode: PraktikaSessionMode;
 }) {
-  return withPraktikaAutoRefresh(
-    async () => {
-      const cookie = await getPraktikaCookie(mode);
-
-      const payload = [
-        {
-          parameters: [
-            {
-              practice_id: Number(practiceId),
-              patient_id: Number(patientId),
-            },
-          ],
-          fields: ["patient_referrals"],
-        },
-      ];
-
-      const response = await fetch(PRAKTIKA_FORM_DATA_URL, {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/json",
-          Cookie: cookie,
-          Origin: "https://praktika.praktika.net.au",
-          Referer:
-            "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
-          "X-Requested-With": "XMLHttpRequest",
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
-        },
-        body: JSON.stringify(payload),
-        cache: "no-store",
-      });
-
-      const text = await response.text();
-
-      if (!text.trim()) return null;
-
-      if (!response.ok) {
-        throw new Error(
-          `Praktika referral request failed: ${response.status}. ${text.slice(
-            0,
-            500,
-          )}`,
-        );
-      }
-
-      if (text.trim().startsWith("<")) {
-        throw new Error(
-          "Praktika returned HTML instead of JSON. Session may be expired.",
-        );
-      }
-
-      try {
-        return JSON.parse(text);
-      } catch {
-        throw new Error(
-          `Praktika returned non-JSON referral response. ${text.slice(0, 500)}`,
-        );
-      }
-    },
-    {
-      mode,
-    },
-  );
+  return await praktikaHelperPost<any>({
+    mode,
+    jobType: "report_writing_latest_referral",
+    path: "/php/forms/db_getFormData.php",
+    contentType: "json",
+    referer:
+      "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
+    priority: 30,
+    body: [
+      {
+        parameters: [
+          {
+            practice_id: Number(practiceId),
+            patient_id: Number(patientId),
+          },
+        ],
+        fields: ["patient_referrals"],
+      },
+    ],
+  });
 }
 
 export async function POST(req: Request) {

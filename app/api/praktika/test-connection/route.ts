@@ -1,17 +1,25 @@
 import { NextResponse } from "next/server";
-import { praktikaPost } from "@/lib/praktika/praktika-client";
+import { praktikaHelperPostForCurrentUser } from "@/lib/praktika/helper-job-client";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const result = await praktikaPost<any>({
+    const practiceId = process.env.PRAKTIKA_PRACTICE_ID || "1181";
+
+    const result = await praktikaHelperPostForCurrentUser<any>({
+      jobType: "praktika_test_connection",
+      priority: 10,
       path: "/php/json/db_reportingDataWarehouse.php",
       contentType: "form",
       referer:
         "https://praktika.praktika.net.au/v2/reports/upcoming-appointments",
+      timeoutMs: 90_000,
       body: {
         sReportName: "appointments",
         bByCreationTime: "false",
-        "iPracticeIds[]": ["1181"],
+        "iPracticeIds[]": [practiceId],
         sFromDate: "2026-06-01",
         sToDate: "2026-06-01",
       },
@@ -29,7 +37,7 @@ export async function GET() {
         error:
           error instanceof Error ? error.message : "Unknown Praktika error",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

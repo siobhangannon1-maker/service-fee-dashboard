@@ -1,17 +1,16 @@
+import "server-only";
+
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { autoFileInboxItemToPraktika } from "@/lib/ai/brain/praktikaAutoFile";
-import { getPraktikaCookie } from "@/lib/praktika/hybrid-session-store";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { praktikaHelperPostForCurrentUser } from "@/lib/praktika/helper-job-client";
 
-const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
-const PRAKTIKA_UPDATE_FORM_URL = `${PRAKTIKA_BASE_URL}/php/forms/db_updateFormData.php`;
+const PRAKTIKA_UPDATE_FORM_PATH = "/php/forms/db_updateFormData.php";
 const DEFAULT_PRACTICE_ID = Number(process.env.PRAKTIKA_PRACTICE_ID || 1181);
 const DEFAULT_CUSTOMER_ID = String(process.env.PRAKTIKA_CUSTOMER_ID || 480);
 const DEFAULT_USER_ID = String(process.env.PRAKTIKA_USER_ID || 12393);
 const DEFAULT_FEE_SCHEDULE_ID = Number(
   process.env.PRAKTIKA_DEFAULT_FEE_SCHEDULE_ID || 8769,
 );
-const PRACTICE_MODE = { scope: "practice" as const };
 
 type NewPatientInput = {
   inboxItemId: string;
@@ -140,53 +139,15 @@ async function writeAuditEvent({
   }
 }
 
-async function praktikaJsonPost(url: string, payload: any) {
-  return withPraktikaAutoRefresh(async () => {
-    const cookie = await getPraktikaCookie(PRACTICE_MODE);
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/json; charset=UTF-8",
-        Origin: PRAKTIKA_BASE_URL,
-        Referer: `${PRAKTIKA_BASE_URL}/v2/patient-directory/patient-search`,
-        Cookie: cookie,
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: JSON.stringify(payload),
-      cache: "no-store",
-    });
-
-    const text = await response.text();
-    const lower = text.trim().toLowerCase();
-
-    if (
-      lower.startsWith("<!doctype") ||
-      lower.startsWith("<html") ||
-      lower.includes("/v2/login") ||
-      lower.includes("type=\"password\"") ||
-      lower.includes("logged-out") ||
-      lower.includes("logged out")
-    ) {
-      throw new Error("Praktika session expired or returned a login page.");
-    }
-
-    let json: any = null;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error(`Praktika returned non-JSON response: ${text.slice(0, 300)}`);
-    }
-
-    if (!response.ok) {
-      throw new Error(json?.error || json?.message || `Praktika request failed (${response.status}).`);
-    }
-
-    return json;
-  },
-  {
-    mode: PRACTICE_MODE,
+async function praktikaJsonPost(path: string, payload: any, jobType = "ai_praktika_json_post") {
+  return await praktikaHelperPostForCurrentUser<any>({
+    jobType,
+    priority: 15,
+    path,
+    contentType: "json",
+    referer: "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
+    timeoutMs: 120_000,
+    body: payload,
   });
 }
 
@@ -317,7 +278,7 @@ export async function createPraktikaPatientFromInboxItem({
 
   try {
     const patientPayload = buildCreatePatientPayload(input);
-    const patientResult = await praktikaJsonPost(PRAKTIKA_UPDATE_FORM_URL, patientPayload);
+    const patientResult = await praktikaJsonPost(PRAKTIKA_UPDATE_FORM_PATH, patientPayload, "ai_create_praktika_patient");
 
     const patientId = String(patientResult?.patient_id || "").trim();
 
@@ -335,8 +296,9 @@ export async function createPraktikaPatientFromInboxItem({
       });
 
       referralResult = await praktikaJsonPost(
-        PRAKTIKA_UPDATE_FORM_URL,
+        PRAKTIKA_UPDATE_FORM_PATH,
         referralPayload,
+        "ai_create_praktika_new_patient_referral",
       );
 
       referralId =

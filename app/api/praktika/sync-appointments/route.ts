@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { praktikaPost } from "@/lib/praktika/praktika-client";
+import { praktikaHelperPostForCurrentUser } from "@/lib/praktika/helper-job-client";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 type PraktikaAppointmentRow = any;
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function seconds(start: number) {
   return `${((Date.now() - start) / 1000).toFixed(1)}s`;
@@ -58,29 +61,36 @@ export async function POST(request: NextRequest) {
     if (!fromDate || !toDate) {
       return NextResponse.json(
         { error: "fromDate and toDate are required." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    const rows = await praktikaPost<PraktikaAppointmentRow[]>({
+    const practiceId = process.env.PRAKTIKA_PRACTICE_ID || "1181";
+
+    const rows = await praktikaHelperPostForCurrentUser<PraktikaAppointmentRow[]>({
+      jobType: "sync_appointments_bulk",
+      priority: 20,
       path: "/php/json/db_reportingDataWarehouse.php",
       contentType: "form",
       referer:
         "https://praktika.praktika.net.au/v2/reports/upcoming-appointments",
+      timeoutMs: 120_000,
       body: {
         sReportName: "appointments",
         bByCreationTime: "false",
-        "iPracticeIds[]": ["1181"],
+        "iPracticeIds[]": [practiceId],
         sFromDate: fromDate,
         sToDate: toDate,
       },
     });
 
+    const safeRows = Array.isArray(rows) ? rows : [];
+
     console.log(
       "SYNC APPOINTMENTS BULK: Praktika returned",
-      rows?.length || 0,
+      safeRows.length,
       "rows after",
-      seconds(start)
+      seconds(start),
     );
 
     const { data: rules, error: rulesError } = await supabaseAdmin
@@ -95,18 +105,6 @@ export async function POST(request: NextRequest) {
 
     const now = new Date().toISOString();
 
-    /*
-      Testing phase cleanup:
-      Delete all currently synced appointments within this date range before
-      re-inserting what Praktika currently returns.
-
-      This means if an appointment was deleted in Praktika, it disappears from:
-      - messages page appointment panel
-      - confirmation queue
-      - post-op questionnaire queue
-
-      It intentionally does not delete reception messages or conversations.
-    */
     const { error: deleteQueueError } = await supabaseAdmin
       .from("reception_questionnaire_queue")
       .delete()
@@ -116,7 +114,7 @@ export async function POST(request: NextRequest) {
     if (deleteQueueError) {
       console.warn(
         "SYNC APPOINTMENTS BULK: could not delete questionnaire queue items",
-        deleteQueueError.message
+        deleteQueueError.message,
       );
     }
 
@@ -129,12 +127,12 @@ export async function POST(request: NextRequest) {
 
     if (lookupDeleteError) {
       throw new Error(
-        `Could not find old appointments to delete: ${lookupDeleteError.message}`
+        `Could not find old appointments to delete: ${lookupDeleteError.message}`,
       );
     }
 
     const appointmentIdsToDelete = (appointmentsToDelete || []).map((item) =>
-      String(item.praktika_appointment_id)
+      String(item.praktika_appointment_id),
     );
 
     if (appointmentIdsToDelete.length > 0) {
@@ -155,18 +153,18 @@ export async function POST(request: NextRequest) {
 
       if (deleteAppointmentsError) {
         throw new Error(
-          `Could not delete old synced appointments: ${deleteAppointmentsError.message}`
+          `Could not delete old synced appointments: ${deleteAppointmentsError.message}`,
         );
       }
     }
 
     const patientMap = new Map<string, any>();
 
-    for (const row of rows || []) {
+    for (const row of safeRows) {
       patientMap.set(String(row.iPatientId), {
         praktika_patient_id: String(row.iPatientId),
         praktika_patient_number: row.iPatientNumber || null,
-        practice_id: row.iPractice || "1181",
+        practice_id: row.iPractice || practiceId,
         first_name: row.vchPatientFirstName || null,
         last_name: row.vchPatientLastName || null,
         mobile: row.vchMobile || null,
@@ -179,14 +177,14 @@ export async function POST(request: NextRequest) {
 
     const patientRows = Array.from(patientMap.values());
 
-    const appointmentRows = (rows || []).map((row) => {
+    const appointmentRows = safeRows.map((row) => {
       const location = resolveLocationFromRules(row, rules || []);
 
       return {
         praktika_appointment_id: String(row.iAppointmentId),
         praktika_patient_id: String(row.iPatientId),
         praktika_patient_number: row.iPatientNumber || null,
-        practice_id: row.iPractice || "1181",
+        practice_id: row.iPractice || practiceId,
 
         appointment_datetime: row.dtAppointment
           ? new Date(row.dtAppointment).toISOString()
@@ -238,14 +236,14 @@ export async function POST(request: NextRequest) {
 
       if (patientResult.error) {
         throw new Error(
-          `Patient bulk upsert failed: ${patientResult.error.message}`
+          `Patient bulk upsert failed: ${patientResult.error.message}`,
         );
       }
     }
 
     console.log(
       "SYNC APPOINTMENTS BULK: upserting appointments",
-      appointmentRows.length
+      appointmentRows.length,
     );
 
     if (appointmentRows.length > 0) {
@@ -255,7 +253,7 @@ export async function POST(request: NextRequest) {
 
       if (appointmentResult.error) {
         throw new Error(
-          `Appointment bulk upsert failed: ${appointmentResult.error.message}`
+          `Appointment bulk upsert failed: ${appointmentResult.error.message}`,
         );
       }
     }
@@ -269,7 +267,7 @@ export async function POST(request: NextRequest) {
       debug: {
         fromDate,
         toDate,
-        returnedFromPraktika: rows?.length || 0,
+        returnedFromPraktika: safeRows.length,
         patientUpsertCount: patientRows.length,
         appointmentUpsertCount: appointmentRows.length,
         deletedOldAppointmentCount: appointmentIdsToDelete.length,
@@ -287,7 +285,7 @@ export async function POST(request: NextRequest) {
           totalTime: seconds(start),
         },
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

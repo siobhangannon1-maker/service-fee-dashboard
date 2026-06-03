@@ -11,8 +11,11 @@ const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
 const PROFILE_ROOT = path.join(process.cwd(), "praktika-browser-profiles");
 
 const HEADLESS =
-  String(process.env.PRAKTIKA_HELPER_HEADLESS ?? "true").toLowerCase() !==
+  String(process.env.PRAKTIKA_HELPER_HEADLESS ?? "false").toLowerCase() !==
   "false";
+  
+  console.log("PRAKTIKA_HELPER_HEADLESS =", process.env.PRAKTIKA_HELPER_HEADLESS);
+console.log("HEADLESS =", HEADLESS);
 
 const KEEP_BROWSER_OPEN =
   String(process.env.PRAKTIKA_KEEP_BROWSER_OPEN ?? "true").toLowerCase() !==

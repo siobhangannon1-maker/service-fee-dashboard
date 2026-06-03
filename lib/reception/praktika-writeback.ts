@@ -1,7 +1,26 @@
-import { praktikaPost } from "@/lib/praktika/praktika-client";
+import { createPraktikaHelperJob } from "@/lib/praktika/helper-jobs";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 const PRAKTIKA_PRACTICE_ID = Number(process.env.PRAKTIKA_PRACTICE_ID || 1181);
+
+type UserMode = {
+  scope: "user";
+  appUserId: string;
+};
+
+type WritebackResult = {
+  appointmentMarkedConfirmed: boolean;
+  appointmentNoteCreated: boolean;
+  errors: string[];
+  queuedJobs: Array<{
+    jobId: string;
+    jobType: string;
+    appUserId: string;
+  }>;
+  markConfirmedJobId?: string;
+  appointmentNoteJobId?: string;
+  generalClinicalNoteJobId?: string;
+};
 
 function makeRequestId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -11,124 +30,75 @@ function clean(value: unknown) {
   return String(value ?? "").trim();
 }
 
-function getServerPraktikaCookie() {
-  const phpsessid = process.env.PRAKTIKA_SERVER_PHPSESSID;
-  const uat = process.env.PRAKTIKA_SERVER_UAT;
-
-  if (!phpsessid || !uat) return null;
-
-  return `PHPSESSID=${phpsessid}; UAT=${uat}`;
+function userMode(appUserId: string): UserMode {
+  return {
+    scope: "user",
+    appUserId,
+  };
 }
 
-async function praktikaPostWithServerSession<T>({
+function appUserIdFromMode(mode: UserMode) {
+  return mode.appUserId;
+}
+
+async function createUserScopedPraktikaJob({
+  mode,
+  jobType,
   path,
   referer,
   body,
+  priority = 40,
 }: {
+  mode: UserMode;
+  jobType: string;
   path: string;
   referer: string;
-  body: any;
+  body: Record<string, unknown> | unknown[];
+  priority?: number;
 }) {
-  const cookie = getServerPraktikaCookie();
+  const appUserId = appUserIdFromMode(mode);
 
-  if (!cookie) {
+  if (!appUserId) {
     throw new Error(
-      "No server Praktika session configured. Add PRAKTIKA_SERVER_PHPSESSID and PRAKTIKA_SERVER_UAT to Vercel."
+      "A DocuDental user is required before creating a Praktika helper job.",
     );
   }
 
-  const response = await fetch(`https://praktika.praktika.net.au${path}`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json",
-      Origin: "https://praktika.praktika.net.au",
-      Referer: referer,
-      Cookie: cookie,
-      "Cache-Control": "no-cache",
-      Pragma: "no-cache",
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
-    },
-    body: JSON.stringify(body),
-  });
-
-  const text = await response.text();
-
-  let data: any = null;
-
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    throw new Error(
-      `Praktika server session response was not JSON. Status ${response.status}. ${text.slice(
-        0,
-        300
-      )}`
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      data?.message ||
-        data?.error ||
-        `Praktika server session request failed with status ${response.status}`
-    );
-  }
-
-  return data as T;
-}
-
-async function praktikaPostUserThenServer<T>({
-  path,
-  referer,
-  body,
-}: {
-  path: string;
-  referer: string;
-  body: any;
-}) {
-  try {
-    return await praktikaPost<T>({
+  return await createPraktikaHelperJob({
+    appUserId,
+    jobType,
+    priority,
+    request: {
+      method: "POST",
       path,
       contentType: "json",
       referer,
       body,
-    });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Praktika user session failed.";
-
-    const shouldTryServerSession =
-      message.includes("logged in") ||
-      message.includes("session") ||
-      message.includes("username/password") ||
-      message.includes("individual Praktika session");
-
-    if (!shouldTryServerSession) {
-      throw error;
-    }
-
-    return await praktikaPostWithServerSession<T>({
-      path,
-      referer,
-      body,
-    });
-  }
+    },
+  });
 }
 
 export async function markPraktikaAppointmentConfirmed({
   appointmentId,
   appointmentDate,
+  appUserId,
 }: {
   appointmentId: string;
   appointmentDate?: string | null;
+  appUserId: string;
 }) {
   if (!appointmentId) throw new Error("Praktika appointment ID is required.");
+  if (!appUserId) {
+    throw new Error(
+      "Cannot mark Praktika appointment confirmed without an assigned DocuDental user.",
+    );
+  }
 
   const refererDate = appointmentDate || new Date().toISOString().slice(0, 10);
 
-  return await praktikaPostUserThenServer<any>({
+  return await createUserScopedPraktikaJob({
+    mode: userMode(appUserId),
+    jobType: "reception_mark_appointment_confirmed",
     path: "/php/forms/db_commitFormData.php",
     referer: `https://praktika.praktika.net.au/v2/scheduler/${refererDate}`,
     body: [
@@ -147,16 +117,25 @@ export async function createPraktikaAppointmentNote({
   appointmentId,
   appointmentDate,
   note,
+  appUserId,
 }: {
   appointmentId: string;
   appointmentDate?: string | null;
   note: string;
+  appUserId: string;
 }) {
   if (!appointmentId) throw new Error("Praktika appointment ID is required.");
+  if (!appUserId) {
+    throw new Error(
+      "Cannot create Praktika appointment note without an assigned DocuDental user.",
+    );
+  }
 
   const refererDate = appointmentDate || new Date().toISOString().slice(0, 10);
 
-  return await praktikaPostUserThenServer<any>({
+  return await createUserScopedPraktikaJob({
+    mode: userMode(appUserId),
+    jobType: "reception_create_appointment_note",
     path: "/php/forms/db_commitFormData.php",
     referer: `https://praktika.praktika.net.au/v2/scheduler/${refererDate}`,
     body: [
@@ -182,12 +161,21 @@ export async function createPraktikaAppointmentNote({
 
 export async function fetchPraktikaClinicalNotes({
   patientId,
+  appUserId,
 }: {
   patientId: string;
+  appUserId: string;
 }) {
   if (!patientId) throw new Error("Praktika patient ID is required.");
+  if (!appUserId) {
+    throw new Error(
+      "Cannot fetch Praktika clinical notes without an assigned DocuDental user.",
+    );
+  }
 
-  return await praktikaPostUserThenServer<any>({
+  return await createUserScopedPraktikaJob({
+    mode: userMode(appUserId),
+    jobType: "reception_fetch_clinical_notes",
     path: "/php/forms/db_getFormData.php",
     referer:
       "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
@@ -208,15 +196,22 @@ export async function fetchPraktikaClinicalNotes({
 export async function createPraktikaGeneralClinicalNote({
   patientId,
   noteText,
+  appUserId,
 }: {
   patientId: string;
   noteText: string;
+  appUserId: string;
 }) {
   if (!patientId) throw new Error("Praktika patient ID is required.");
+  if (!appUserId) {
+    throw new Error(
+      "Cannot create Praktika general note without an assigned DocuDental user.",
+    );
+  }
 
-  await fetchPraktikaClinicalNotes({ patientId });
-
-  return await praktikaPostUserThenServer<any>({
+  return await createUserScopedPraktikaJob({
+    mode: userMode(appUserId),
+    jobType: "reception_create_general_clinical_note",
     path: "/php/forms/db_commitFormData.php",
     referer:
       "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
@@ -251,12 +246,14 @@ export async function createPraktikaGeneralClinicalNote({
 export async function writePraktikaConfirmationBack({
   conversationId,
   appointmentId,
+  appUserId,
   note = "Confirmed YES via text message",
 }: {
   conversationId: string;
   appointmentId: string;
+  appUserId?: string | null;
   note?: string;
-}) {
+}): Promise<WritebackResult> {
   const { data: appointment } = await supabaseAdmin
     .from("praktika_appointments")
     .select("*")
@@ -265,36 +262,62 @@ export async function writePraktikaConfirmationBack({
 
   const appointmentDate = appointment?.appointment_date || null;
 
-  const result: any = {
+  const result: WritebackResult = {
     appointmentMarkedConfirmed: false,
     appointmentNoteCreated: false,
     errors: [],
+    queuedJobs: [],
   };
 
-  try {
-    const response = await markPraktikaAppointmentConfirmed({
-      appointmentId,
-      appointmentDate,
-    });
+  if (!appUserId) {
+    const message =
+      "No assigned DocuDental user was available for user-specific Praktika writeback. Manual queue processing is required.";
 
-    result.appointmentMarkedConfirmed = true;
-    result.markConfirmedResponse = response;
+    result.errors.push(message);
 
     await supabaseAdmin.from("reception_audit_logs").insert({
       conversation_id: conversationId,
-      action: "praktika_appointment_marked_confirmed",
+      action: "praktika_writeback_missing_assigned_user",
       details: {
         praktika_appointment_id: appointmentId,
         appointment_date: appointmentDate,
-        response,
-        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
+        error: message,
+      },
+    });
+
+    return result;
+  }
+
+  try {
+    const job = await markPraktikaAppointmentConfirmed({
+      appointmentId,
+      appointmentDate,
+      appUserId,
+    });
+
+    result.appointmentMarkedConfirmed = true;
+    result.markConfirmedJobId = job.id;
+    result.queuedJobs.push({
+      jobId: job.id,
+      jobType: "reception_mark_appointment_confirmed",
+      appUserId,
+    });
+
+    await supabaseAdmin.from("reception_audit_logs").insert({
+      conversation_id: conversationId,
+      action: "praktika_appointment_confirm_helper_job_created",
+      details: {
+        praktika_appointment_id: appointmentId,
+        appointment_date: appointmentDate,
+        app_user_id: appUserId,
+        helper_job_id: job.id,
       },
     });
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
-        : "Could not mark appointment confirmed.";
+        : "Could not create appointment confirmation helper job.";
 
     result.errors.push(message);
 
@@ -304,36 +327,44 @@ export async function writePraktikaConfirmationBack({
       details: {
         praktika_appointment_id: appointmentId,
         appointment_date: appointmentDate,
+        app_user_id: appUserId,
         error: message,
-        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
       },
     });
   }
 
   try {
-    const response = await createPraktikaAppointmentNote({
+    const job = await createPraktikaAppointmentNote({
       appointmentId,
       appointmentDate,
       note,
+      appUserId,
     });
 
     result.appointmentNoteCreated = true;
-    result.appointmentNoteResponse = response;
+    result.appointmentNoteJobId = job.id;
+    result.queuedJobs.push({
+      jobId: job.id,
+      jobType: "reception_create_appointment_note",
+      appUserId,
+    });
 
     await supabaseAdmin.from("reception_audit_logs").insert({
       conversation_id: conversationId,
-      action: "praktika_appointment_note_created",
+      action: "praktika_appointment_note_helper_job_created",
       details: {
         praktika_appointment_id: appointmentId,
         appointment_date: appointmentDate,
+        app_user_id: appUserId,
         note,
-        response,
-        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
+        helper_job_id: job.id,
       },
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Could not create appointment note.";
+      error instanceof Error
+        ? error.message
+        : "Could not create appointment note helper job.";
 
     result.errors.push(message);
 
@@ -343,9 +374,9 @@ export async function writePraktikaConfirmationBack({
       details: {
         praktika_appointment_id: appointmentId,
         appointment_date: appointmentDate,
+        app_user_id: appUserId,
         note,
         error: message,
-        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
       },
     });
   }
@@ -380,17 +411,50 @@ export async function pushGeneralNoteExportToPraktika(exportId: string) {
     };
   }
 
+  const appUserId =
+    clean(exportRow.app_user_id) ||
+    clean(exportRow.user_id) ||
+    clean(exportRow.created_by) ||
+    clean(exportRow.assigned_user_id);
+
+  if (!appUserId) {
+    const message =
+      "No DocuDental user was linked to this general note export. Manual processing is required.";
+
+    await supabaseAdmin
+      .from("reception_praktika_general_note_exports")
+      .update({
+        status: "failed",
+        error_message: message,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", exportId);
+
+    await supabaseAdmin.from("reception_audit_logs").insert({
+      conversation_id: exportRow.conversation_id,
+      action: "praktika_general_note_missing_assigned_user",
+      details: {
+        export_id: exportId,
+        praktika_patient_id: exportRow.praktika_patient_id,
+        error: message,
+      },
+    });
+
+    return { ok: false, error: message };
+  }
+
   try {
-    const response = await createPraktikaGeneralClinicalNote({
+    const job = await createPraktikaGeneralClinicalNote({
       patientId: String(exportRow.praktika_patient_id),
       noteText: clean(exportRow.note_body),
+      appUserId,
     });
 
     await supabaseAdmin
       .from("reception_praktika_general_note_exports")
       .update({
-        status: "pushed",
-        pushed_at: new Date().toISOString(),
+        status: "queued",
+        pushed_at: null,
         error_message: null,
         updated_at: new Date().toISOString(),
       })
@@ -398,21 +462,21 @@ export async function pushGeneralNoteExportToPraktika(exportId: string) {
 
     await supabaseAdmin.from("reception_audit_logs").insert({
       conversation_id: exportRow.conversation_id,
-      action: "praktika_general_clinical_note_created",
+      action: "praktika_general_clinical_note_helper_job_created",
       details: {
         export_id: exportId,
         praktika_patient_id: exportRow.praktika_patient_id,
-        response,
-        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
+        app_user_id: appUserId,
+        helper_job_id: job.id,
       },
     });
 
-    return { ok: true, response };
+    return { ok: true, queued: true, helperJobId: job.id };
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
-        : "Could not create Praktika general note.";
+        : "Could not create Praktika general note helper job.";
 
     await supabaseAdmin
       .from("reception_praktika_general_note_exports")
@@ -429,8 +493,8 @@ export async function pushGeneralNoteExportToPraktika(exportId: string) {
       details: {
         export_id: exportId,
         praktika_patient_id: exportRow.praktika_patient_id,
+        app_user_id: appUserId,
         error: message,
-        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
       },
     });
 

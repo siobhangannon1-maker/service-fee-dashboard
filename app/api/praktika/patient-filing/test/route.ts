@@ -7,6 +7,34 @@ import {
 
 export const runtime = "nodejs";
 
+type UploadFileParams = {
+  patientId: string;
+  file: File;
+  fileName: string;
+  notes?: string;
+};
+
+type ClinicalNoteParams = {
+  patientId: string;
+  text: string;
+  author?: string;
+};
+
+const uploadCommunication =
+  uploadPatientCommunicationFile as unknown as (
+    params: UploadFileParams
+  ) => Promise<any>;
+
+const uploadImage =
+  uploadPatientImageFile as unknown as (
+    params: UploadFileParams
+  ) => Promise<any>;
+
+const createClinicalNote =
+  createPatientClinicalNote as unknown as (
+    params: ClinicalNoteParams
+  ) => Promise<any>;
+
 function isImage(file: File) {
   return ["image/jpeg", "image/png"].includes(file.type);
 }
@@ -21,7 +49,10 @@ export async function POST(request: Request) {
 
     const patientId = String(formData.get("patientId") ?? "").trim();
     const noteText = String(formData.get("noteText") ?? "").trim();
-    const files = formData.getAll("files").filter((item): item is File => item instanceof File);
+
+    const files = formData
+      .getAll("files")
+      .filter((item): item is File => item instanceof File);
 
     if (!patientId) {
       return NextResponse.json(
@@ -34,7 +65,7 @@ export async function POST(request: Request) {
 
     for (const file of files) {
       if (isPdf(file)) {
-        const result = await uploadPatientCommunicationFile({
+        const result = await uploadCommunication({
           patientId,
           file,
           fileName: file.name,
@@ -47,7 +78,7 @@ export async function POST(request: Request) {
           result,
         });
       } else if (isImage(file)) {
-        const result = await uploadPatientImageFile({
+        const result = await uploadImage({
           patientId,
           file,
           fileName: file.name,
@@ -71,7 +102,7 @@ export async function POST(request: Request) {
     let noteResult = null;
 
     if (noteText) {
-      noteResult = await createPatientClinicalNote({
+      noteResult = await createClinicalNote({
         patientId,
         text: noteText,
         author: "AI",

@@ -1,8 +1,8 @@
-import { requestPraktikaJson } from "@/lib/praktika/praktika-request";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import "server-only";
+
+import { praktikaHelperPostForCurrentUser } from "@/lib/praktika/helper-job-client";
 
 const PRAKTIKA_PRACTICE_ID = process.env.PRAKTIKA_PRACTICE_ID || "1181";
-const PRACTICE_MODE = { scope: "practice" as const };
 
 export type PraktikaPatientSearchInput = {
   firstName?: string;
@@ -247,18 +247,20 @@ function scorePatientMatch(patient: any, input: PraktikaPatientSearchInput) {
 async function searchAttempt({
   input,
   filterModel,
+  attemptLabel,
 }: {
   input: PraktikaPatientSearchInput;
   filterModel: Record<string, any>;
+  attemptLabel: string;
 }) {
-  const json = await requestPraktikaJson({
+  const json = await praktikaHelperPostForCurrentUser<any>({
+    jobType: "patient_match_search",
+    priority: 15,
     path: "/php/json/db_gridPatientList.php",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Referer: "https://praktika.praktika.net.au/v2/patients",
-    },
-    body: JSON.stringify({
+    contentType: "json",
+    referer: "https://praktika.praktika.net.au/v2/patients",
+    timeoutMs: 90_000,
+    body: {
       startRow: 0,
       endRow: 100,
       rowGroupCols: [],
@@ -273,8 +275,8 @@ async function searchAttempt({
         { sort: "asc", colId: "lastName", caseSensitive: false },
         { sort: "asc", colId: "firstName", caseSensitive: false },
       ],
-    }),
-    mode: PRACTICE_MODE,
+      docudentalAttemptLabel: attemptLabel,
+    },
   });
 
   const rows = Array.isArray(json?.rows) ? json.rows : [];
@@ -300,7 +302,7 @@ async function searchAttempt({
       practiceId: Number(patient.practiceId || PRAKTIKA_PRACTICE_ID),
       matchScore: scored.score,
       matchReason: scored.reason,
-    };
+    } satisfies PraktikaPatientSearchResult;
   });
 }
 
@@ -313,6 +315,7 @@ async function searchOnce(input: PraktikaPatientSearchInput) {
     const results = await searchAttempt({
       input,
       filterModel: attempt.filterModel,
+      attemptLabel: attempt.label,
     });
 
     for (const result of results) {
@@ -342,10 +345,5 @@ export async function searchPraktikaPatients(
     throw new Error("Enter at least one search field.");
   }
 
-  return withPraktikaAutoRefresh(
-    () => searchOnce(input),
-    {
-      mode: PRACTICE_MODE,
-    },
-  );
+  return await searchOnce(input);
 }

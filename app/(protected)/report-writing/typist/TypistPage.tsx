@@ -477,6 +477,10 @@ export default function TypistPage() {
   const [praktikaSyncingQueue, setPraktikaSyncingQueue] = useState(false);
   const [praktikaSyncingReferrers, setPraktikaSyncingReferrers] =
     useState(false);
+  const [imageDraftId, setImageDraftId] = useState<string | null>(null);
+  const [imageDraftCreating, setImageDraftCreating] = useState(false);
+  const [imageDraftError, setImageDraftError] = useState<string | null>(null);
+  const autoImageDraftQueueIdRef = useRef<string | null>(null);
 
   const selectedProviderRequiresApproval =
     selectedProvider?.typist_letters_require_approval !== false;
@@ -542,6 +546,8 @@ export default function TypistPage() {
     selectedDraft &&
     ["approved", "uploaded_to_praktika"].includes(selectedDraft.status),
   );
+
+  const currentImageDraftId = selectedDraft?.id || imageDraftId;
 
   function getNextWorkflowAction() {
     if (!selectedDraft) return "Select or create a letter.";
@@ -727,6 +733,94 @@ export default function TypistPage() {
 
   function getLetterTextForSave() {
     return buildLetterTextForSave(letterText, pdfCcText);
+  }
+
+  async function ensureImageDraftForCurrentWork(options?: { quiet?: boolean }) {
+    if (selectedDraft?.id) {
+      setImageDraftId(selectedDraft.id);
+      setImageDraftError(null);
+      return selectedDraft.id;
+    }
+
+    if (imageDraftId) {
+      setImageDraftError(null);
+      return imageDraftId;
+    }
+
+    if (!selectedProviderId) {
+      const message = "Please select a provider before uploading images.";
+      setImageDraftError(message);
+      if (!options?.quiet) alert(message);
+      return null;
+    }
+
+    if (!patientFirstName.trim() || !patientLastName.trim()) {
+      const message = "Patient first name and last name are required before uploading images.";
+      setImageDraftError(message);
+      if (!options?.quiet) alert(message);
+      return null;
+    }
+
+    setImageDraftCreating(true);
+    setImageDraftError(null);
+
+    try {
+      const placeholderText =
+        getLetterTextForSave().trim() ||
+        "[Temporary image workspace. Replace this text before finalising the letter.]";
+
+      const response = await fetch("/api/report-writing/save-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerId: selectedProviderId,
+          patientName,
+          patientDob,
+          patientGender,
+          referrerName,
+          referrerAddress,
+          reportType,
+          clinicalNotes,
+          generatedReport: generatedAiLetterText || placeholderText,
+          editedText: placeholderText,
+          finalApprovedText: placeholderText,
+          originalAiText: generatedAiLetterText || placeholderText,
+          learnFromEdits: false,
+          learningSource: "typist_image_workspace",
+          praktikaPatientId: selectedPraktikaPatientId || null,
+          queueId: activeQueueItemId,
+          status: "draft",
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success) {
+        throw new Error(data?.error || "Could not prepare image upload workspace.");
+      }
+
+      const createdDraftId = String(data.draft?.id || data.draftId || data.id || "").trim();
+
+      if (!createdDraftId) {
+        throw new Error("Image workspace was created but no draft ID was returned.");
+      }
+
+      setImageDraftId(createdDraftId);
+      await loadDrafts(selectedProviderId);
+      return createdDraftId;
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not prepare image upload workspace.";
+
+      console.error("Failed to prepare image upload workspace:", error);
+      setImageDraftError(message);
+      if (!options?.quiet) alert(message);
+      return null;
+    } finally {
+      setImageDraftCreating(false);
+    }
   }
 
   function insertImagePlaceholder(imageNumber: number) {
@@ -1456,6 +1550,9 @@ export default function TypistPage() {
     setPraktikaCandidates([]);
     setSelectedPraktikaPatientId("");
     setAttachPeriodontalChart(false);
+    setImageDraftId(null);
+    setImageDraftError(null);
+    autoImageDraftQueueIdRef.current = null;
   }
 
   function selectDraft(draft: Draft) {
@@ -1487,6 +1584,9 @@ export default function TypistPage() {
     setAutoGenerateStatus("idle");
     setPraktikaCandidates([]);
     setSelectedPraktikaPatientId(draft.praktika_patient_id || "");
+    setImageDraftId(draft.id);
+    setImageDraftError(null);
+    autoImageDraftQueueIdRef.current = null;
   }
 
   async function autoFillReferrerFromLatestPraktikaReferral(
@@ -1599,6 +1699,9 @@ export default function TypistPage() {
     lastAutosavedTextRef.current = "";
     setActiveQueueItemId(item.id);
     setSelectedDraft(null);
+    setImageDraftId(item.report_draft_id || null);
+    setImageDraftError(null);
+    autoImageDraftQueueIdRef.current = null;
 
     const firstName = item.patient_first_name || "";
     const lastName = item.patient_last_name || "";
@@ -1747,6 +1850,17 @@ export default function TypistPage() {
       }
     }
   }
+
+  useEffect(() => {
+    if (!activeQueueItemId) return;
+    if (selectedDraft || imageDraftId || imageDraftCreating) return;
+    if (!patientFirstName.trim() || !patientLastName.trim()) return;
+    if (autoImageDraftQueueIdRef.current === activeQueueItemId) return;
+
+    autoImageDraftQueueIdRef.current = activeQueueItemId;
+    void ensureImageDraftForCurrentWork({ quiet: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeQueueItemId, selectedDraft?.id, imageDraftId, imageDraftCreating, patientFirstName, patientLastName]);
 
   async function updateQueueStatus(queueId: string, status: string) {
     await fetch("/api/report-writing/letter-queue", {
@@ -1973,6 +2087,12 @@ export default function TypistPage() {
 
     setPraktikaSyncingQueue(true);
     setLoading(true);
+    setPraktikaPreSyncMessage(null);
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      controller.abort();
+    }, 180_000);
 
     try {
       const response = await fetch(
@@ -1986,12 +2106,23 @@ export default function TypistPage() {
             fromDate: queueFromDate,
             toDate: queueToDate,
           }),
+          signal: controller.signal,
         },
       );
 
-      const data = await response.json();
+      const text = await response.text();
+      let data: any = {};
 
-      if (!data.success) {
+      try {
+        data = text.trim() ? JSON.parse(text) : {};
+      } catch {
+        data = {
+          success: false,
+          error: `Queue sync returned non-JSON: ${text.slice(0, 300)}`,
+        };
+      }
+
+      if (!response.ok || !data.success) {
         const needsReconnect =
           response.status === 409 ||
           data?.needsPraktikaLogin ||
@@ -2006,20 +2137,38 @@ export default function TypistPage() {
             data.error ||
               "Praktika needs to be reconnected before the queue can be synced.",
           );
-        }
-
-        if (!needsReconnect) {
+        } else {
+          setPraktikaPreSyncMessage(
+            data.error || "Failed to sync letter queue.",
+          );
           alert(data.error || "Failed to sync letter queue.");
         }
+
         return;
       }
+
+      setPraktikaNeedsReconnect(false);
+      setPraktikaPreSyncMessage(
+        `Queue synced. ${data.queued || 0} item(s) found.`,
+      );
 
       alert(`Queue synced. ${data.queued || 0} item(s) found.`);
 
       if (selectedProviderId) {
         await loadQueue(selectedProviderId);
       }
+    } catch (error) {
+      const message =
+        error instanceof DOMException && error.name === "AbortError"
+          ? "Queue sync is taking too long. The helper may still be running in the background. Wait a minute, then refresh and check the queue."
+          : error instanceof Error
+            ? error.message
+            : "Failed to sync letter queue.";
+
+      setPraktikaPreSyncMessage(message);
+      alert(message);
     } finally {
+      window.clearTimeout(timeout);
       setPraktikaSyncingQueue(false);
       setLoading(false);
     }
@@ -2152,6 +2301,68 @@ export default function TypistPage() {
     setLoading(true);
 
     try {
+      if (imageDraftId) {
+        const response = await fetch("/api/report-writing/update-draft", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            draftId: imageDraftId,
+            editedText: finalLetterTextForSave,
+            status,
+            referrerName,
+            referrerAddress,
+            patientName,
+            patientDob,
+            reportType,
+            clinicalNotes,
+            originalAiText,
+            finalApprovedText,
+            praktikaPatientId: selectedPraktikaPatientId || null,
+            learnFromEdits: status === "approved" && hasEditedAiText,
+            learningSource: "typist_image_workspace_final_save",
+          }),
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok || !data.success) {
+          alert(data.error || "Failed to save letter");
+          return;
+        }
+
+        alert(
+          status === "approved"
+            ? "Letter approved."
+            : status === "awaiting_provider_approval"
+              ? "Letter sent to provider approval."
+              : "Draft saved for provider.",
+        );
+
+        if (activeQueueItemId) {
+          await fetch("/api/report-writing/letter-queue", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              queueId: activeQueueItemId,
+              status: "completed",
+              reportDraftId: imageDraftId,
+            }),
+          });
+
+          setActiveQueueItemId(null);
+          await loadQueue(selectedProviderId, queueStatusTab);
+        }
+
+        setSaveStatus("saved");
+        setLastSavedAt(new Date().toISOString());
+
+        await loadDrafts(selectedProviderId);
+        clearForm();
+        return;
+      }
+
       const response = await fetch("/api/report-writing/save-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3221,9 +3432,48 @@ export default function TypistPage() {
               </label>
             </section>
 
-            {selectedDraft ? (
-              <DraftImagePanel reportDraftId={selectedDraft.id} />
-            ) : null}
+            <section className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-950">Images for this letter</h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Upload images before or after the formal draft is saved. When you are working
+                    from the queue, a temporary draft workspace is prepared automatically so images
+                    can be attached straight away.
+                  </p>
+                </div>
+
+                {!currentImageDraftId ? (
+                  <button
+                    type="button"
+                    onClick={() => ensureImageDraftForCurrentWork()}
+                    disabled={imageDraftCreating || loading}
+                    className="rounded-xl bg-slate-950 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
+                  >
+                    {imageDraftCreating ? "Preparing..." : "Enable image uploads"}
+                  </button>
+                ) : null}
+              </div>
+
+              {imageDraftError ? (
+                <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  {imageDraftError}
+                </div>
+              ) : null}
+
+              {imageDraftCreating ? (
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm font-semibold text-blue-900">
+                  Preparing image upload workspace...
+                </div>
+              ) : currentImageDraftId ? (
+                <DraftImagePanel reportDraftId={currentImageDraftId} />
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+                  Select a queue item or enter patient details, then click Enable image uploads.
+                  You do not need to manually save the letter first.
+                </div>
+              )}
+            </section>
 
             {selectedDraft ? (
               <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">

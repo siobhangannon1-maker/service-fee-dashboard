@@ -14,7 +14,7 @@ function twimlEmptyResponse() {
       headers: {
         "Content-Type": "text/xml",
       },
-    }
+    },
   );
 }
 
@@ -47,6 +47,23 @@ function isYesConfirmation(body: string) {
   return /^(Y|YES|YEP|YEAH|CONFIRM|CONFIRMED|OK|OKAY|👍)$/.test(clean);
 }
 
+function clean(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function getWritebackUserId(conversation: any, pendingRequest: any) {
+  return (
+    clean(pendingRequest?.assigned_user_id) ||
+    clean(pendingRequest?.created_by) ||
+    clean(pendingRequest?.app_user_id) ||
+    clean(pendingRequest?.sent_by_user_id) ||
+    clean(conversation?.assigned_user_id) ||
+    clean(conversation?.created_by) ||
+    clean(conversation?.app_user_id) ||
+    null
+  );
+}
+
 async function audit({
   conversationId,
   messageId = null,
@@ -72,12 +89,14 @@ async function createWritebackQueueItem({
   praktikaPatientId,
   error,
   note,
+  appUserId,
 }: {
   conversationId: string;
   appointmentId: string;
   praktikaPatientId?: string | null;
   error?: string | null;
   note: string;
+  appUserId?: string | null;
 }) {
   const { data: existing } = await supabaseAdmin
     .from("reception_praktika_writeback_queue")
@@ -99,7 +118,9 @@ async function createWritebackQueueItem({
         payload: {
           ...(existing.payload || {}),
           note,
-          last_enqueue_reason: error || "Queued after automatic write-back failed.",
+          app_user_id: appUserId || existing.payload?.app_user_id || null,
+          last_enqueue_reason:
+            error || "Queued after automatic write-back could not be completed.",
         },
         updated_at: new Date().toISOString(),
       })
@@ -111,6 +132,7 @@ async function createWritebackQueueItem({
       details: {
         queue_id: existing.id,
         praktika_appointment_id: appointmentId,
+        app_user_id: appUserId || null,
         error,
       },
     });
@@ -128,6 +150,7 @@ async function createWritebackQueueItem({
       payload: {
         note,
         source: "twilio_inbound_confirmation",
+        app_user_id: appUserId || null,
       },
       status: "pending",
       attempts: 0,
@@ -142,6 +165,7 @@ async function createWritebackQueueItem({
       action: "praktika_writeback_queue_create_failed",
       details: {
         praktika_appointment_id: appointmentId,
+        app_user_id: appUserId || null,
         error: insertError?.message || "Could not create queue item.",
       },
     });
@@ -155,6 +179,7 @@ async function createWritebackQueueItem({
     details: {
       queue_id: data.id,
       praktika_appointment_id: appointmentId,
+      app_user_id: appUserId || null,
       error,
     },
   });
@@ -184,7 +209,7 @@ async function findPendingConfirmationRequests(conversationId: string) {
 
   const allRequests = data || [];
   const unresponded = allRequests.filter(
-    (request) => request.confirmation_response_detected !== true
+    (request) => request.confirmation_response_detected !== true,
   );
 
   return {
@@ -206,6 +231,7 @@ async function markConfirmationAsConfirmed({
   const confirmedAt = new Date().toISOString();
   const appointmentId = String(pendingRequest.praktika_appointment_id);
   const note = "Confirmed YES via text message";
+  const appUserId = getWritebackUserId(conversation, pendingRequest);
 
   if (pendingRequest.id) {
     await supabaseAdmin
@@ -246,12 +272,18 @@ async function markConfirmationAsConfirmed({
     details: {
       praktika_appointment_id: appointmentId,
       confirmation_request_message_id: pendingRequest.id || null,
+      app_user_id: appUserId || null,
+      note:
+        appUserId
+          ? "Creating user-scoped Praktika helper jobs."
+          : "No assigned user found. Manual queue fallback will be used.",
     },
   });
 
   const praktikaResult = await writePraktikaConfirmationBack({
     conversationId: conversation.id,
     appointmentId,
+    appUserId,
     note,
   });
 
@@ -261,6 +293,7 @@ async function markConfirmationAsConfirmed({
     action: "praktika_confirmation_writeback_finished",
     details: {
       praktika_appointment_id: appointmentId,
+      app_user_id: appUserId || null,
       result: praktikaResult,
     },
   });
@@ -272,6 +305,7 @@ async function markConfirmationAsConfirmed({
       praktikaPatientId: conversation.praktika_patient_id,
       error: praktikaResult.errors.join("; "),
       note,
+      appUserId,
     });
   }
 
@@ -559,7 +593,7 @@ export async function POST(request: NextRequest) {
         },
         {
           onConflict: "phone_number",
-        }
+        },
       );
 
       await audit({
@@ -586,7 +620,7 @@ export async function POST(request: NextRequest) {
         },
         {
           onConflict: "phone_number",
-        }
+        },
       );
 
       await audit({

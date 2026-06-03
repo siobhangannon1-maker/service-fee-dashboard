@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import {
-  getCurrentUserPraktikaSessionMode,
-  getPraktikaCookie,
-} from "@/lib/praktika/hybrid-session-store";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
+import { praktikaHelperPost } from "@/lib/praktika/helper-job-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,7 +11,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
-const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
 const TYPIST_LETTER_ICON_ID = 7360;
 const LETTER_SENT_ICON_ID = 6597;
 
@@ -27,10 +23,8 @@ function numberValue(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function buildRequestId(cookie: string) {
-  const match = cookie.match(/PHPSESSID=([^;]+)/);
-  const sessionId = match?.[1] || crypto.randomUUID();
-  return `${sessionId}_${Date.now()}`;
+function buildRequestId() {
+  return `letter_icon_${Date.now()}_${crypto.randomUUID()}`;
 }
 
 function replaceTypistLetterIcon(iconIds: number[]) {
@@ -47,21 +41,6 @@ function replaceTypistLetterIcon(iconIds: number[]) {
   }
 
   return updated.slice(0, 4);
-}
-
-function assertPraktikaJsonResponse(responseText: string) {
-  const trimmed = responseText.trim().toLowerCase();
-
-  if (
-    trimmed.startsWith("<!doctype") ||
-    trimmed.startsWith("<html") ||
-    trimmed.includes("/v2/login") ||
-    trimmed.includes('type="password"') ||
-    trimmed.includes("logged-out") ||
-    trimmed.includes("logged out")
-  ) {
-    throw new Error("Praktika session expired or returned a login page.");
-  }
 }
 
 async function findQueueItem(params: { queueId?: string; draftId?: string }) {
@@ -90,58 +69,6 @@ async function findQueueItem(params: { queueId?: string; draftId?: string }) {
   }
 
   return null;
-}
-
-async function commitAppointmentIcons({
-  cookie,
-  practiceId,
-  appointmentId,
-  updatedIconIds,
-}: {
-  cookie: string;
-  practiceId: number;
-  appointmentId: string;
-  updatedIconIds: number[];
-}) {
-  const payload = [
-    {
-      request_id: buildRequestId(cookie),
-      practice_id: practiceId,
-      appointment_id: Number(appointmentId),
-      appointment_icon1id: updatedIconIds[0],
-      appointment_icon2id: updatedIconIds[1],
-      appointment_icon3id: updatedIconIds[2],
-      appointment_icon4id: updatedIconIds[3],
-    },
-  ];
-
-  const response = await fetch(
-    `${PRAKTIKA_BASE_URL}/php/forms/db_commitFormData.php`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        Cookie: cookie,
-        Origin: PRAKTIKA_BASE_URL,
-        Referer: `${PRAKTIKA_BASE_URL}/v2/scheduler`,
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: JSON.stringify(payload),
-      cache: "no-store",
-    },
-  );
-
-  const responseText = await response.text();
-  assertPraktikaJsonResponse(responseText);
-
-  if (!response.ok) {
-    throw new Error(
-      `Praktika icon update failed: ${response.status}. ${responseText.slice(0, 500)}`,
-    );
-  }
-
-  return responseText;
 }
 
 export async function POST(req: Request) {
@@ -192,21 +119,30 @@ export async function POST(req: Request) {
 
     const updatedIconIds = replaceTypistLetterIcon(currentIconIds);
 
-    const responseText = await withPraktikaAutoRefresh(
-      async () => {
-        const cookie = await getPraktikaCookie(mode);
+    const response = await praktikaHelperPost<any>({
+      mode,
+      jobType: "update_praktika_letter_icons",
+      path: "/php/forms/db_commitFormData.php",
+      contentType: "json",
+      referer: "https://praktika.praktika.net.au/v2/scheduler",
+      priority: 20,
+      body: [
+        {
+          request_id: buildRequestId(),
+          practice_id: practiceId,
+          appointment_id: Number(appointmentId),
+          appointment_icon1id: updatedIconIds[0],
+          appointment_icon2id: updatedIconIds[1],
+          appointment_icon3id: updatedIconIds[2],
+          appointment_icon4id: updatedIconIds[3],
+        },
+      ],
+    });
 
-        return commitAppointmentIcons({
-          cookie,
-          practiceId,
-          appointmentId,
-          updatedIconIds,
-        });
-      },
-      {
-        mode,
-      },
-    );
+    const responsePreview =
+      typeof response === "string"
+        ? response.slice(0, 500)
+        : JSON.stringify(response).slice(0, 500);
 
     const now = new Date().toISOString();
 
@@ -223,7 +159,7 @@ export async function POST(req: Request) {
           iIcon3Id: String(updatedIconIds[2]),
           iIcon4Id: String(updatedIconIds[3]),
           letterIconUpdatedAt: now,
-          letterIconUpdateResponsePreview: responseText.slice(0, 500),
+          letterIconUpdateResponsePreview: responsePreview,
         },
       })
       .eq("id", queueItem.id);

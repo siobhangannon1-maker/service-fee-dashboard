@@ -2,13 +2,34 @@ import "server-only";
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-export type PraktikaHelperRequest = {
+export type PraktikaHelperJsonRequest = {
   method: "POST";
   path: string;
   contentType?: "json" | "form";
   referer?: string;
   body: Record<string, unknown> | unknown[];
 };
+
+export type PraktikaHelperMultipartStorageRequest = {
+  method: "POST";
+  path: string;
+  contentType: "multipart_storage";
+  referer?: string;
+  body: {
+    fields: Record<string, string | number | boolean | null | undefined>;
+    file: {
+      bucket: string;
+      path: string;
+      fieldName: string;
+      fileName: string;
+      contentType?: string;
+    };
+  };
+};
+
+export type PraktikaHelperRequest =
+  | PraktikaHelperJsonRequest
+  | PraktikaHelperMultipartStorageRequest;
 
 type CreatePraktikaHelperJobInput = {
   appUserId?: string | null;

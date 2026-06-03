@@ -1,5 +1,6 @@
-import { praktikaPost } from "@/lib/praktika/praktika-client";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
+import { praktikaHelperPost } from "@/lib/praktika/helper-job-client";
 
 type ConfirmAppointmentInput = {
   praktikaAppointmentId: string;
@@ -10,12 +11,16 @@ export async function confirmPraktikaAppointment({
   praktikaAppointmentId,
   practiceId = 1181,
 }: ConfirmAppointmentInput) {
+  const mode = await getCurrentUserPraktikaSessionMode();
   const requestId = `${Date.now()}_confirm_${praktikaAppointmentId}`;
 
-  const response = await praktikaPost<any>({
+  const response = await praktikaHelperPost<any>({
+    mode,
+    jobType: "confirm_appointment",
     path: "/php/forms/db_commitFormData.php",
     contentType: "json",
     referer: "https://praktika.praktika.net.au/v2/scheduler",
+    priority: 20,
     body: [
       {
         request_id: requestId,

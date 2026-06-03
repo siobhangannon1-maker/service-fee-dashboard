@@ -2,9 +2,6 @@ import OpenAI from "openai";
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { searchPraktikaPatients } from "@/lib/praktika/patientSearch";
-import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
-
-const PRACTICE_MODE = { scope: "practice" as const };
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -76,7 +73,10 @@ function getInboxText(item: any) {
     .trim();
 
   if (attachmentText.length >= 40) {
-    return [attachmentText, emailText].filter(Boolean).join("\n\n").slice(0, 12000);
+    return [attachmentText, emailText]
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, 12000);
   }
 
   return emailText.slice(0, 12000);
@@ -345,15 +345,12 @@ export async function matchPraktikaPatientForInboxItem({
     }
 
     try {
-      let attemptMatches: any[] = [];
+      let attemptMatches: Awaited<ReturnType<typeof searchPraktikaPatients>> = [];
 
       try {
-        attemptMatches = await withPraktikaAutoRefresh(
-          () => searchPraktikaPatients(attempt.input),
-          {
-            mode: PRACTICE_MODE,
-          },
-        );
+        // searchPraktikaPatients now uses the current user's helper-job session.
+        // Do NOT wrap this in practice-mode auto refresh, or it will spawn the old practice helper.
+        attemptMatches = await searchPraktikaPatients(attempt.input);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Praktika search failed.";
@@ -420,7 +417,8 @@ export async function matchPraktikaPatientForInboxItem({
   } else if (bestMatch && confidentMatches.length > 1) {
     status = "possible_match";
     confidence = bestMatch.matchScore;
-    reason = `Multiple high-confidence Praktika matches were found. Staff must confirm the correct patient before filing.`;
+    reason =
+      "Multiple high-confidence Praktika matches were found. Staff must confirm the correct patient before filing.";
   } else if (bestMatch && bestMatch.matchScore >= 0.45) {
     status = "possible_match";
     confidence = bestMatch.matchScore;
