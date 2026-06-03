@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { writePraktikaConfirmationBack } from "@/lib/reception/praktika-writeback";
 
 function normalizePhone(value: string) {
   return value.replace(/\s+/g, "");
@@ -32,6 +33,11 @@ function isStopMessage(body: string) {
   ].includes(clean);
 }
 
+function isStartMessage(body: string) {
+  const clean = body.trim().toUpperCase();
+  return ["START", "UNSTOP"].includes(clean);
+}
+
 function isHelpMessage(body: string) {
   return body.trim().toUpperCase() === "HELP";
 }
@@ -41,6 +47,25 @@ function isYesConfirmation(body: string) {
   return /^(Y|YES|YEP|YEAH|CONFIRM|CONFIRMED|OK|OKAY|👍)$/.test(clean);
 }
 
+async function audit({
+  conversationId,
+  messageId = null,
+  action,
+  details,
+}: {
+  conversationId: string;
+  messageId?: string | null;
+  action: string;
+  details: any;
+}) {
+  await supabaseAdmin.from("reception_audit_logs").insert({
+    conversation_id: conversationId,
+    message_id: messageId,
+    action,
+    details,
+  });
+}
+
 async function findPendingConfirmationRequests(conversationId: string) {
   const { data, error } = await supabaseAdmin
     .from("reception_messages")
@@ -48,17 +73,33 @@ async function findPendingConfirmationRequests(conversationId: string) {
     .eq("conversation_id", conversationId)
     .eq("direction", "outbound")
     .eq("confirmation_intent", "appointment_confirmation_request")
-    .eq("confirmation_response_detected", false)
     .not("praktika_appointment_id", "is", null)
     .order("created_at", { ascending: false })
     .limit(10);
 
   if (error) {
     console.error("Could not search pending confirmation requests", error);
-    return [];
+    return {
+      requests: [],
+      error: error.message,
+    };
   }
 
-  return data || [];
+  // Important:
+  // Resends can mark older confirmation request rows as responded/superseded.
+  // We still need the latest appointment_confirmation_request for automatic
+  // YES matching, so we do NOT filter confirmation_response_detected in SQL.
+  // We prefer the newest unresponded request, but fall back to newest request.
+  const allRequests = data || [];
+  const unresponded = allRequests.filter(
+    (request) => request.confirmation_response_detected !== true
+  );
+
+  return {
+    requests: unresponded.length > 0 ? unresponded : allRequests.slice(0, 1),
+    allRequests,
+    error: null,
+  };
 }
 
 async function markConfirmationAsConfirmed({
@@ -73,7 +114,7 @@ async function markConfirmationAsConfirmed({
   const confirmedAt = new Date().toISOString();
   const appointmentId = String(pendingRequest.praktika_appointment_id);
 
-  const { error: messageUpdateError } = await supabaseAdmin
+  await supabaseAdmin
     .from("reception_messages")
     .update({
       confirmation_response_detected: true,
@@ -82,37 +123,57 @@ async function markConfirmationAsConfirmed({
     })
     .eq("id", pendingRequest.id);
 
-  if (messageUpdateError) {
-    console.error("Could not mark confirmation request as responded", {
-      error: messageUpdateError,
-      pendingRequestId: pendingRequest.id,
-    });
-  }
+  await supabaseAdmin
+    .from("reception_conversations")
+    .update({
+      praktika_appointment_id: appointmentId,
+      appointment_confirmation_status: "confirmed",
+      appointment_confirmed_at: confirmedAt,
+      updated_at: confirmedAt,
+    })
+    .eq("id", conversationId);
 
-  const { data: updatedConversation, error: conversationUpdateError } =
-    await supabaseAdmin
-      .from("reception_conversations")
-      .update({
-        praktika_appointment_id: appointmentId,
-        appointment_confirmation_status: "confirmed",
-        appointment_confirmed_at: confirmedAt,
-        updated_at: confirmedAt,
-      })
-      .eq("id", conversationId)
-      .select("id, appointment_confirmation_status, appointment_confirmed_at, praktika_appointment_id")
-      .single();
+  await audit({
+    conversationId,
+    messageId: inboundMessageId,
+    action: "appointment_confirmed",
+    details: {
+      praktika_appointment_id: appointmentId,
+      confirmation_request_message_id: pendingRequest.id,
+      source: "sms_confirmation_reply",
+    },
+  });
 
-  if (conversationUpdateError || !updatedConversation) {
-    console.error("Could not update conversation confirmation status", {
-      error: conversationUpdateError,
-      conversationId,
-      appointmentId,
-    });
-  } else {
-    console.log("Conversation marked confirmed", updatedConversation);
-  }
+  await audit({
+    conversationId,
+    messageId: inboundMessageId,
+    action: "praktika_confirmation_writeback_started",
+    details: {
+      praktika_appointment_id: appointmentId,
+      confirmation_request_message_id: pendingRequest.id,
+    },
+  });
 
-  return confirmedAt;
+  const praktikaResult = await writePraktikaConfirmationBack({
+    conversationId,
+    appointmentId,
+    note: "Confirmed YES via text message",
+  });
+
+  await audit({
+    conversationId,
+    messageId: inboundMessageId,
+    action: "praktika_confirmation_writeback_finished",
+    details: {
+      praktika_appointment_id: appointmentId,
+      result: praktikaResult,
+    },
+  });
+
+  return {
+    confirmedAt,
+    praktikaResult,
+  };
 }
 
 export async function GET() {
@@ -185,8 +246,8 @@ export async function POST(request: NextRequest) {
 
       conversation = createdConversation;
 
-      await supabaseAdmin.from("reception_audit_logs").insert({
-        conversation_id: conversation.id,
+      await audit({
+        conversationId: conversation.id,
         action: "conversation_created_from_unknown_inbound_sms",
         details: {
           from,
@@ -234,9 +295,9 @@ export async function POST(request: NextRequest) {
       })
       .eq("id", conversation.id);
 
-    await supabaseAdmin.from("reception_audit_logs").insert({
-      conversation_id: conversation.id,
-      message_id: message.id,
+    await audit({
+      conversationId: conversation.id,
+      messageId: message.id,
       action: "message_received",
       details: {
         from,
@@ -247,21 +308,52 @@ export async function POST(request: NextRequest) {
     });
 
     if (isYesConfirmation(body)) {
-      const pendingRequests = await findPendingConfirmationRequests(
-        conversation.id
-      );
+      await audit({
+        conversationId: conversation.id,
+        messageId: message.id,
+        action: "yes_confirmation_reply_seen",
+        details: {
+          from,
+          body,
+          conversation_id: conversation.id,
+          current_praktika_appointment_id: conversation.praktika_appointment_id,
+        },
+      });
+
+      const pendingResult = await findPendingConfirmationRequests(conversation.id);
+      const pendingRequests = pendingResult.requests;
+
+      await audit({
+        conversationId: conversation.id,
+        messageId: message.id,
+        action: "yes_confirmation_pending_requests_checked",
+        details: {
+          error: pendingResult.error,
+          selected_pending_count: pendingRequests.length,
+          all_request_count: pendingResult.allRequests?.length || 0,
+          selected_requests: pendingRequests.map((request: any) => ({
+            id: request.id,
+            praktika_appointment_id: request.praktika_appointment_id,
+            confirmation_response_detected:
+              request.confirmation_response_detected,
+            created_at: request.created_at,
+          })),
+          all_requests: (pendingResult.allRequests || []).map((request: any) => ({
+            id: request.id,
+            praktika_appointment_id: request.praktika_appointment_id,
+            confirmation_response_detected:
+              request.confirmation_response_detected,
+            created_at: request.created_at,
+          })),
+        },
+      });
 
       if (pendingRequests.length === 1) {
         const pendingRequest = pendingRequests[0];
-        const confirmedAt = await markConfirmationAsConfirmed({
-          conversationId: conversation.id,
-          inboundMessageId: message.id,
-          pendingRequest,
-        });
 
-        await supabaseAdmin.from("reception_audit_logs").insert({
-          conversation_id: conversation.id,
-          message_id: message.id,
+        await audit({
+          conversationId: conversation.id,
+          messageId: message.id,
           action: "appointment_confirmation_reply_detected",
           details: {
             from,
@@ -271,14 +363,18 @@ export async function POST(request: NextRequest) {
               pendingRequest.confirmation_patient_name,
             confirmation_appointment_label:
               pendingRequest.confirmation_appointment_label,
-            praktika_appointment_id:
-              pendingRequest.praktika_appointment_id,
-            confirmed_at: confirmedAt,
+            praktika_appointment_id: pendingRequest.praktika_appointment_id,
             note: "Safe confirmation. One pending confirmation request existed.",
           },
         });
+
+        await markConfirmationAsConfirmed({
+          conversationId: conversation.id,
+          inboundMessageId: message.id,
+          pendingRequest,
+        });
       } else if (pendingRequests.length > 1) {
-        const { error: ambiguousError } = await supabaseAdmin
+        await supabaseAdmin
           .from("reception_conversations")
           .update({
             appointment_confirmation_status: "ambiguous",
@@ -286,22 +382,15 @@ export async function POST(request: NextRequest) {
           })
           .eq("id", conversation.id);
 
-        if (ambiguousError) {
-          console.error("Could not mark conversation as ambiguous", {
-            error: ambiguousError,
-            conversationId: conversation.id,
-          });
-        }
-
-        await supabaseAdmin.from("reception_audit_logs").insert({
-          conversation_id: conversation.id,
-          message_id: message.id,
+        await audit({
+          conversationId: conversation.id,
+          messageId: message.id,
           action: "ambiguous_confirmation_reply_received",
           details: {
             from,
             body,
             pending_confirmation_count: pendingRequests.length,
-            pending_requests: pendingRequests.map((request) => ({
+            pending_requests: pendingRequests.map((request: any) => ({
               message_id: request.id,
               praktika_appointment_id: request.praktika_appointment_id,
               confirmation_patient_name: request.confirmation_patient_name,
@@ -312,9 +401,9 @@ export async function POST(request: NextRequest) {
           },
         });
       } else {
-        await supabaseAdmin.from("reception_audit_logs").insert({
-          conversation_id: conversation.id,
-          message_id: message.id,
+        await audit({
+          conversationId: conversation.id,
+          messageId: message.id,
           action: "yes_reply_received_without_pending_confirmation",
           details: {
             from,
@@ -322,6 +411,37 @@ export async function POST(request: NextRequest) {
             note: "YES was not treated as appointment confirmation because no pending confirmation request was found.",
           },
         });
+
+        // Fallback safety:
+        // If the conversation itself is linked to an appointment and currently
+        // has confirmation_requested, allow YES to complete that appointment.
+        if (
+          conversation.praktika_appointment_id &&
+          conversation.appointment_confirmation_status ===
+            "confirmation_requested"
+        ) {
+          const fallbackRequest = {
+            id: null,
+            praktika_appointment_id: conversation.praktika_appointment_id,
+          };
+
+          await audit({
+            conversationId: conversation.id,
+            messageId: message.id,
+            action: "yes_confirmation_fallback_to_linked_appointment",
+            details: {
+              praktika_appointment_id: conversation.praktika_appointment_id,
+              reason:
+                "No pending request row found, but conversation was linked and status was confirmation_requested.",
+            },
+          });
+
+          await markConfirmationAsConfirmed({
+            conversationId: conversation.id,
+            inboundMessageId: message.id,
+            pendingRequest: fallbackRequest,
+          });
+        }
       }
     }
 
@@ -340,9 +460,9 @@ export async function POST(request: NextRequest) {
         }
       );
 
-      await supabaseAdmin.from("reception_audit_logs").insert({
-        conversation_id: conversation.id,
-        message_id: message.id,
+      await audit({
+        conversationId: conversation.id,
+        messageId: message.id,
         action: "patient_unsubscribed",
         details: {
           from,
@@ -352,10 +472,37 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    if (isStartMessage(body)) {
+      await supabaseAdmin.from("reception_sms_consent").upsert(
+        {
+          phone_number: from,
+          praktika_patient_id: conversation.praktika_patient_id,
+          status: "subscribed",
+          source: "patient_sms_reply",
+          reason: `Patient replied: ${body}`,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "phone_number",
+        }
+      );
+
+      await audit({
+        conversationId: conversation.id,
+        messageId: message.id,
+        action: "patient_resubscribed",
+        details: {
+          from,
+          body,
+          source: "twilio_inbound_webhook",
+        },
+      });
+    }
+
     if (isHelpMessage(body)) {
-      await supabaseAdmin.from("reception_audit_logs").insert({
-        conversation_id: conversation.id,
-        message_id: message.id,
+      await audit({
+        conversationId: conversation.id,
+        messageId: message.id,
         action: "patient_requested_sms_help",
         details: {
           from,

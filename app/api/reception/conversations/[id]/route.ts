@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { getStaffDisplayInfo } from "@/lib/reception/staff-display";
+import { pushGeneralNoteExportToPraktika } from "@/lib/reception/praktika-writeback";
 
 function formatMessageLine(message: any) {
-  const direction = message.direction === "outbound" ? "Staff" : "Patient";
+  const direction = message.direction === "outbound" ? "Practice" : "Patient";
   const time = message.created_at
     ? new Date(message.created_at).toLocaleString("en-AU")
     : "";
@@ -60,12 +61,14 @@ async function createConversationClinicalNoteExport({
 
   const relevantMessages = (messages || []).filter(
     (message) =>
-      !startAt || new Date(message.created_at).getTime() >= new Date(startAt).getTime()
+      !startAt ||
+      new Date(message.created_at).getTime() >= new Date(startAt).getTime()
   );
 
   const relevantAudits = (audits || []).filter(
     (audit) =>
-      !startAt || new Date(audit.created_at).getTime() >= new Date(startAt).getTime()
+      !startAt ||
+      new Date(audit.created_at).getTime() >= new Date(startAt).getTime()
   );
 
   const patientName = [conversation.patient_first_name, conversation.patient_last_name]
@@ -73,15 +76,16 @@ async function createConversationClinicalNoteExport({
     .join(" ");
 
   const noteBody = [
-    "Reception SMS conversation summary",
+    "SMS conversation closed",
     "",
+    `Date/time: ${new Date(closedAt).toLocaleString("en-AU")}`,
     `Patient: ${patientName || "Unknown patient"}`,
     `Mobile: ${conversation.patient_mobile || "Unknown"}`,
-    `Conversation opened: ${
-      startAt ? new Date(startAt).toLocaleString("en-AU") : "Unknown"
-    }`,
-    `Conversation closed: ${new Date(closedAt).toLocaleString("en-AU")}`,
-    `Closed by: ${closedBy || "Unknown staff member"}`,
+    `Staff: ${closedBy || "Unknown staff member"}`,
+    `Conversation status: Closed`,
+    "",
+    "Summary:",
+    conversation.close_summary || "Reception SMS conversation closed.",
     "",
     "Messages:",
     relevantMessages.length > 0
@@ -92,6 +96,8 @@ async function createConversationClinicalNoteExport({
     relevantAudits.length > 0
       ? relevantAudits.map(formatAuditLine).join("\n")
       : "No events in this conversation period.",
+    "",
+    `Closed by: ${closedBy || "Unknown staff member"}`,
   ].join("\n");
 
   const { data: exportRow, error } = await supabaseAdmin
@@ -125,9 +131,12 @@ async function createConversationClinicalNoteExport({
       status: exportRow.status,
       note_title: exportRow.note_title,
       note_preview: noteBody.slice(0, 500),
-      note: "Created when the conversation was closed. Praktika write-back can be connected after the create-note endpoint is confirmed.",
     },
   });
+
+  if (exportRow.status === "pending") {
+    await pushGeneralNoteExportToPraktika(exportRow.id);
+  }
 
   return exportRow;
 }
@@ -353,10 +362,7 @@ export async function PATCH(
     },
   });
 
-  if (
-    existingConversation.status !== "closed" &&
-    body.status === "closed"
-  ) {
+  if (existingConversation.status !== "closed" && body.status === "closed") {
     await createConversationClinicalNoteExport({
       conversationId: id,
       closedAt: now,

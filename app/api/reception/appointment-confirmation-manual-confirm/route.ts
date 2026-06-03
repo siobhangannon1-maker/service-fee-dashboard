@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { getStaffDisplayInfo } from "@/lib/reception/staff-display";
+import { writePraktikaConfirmationBack } from "@/lib/reception/praktika-writeback";
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -79,8 +80,15 @@ export async function POST(request: NextRequest) {
     },
   });
 
+  const praktikaResult = await writePraktikaConfirmationBack({
+    conversationId,
+    appointmentId: praktikaAppointmentId,
+    note: "Confirmed YES via text message",
+  });
+
   return NextResponse.json({
     ok: true,
     confirmedAt,
+    praktikaResult,
   });
 }
