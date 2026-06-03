@@ -47,6 +47,31 @@ async function sendTwilioSms(to: string, body: string) {
   return result;
 }
 
+async function appointmentAlreadyConfirmed(appointmentId: string) {
+  const { data: conversation } = await supabaseAdmin
+    .from("reception_conversations")
+    .select("id, appointment_confirmation_status, appointment_confirmed_at")
+    .eq("praktika_appointment_id", String(appointmentId))
+    .eq("appointment_confirmation_status", "confirmed")
+    .order("appointment_confirmed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (conversation) return true;
+
+  const { data: confirmedMessage } = await supabaseAdmin
+    .from("reception_messages")
+    .select("id")
+    .eq("confirmation_intent", "appointment_confirmation_request")
+    .eq("praktika_appointment_id", String(appointmentId))
+    .eq("confirmation_response_detected", true)
+    .not("confirmation_response_at", "is", null)
+    .limit(1)
+    .maybeSingle();
+
+  return Boolean(confirmedMessage);
+}
+
 async function sendConfirmationForAppointment({
   appointment,
   userId,
@@ -60,11 +85,23 @@ async function sendConfirmationForAppointment({
   staffInitials: string;
   forceResend: boolean;
 }) {
+  const appointmentId = String(appointment.praktika_appointment_id);
+
+  if (await appointmentAlreadyConfirmed(appointmentId)) {
+    return {
+      appointmentId,
+      ok: false,
+      blocked: true,
+      error:
+        "This appointment is already confirmed in DocuDental. Confirmation SMS was not resent.",
+    };
+  }
+
   const mobile = normalizePhone(appointment.patient_mobile || "");
 
   if (!mobile) {
     return {
-      appointmentId: appointment.praktika_appointment_id,
+      appointmentId,
       ok: false,
       error: "No mobile number.",
     };
@@ -78,7 +115,7 @@ async function sendConfirmationForAppointment({
 
   if (consent?.status === "unsubscribed") {
     return {
-      appointmentId: appointment.praktika_appointment_id,
+      appointmentId,
       ok: false,
       error: "Patient is unsubscribed.",
     };
@@ -88,15 +125,15 @@ async function sendConfirmationForAppointment({
     .from("reception_messages")
     .select("*")
     .eq("confirmation_intent", "appointment_confirmation_request")
-    .eq("praktika_appointment_id", String(appointment.praktika_appointment_id))
+    .eq("praktika_appointment_id", appointmentId)
     .eq("confirmation_response_detected", false)
     .order("created_at", { ascending: false });
 
   if ((existingRequests || []).length > 0 && !forceResend) {
     return {
-      appointmentId: appointment.praktika_appointment_id,
+      appointmentId,
       ok: false,
-      error: "Confirmation already sent.",
+      error: "Confirmation already sent and is awaiting reply.",
     };
   }
 
@@ -135,9 +172,7 @@ Please reply YES to confirm.`;
     praktikaPatientId: appointment.praktika_patient_id
       ? String(appointment.praktika_patient_id)
       : null,
-    praktikaAppointmentId: appointment.praktika_appointment_id
-      ? String(appointment.praktika_appointment_id)
-      : null,
+    praktikaAppointmentId: appointmentId,
     assignedUserId: userId,
     assignedDisplayName: staffDisplayName,
     workflowStatus: "general",
@@ -160,7 +195,7 @@ Please reply YES to confirm.`;
       staff_initials: staffInitials,
       message_source: "manual",
       confirmation_intent: "appointment_confirmation_request",
-      praktika_appointment_id: String(appointment.praktika_appointment_id),
+      praktika_appointment_id: appointmentId,
       confirmation_patient_name: patientName,
       confirmation_appointment_label: `${appointment.appointment_day || ""} ${dateText} at ${timeText}`.trim(),
     })
@@ -169,7 +204,7 @@ Please reply YES to confirm.`;
 
   if (messageError || !message) {
     return {
-      appointmentId: appointment.praktika_appointment_id,
+      appointmentId,
       ok: false,
       error: messageError?.message || "Could not save message.",
     };
@@ -181,7 +216,7 @@ Please reply YES to confirm.`;
       status: "open",
       praktika_patient_id:
         conversation.praktika_patient_id || String(appointment.praktika_patient_id),
-      praktika_appointment_id: String(appointment.praktika_appointment_id),
+      praktika_appointment_id: appointmentId,
       appointment_confirmation_status: "confirmation_requested",
       appointment_confirmed_at: null,
       last_message_preview: smsBody.slice(0, 160),
@@ -199,7 +234,7 @@ Please reply YES to confirm.`;
       ? "appointment_confirmation_request_resent"
       : "appointment_confirmation_request_sent_from_queue",
     details: {
-      praktika_appointment_id: appointment.praktika_appointment_id,
+      praktika_appointment_id: appointmentId,
       praktika_patient_id: appointment.praktika_patient_id,
       patient_name: patientName,
       patient_mobile: mobile,
@@ -207,12 +242,11 @@ Please reply YES to confirm.`;
       appointment_time: appointment.appointment_time,
       location,
       twilio_sid: twilio.sid,
-      note: "Conversation selected using patient name/mobile thread matching.",
     },
   });
 
   return {
-    appointmentId: appointment.praktika_appointment_id,
+    appointmentId,
     ok: true,
     conversationId: conversation.id,
     messageId: message.id,
@@ -250,6 +284,21 @@ export async function GET(request: NextRequest) {
           .order("created_at", { ascending: false })
       : { data: [] };
 
+  const { data: confirmedConversations } =
+    appointmentIds.length > 0
+      ? await supabaseAdmin
+          .from("reception_conversations")
+          .select("praktika_appointment_id, appointment_confirmation_status, appointment_confirmed_at")
+          .in("praktika_appointment_id", appointmentIds)
+          .eq("appointment_confirmation_status", "confirmed")
+      : { data: [] };
+
+  const confirmedAppointmentIds = new Set(
+    (confirmedConversations || []).map((item) =>
+      String(item.praktika_appointment_id)
+    )
+  );
+
   const sentMap = new Map<string, any[]>();
 
   for (const item of sentMessages || []) {
@@ -264,9 +313,13 @@ export async function GET(request: NextRequest) {
       sentMap.get(String(appointment.praktika_appointment_id)) || [];
 
     const latest = sentItems[0] || null;
-    const confirmed = sentItems.some(
+    const confirmedByMessage = sentItems.some(
       (item) => item.confirmation_response_detected && item.confirmation_response_at
     );
+
+    const confirmed =
+      confirmedByMessage ||
+      confirmedAppointmentIds.has(String(appointment.praktika_appointment_id));
 
     return {
       ...appointment,
@@ -334,6 +387,7 @@ export async function POST(request: NextRequest) {
     ok: true,
     sentCount: results.filter((item) => item.ok).length,
     failedCount: results.filter((item) => !item.ok).length,
+    blockedCount: results.filter((item: any) => item.blocked).length,
     results,
   });
 }

@@ -13,6 +13,36 @@ type PraktikaRequestOptions = {
   referer?: string;
 };
 
+function looksLikeLoggedOutResponse(text: string) {
+  const lower = text.toLowerCase();
+
+  return (
+    lower.includes("login failed") ||
+    lower.includes("logged-out") ||
+    lower.includes("logged out") ||
+    lower.includes("not logged in") ||
+    lower.includes("dbunauthorisedexception") ||
+    lower.includes("fisloggedin") ||
+    lower.includes("fisisloggedin") ||
+    lower.includes("hijacked or expired session") ||
+    lower.includes("expired session")
+  );
+}
+
+function looksLikeLoginHtml(text: string) {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+
+  return (
+    trimmed.startsWith("<!DOCTYPE") ||
+    lower.startsWith("<html") ||
+    lower.includes("/v2/login") ||
+    lower.includes("<title>login") ||
+    lower.includes('type="password"') ||
+    lower.includes('name="password"')
+  );
+}
+
 export async function praktikaPost<T>({
   path,
   body,
@@ -30,6 +60,9 @@ export async function praktikaPost<T>({
         cookie,
         origin: PRAKTIKA_BASE_URL,
         referer,
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
       };
 
       let requestBody: BodyInit;
@@ -66,12 +99,16 @@ export async function praktikaPost<T>({
         throw new Error(`Praktika request failed: ${response.status} ${text}`);
       }
 
+      if (looksLikeLoginHtml(text) || looksLikeLoggedOutResponse(text)) {
+        throw new Error(`Praktika session expired or logged out: ${text}`);
+      }
+
       try {
         return JSON.parse(text) as T;
       } catch {
         throw new Error(`Praktika returned non-JSON response: ${text}`);
       }
     },
-    { mode }
+    { mode },
   );
 }

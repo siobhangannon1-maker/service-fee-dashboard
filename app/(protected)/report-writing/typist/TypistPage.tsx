@@ -5,7 +5,6 @@ import JSZip from "jszip";
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
 import SyncReferrersButton from "@/components/report-writing/SyncReferrersButton";
 import DraftImagePanel from "@/components/report-writing/DraftImagePanel";
-import PraktikaSessionPanel from "@/components/PraktikaSessionPanel";
 import LetterAuditTrail from "@/components/report-writing/LetterAuditTrail";
 import PraktikaCompactSessionPanel from "@/components/PraktikaCompactSessionPanel";
 
@@ -472,7 +471,7 @@ export default function TypistPage() {
     (provider) => provider.id === selectedProviderId,
   );
   const [mounted, setMounted] = useState(false);
-  const [showPraktikaDetails, setShowPraktikaDetails] = useState(false);
+  const [showPraktikaTools, setShowPraktikaTools] = useState(false);
 
   const selectedProviderRequiresApproval =
     selectedProvider?.typist_letters_require_approval !== false;
@@ -2484,73 +2483,6 @@ export default function TypistPage() {
                   : "Provider approval required before final upload/email."}
               </div>
             </div>
-
-            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Praktika
-                  </div>
-                  <div className="mt-1 text-sm font-semibold text-slate-900">
-                    Session tools
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setShowPraktikaDetails((current) => !current)}
-                  className="rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                >
-                  {showPraktikaDetails ? "Hide" : "Show"}
-                </button>
-              </div>
-
-              {showPraktikaDetails ? (
-                <div className="mt-3 rounded-xl border bg-white p-3">
-                  <PraktikaCompactSessionPanel scope="user" />
-                </div>
-              ) : (
-                <p className="mt-2 text-xs text-slate-500">
-                  Open only when reconnecting or checking the live Praktika
-                  session.
-                </p>
-              )}
-            </div>
-
-            <div className="mt-3">
-              <SyncReferrersButton />
-            </div>
-          </div>
-
-          <div className="border-b bg-slate-50 p-3">
-            <div className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Providers
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              Use the selector above for day-to-day switching.
-            </p>
-          </div>
-
-          <div className="space-y-2 p-3">
-            {providers.map((provider) => (
-              <button
-                key={provider.id}
-                onClick={() => setSelectedProviderId(provider.id)}
-                className={[
-                  "w-full rounded-xl border p-3 text-left text-sm font-semibold transition",
-                  selectedProviderId === provider.id
-                    ? "border-blue-600 bg-blue-50 text-blue-950 shadow-sm ring-2 ring-blue-100"
-                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
-                ].join(" ")}
-              >
-                <div>{provider.name}</div>
-                <div className="mt-1 text-xs font-normal text-slate-500">
-                  {provider.typist_letters_require_approval === false
-                    ? "Typist can approve"
-                    : "Approval required"}
-                </div>
-              </button>
-            ))}
           </div>
         </div>
 
@@ -2640,53 +2572,6 @@ export default function TypistPage() {
 
           {listTab === "queue" ? (
             <div className="space-y-3 p-3">
-              <div className="rounded-2xl border bg-white p-3 shadow-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">
-                      Sync Queue
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      Pull Praktika letter-icon appointments.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <div className="mb-1 text-xs font-semibold text-slate-500">
-                      From
-                    </div>
-                    <input
-                      type="date"
-                      value={queueFromDate}
-                      onChange={(e) => setQueueFromDate(e.target.value)}
-                      className="w-full rounded-xl border p-2 text-sm"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <div className="mb-1 text-xs font-semibold text-slate-500">
-                      To
-                    </div>
-                    <input
-                      type="date"
-                      value={queueToDate}
-                      onChange={(e) => setQueueToDate(e.target.value)}
-                      className="w-full rounded-xl border p-2 text-sm"
-                    />
-                  </label>
-                </div>
-
-                <button
-                  onClick={syncQueueRange}
-                  disabled={loading}
-                  className="mt-3 w-full rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-                >
-                  {loading ? "Syncing..." : "Sync Queue"}
-                </button>
-              </div>
-
               <div className="grid grid-cols-2 gap-2">
                 {(
                   [
@@ -2971,30 +2856,7 @@ export default function TypistPage() {
                 ))}
               </select>
 
-              <select
-                className="rounded-xl border p-3 md:col-span-2"
-                value={preferredExampleId}
-                onChange={(e) => setPreferredExampleId(e.target.value)}
-              >
-                <option value="">Auto-select best matching example</option>
-
-                {preferredExamples.map((example) => (
-                  <option key={example.id} value={example.id}>
-                    {example.title || "Untitled example"}
-                    {example.scenario_tags?.length
-                      ? ` — ${example.scenario_tags.join(", ")}`
-                      : ""}
-                  </option>
-                ))}
-              </select>
-
-              {preferredExamples.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 text-sm text-slate-500 md:col-span-2">
-                  No examples available for this provider/report type yet.
-                </div>
-              ) : null}
-
-              <div className="space-y-2">
+              <div className="space-y-2 md:col-span-2">
                 <ReferrerSearchBox
                   onSelect={(referrer) => {
                     setReferrerName(referrer.name);
@@ -3039,21 +2901,23 @@ export default function TypistPage() {
                     ) : null}
                   </div>
                 ) : null}
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Selected referrer
+                  </div>
+
+                  {referrerName || referrerAddress ? (
+                    <div className="mt-2 whitespace-pre-line leading-6 text-slate-800">
+                      {[referrerName, referrerAddress].filter(Boolean).join("\n")}
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-slate-500">
+                      Search and select a referrer.
+                    </div>
+                  )}
+                </div>
               </div>
-
-              <input
-                className="rounded-xl border p-3"
-                placeholder="Referrer Name"
-                value={referrerName}
-                onChange={(e) => setReferrerName(e.target.value)}
-              />
-
-              <textarea
-                className="rounded-xl border p-3 md:col-span-2"
-                placeholder="Referrer address"
-                value={referrerAddress}
-                onChange={(e) => setReferrerAddress(e.target.value)}
-              />
             </div>
 
             {!selectedDraft ? (
@@ -3073,17 +2937,6 @@ export default function TypistPage() {
                   {loading ? "Working..." : "Generate Letter From Notes"}
                 </button>
               </>
-            ) : null}
-
-            {clinicalNotes.trim() ? (
-              <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <div className="mb-2 text-sm font-bold text-slate-900">
-                  Source notes used for AI draft
-                </div>
-                <div className="max-h-44 overflow-y-auto whitespace-pre-wrap text-sm text-slate-700">
-                  {clinicalNotes}
-                </div>
-              </section>
             ) : null}
 
             <section className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -3376,23 +3229,27 @@ export default function TypistPage() {
                   Save Draft
                 </button>
 
-                <button
-                  onClick={() => updateExistingDraft("approved")}
-                  disabled={loading}
-                  className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                >
-                  Typist Approval
-                </button>
+                {selectedDraft.status !== "approved" ? (
+                  <>
+                    <button
+                      onClick={() => updateExistingDraft("approved")}
+                      disabled={loading}
+                      className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                    >
+                      Typist Approval
+                    </button>
 
-                <button
-                  onClick={() =>
-                    updateExistingDraft("awaiting_provider_approval")
-                  }
-                  disabled={loading}
-                  className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                >
-                  Send to Provider For Approval
-                </button>
+                    <button
+                      onClick={() =>
+                        updateExistingDraft("awaiting_provider_approval")
+                      }
+                      disabled={loading}
+                      className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                    >
+                      Send to Provider For Approval
+                    </button>
+                  </>
+                ) : null}
 
                 {selectedDraftCanComplete ? (
                   <>
@@ -3447,6 +3304,93 @@ export default function TypistPage() {
             )}
           </div>
         </div>
+      </div>
+
+      <div className="fixed bottom-5 right-5 z-50">
+        {showPraktikaTools ? (
+          <div className="mb-3 w-[420px] max-w-[calc(100vw-2rem)] rounded-3xl border border-slate-200 bg-white p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold text-slate-900">
+                  Praktika tools
+                </div>
+                <div className="text-xs text-slate-500">
+                  Session, referrer sync and queue sync.
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowPraktikaTools(false)}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <PraktikaCompactSessionPanel scope="user" />
+
+              <div>
+                <SyncReferrersButton />
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Sync Queue
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Pull Praktika letter-icon appointments.
+                  </p>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <div className="mb-1 text-xs font-semibold text-slate-500">
+                      From
+                    </div>
+                    <input
+                      type="date"
+                      value={queueFromDate}
+                      onChange={(e) => setQueueFromDate(e.target.value)}
+                      className="w-full rounded-xl border p-2 text-sm"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-xs font-semibold text-slate-500">
+                      To
+                    </div>
+                    <input
+                      type="date"
+                      value={queueToDate}
+                      onChange={(e) => setQueueToDate(e.target.value)}
+                      className="w-full rounded-xl border p-2 text-sm"
+                    />
+                  </label>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={syncQueueRange}
+                  disabled={loading}
+                  className="mt-3 w-full rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {loading ? "Syncing..." : "Sync Queue"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <button
+          type="button"
+          onClick={() => setShowPraktikaTools((current) => !current)}
+          className="rounded-full bg-slate-950 px-5 py-3 text-sm font-bold text-white shadow-2xl hover:bg-slate-800"
+        >
+          Praktika tools
+        </button>
       </div>
 
       {completeModalOpen ? (

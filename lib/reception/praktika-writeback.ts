@@ -11,6 +11,112 @@ function clean(value: unknown) {
   return String(value ?? "").trim();
 }
 
+function getServerPraktikaCookie() {
+  const phpsessid = process.env.PRAKTIKA_SERVER_PHPSESSID;
+  const uat = process.env.PRAKTIKA_SERVER_UAT;
+
+  if (!phpsessid || !uat) return null;
+
+  return `PHPSESSID=${phpsessid}; UAT=${uat}`;
+}
+
+async function praktikaPostWithServerSession<T>({
+  path,
+  referer,
+  body,
+}: {
+  path: string;
+  referer: string;
+  body: any;
+}) {
+  const cookie = getServerPraktikaCookie();
+
+  if (!cookie) {
+    throw new Error(
+      "No server Praktika session configured. Add PRAKTIKA_SERVER_PHPSESSID and PRAKTIKA_SERVER_UAT to Vercel."
+    );
+  }
+
+  const response = await fetch(`https://praktika.praktika.net.au${path}`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json, text/plain, */*",
+      "Content-Type": "application/json",
+      Origin: "https://praktika.praktika.net.au",
+      Referer: referer,
+      Cookie: cookie,
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
+    },
+    body: JSON.stringify(body),
+  });
+
+  const text = await response.text();
+
+  let data: any = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(
+      `Praktika server session response was not JSON. Status ${response.status}. ${text.slice(
+        0,
+        300
+      )}`
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.message ||
+        data?.error ||
+        `Praktika server session request failed with status ${response.status}`
+    );
+  }
+
+  return data as T;
+}
+
+async function praktikaPostUserThenServer<T>({
+  path,
+  referer,
+  body,
+}: {
+  path: string;
+  referer: string;
+  body: any;
+}) {
+  try {
+    return await praktikaPost<T>({
+      path,
+      contentType: "json",
+      referer,
+      body,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Praktika user session failed.";
+
+    const shouldTryServerSession =
+      message.includes("logged in") ||
+      message.includes("session") ||
+      message.includes("username/password") ||
+      message.includes("individual Praktika session");
+
+    if (!shouldTryServerSession) {
+      throw error;
+    }
+
+    return await praktikaPostWithServerSession<T>({
+      path,
+      referer,
+      body,
+    });
+  }
+}
+
 export async function markPraktikaAppointmentConfirmed({
   appointmentId,
   appointmentDate,
@@ -22,9 +128,8 @@ export async function markPraktikaAppointmentConfirmed({
 
   const refererDate = appointmentDate || new Date().toISOString().slice(0, 10);
 
-  return await praktikaPost<any>({
+  return await praktikaPostUserThenServer<any>({
     path: "/php/forms/db_commitFormData.php",
-    contentType: "json",
     referer: `https://praktika.praktika.net.au/v2/scheduler/${refererDate}`,
     body: [
       {
@@ -51,9 +156,8 @@ export async function createPraktikaAppointmentNote({
 
   const refererDate = appointmentDate || new Date().toISOString().slice(0, 10);
 
-  return await praktikaPost<any>({
+  return await praktikaPostUserThenServer<any>({
     path: "/php/forms/db_commitFormData.php",
-    contentType: "json",
     referer: `https://praktika.praktika.net.au/v2/scheduler/${refererDate}`,
     body: [
       {
@@ -76,13 +180,17 @@ export async function createPraktikaAppointmentNote({
   });
 }
 
-export async function fetchPraktikaClinicalNotes({ patientId }: { patientId: string }) {
+export async function fetchPraktikaClinicalNotes({
+  patientId,
+}: {
+  patientId: string;
+}) {
   if (!patientId) throw new Error("Praktika patient ID is required.");
 
-  return await praktikaPost<any>({
+  return await praktikaPostUserThenServer<any>({
     path: "/php/forms/db_getFormData.php",
-    contentType: "json",
-    referer: "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
+    referer:
+      "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
     body: [
       {
         parameters: [
@@ -108,10 +216,10 @@ export async function createPraktikaGeneralClinicalNote({
 
   await fetchPraktikaClinicalNotes({ patientId });
 
-  return await praktikaPost<any>({
+  return await praktikaPostUserThenServer<any>({
     path: "/php/forms/db_commitFormData.php",
-    contentType: "json",
-    referer: "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
+    referer:
+      "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
     body: [
       {
         request_id: makeRequestId("general_note"),
@@ -179,6 +287,7 @@ export async function writePraktikaConfirmationBack({
         praktika_appointment_id: appointmentId,
         appointment_date: appointmentDate,
         response,
+        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
       },
     });
   } catch (error) {
@@ -196,6 +305,7 @@ export async function writePraktikaConfirmationBack({
         praktika_appointment_id: appointmentId,
         appointment_date: appointmentDate,
         error: message,
+        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
       },
     });
   }
@@ -218,6 +328,7 @@ export async function writePraktikaConfirmationBack({
         appointment_date: appointmentDate,
         note,
         response,
+        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
       },
     });
   } catch (error) {
@@ -234,6 +345,7 @@ export async function writePraktikaConfirmationBack({
         appointment_date: appointmentDate,
         note,
         error: message,
+        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
       },
     });
   }
@@ -291,6 +403,7 @@ export async function pushGeneralNoteExportToPraktika(exportId: string) {
         export_id: exportId,
         praktika_patient_id: exportRow.praktika_patient_id,
         response,
+        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
       },
     });
 
@@ -317,6 +430,7 @@ export async function pushGeneralNoteExportToPraktika(exportId: string) {
         export_id: exportId,
         praktika_patient_id: exportRow.praktika_patient_id,
         error: message,
+        server_session_fallback_configured: Boolean(getServerPraktikaCookie()),
       },
     });
 
