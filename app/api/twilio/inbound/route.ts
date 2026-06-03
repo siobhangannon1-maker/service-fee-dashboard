@@ -66,6 +66,102 @@ async function audit({
   });
 }
 
+async function createWritebackQueueItem({
+  conversationId,
+  appointmentId,
+  praktikaPatientId,
+  error,
+  note,
+}: {
+  conversationId: string;
+  appointmentId: string;
+  praktikaPatientId?: string | null;
+  error?: string | null;
+  note: string;
+}) {
+  const { data: existing } = await supabaseAdmin
+    .from("reception_praktika_writeback_queue")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .eq("praktika_appointment_id", appointmentId)
+    .eq("writeback_type", "appointment_confirmation")
+    .in("status", ["pending", "failed", "processing"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existing) {
+    await supabaseAdmin
+      .from("reception_praktika_writeback_queue")
+      .update({
+        status: "pending",
+        last_error: error || existing.last_error,
+        payload: {
+          ...(existing.payload || {}),
+          note,
+          last_enqueue_reason: error || "Queued after automatic write-back failed.",
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", existing.id);
+
+    await audit({
+      conversationId,
+      action: "praktika_writeback_queue_item_reused",
+      details: {
+        queue_id: existing.id,
+        praktika_appointment_id: appointmentId,
+        error,
+      },
+    });
+
+    return existing;
+  }
+
+  const { data, error: insertError } = await supabaseAdmin
+    .from("reception_praktika_writeback_queue")
+    .insert({
+      conversation_id: conversationId,
+      praktika_patient_id: praktikaPatientId || null,
+      praktika_appointment_id: appointmentId,
+      writeback_type: "appointment_confirmation",
+      payload: {
+        note,
+        source: "twilio_inbound_confirmation",
+      },
+      status: "pending",
+      attempts: 0,
+      last_error: error || null,
+    })
+    .select("*")
+    .single();
+
+  if (insertError || !data) {
+    await audit({
+      conversationId,
+      action: "praktika_writeback_queue_create_failed",
+      details: {
+        praktika_appointment_id: appointmentId,
+        error: insertError?.message || "Could not create queue item.",
+      },
+    });
+
+    return null;
+  }
+
+  await audit({
+    conversationId,
+    action: "praktika_writeback_queue_item_created",
+    details: {
+      queue_id: data.id,
+      praktika_appointment_id: appointmentId,
+      error,
+    },
+  });
+
+  return data;
+}
+
 async function findPendingConfirmationRequests(conversationId: string) {
   const { data, error } = await supabaseAdmin
     .from("reception_messages")
@@ -81,15 +177,11 @@ async function findPendingConfirmationRequests(conversationId: string) {
     console.error("Could not search pending confirmation requests", error);
     return {
       requests: [],
+      allRequests: [],
       error: error.message,
     };
   }
 
-  // Important:
-  // Resends can mark older confirmation request rows as responded/superseded.
-  // We still need the latest appointment_confirmation_request for automatic
-  // YES matching, so we do NOT filter confirmation_response_detected in SQL.
-  // We prefer the newest unresponded request, but fall back to newest request.
   const allRequests = data || [];
   const unresponded = allRequests.filter(
     (request) => request.confirmation_response_detected !== true
@@ -103,25 +195,28 @@ async function findPendingConfirmationRequests(conversationId: string) {
 }
 
 async function markConfirmationAsConfirmed({
-  conversationId,
+  conversation,
   inboundMessageId,
   pendingRequest,
 }: {
-  conversationId: string;
+  conversation: any;
   inboundMessageId: string;
   pendingRequest: any;
 }) {
   const confirmedAt = new Date().toISOString();
   const appointmentId = String(pendingRequest.praktika_appointment_id);
+  const note = "Confirmed YES via text message";
 
-  await supabaseAdmin
-    .from("reception_messages")
-    .update({
-      confirmation_response_detected: true,
-      confirmation_response_message_id: inboundMessageId,
-      confirmation_response_at: confirmedAt,
-    })
-    .eq("id", pendingRequest.id);
+  if (pendingRequest.id) {
+    await supabaseAdmin
+      .from("reception_messages")
+      .update({
+        confirmation_response_detected: true,
+        confirmation_response_message_id: inboundMessageId,
+        confirmation_response_at: confirmedAt,
+      })
+      .eq("id", pendingRequest.id);
+  }
 
   await supabaseAdmin
     .from("reception_conversations")
@@ -131,37 +226,37 @@ async function markConfirmationAsConfirmed({
       appointment_confirmed_at: confirmedAt,
       updated_at: confirmedAt,
     })
-    .eq("id", conversationId);
+    .eq("id", conversation.id);
 
   await audit({
-    conversationId,
+    conversationId: conversation.id,
     messageId: inboundMessageId,
     action: "appointment_confirmed",
     details: {
       praktika_appointment_id: appointmentId,
-      confirmation_request_message_id: pendingRequest.id,
+      confirmation_request_message_id: pendingRequest.id || null,
       source: "sms_confirmation_reply",
     },
   });
 
   await audit({
-    conversationId,
+    conversationId: conversation.id,
     messageId: inboundMessageId,
     action: "praktika_confirmation_writeback_started",
     details: {
       praktika_appointment_id: appointmentId,
-      confirmation_request_message_id: pendingRequest.id,
+      confirmation_request_message_id: pendingRequest.id || null,
     },
   });
 
   const praktikaResult = await writePraktikaConfirmationBack({
-    conversationId,
+    conversationId: conversation.id,
     appointmentId,
-    note: "Confirmed YES via text message",
+    note,
   });
 
   await audit({
-    conversationId,
+    conversationId: conversation.id,
     messageId: inboundMessageId,
     action: "praktika_confirmation_writeback_finished",
     details: {
@@ -169,6 +264,16 @@ async function markConfirmationAsConfirmed({
       result: praktikaResult,
     },
   });
+
+  if (praktikaResult.errors?.length > 0) {
+    await createWritebackQueueItem({
+      conversationId: conversation.id,
+      appointmentId,
+      praktikaPatientId: conversation.praktika_patient_id,
+      error: praktikaResult.errors.join("; "),
+      note,
+    });
+  }
 
   return {
     confirmedAt,
@@ -369,7 +474,7 @@ export async function POST(request: NextRequest) {
         });
 
         await markConfirmationAsConfirmed({
-          conversationId: conversation.id,
+          conversation,
           inboundMessageId: message.id,
           pendingRequest,
         });
@@ -412,9 +517,6 @@ export async function POST(request: NextRequest) {
           },
         });
 
-        // Fallback safety:
-        // If the conversation itself is linked to an appointment and currently
-        // has confirmation_requested, allow YES to complete that appointment.
         if (
           conversation.praktika_appointment_id &&
           conversation.appointment_confirmation_status ===
@@ -437,7 +539,7 @@ export async function POST(request: NextRequest) {
           });
 
           await markConfirmationAsConfirmed({
-            conversationId: conversation.id,
+            conversation,
             inboundMessageId: message.id,
             pendingRequest: fallbackRequest,
           });

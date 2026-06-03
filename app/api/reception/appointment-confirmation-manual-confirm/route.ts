@@ -4,6 +4,64 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { getStaffDisplayInfo } from "@/lib/reception/staff-display";
 import { writePraktikaConfirmationBack } from "@/lib/reception/praktika-writeback";
 
+async function createWritebackQueueItem({
+  conversationId,
+  appointmentId,
+  praktikaPatientId,
+  error,
+  note,
+}: {
+  conversationId: string;
+  appointmentId: string;
+  praktikaPatientId?: string | null;
+  error?: string | null;
+  note: string;
+}) {
+  const { data: existing } = await supabaseAdmin
+    .from("reception_praktika_writeback_queue")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .eq("praktika_appointment_id", appointmentId)
+    .eq("writeback_type", "appointment_confirmation")
+    .in("status", ["pending", "failed", "processing"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existing) {
+    await supabaseAdmin
+      .from("reception_praktika_writeback_queue")
+      .update({
+        status: "pending",
+        last_error: error || existing.last_error,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", existing.id);
+
+    return existing;
+  }
+
+  const { data } = await supabaseAdmin
+    .from("reception_praktika_writeback_queue")
+    .insert({
+      conversation_id: conversationId,
+      praktika_patient_id: praktikaPatientId || null,
+      praktika_appointment_id: appointmentId,
+      writeback_type: "appointment_confirmation",
+      payload: {
+        note,
+        source: "manual_ambiguous_confirmation_resolver",
+      },
+      status: "pending",
+      attempts: 0,
+      last_error: error || null,
+    })
+    .select("*")
+    .single();
+
+  return data;
+}
+
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
 
@@ -32,6 +90,12 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   }
+
+  const { data: conversation } = await supabaseAdmin
+    .from("reception_conversations")
+    .select("*")
+    .eq("id", conversationId)
+    .maybeSingle();
 
   const { data: pendingRequest } = await supabaseAdmin
     .from("reception_messages")
@@ -80,15 +144,40 @@ export async function POST(request: NextRequest) {
     },
   });
 
+  const note = "Confirmed YES via text message";
   const praktikaResult = await writePraktikaConfirmationBack({
     conversationId,
     appointmentId: praktikaAppointmentId,
-    note: "Confirmed YES via text message",
+    note,
   });
+
+  let queueItem = null;
+
+  if (praktikaResult.errors?.length > 0) {
+    queueItem = await createWritebackQueueItem({
+      conversationId,
+      appointmentId: praktikaAppointmentId,
+      praktikaPatientId: conversation?.praktika_patient_id || null,
+      error: praktikaResult.errors.join("; "),
+      note,
+    });
+
+    await supabaseAdmin.from("reception_audit_logs").insert({
+      conversation_id: conversationId,
+      action: "praktika_writeback_queue_item_created",
+      details: {
+        queue_id: queueItem?.id || null,
+        praktika_appointment_id: praktikaAppointmentId,
+        source: "manual_ambiguous_confirmation_resolver",
+        errors: praktikaResult.errors,
+      },
+    });
+  }
 
   return NextResponse.json({
     ok: true,
     confirmedAt,
     praktikaResult,
+    queueItem,
   });
 }

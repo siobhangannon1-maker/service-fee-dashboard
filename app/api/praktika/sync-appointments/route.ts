@@ -23,9 +23,15 @@ function resolveLocationFromRules(row: PraktikaAppointmentRow, rules: any[]) {
 
     if (rule.match_field === "tx_type") value = row.vchTxType || "";
     if (rule.match_field === "tx_label") value = row.vchTxLabel || "";
-    if (rule.match_field === "appointment_notes") value = row.vchAppointmentNotes || "";
-    if (rule.match_field === "resource_name") value = row.vchResourceName || "";
-    if (rule.match_field === "provider_name") value = row.vchProviderName || "";
+    if (rule.match_field === "appointment_notes") {
+      value = row.vchAppointmentNotes || "";
+    }
+    if (rule.match_field === "resource_name") {
+      value = row.vchResourceName || "";
+    }
+    if (rule.match_field === "provider_name") {
+      value = row.vchProviderName || "";
+    }
 
     if (matchRule(value, rule.match_type, rule.match_value)) {
       return {
@@ -89,24 +95,89 @@ export async function POST(request: NextRequest) {
 
     const now = new Date().toISOString();
 
+    /*
+      Testing phase cleanup:
+      Delete all currently synced appointments within this date range before
+      re-inserting what Praktika currently returns.
+
+      This means if an appointment was deleted in Praktika, it disappears from:
+      - messages page appointment panel
+      - confirmation queue
+      - post-op questionnaire queue
+
+      It intentionally does not delete reception messages or conversations.
+    */
+    const { error: deleteQueueError } = await supabaseAdmin
+      .from("reception_questionnaire_queue")
+      .delete()
+      .gte("appointment_date", fromDate)
+      .lte("appointment_date", toDate);
+
+    if (deleteQueueError) {
+      console.warn(
+        "SYNC APPOINTMENTS BULK: could not delete questionnaire queue items",
+        deleteQueueError.message
+      );
+    }
+
+    const { data: appointmentsToDelete, error: lookupDeleteError } =
+      await supabaseAdmin
+        .from("praktika_appointments")
+        .select("praktika_appointment_id")
+        .gte("appointment_date", fromDate)
+        .lte("appointment_date", toDate);
+
+    if (lookupDeleteError) {
+      throw new Error(
+        `Could not find old appointments to delete: ${lookupDeleteError.message}`
+      );
+    }
+
+    const appointmentIdsToDelete = (appointmentsToDelete || []).map((item) =>
+      String(item.praktika_appointment_id)
+    );
+
+    if (appointmentIdsToDelete.length > 0) {
+      await supabaseAdmin
+        .from("reception_conversations")
+        .update({
+          praktika_appointment_id: null,
+          appointment_confirmation_status: null,
+          appointment_confirmed_at: null,
+          updated_at: now,
+        })
+        .in("praktika_appointment_id", appointmentIdsToDelete);
+
+      const { error: deleteAppointmentsError } = await supabaseAdmin
+        .from("praktika_appointments")
+        .delete()
+        .in("praktika_appointment_id", appointmentIdsToDelete);
+
+      if (deleteAppointmentsError) {
+        throw new Error(
+          `Could not delete old synced appointments: ${deleteAppointmentsError.message}`
+        );
+      }
+    }
+
     const patientMap = new Map<string, any>();
 
-for (const row of rows || []) {
-  patientMap.set(String(row.iPatientId), {
-    praktika_patient_id: String(row.iPatientId),
-    praktika_patient_number: row.iPatientNumber || null,
-    practice_id: row.iPractice || "1181",
-    first_name: row.vchPatientFirstName || null,
-    last_name: row.vchPatientLastName || null,
-    mobile: row.vchMobile || null,
-    email: row.vchEmail || null,
-    synced_at: now,
-    updated_at: now,
-    raw_json: row,
-  });
-}
+    for (const row of rows || []) {
+      patientMap.set(String(row.iPatientId), {
+        praktika_patient_id: String(row.iPatientId),
+        praktika_patient_number: row.iPatientNumber || null,
+        practice_id: row.iPractice || "1181",
+        first_name: row.vchPatientFirstName || null,
+        last_name: row.vchPatientLastName || null,
+        mobile: row.vchMobile || null,
+        email: row.vchEmail || null,
+        synced_at: now,
+        updated_at: now,
+        raw_json: row,
+      });
+    }
 
-const patientRows = Array.from(patientMap.values());
+    const patientRows = Array.from(patientMap.values());
 
     const appointmentRows = (rows || []).map((row) => {
       const location = resolveLocationFromRules(row, rules || []);
@@ -160,12 +231,16 @@ const patientRows = Array.from(patientMap.values());
 
     console.log("SYNC APPOINTMENTS BULK: upserting patients", patientRows.length);
 
-    const patientResult = await supabaseAdmin
-      .from("praktika_patients")
-      .upsert(patientRows, { onConflict: "praktika_patient_id" });
+    if (patientRows.length > 0) {
+      const patientResult = await supabaseAdmin
+        .from("praktika_patients")
+        .upsert(patientRows, { onConflict: "praktika_patient_id" });
 
-    if (patientResult.error) {
-      throw new Error(`Patient bulk upsert failed: ${patientResult.error.message}`);
+      if (patientResult.error) {
+        throw new Error(
+          `Patient bulk upsert failed: ${patientResult.error.message}`
+        );
+      }
     }
 
     console.log(
@@ -173,14 +248,16 @@ const patientRows = Array.from(patientMap.values());
       appointmentRows.length
     );
 
-    const appointmentResult = await supabaseAdmin
-      .from("praktika_appointments")
-      .upsert(appointmentRows, { onConflict: "praktika_appointment_id" });
+    if (appointmentRows.length > 0) {
+      const appointmentResult = await supabaseAdmin
+        .from("praktika_appointments")
+        .upsert(appointmentRows, { onConflict: "praktika_appointment_id" });
 
-    if (appointmentResult.error) {
-      throw new Error(
-        `Appointment bulk upsert failed: ${appointmentResult.error.message}`
-      );
+      if (appointmentResult.error) {
+        throw new Error(
+          `Appointment bulk upsert failed: ${appointmentResult.error.message}`
+        );
+      }
     }
 
     console.log("SYNC APPOINTMENTS BULK: finished", seconds(start));
@@ -188,12 +265,14 @@ const patientRows = Array.from(patientMap.values());
     return NextResponse.json({
       ok: true,
       syncedCount: appointmentRows.length,
+      deletedOldAppointmentCount: appointmentIdsToDelete.length,
       debug: {
         fromDate,
         toDate,
         returnedFromPraktika: rows?.length || 0,
         patientUpsertCount: patientRows.length,
         appointmentUpsertCount: appointmentRows.length,
+        deletedOldAppointmentCount: appointmentIdsToDelete.length,
         totalTime: seconds(start),
       },
     });
@@ -203,9 +282,7 @@ const patientRows = Array.from(patientMap.values());
     return NextResponse.json(
       {
         error:
-          error instanceof Error
-            ? error.message
-            : "Appointment sync failed.",
+          error instanceof Error ? error.message : "Appointment sync failed.",
         debug: {
           totalTime: seconds(start),
         },
