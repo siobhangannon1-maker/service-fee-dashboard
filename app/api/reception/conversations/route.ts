@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { normalizePhone } from "@/lib/reception/phone";
+import {
+  findOrCreatePatientConversation,
+  normalizeReceptionPhone,
+} from "@/lib/reception/conversation-threading";
 import { getStaffDisplayInfo } from "@/lib/reception/staff-display";
 
 export async function GET(request: NextRequest) {
@@ -12,23 +15,36 @@ export async function GET(request: NextRequest) {
     .from("reception_conversations")
     .select("*")
     .eq("status", status)
-    .order("is_urgent", { ascending: false })
     .order("last_message_at", { ascending: false, nullsFirst: false })
-    .order("updated_at", { ascending: false });
+    .order("updated_at", { ascending: false })
+    .limit(100);
 
-  if (search.trim()) {
+  const cleanSearch = search.trim();
+
+  if (cleanSearch) {
+    const normalisedPhone = normalizeReceptionPhone(cleanSearch);
+
     query = query.or(
-      `patient_first_name.ilike.%${search}%,patient_last_name.ilike.%${search}%,patient_mobile.ilike.%${search}%`
+      [
+        `patient_first_name.ilike.%${cleanSearch}%`,
+        `patient_last_name.ilike.%${cleanSearch}%`,
+        `patient_mobile.ilike.%${cleanSearch}%`,
+        normalisedPhone ? `patient_mobile.ilike.%${normalisedPhone}%` : "",
+      ]
+        .filter(Boolean)
+        .join(",")
     );
   }
 
-  const { data, error } = await query.limit(100);
+  const { data, error } = await query;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ conversations: data || [] });
+  return NextResponse.json({
+    conversations: data || [],
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -42,123 +58,85 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const staff = await getStaffDisplayInfo(user.id);
   const body = await request.json();
 
-  const praktikaPatientId = body.praktikaPatientId
-    ? String(body.praktikaPatientId)
-    : null;
-
-  const praktikaAppointmentId = body.praktikaAppointmentId
-    ? String(body.praktikaAppointmentId)
-    : null;
-
-  if (!praktikaPatientId && !body.patientMobile) {
-    return NextResponse.json(
-      { error: "Patient or mobile number is required." },
-      { status: 400 }
-    );
-  }
-
   let patient: any = null;
-  let appointment: any = null;
 
-  if (praktikaPatientId) {
-    const { data } = await supabaseAdmin
+  if (body.praktikaPatientId) {
+    const { data, error } = await supabaseAdmin
       .from("praktika_patients")
       .select("*")
-      .eq("praktika_patient_id", praktikaPatientId)
+      .eq("praktika_patient_id", String(body.praktikaPatientId))
       .maybeSingle();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
 
     patient = data;
   }
 
-  if (praktikaAppointmentId) {
-    const { data } = await supabaseAdmin
-      .from("praktika_appointments")
-      .select("*")
-      .eq("praktika_appointment_id", praktikaAppointmentId)
-      .maybeSingle();
-
-    appointment = data;
-  }
-
-  const patientMobile = normalizePhone(
-    patient?.mobile || appointment?.patient_mobile || body.patientMobile
-  );
+  const patientMobile =
+    patient?.mobile ||
+    patient?.patient_mobile ||
+    body.patientMobile ||
+    body.mobile ||
+    "";
 
   if (!patientMobile) {
     return NextResponse.json(
-      { error: "Patient does not have a usable mobile number." },
+      { error: "Patient mobile is required." },
       { status: 400 }
     );
   }
 
-  const firstName =
-    patient?.preferred_name ||
+  const patientFirstName =
     patient?.first_name ||
-    appointment?.patient_first_name ||
-    "";
+    patient?.preferred_name ||
+    body.patientFirstName ||
+    body.firstName ||
+    null;
 
-  const lastName = patient?.last_name || appointment?.patient_last_name || "";
+  const patientLastName =
+    patient?.last_name || body.patientLastName || body.lastName || null;
 
-  const staff = await getStaffDisplayInfo(user.id);
+  const praktikaPatientId =
+    patient?.praktika_patient_id ||
+    body.praktikaPatientId ||
+    body.praktikaPatientID ||
+    null;
 
-  const { data: existing } = await supabaseAdmin
-    .from("reception_conversations")
-    .select("*")
-    .eq("patient_mobile", patientMobile)
-    .eq("status", "open")
-    .maybeSingle();
-
-  if (existing) {
-    return NextResponse.json({ conversation: existing });
-  }
-
-  const { data: conversation, error } = await supabaseAdmin
-    .from("reception_conversations")
-    .insert({
-      status: "open",
-      workflow_status: "general",
-      is_urgent: false,
-      unread_count: 0,
-      praktika_patient_id: praktikaPatientId,
-      praktika_appointment_id: praktikaAppointmentId,
-      patient_first_name: firstName,
-      patient_last_name: lastName,
-      patient_mobile: patientMobile,
-      assigned_user_id: user.id,
-      assigned_display_name: staff.displayName,
-      last_message_preview: "Conversation started",
-      last_message_at: new Date().toISOString(),
-    })
-    .select("*")
-    .single();
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  await supabaseAdmin.from("reception_audit_logs").insert({
-    conversation_id: conversation.id,
-    actor_user_id: user.id,
-    actor_display_name: staff.displayName,
-    action: "conversation_created",
-    details: {
-      praktika_patient_id: praktikaPatientId,
-      praktika_appointment_id: praktikaAppointmentId,
-    },
+  const { conversation, created } = await findOrCreatePatientConversation({
+    patientMobile,
+    patientFirstName,
+    patientLastName,
+    praktikaPatientId,
+    praktikaAppointmentId: body.praktikaAppointmentId || null,
+    assignedUserId: user.id,
+    assignedDisplayName: staff.displayName,
+    workflowStatus: "general",
+    lastMessagePreview: created ? "Conversation started" : "Conversation reopened",
   });
 
-  await supabaseAdmin.from("reception_sms_consent").upsert(
-    {
-      phone_number: patientMobile,
-      praktika_patient_id: praktikaPatientId,
-      status: "subscribed",
-      source: "system",
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "phone_number" }
-  );
+  if (!created) {
+    await supabaseAdmin.from("reception_audit_logs").insert({
+      conversation_id: conversation.id,
+      actor_user_id: user.id,
+      actor_display_name: staff.displayName,
+      action: "existing_patient_thread_reused",
+      details: {
+        reason: "Matched by Praktika patient ID or patient name/mobile.",
+        praktika_patient_id: praktikaPatientId,
+        patient_first_name: patientFirstName,
+        patient_last_name: patientLastName,
+        patient_mobile: normalizeReceptionPhone(patientMobile),
+      },
+    });
+  }
 
-  return NextResponse.json({ conversation });
+  return NextResponse.json({
+    conversation,
+    created,
+  });
 }

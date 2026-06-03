@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { normalizePhone } from "@/lib/reception/phone";
 import { getStaffDisplayInfo } from "@/lib/reception/staff-display";
+import { findOrCreatePatientConversation } from "@/lib/reception/conversation-threading";
 
 function formatDateDdMmYyyy(value: string | null) {
   if (!value) return "";
@@ -127,47 +128,21 @@ This is a reminder of your appointment on ${dateText} at ${timeText} at ${locati
 
 Please reply YES to confirm.`;
 
-  let { data: conversation } = await supabaseAdmin
-    .from("reception_conversations")
-    .select("*")
-    .eq("patient_mobile", mobile)
-    .eq("status", "open")
-    .order("last_message_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (!conversation) {
-    const { data: createdConversation, error: createError } = await supabaseAdmin
-      .from("reception_conversations")
-      .insert({
-        status: "open",
-        workflow_status: "general",
-        is_urgent: false,
-        unread_count: 0,
-        praktika_patient_id: String(appointment.praktika_patient_id),
-        praktika_appointment_id: String(appointment.praktika_appointment_id),
-        patient_first_name: appointment.patient_first_name || null,
-        patient_last_name: appointment.patient_last_name || null,
-        patient_mobile: mobile,
-        assigned_user_id: userId,
-        assigned_display_name: staffDisplayName,
-        appointment_confirmation_status: "confirmation_requested",
-        last_message_preview: "Conversation started",
-        last_message_at: new Date().toISOString(),
-      })
-      .select("*")
-      .single();
-
-    if (createError || !createdConversation) {
-      return {
-        appointmentId: appointment.praktika_appointment_id,
-        ok: false,
-        error: createError?.message || "Could not create conversation.",
-      };
-    }
-
-    conversation = createdConversation;
-  }
+  const { conversation } = await findOrCreatePatientConversation({
+    patientMobile: mobile,
+    patientFirstName: appointment.patient_first_name || null,
+    patientLastName: appointment.patient_last_name || null,
+    praktikaPatientId: appointment.praktika_patient_id
+      ? String(appointment.praktika_patient_id)
+      : null,
+    praktikaAppointmentId: appointment.praktika_appointment_id
+      ? String(appointment.praktika_appointment_id)
+      : null,
+    assignedUserId: userId,
+    assignedDisplayName: staffDisplayName,
+    workflowStatus: "general",
+    lastMessagePreview: smsBody.slice(0, 160),
+  });
 
   const twilio = await sendTwilioSms(mobile, smsBody);
 
@@ -206,8 +181,7 @@ Please reply YES to confirm.`;
       status: "open",
       praktika_patient_id:
         conversation.praktika_patient_id || String(appointment.praktika_patient_id),
-      praktika_appointment_id:
-        conversation.praktika_appointment_id || String(appointment.praktika_appointment_id),
+      praktika_appointment_id: String(appointment.praktika_appointment_id),
       appointment_confirmation_status: "confirmation_requested",
       appointment_confirmed_at: null,
       last_message_preview: smsBody.slice(0, 160),
@@ -226,11 +200,14 @@ Please reply YES to confirm.`;
       : "appointment_confirmation_request_sent_from_queue",
     details: {
       praktika_appointment_id: appointment.praktika_appointment_id,
+      praktika_patient_id: appointment.praktika_patient_id,
       patient_name: patientName,
+      patient_mobile: mobile,
       appointment_date: appointment.appointment_date,
       appointment_time: appointment.appointment_time,
       location,
       twilio_sid: twilio.sid,
+      note: "Conversation selected using patient name/mobile thread matching.",
     },
   });
 
