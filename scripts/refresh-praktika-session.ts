@@ -3,11 +3,11 @@ import crypto from "node:crypto";
 import dotenv from "dotenv";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { createClient } from "@supabase/supabase-js";
+import { processOnePraktikaHelperJob } from "./praktika-helper-job-processor";
 
 dotenv.config({ path: ".env.local" });
 
 const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
-const PRAKTIKA_PRACTICE_ID = process.env.PRAKTIKA_PRACTICE_ID || "1181";
 const PROFILE_ROOT = path.join(process.cwd(), "praktika-browser-profiles");
 
 const HEADLESS =
@@ -24,10 +24,6 @@ const KEEP_ALIVE_INTERVAL_MS = Number(
 
 const REAL_ACTIVITY_INTERVAL_MS = Number(
   process.env.PRAKTIKA_REAL_ACTIVITY_INTERVAL_MS || 5 * 60_000,
-);
-
-const API_VALIDATION_INTERVAL_MS = Number(
-  process.env.PRAKTIKA_API_VALIDATION_INTERVAL_MS || 2 * 60_000,
 );
 
 const LOGIN_TIMEOUT_MS = Number(
@@ -197,20 +193,6 @@ function looksLikeLoggedOutText(text: string) {
   );
 }
 
-function looksLikeLoginHtml(text: string) {
-  const trimmed = text.trim();
-  const lower = trimmed.toLowerCase();
-
-  return (
-    trimmed.startsWith("<!DOCTYPE") ||
-    lower.startsWith("<html") ||
-    lower.includes("/v2/login") ||
-    lower.includes("<title>login") ||
-    lower.includes('type="password"') ||
-    lower.includes('name="password"')
-  );
-}
-
 async function buildCookieHeader(context: BrowserContext) {
   const cookies = await context.cookies(PRAKTIKA_BASE_URL);
 
@@ -223,92 +205,6 @@ async function buildCookieHeader(context: BrowserContext) {
     hasPhpSession: cookies.some((cookie) => cookie.name === "PHPSESSID"),
     hasUat: cookies.some((cookie) => cookie.name === "UAT"),
   };
-}
-
-async function validateCookieWithPraktikaApi(cookieHeader: string) {
-  try {
-    const today = new Date().toISOString().slice(0, 10);
-
-    const params = new URLSearchParams();
-    params.append("sReportName", "appointments");
-    params.append("bByCreationTime", "false");
-    params.append("iPracticeIds[]", PRAKTIKA_PRACTICE_ID);
-    params.append("sFromDate", today);
-    params.append("sToDate", today);
-
-    const response = await fetch(
-      `${PRAKTIKA_BASE_URL}/php/json/db_reportingDataWarehouse.php`,
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/x-www-form-urlencoded",
-          Cookie: cookieHeader,
-          Origin: PRAKTIKA_BASE_URL,
-          Referer: `${PRAKTIKA_BASE_URL}/v2/reports/appointments`,
-          "X-Requested-With": "XMLHttpRequest",
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36",
-        },
-        body: params.toString(),
-        cache: "no-store",
-      },
-    );
-
-    const text = await response.text();
-
-    if (
-      response.status === 401 ||
-      looksLikeLoginHtml(text) ||
-      looksLikeLoggedOutText(text)
-    ) {
-      return {
-        ok: false,
-        reason: `Praktika API says session is logged out. ${text.slice(0, 300)}`,
-      };
-    }
-
-    let parsed: unknown;
-
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return {
-        ok: false,
-        reason: `Praktika API returned non-JSON during helper validation. ${text.slice(0, 300)}`,
-      };
-    }
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        reason: `Praktika API validation failed with HTTP ${response.status}. ${text.slice(0, 300)}`,
-      };
-    }
-
-    if (!Array.isArray(parsed)) {
-      const jsonText = JSON.stringify(parsed).slice(0, 300);
-
-      if (looksLikeLoggedOutText(jsonText)) {
-        return {
-          ok: false,
-          reason: `Praktika API says session is logged out. ${jsonText}`,
-        };
-      }
-
-      return {
-        ok: false,
-        reason: `Praktika API returned unexpected validation data. ${jsonText}`,
-      };
-    }
-
-    return { ok: true, reason: "Praktika API validation succeeded." };
-  } catch (error: any) {
-    return {
-      ok: false,
-      reason: error?.message || "Praktika API validation failed.",
-    };
-  }
 }
 
 async function pageHasVisiblePasswordInput(page: Page) {
@@ -454,6 +350,8 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
     return false;
   }
 
+  console.log("Submitting Praktika credentials from saved pending credentials.");
+
   await usernameField.fill(username);
   await passwordField.fill(password);
 
@@ -552,7 +450,7 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
     message:
       message ||
       (KEEP_BROWSER_OPEN
-        ? "Praktika session connected. Helper browser is open and refreshing cookies."
+        ? "Praktika helper browser is connected."
         : "Praktika session refreshed successfully."),
     current_url: await safePageUrl(page),
     praktika_username: usernameToDisplay,
@@ -567,7 +465,17 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
 }
 
 async function performRealBrowserActivity(page: Page) {
-  await page.goto(`${PRAKTIKA_BASE_URL}/v2/`, {
+  const currentUrl = page.url();
+
+  if (
+    currentUrl.includes("/login") ||
+    currentUrl.includes("/v2/login") ||
+    (await pageHasVisiblePasswordInput(page))
+  ) {
+    return;
+  }
+
+  await page.reload({
     waitUntil: "domcontentloaded",
     timeout: 90_000,
   });
@@ -580,15 +488,12 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
   console.log(
     `Praktika browser left open. Helper will refresh cookies every ${Math.round(
       KEEP_ALIVE_INTERVAL_MS / 1000,
-    )} seconds, perform real browser activity every ${Math.round(
+    )} seconds and perform browser activity every ${Math.round(
       REAL_ACTIVITY_INTERVAL_MS / 1000,
-    )} seconds, and validate copied-cookie API access every ${Math.round(
-      API_VALIDATION_INTERVAL_MS / 1000,
-    )} seconds.`,
+    )} seconds. Copied-cookie API validation is disabled.`,
   );
 
   let lastRealActivityAt = 0;
-  let lastValidationAt = 0;
 
   while (true) {
     try {
@@ -605,73 +510,14 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
       }
 
       if (await isBrowserUiLoggedIn(page)) {
-        const { cookieHeader, hasPhpSession, hasUat } =
-          await buildCookieHeader(context);
-
-        if (!cookieHeader || !hasPhpSession || !hasUat) {
-          await updateSession({
-            status: "refreshing",
-            message:
-              "Praktika browser is open, but required session cookies are missing. Rechecking login.",
-            current_url: await safePageUrl(page),
-          });
-
-          await page.goto(`${PRAKTIKA_BASE_URL}/v2/login`, {
-            waitUntil: "domcontentloaded",
-            timeout: 90_000,
-          });
-
-          await sleep(2500);
-          continue;
-        }
-
-        if (now - lastValidationAt >= API_VALIDATION_INTERVAL_MS) {
-          const validation = await validateCookieWithPraktikaApi(cookieHeader);
-          lastValidationAt = now;
-
-          if (!validation.ok) {
-            console.warn("Praktika copied-cookie validation failed:", validation.reason);
-
-            await updateSession({
-              status: "refreshing",
-              message:
-                "Praktika browser appears logged in, but copied-cookie API access is not currently valid. Rechecking browser session.",
-              current_url: await safePageUrl(page),
-            });
-
-            await performRealBrowserActivity(page);
-
-            if (await pageHasMfaInput(page)) {
-              await submitMfaCodeIfAvailable(page);
-            } else if (await pageHasVisiblePasswordInput(page)) {
-              const hasNewCredentials = Boolean(
-                session.pending_praktika_username &&
-                  session.pending_praktika_password,
-              );
-
-              if (hasNewCredentials) {
-                await fillLoginIfCredentialsAvailable(page);
-              } else {
-                await updateSession({
-                  status: "waiting_for_credentials",
-                  message:
-                    "Praktika requires login again. Enter credentials in DocuDental.",
-                  current_url: await safePageUrl(page),
-                  refresh_requested_at: null,
-                });
-              }
-            }
-
-            await sleep(KEEP_ALIVE_INTERVAL_MS);
-            continue;
-          }
-        }
-
         await saveCookies(
           context,
           page,
-          "Praktika browser is open and copied-cookie API access was recently valid.",
+          "Praktika helper browser is connected. Helper jobs can run for this user.",
         );
+
+        // Only process jobs after the browser appears logged in, and only for this session's user.
+        await processOnePraktikaHelperJob(context, session.app_user_id);
       } else if (await pageHasMfaInput(page)) {
         await submitMfaCodeIfAvailable(page);
       } else if (await pageHasVisiblePasswordInput(page)) {

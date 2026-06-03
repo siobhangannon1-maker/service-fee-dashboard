@@ -35,6 +35,8 @@ export async function GET(req: Request) {
 
     const drafts = (data || []).map((draft: any) => ({
       ...draft,
+
+      // These aliases keep older drafts/API fields working with the frontend.
       clinical_notes:
         draft.clinical_notes ||
         draft.source_clinical_notes ||
@@ -45,6 +47,10 @@ export async function GET(req: Request) {
         draft.clinical_notes ||
         draft.source_text ||
         null,
+
+      // New provider-to-typist instruction field.
+      // These notes are for workflow actions only and should not be included in the letter.
+      typist_instructions: draft.typist_instructions || null,
     }))
 
     return NextResponse.json({

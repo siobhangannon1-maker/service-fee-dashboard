@@ -1,59 +1,121 @@
 import { NextResponse } from "next/server";
-
-import {
-  getCurrentUserPraktikaSessionMode,
-  updatePraktikaSession,
-} from "@/lib/praktika/hybrid-session-store";
-import { encryptTemporaryCredential } from "@/lib/praktika/temporary-credentials-crypto";
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  },
+);
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
 
     const username = String(body.username || "").trim();
-    const password = String(body.password || "");
+    const password = String(body.password || "").trim();
 
     if (!username || !password) {
       return NextResponse.json(
-        {
-          ok: false,
-          error: "Enter both your Praktika username and password.",
-        },
+        { success: false, error: "Username and password are required." },
         { status: 400 },
       );
     }
 
-    const mode = await getCurrentUserPraktikaSessionMode();
+    const cookieStore = await cookies();
+
+    const supabaseAuth = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return cookieStore.getAll();
+          },
+          setAll() {},
+        },
+      },
+    );
+
+    const {
+      data: { user },
+      error: userError,
+    } = await supabaseAuth.auth.getUser();
+
+    if (userError || !user) {
+      return NextResponse.json(
+        { success: false, error: "You must be logged in." },
+        { status: 401 },
+      );
+    }
+
     const now = new Date().toISOString();
 
-    await updatePraktikaSession(mode, {
-      pending_praktika_username: username,
-      pending_praktika_password: encryptTemporaryCredential(password),
-      credentials_updated_at: now,
-      status: "refresh_requested",
-      message:
-        "Praktika login details received securely. Waiting for the local helper to sign in.",
-      refresh_requested_at: now,
-      mfa_code: null,
-      mfa_code_updated_at: null,
-    });
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from("praktika_sessions")
+      .select("id")
+      .eq("scope", "user")
+      .eq("app_user_id", user.id)
+      .maybeSingle();
+
+    if (existingError) {
+      throw new Error(existingError.message);
+    }
+
+    if (existing?.id) {
+      const { error } = await supabaseAdmin
+        .from("praktika_sessions")
+        .update({
+          pending_praktika_username: username,
+          pending_praktika_password: password,
+          praktika_username: username,
+          status: "refresh_requested",
+          message:
+            "Praktika credentials were submitted. Local helper will continue login.",
+          refresh_requested_at: now,
+          updated_at: now,
+        })
+        .eq("id", existing.id);
+
+      if (error) throw new Error(error.message);
+    } else {
+      const { error } = await supabaseAdmin.from("praktika_sessions").insert({
+        scope: "user",
+        app_user_id: user.id,
+        pending_praktika_username: username,
+        pending_praktika_password: password,
+        praktika_username: username,
+        status: "refresh_requested",
+        message:
+          "Praktika credentials were submitted. Local helper will continue login.",
+        refresh_requested_at: now,
+        updated_at: now,
+      });
+
+      if (error) throw new Error(error.message);
+    }
 
     return NextResponse.json({
-      ok: true,
-      scope: "user",
-      message:
-        "Praktika login details saved temporarily and encrypted. The local helper will now try to sign in.",
+      success: true,
+      message: "Credentials submitted.",
     });
-  } catch (error: any) {
+  } catch (error) {
     return NextResponse.json(
       {
-        ok: false,
+        success: false,
         error:
-          error?.message ||
-          "Could not save Praktika login details for this user.",
+          error instanceof Error
+            ? error.message
+            : "Could not submit Praktika credentials.",
       },
       { status: 500 },
     );

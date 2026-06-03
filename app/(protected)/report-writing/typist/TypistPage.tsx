@@ -3,10 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
-import SyncReferrersButton from "@/components/report-writing/SyncReferrersButton";
 import DraftImagePanel from "@/components/report-writing/DraftImagePanel";
-import LetterAuditTrail from "@/components/report-writing/LetterAuditTrail";
-import PraktikaCompactSessionPanel from "@/components/PraktikaCompactSessionPanel";
+import PraktikaToolsPopup from "@/components/report-writing/PraktikaToolsPopup";
 
 type Provider = {
   id: string;
@@ -47,6 +45,7 @@ type Draft = {
   emailed_to_referrer_at?: string | null;
   emailed_to_referrer_email?: string | null;
   emailed_to_referrer_resend_id?: string | null;
+  typist_instructions?: string | null;
 };
 
 type QueueItem = {
@@ -472,6 +471,12 @@ export default function TypistPage() {
   );
   const [mounted, setMounted] = useState(false);
   const [showPraktikaTools, setShowPraktikaTools] = useState(false);
+  const [praktikaPreSyncMessage, setPraktikaPreSyncMessage] =
+    useState<string | null>(null);
+  const [praktikaNeedsReconnect, setPraktikaNeedsReconnect] = useState(false);
+  const [praktikaSyncingQueue, setPraktikaSyncingQueue] = useState(false);
+  const [praktikaSyncingReferrers, setPraktikaSyncingReferrers] =
+    useState(false);
 
   const selectedProviderRequiresApproval =
     selectedProvider?.typist_letters_require_approval !== false;
@@ -1792,6 +1797,163 @@ export default function TypistPage() {
     await loadQueue(selectedProviderId, queueStatusTab);
   }
 
+  function getPraktikaStatusMessage(status: string | null | undefined) {
+    if (status === "connected") {
+      return "Praktika is connected.";
+    }
+
+    if (status === "waiting_for_mfa") {
+      return "Praktika is waiting for MFA.";
+    }
+
+    if (status === "waiting_for_credentials") {
+      return "Praktika login is needed.";
+    }
+
+    if (status === "refresh_requested") {
+      return "Praktika reconnect has been requested. Please wait for the local helper.";
+    }
+
+    if (status === "refreshing") {
+      return "Praktika is currently reconnecting.";
+    }
+
+    if (status === "expired") {
+      return "Praktika session has expired.";
+    }
+
+    if (status === "error") {
+      return "Praktika connection has an error.";
+    }
+
+    if (status === "not_started") {
+      return "Praktika has not been connected yet.";
+    }
+
+    return "Praktika is not connected.";
+  }
+
+  async function ensurePraktikaConnectedBeforeSync() {
+    setPraktikaPreSyncMessage(null);
+
+    try {
+      const response = await fetch("/api/praktika/session/status?scope=user", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok || !data) {
+        const message =
+          "Could not check Praktika connection. Click Manage, reconnect Praktika, then run the sync again.";
+
+        setPraktikaNeedsReconnect(true);
+        setShowPraktikaTools(true);
+        setPraktikaPreSyncMessage(message);
+        return false;
+      }
+
+      const status = String(data.status || "not_started");
+
+      // IMPORTANT:
+      // Helper-job syncs use the live local Playwright/Chrome helper browser.
+      // They should NOT be blocked just because no copied Praktika cookie is
+      // saved in Supabase. Praktika appears to reject copied-cookie requests
+      // quickly, so "hasCookie" is no longer a reliable sync gate.
+      if (status !== "connected") {
+        const statusLabel = getPraktikaStatusMessage(status);
+        const message = `${statusLabel} Click Manage, reconnect Praktika, then run the sync again.`;
+
+        setPraktikaNeedsReconnect(true);
+        setShowPraktikaTools(true);
+        setPraktikaPreSyncMessage(message);
+        return false;
+      }
+
+      setPraktikaNeedsReconnect(false);
+      setPraktikaPreSyncMessage(null);
+      return true;
+    } catch (error) {
+      console.error("Could not check Praktika session before sync:", error);
+
+      const message =
+        "Could not check Praktika connection. Click Manage, reconnect Praktika, then run the sync again.";
+
+      setPraktikaNeedsReconnect(true);
+      setShowPraktikaTools(true);
+      setPraktikaPreSyncMessage(message);
+
+      return false;
+    }
+  }
+
+  async function syncPraktikaReferrers() {
+    const canSync = await ensurePraktikaConnectedBeforeSync();
+
+    if (!canSync) {
+      return;
+    }
+
+    setPraktikaSyncingReferrers(true);
+
+    try {
+      const response = await fetch("/api/report-writing/referrers/sync-praktika", {
+        method: "POST",
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success) {
+        const needsReconnect =
+          response.status === 409 ||
+          data?.needsPraktikaLogin ||
+          String(data?.error || "")
+            .toLowerCase()
+            .includes("praktika");
+
+        if (needsReconnect) {
+          setPraktikaNeedsReconnect(true);
+          setShowPraktikaTools(true);
+          setPraktikaPreSyncMessage(
+            data?.error ||
+              "Praktika needs to be reconnected before referrers can be synced.",
+          );
+        }
+
+        if (!needsReconnect) {
+          alert(data?.error || "Failed to sync Praktika referrers.");
+        }
+        return;
+      }
+
+      setPraktikaNeedsReconnect(false);
+      setPraktikaPreSyncMessage(
+        `Referrers synced. Imported ${data.imported || 0} item(s).`,
+      );
+
+      alert(
+        `Referrers synced. Imported ${data.imported || 0} item(s). Skipped ${
+          data.skipped || 0
+        }.`,
+      );
+    } catch (error) {
+      console.error("Failed to sync Praktika referrers:", error);
+      setPraktikaPreSyncMessage(
+        error instanceof Error
+          ? error.message
+          : "Failed to sync Praktika referrers.",
+      );
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Failed to sync Praktika referrers.",
+      );
+    } finally {
+      setPraktikaSyncingReferrers(false);
+    }
+  }
+
   async function syncQueueRange() {
     if (!queueFromDate || !queueToDate) {
       alert("Please select both a from date and a to date.");
@@ -1803,6 +1965,13 @@ export default function TypistPage() {
       return;
     }
 
+    const canSync = await ensurePraktikaConnectedBeforeSync();
+
+    if (!canSync) {
+      return;
+    }
+
+    setPraktikaSyncingQueue(true);
     setLoading(true);
 
     try {
@@ -1823,7 +1992,25 @@ export default function TypistPage() {
       const data = await response.json();
 
       if (!data.success) {
-        alert(data.error || "Failed to sync letter queue.");
+        const needsReconnect =
+          response.status === 409 ||
+          data?.needsPraktikaLogin ||
+          String(data?.error || "")
+            .toLowerCase()
+            .includes("praktika");
+
+        if (needsReconnect) {
+          setPraktikaNeedsReconnect(true);
+          setShowPraktikaTools(true);
+          setPraktikaPreSyncMessage(
+            data.error ||
+              "Praktika needs to be reconnected before the queue can be synced.",
+          );
+        }
+
+        if (!needsReconnect) {
+          alert(data.error || "Failed to sync letter queue.");
+        }
         return;
       }
 
@@ -1833,6 +2020,7 @@ export default function TypistPage() {
         await loadQueue(selectedProviderId);
       }
     } finally {
+      setPraktikaSyncingQueue(false);
       setLoading(false);
     }
   }
@@ -2917,6 +3105,28 @@ export default function TypistPage() {
                     </div>
                   )}
                 </div>
+
+                {selectedDraft?.typist_instructions?.trim() ? (
+                  <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm shadow-sm">
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-200 text-sm font-black text-amber-900">
+                        !
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-bold text-amber-950">
+                          Provider instructions for typist
+                        </div>
+                        <div className="mt-1 text-xs text-amber-700">
+                          Internal action notes only — do not include this text in the letter.
+                        </div>
+                        <div className="mt-3 whitespace-pre-line rounded-xl border border-amber-200 bg-white p-3 leading-6 text-amber-950">
+                          {selectedDraft.typist_instructions}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -3013,10 +3223,6 @@ export default function TypistPage() {
 
             {selectedDraft ? (
               <DraftImagePanel reportDraftId={selectedDraft.id} />
-            ) : null}
-
-            {selectedDraft ? (
-              <LetterAuditTrail draftId={selectedDraft.id} />
             ) : null}
 
             {selectedDraft ? (
@@ -3306,92 +3512,28 @@ export default function TypistPage() {
         </div>
       </div>
 
-      <div className="fixed bottom-5 right-5 z-50">
-        {showPraktikaTools ? (
-          <div className="mb-3 w-[420px] max-w-[calc(100vw-2rem)] rounded-3xl border border-slate-200 bg-white p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold text-slate-900">
-                  Praktika tools
-                </div>
-                <div className="text-xs text-slate-500">
-                  Session, referrer sync and queue sync.
-                </div>
-              </div>
+      <button
+        type="button"
+        onClick={() => setShowPraktikaTools(true)}
+        className="fixed bottom-6 right-6 z-40 rounded-full bg-slate-950 px-6 py-4 text-sm font-bold text-white shadow-2xl hover:bg-slate-800"
+      >
+        Praktika tools
+      </button>
 
-              <button
-                type="button"
-                onClick={() => setShowPraktikaTools(false)}
-                className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <PraktikaCompactSessionPanel scope="user" />
-
-              <div>
-                <SyncReferrersButton />
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">
-                    Sync Queue
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Pull Praktika letter-icon appointments.
-                  </p>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <div className="mb-1 text-xs font-semibold text-slate-500">
-                      From
-                    </div>
-                    <input
-                      type="date"
-                      value={queueFromDate}
-                      onChange={(e) => setQueueFromDate(e.target.value)}
-                      className="w-full rounded-xl border p-2 text-sm"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <div className="mb-1 text-xs font-semibold text-slate-500">
-                      To
-                    </div>
-                    <input
-                      type="date"
-                      value={queueToDate}
-                      onChange={(e) => setQueueToDate(e.target.value)}
-                      className="w-full rounded-xl border p-2 text-sm"
-                    />
-                  </label>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={syncQueueRange}
-                  disabled={loading}
-                  className="mt-3 w-full rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-                >
-                  {loading ? "Syncing..." : "Sync Queue"}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        <button
-          type="button"
-          onClick={() => setShowPraktikaTools((current) => !current)}
-          className="rounded-full bg-slate-950 px-5 py-3 text-sm font-bold text-white shadow-2xl hover:bg-slate-800"
-        >
-          Praktika tools
-        </button>
-      </div>
+      <PraktikaToolsPopup
+        open={showPraktikaTools}
+        onOpenChange={setShowPraktikaTools}
+        queueFromDate={queueFromDate}
+        queueToDate={queueToDate}
+        onQueueFromDateChange={setQueueFromDate}
+        onQueueToDateChange={setQueueToDate}
+        onSyncQueue={syncQueueRange}
+        onSyncReferrers={syncPraktikaReferrers}
+        loadingQueue={praktikaSyncingQueue}
+        loadingReferrers={praktikaSyncingReferrers}
+        message={praktikaPreSyncMessage}
+        needsReconnect={praktikaNeedsReconnect}
+      />
 
       {completeModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">

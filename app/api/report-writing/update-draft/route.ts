@@ -147,6 +147,15 @@ export async function POST(req: Request) {
       updatePayload.praktika_patient_id = cleanOrNull(praktikaPatientId)
     }
 
+    if (
+      Object.prototype.hasOwnProperty.call(body, "typistInstructions") ||
+      Object.prototype.hasOwnProperty.call(body, "typist_instructions")
+    ) {
+      updatePayload.typist_instructions = cleanOrNull(
+        body.typistInstructions ?? body.typist_instructions
+      )
+    }
+
     if (typeof status === "string" && status.trim()) {
       updatePayload.status = status
 
@@ -229,6 +238,7 @@ export async function POST(req: Request) {
         praktikaPatientId: data.praktika_patient_id || null,
         referrerNameSaved: Boolean(data.referrer_name),
         referrerAddressSaved: Boolean(data.referrer_address),
+        typistInstructionsSaved: Boolean(data.typist_instructions),
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
         learningSaved:

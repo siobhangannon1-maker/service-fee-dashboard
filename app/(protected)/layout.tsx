@@ -2,7 +2,6 @@ import { redirect } from "next/navigation";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { getUserStatus } from "@/lib/getUserStatus";
-import PraktikaReconnectPopup from "@/components/PraktikaReconnectPopup";
 
 export default async function DashboardLayout({
   children,
@@ -40,10 +39,5 @@ export default async function DashboardLayout({
     redirect("/account-inactive");
   }
 
-  return (
-    <>
-      {children}
-      <PraktikaReconnectPopup />
-    </>
-  );
+  return <>{children}</>;
 }

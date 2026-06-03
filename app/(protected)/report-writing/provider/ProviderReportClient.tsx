@@ -27,6 +27,7 @@ type Draft = {
   emailed_to_referrer_at?: string | null
   emailed_to_referrer_email?: string | null
   praktika_patient_id?: string | null
+  typist_instructions?: string | null
 }
 
 type ProviderReportClientProps = {
@@ -51,6 +52,8 @@ type PatientAndReferrerFieldsProps = {
   setReferrerName: (value: string) => void
   referrerAddress: string
   setReferrerAddress: (value: string) => void
+  typistInstructions: string
+  setTypistInstructions: (value: string) => void
 }
 
 type ActiveTab = "smart" | "dictate" | "notes" | "approval" | "approved"
@@ -71,6 +74,8 @@ function PatientAndReferrerFields({
   setReferrerName,
   referrerAddress,
   setReferrerAddress,
+  typistInstructions,
+  setTypistInstructions,
 }: PatientAndReferrerFieldsProps) {
   const [dobFocused, setDobFocused] = useState(false)
 
@@ -152,6 +157,21 @@ function PatientAndReferrerFields({
         value={referrerAddress}
         onChange={(e) => setReferrerAddress(e.target.value)}
       />
+
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 md:col-span-2">
+        <label className="block text-xs font-bold uppercase tracking-wide text-amber-800">
+          Typist instructions
+        </label>
+        <p className="mt-1 text-xs text-amber-700">
+          Internal notes only. These will show on the typist page but will not be included in the letter.
+        </p>
+        <textarea
+          className="mt-3 h-28 w-full rounded-xl border border-amber-300 bg-white p-3 text-sm text-slate-900 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
+          placeholder="Examples: attach PA X-Ray, attach periodontal chart, cc to Dr John Smith..."
+          value={typistInstructions}
+          onChange={(e) => setTypistInstructions(e.target.value)}
+        />
+      </div>
     </div>
   )
 }
@@ -253,6 +273,7 @@ export default function ProviderReportClient({
   const [generatedReport, setGeneratedReport] = useState("")
   const [originalGeneratedReport, setOriginalGeneratedReport] = useState("")
   const [dictatedLetter, setDictatedLetter] = useState("")
+  const [typistInstructions, setTypistInstructions] = useState("")
 
   const [approvalDrafts, setApprovalDrafts] = useState<Draft[]>([])
   const [approvedDrafts, setApprovedDrafts] = useState<Draft[]>([])
@@ -445,6 +466,7 @@ export default function ProviderReportClient({
           referrerAddress,
           reportType,
           clinicalNotes,
+          typistInstructions,
           generatedReport: originalAiText,
           editedText: finalApprovedText,
           originalAiText,
@@ -471,6 +493,7 @@ export default function ProviderReportClient({
       setSavedMessage(successMessage)
       showSavedConfirmation("Letter saved", successMessage)
       clearGeneratedForm()
+      setTypistInstructions("")
       await loadDrafts()
     } finally {
       setLoading(false)
@@ -502,6 +525,7 @@ export default function ProviderReportClient({
           referrerAddress,
           reportType: "dictated_letter",
           clinicalNotes: dictatedLetter,
+          typistInstructions,
           generatedReport: dictatedLetter,
           editedText: dictatedLetter,
           sourceType: "dictation",
@@ -523,6 +547,7 @@ export default function ProviderReportClient({
       setSavedMessage(successMessage)
       showSavedConfirmation("Letter saved", successMessage)
       setDictatedLetter("")
+      setTypistInstructions("")
       await loadDrafts()
     } finally {
       setLoading(false)
@@ -559,6 +584,7 @@ export default function ProviderReportClient({
           finalApprovedText: finalText,
           learnFromEdits: hasEditedAiText,
           learningSource: "provider_approval_edit",
+          typistInstructions: selectedApprovalDraft.typist_instructions || "",
         }),
       })
 
@@ -596,6 +622,7 @@ export default function ProviderReportClient({
           editedText: selectedApprovalDraft.edited_text || "",
           status: "edited_by_typist",
           learnFromEdits: false,
+          typistInstructions: selectedApprovalDraft.typist_instructions || "",
         }),
       })
 
@@ -677,6 +704,8 @@ export default function ProviderReportClient({
       setReferrerName={setReferrerName}
       referrerAddress={referrerAddress}
       setReferrerAddress={setReferrerAddress}
+      typistInstructions={typistInstructions}
+      setTypistInstructions={setTypistInstructions}
     />
   )
 
@@ -1007,6 +1036,26 @@ export default function ProviderReportClient({
                   </div>
                 </div>
 
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                  <label className="block text-sm font-bold text-amber-900">
+                    Instructions for typist
+                  </label>
+                  <p className="mt-1 text-xs text-amber-700">
+                    Internal action notes only. These will not be included in the final letter.
+                  </p>
+                  <textarea
+                    className="mt-3 h-28 w-full rounded-xl border border-amber-300 bg-white p-3 text-sm text-slate-900 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
+                    placeholder="Examples: attach PA X-Ray, attach periodontal chart, cc to Dr John Smith..."
+                    value={selectedApprovalDraft.typist_instructions || ""}
+                    onChange={(e) =>
+                      setSelectedApprovalDraft({
+                        ...selectedApprovalDraft,
+                        typist_instructions: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+
                 {selectedApprovalDraft.ai_generated_text ? (
                   <div className="flex justify-end">
                     <button
@@ -1151,6 +1200,17 @@ export default function ProviderReportClient({
                   readOnly
                   value={getReportText(selectedApprovedDraft)}
                 />
+
+                {selectedApprovedDraft.typist_instructions?.trim() ? (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <div className="text-sm font-bold text-amber-900">
+                      Instructions for typist
+                    </div>
+                    <div className="mt-2 whitespace-pre-line text-sm leading-6 text-amber-950">
+                      {selectedApprovedDraft.typist_instructions}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
                   This letter is approved. The typist portal is used to add

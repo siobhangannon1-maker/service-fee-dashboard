@@ -99,6 +99,10 @@ export async function POST(req: Request) {
       queueId,
     } = body
 
+    const typistInstructions = cleanOrNull(
+      body.typistInstructions ?? body.typist_instructions
+    )
+
     if (!providerId) {
       return NextResponse.json(
         { success: false, error: "Missing providerId" },
@@ -131,6 +135,7 @@ export async function POST(req: Request) {
       edited_text: finalText,
       status: finalStatus,
       praktika_patient_id: finalPraktikaPatientId,
+      typist_instructions: typistInstructions,
       drafted_by_initials: actor.actorInitials,
       drafted_by_name: actor.actorFullName,
       provider_approved_at:
@@ -190,6 +195,7 @@ export async function POST(req: Request) {
         status: finalStatus,
         referrerNameSaved: Boolean(finalReferrerName),
         referrerAddressSaved: Boolean(finalReferrerAddress),
+        typistInstructionsSaved: Boolean(typistInstructions),
         linkedQueueId: clean(queueId) || null,
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
