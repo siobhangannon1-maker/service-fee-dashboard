@@ -6,6 +6,14 @@ import { type PraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 const PRAKTIKA_PRACTICE_ID = process.env.PRAKTIKA_PRACTICE_ID || "1181";
 const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
 
+type UploadPatientFileInput = {
+  patientId: string | number;
+  file: Blob | File;
+  fileName: string;
+  description?: string;
+  mode?: PraktikaSessionMode;
+};
+
 function formatPraktikaDateTime(date = new Date()) {
   const yyyy = date.getFullYear();
   const mm = String(date.getMonth() + 1).padStart(2, "0");
@@ -100,15 +108,15 @@ export async function createPatientClinicalNote({
   });
 }
 
-// File uploads are now created directly by the route as multipart_storage helper jobs.
-// These placeholders deliberately prevent accidental fallback to copied-cookie uploads.
-export async function uploadPatientCommunicationFile() {
+export async function uploadPatientCommunicationFile(
+  _input: UploadPatientFileInput,
+) {
   throw new Error(
     "uploadPatientCommunicationFile has moved to helper-job multipart upload. Use app/api/report-writing/upload-to-praktika/route.ts.",
   );
 }
 
-export async function uploadPatientImageFile() {
+export async function uploadPatientImageFile(_input: UploadPatientFileInput) {
   throw new Error(
     "uploadPatientImageFile has moved to helper-job multipart upload. Add a multipart_storage helper job for image uploads.",
   );
