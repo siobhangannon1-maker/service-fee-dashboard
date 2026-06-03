@@ -1,6 +1,9 @@
 import "server-only";
 
-import { praktikaHelperPost } from "@/lib/praktika/helper-job-client";
+import {
+  praktikaHelperPost,
+  praktikaHelperPostForCurrentUser,
+} from "@/lib/praktika/helper-job-client";
 import { type PraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 
 const PRAKTIKA_PRACTICE_ID = process.env.PRAKTIKA_PRACTICE_ID || "1181";
@@ -11,6 +14,7 @@ type UploadPatientFileInput = {
   file: Blob | File;
   fileName: string;
   description?: string;
+  notes?: string;
   mode?: PraktikaSessionMode;
 };
 
@@ -33,13 +37,12 @@ export async function getPatientClinicalNotes({
   mode,
 }: {
   patientId: string | number;
-  mode: PraktikaSessionMode;
+  mode?: PraktikaSessionMode;
 }) {
-  return await praktikaHelperPost<any>({
-    mode,
+  const options = {
     jobType: "get_patient_clinical_notes",
     path: "/php/forms/db_getFormData.php",
-    contentType: "json",
+    contentType: "json" as const,
     referer: `${PRAKTIKA_BASE_URL}/v2/patient-directory/patient-search`,
     priority: 40,
     body: [
@@ -53,7 +56,16 @@ export async function getPatientClinicalNotes({
         fields: ["patient_clinicalnotes"],
       },
     ],
-  });
+  };
+
+  if (mode) {
+    return await praktikaHelperPost<any>({
+      ...options,
+      mode,
+    });
+  }
+
+  return await praktikaHelperPostForCurrentUser<any>(options);
 }
 
 export async function createPatientClinicalNote({
@@ -65,17 +77,16 @@ export async function createPatientClinicalNote({
   patientId: string | number;
   text: string;
   author?: string;
-  mode: PraktikaSessionMode;
+  mode?: PraktikaSessionMode;
 }) {
   const now = new Date();
   const dateTime = `${formatPraktikaDateTime(now)}:00`;
   const tempId = `-${Date.now()}`;
 
-  return await praktikaHelperPost<any>({
-    mode,
+  const options = {
     jobType: "create_patient_clinical_note",
     path: "/php/forms/db_commitFormData.php",
-    contentType: "json",
+    contentType: "json" as const,
     referer: `${PRAKTIKA_BASE_URL}/v2/patient-directory/patient-search`,
     priority: 30,
     body: [
@@ -105,7 +116,16 @@ export async function createPatientClinicalNote({
         ],
       },
     ],
-  });
+  };
+
+  if (mode) {
+    return await praktikaHelperPost<any>({
+      ...options,
+      mode,
+    });
+  }
+
+  return await praktikaHelperPostForCurrentUser<any>(options);
 }
 
 export async function uploadPatientCommunicationFile(
