@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
     body.praktikaPatientID ||
     null;
 
-  const { conversation, created } = await findOrCreatePatientConversation({
+  const result = await findOrCreatePatientConversation({
     patientMobile,
     patientFirstName,
     patientLastName,
@@ -116,10 +116,21 @@ export async function POST(request: NextRequest) {
     assignedUserId: user.id,
     assignedDisplayName: staff.displayName,
     workflowStatus: "general",
-    lastMessagePreview: created ? "Conversation started" : "Conversation reopened",
+    lastMessagePreview: "Conversation started",
   });
 
+  const { conversation, created } = result;
+
   if (!created) {
+    await supabaseAdmin
+      .from("reception_conversations")
+      .update({
+        status: "open",
+        last_message_preview: "Conversation reopened",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", conversation.id);
+
     await supabaseAdmin.from("reception_audit_logs").insert({
       conversation_id: conversation.id,
       actor_user_id: user.id,
@@ -132,6 +143,17 @@ export async function POST(request: NextRequest) {
         patient_last_name: patientLastName,
         patient_mobile: normalizeReceptionPhone(patientMobile),
       },
+    });
+
+    const { data: updatedConversation } = await supabaseAdmin
+      .from("reception_conversations")
+      .select("*")
+      .eq("id", conversation.id)
+      .single();
+
+    return NextResponse.json({
+      conversation: updatedConversation || conversation,
+      created,
     });
   }
 
