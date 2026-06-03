@@ -15,30 +15,67 @@ type QueueItem = {
   created_at: string;
 };
 
+async function readJsonSafely(response: Response) {
+  const text = await response.text();
+
+  if (!text) {
+    return {
+      error: `Request failed with status ${response.status}. No response body.`,
+    };
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      error: `Request failed with status ${response.status}. Response was not JSON: ${text.slice(
+        0,
+        300
+      )}`,
+    };
+  }
+}
+
 export default function PraktikaWritebackQueuePage() {
   const [status, setStatus] = useState("pending");
   const [items, setItems] = useState<QueueItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState<string | "all" | null>(null);
   const [message, setMessage] = useState("");
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
 
   async function loadItems() {
     setLoading(true);
     setMessage("");
 
-    const response = await fetch(
-      `/api/reception/praktika-writeback-queue?status=${status}`
-    );
-    const data = await response.json();
+    try {
+      const response = await fetch(
+        `/api/reception/praktika-writeback-queue?status=${status}`,
+        {
+          cache: "no-store",
+        }
+      );
 
-    setLoading(false);
+      const data = await readJsonSafely(response);
 
-    if (!response.ok) {
-      setMessage(data.error || "Could not load writeback queue.");
-      return;
+      if (!response.ok) {
+        setItems([]);
+        setMessage(data.error || `Could not load queue. Status ${response.status}`);
+        return;
+      }
+
+      setItems(data.items || []);
+    } catch (error) {
+      setItems([]);
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not load write-back queue."
+      );
+    } finally {
+      setLoading(false);
+      setInitialLoadDone(true);
     }
-
-    setItems(data.items || []);
   }
 
   useEffect(() => {
@@ -50,30 +87,39 @@ export default function PraktikaWritebackQueuePage() {
     setProcessing(id || "all");
     setMessage("");
 
-    const response = await fetch("/api/reception/praktika-writeback-queue", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(id ? { id } : { processAll: true }),
-    });
+    try {
+      const response = await fetch("/api/reception/praktika-writeback-queue", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify(id ? { id } : { processAll: true }),
+      });
 
-    const data = await response.json();
+      const data = await readJsonSafely(response);
 
-    setProcessing(null);
+      if (!response.ok) {
+        setMessage(data.error || `Could not process queue. Status ${response.status}`);
+        return;
+      }
 
-    if (!response.ok) {
-      setMessage(data.error || "Could not process writeback.");
-      return;
+      setMessage(
+        `Processed ${data.processedCount || 0}. Success ${
+          data.successCount || 0
+        }. Failed ${data.failedCount || 0}.`
+      );
+
+      await loadItems();
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not process write-back queue."
+      );
+    } finally {
+      setProcessing(null);
     }
-
-    setMessage(
-      `Processed ${data.processedCount || 0}. Success ${
-        data.successCount || 0
-      }. Failed ${data.failedCount || 0}.`
-    );
-
-    await loadItems();
   }
 
   return (
@@ -128,14 +174,18 @@ export default function PraktikaWritebackQueuePage() {
             <button
               type="button"
               onClick={() => processItem()}
-              disabled={processing !== null || items.length === 0}
+              disabled={processing !== null || loading || items.length === 0}
               className="rounded-xl bg-slate-950 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40"
             >
               {processing === "all" ? "Processing..." : "Process all"}
             </button>
           </div>
 
-          {message && <div className="mt-3 text-sm text-slate-600">{message}</div>}
+          {message && (
+            <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+              {message}
+            </div>
+          )}
         </section>
 
         <section className="overflow-hidden rounded-2xl bg-white shadow-sm">
@@ -147,7 +197,13 @@ export default function PraktikaWritebackQueuePage() {
             <div>Action</div>
           </div>
 
-          {items.length === 0 && (
+          {loading && !initialLoadDone && (
+            <div className="p-8 text-center text-sm text-slate-500">
+              Loading queue...
+            </div>
+          )}
+
+          {!loading && items.length === 0 && (
             <div className="p-8 text-center text-sm text-slate-500">
               No {status} write-back items.
             </div>
@@ -196,7 +252,7 @@ export default function PraktikaWritebackQueuePage() {
                     <button
                       type="button"
                       onClick={() => processItem(item.id)}
-                      disabled={processing !== null}
+                      disabled={processing !== null || loading}
                       className="rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50"
                     >
                       {processing === item.id ? "Processing..." : "Process"}
