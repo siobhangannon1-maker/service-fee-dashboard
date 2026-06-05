@@ -365,23 +365,39 @@ function hasInvalidEmail(value: string) {
 }
 
 function extractPdfCcText(text: string) {
-  const match = String(text || "").match(/\n?\[\[PDF_CC:([\s\S]*?)\]\]\s*$/);
+  const match = String(text || "").match(/\[\[PDF_CC:([\s\S]*?)\]\]/);
   return match?.[1]?.trim() || "";
 }
 
-function stripPdfCcMarker(text: string) {
+function extractPdfDateText(text: string) {
+  const match = String(text || "").match(/\[\[PDF_DATE:([\s\S]*?)\]\]/);
+  return match?.[1]?.trim() || "";
+}
+
+function stripPdfMarkers(text: string) {
   return String(text || "")
-    .replace(/\n?\[\[PDF_CC:[\s\S]*?\]\]\s*$/, "")
+    .replace(/\n?\[\[PDF_CC:[\s\S]*?\]\]/g, "")
+    .replace(/\n?\[\[PDF_DATE:[\s\S]*?\]\]/g, "")
     .trimEnd();
 }
 
-function buildLetterTextForSave(letterBody: string, pdfCcText: string) {
-  const cleanBody = stripPdfCcMarker(letterBody);
+function buildLetterTextForSave(
+  letterBody: string,
+  pdfCcText: string,
+  pdfLetterDate: string,
+) {
+  const cleanBody = stripPdfMarkers(letterBody);
   const cleanCc = String(pdfCcText || "").trim();
+  const cleanDate = String(pdfLetterDate || "").trim();
 
-  if (!cleanCc) return cleanBody;
+  const markers = [
+    cleanCc ? `[[PDF_CC:${cleanCc}]]` : "",
+    cleanDate ? `[[PDF_DATE:${cleanDate}]]` : "",
+  ].filter(Boolean);
 
-  return `${cleanBody}\n\n[[PDF_CC:${cleanCc}]]`;
+  if (markers.length === 0) return cleanBody;
+
+  return `${cleanBody}\n\n${markers.join("\n")}`;
 }
 
 export default function TypistPage() {
@@ -433,6 +449,9 @@ export default function TypistPage() {
   const [letterText, setLetterText] = useState("");
   const [generatedAiLetterText, setGeneratedAiLetterText] = useState("");
   const [pdfCcText, setPdfCcText] = useState("");
+  const [pdfLetterDate, setPdfLetterDate] = useState(
+    new Date().toISOString().slice(0, 10),
+  );
 
   const [praktikaCandidates, setPraktikaCandidates] = useState<
     PraktikaCandidate[]
@@ -620,7 +639,7 @@ export default function TypistPage() {
     setLetterText(value);
 
     if (selectedDraft) {
-      const existingText = stripPdfCcMarker(
+      const existingText = stripPdfMarkers(
         selectedDraft.edited_text || selectedDraft.ai_generated_text || "",
       );
 
@@ -732,7 +751,7 @@ export default function TypistPage() {
   }
 
   function getLetterTextForSave() {
-    return buildLetterTextForSave(letterText, pdfCcText);
+    return buildLetterTextForSave(letterText, pdfCcText, pdfLetterDate);
   }
 
   async function ensureImageDraftForCurrentWork(options?: { quiet?: boolean }) {
@@ -1491,7 +1510,7 @@ export default function TypistPage() {
         clearTimeout(autosaveTimerRef.current);
       }
     };
-  }, [letterText, pdfCcText, selectedDraft]);
+  }, [letterText, pdfCcText, pdfLetterDate, selectedDraft]);
 
 
   useEffect(() => {
@@ -1543,6 +1562,7 @@ export default function TypistPage() {
     setLetterText("");
     setGeneratedAiLetterText("");
     setPdfCcText("");
+    setPdfLetterDate(new Date().toISOString().slice(0, 10));
     setAutoGenerateStatus("idle");
     setSaveStatus("idle");
     setLastSavedAt(null);
@@ -1576,8 +1596,12 @@ export default function TypistPage() {
 
     const savedLetterText = draft.edited_text || draft.ai_generated_text || "";
     setPdfCcText(extractPdfCcText(savedLetterText));
-    setLetterText(stripPdfCcMarker(savedLetterText));
-    setGeneratedAiLetterText(stripPdfCcMarker(draft.ai_generated_text || ""));
+    setPdfLetterDate(
+      extractPdfDateText(savedLetterText) ||
+        new Date().toISOString().slice(0, 10),
+    );
+    setLetterText(stripPdfMarkers(savedLetterText));
+    setGeneratedAiLetterText(stripPdfMarkers(draft.ai_generated_text || ""));
     setSaveStatus("saved");
     setLastSavedAt(draft.created_at || new Date().toISOString());
     lastAutosavedTextRef.current = savedLetterText;
@@ -1740,6 +1764,7 @@ export default function TypistPage() {
       setLetterText("");
       setGeneratedAiLetterText("");
       setPdfCcText("");
+      setPdfLetterDate(new Date().toISOString().slice(0, 10));
       setPraktikaCandidates([]);
       setSelectedPraktikaPatientId(linkedPraktikaPatientId);
       setAutoGenerateStatus("ready");
@@ -1759,6 +1784,7 @@ export default function TypistPage() {
         setLetterText("");
         setGeneratedAiLetterText("");
         setPdfCcText("");
+        setPdfLetterDate(new Date().toISOString().slice(0, 10));
         setPraktikaCandidates([]);
         setSelectedPraktikaPatientId(linkedPraktikaPatientId);
         setAutoGenerateStatus("ready");
@@ -1776,6 +1802,7 @@ export default function TypistPage() {
         setLetterText("");
         setGeneratedAiLetterText("");
         setPdfCcText("");
+        setPdfLetterDate(new Date().toISOString().slice(0, 10));
         setPraktikaCandidates([]);
         setSelectedPraktikaPatientId(linkedPraktikaPatientId);
 
@@ -3406,6 +3433,21 @@ export default function TypistPage() {
                   </div>
                 </div>
               </div>
+
+              <label className="mb-4 block rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-sm font-bold text-slate-950">
+                  PDF letter date
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  This date will appear at the top of the generated PDF letter.
+                </div>
+                <input
+                  type="date"
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm"
+                  value={pdfLetterDate}
+                  onChange={(e) => setPdfLetterDate(e.target.value)}
+                />
+              </label>
 
               <textarea
                 ref={letterTextareaRef}

@@ -188,6 +188,8 @@ const navGroups: NavGroup[] = [
       { href: "/report-writing/history", label: "Report History", description: "Search details of previous letters" },
       { href: "/report-writing/dashboard", label: "Report Dashboard", description: "Review status of letters" },
       { href: "/ai/bulk-document-filing", label: "Bulk File", description: "Bulk file documents to Praktika" },
+      { href: "/report-writing/admin/provider-examples", label: "Provider Letter Examples", description: "Upload examples of letters for AI training" },
+      { href: "/report-writing/admin/universal-rules", label: "Letter Universal Rules", description: "Create and edit universal rules for AI letter writing" },
     ],
   },
   {
@@ -197,8 +199,6 @@ const navGroups: NavGroup[] = [
     { href: "/admin", label: "Admin", description: "User roles, providers, settings and configuration" },
     { href: "/admin/provider-imports", label: "Imports and Syncs", description: "Import and sync Praktika reports" },
     { href: "/benchmarks/edit", label: "Edit Benchmarks", description: "Edit benchmarks for KPI categories" },
-    { href: "/report-writing/admin/universal-rules", label: "Letter Universal Rules", description: "Create and edit universal rules for AI letter writing" },
-    { href: "/report-writing/admin/provider-examples", label: "Provider Letter Examples", description: "Upload examples of letters for AI training" },
   ],
 },
 ];

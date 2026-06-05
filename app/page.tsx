@@ -24,6 +24,26 @@ const primaryActions = [
 
 const modules = [
   {
+    section: "Typist",
+    items: [
+      {
+        title: "Typist Letter Module",
+        href: "/report-writing/typist",
+        description: "Generate, upload and sent reports.",
+      },
+      {
+        title: "Typist Dashboard",
+        href: "/report-writing/dashboard",
+        description: "Review status of letters.",
+      },
+      {
+        title: "Letter Training",
+        href: "/report-writing/admin/provider-examples",
+        description: "Edit provider examples and rules",
+      },
+    ],
+  },
+  {
     section: "Billing & Data Entry",
     items: [
       {
@@ -75,11 +95,6 @@ const modules = [
         title: "Edit Material Costs",
         href: "/material-costs",
         description: "Manage implant and material cost presets.",
-      },
-      {
-        title: "Practice Manager Hub",
-        href: "/practice-manager",
-        description: "Operational tools and practice management reports.",
       },
       {
         title: "Admin",

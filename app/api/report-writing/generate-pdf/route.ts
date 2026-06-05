@@ -10,6 +10,7 @@ import {
   clip,
   endPath,
 } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import sharp from "sharp";
@@ -41,14 +42,36 @@ type DraftImage = {
 };
 
 function extractPdfCcText(text: string) {
-  const match = String(text || "").match(/\n?\[\[PDF_CC:([\s\S]*?)\]\]\s*$/);
+  const match = String(text || "").match(/\[\[PDF_CC:([\s\S]*?)\]\]/);
   return match?.[1]?.trim() || "";
 }
 
-function stripPdfCcMarker(text: string) {
+function extractPdfDateText(text: string) {
+  const match = String(text || "").match(/\[\[PDF_DATE:([\s\S]*?)\]\]/);
+  return match?.[1]?.trim() || "";
+}
+
+function stripPdfMarkers(text: string) {
   return String(text || "")
-    .replace(/\n?\[\[PDF_CC:[\s\S]*?\]\]\s*$/, "")
+    .replace(/\n?\[\[PDF_CC:[\s\S]*?\]\]/g, "")
+    .replace(/\n?\[\[PDF_DATE:[\s\S]*?\]\]/g, "")
     .trimEnd();
+}
+
+function formatPdfLetterDate(value: string) {
+  const cleanValue = String(value || "").trim();
+
+  if (!cleanValue) {
+    return new Date().toLocaleDateString("en-AU");
+  }
+
+  const date = new Date(`${cleanValue}T00:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return cleanValue;
+  }
+
+  return date.toLocaleDateString("en-AU");
 }
 
 function formatPdfCcLine(value: string) {
@@ -61,7 +84,7 @@ function formatPdfCcLine(value: string) {
 }
 
 function cleanLetterText(text: string) {
-  return stripPdfCcMarker(text)
+  return stripPdfMarkers(text)
     .replace(/^---$/gm, "")
     .replace(/^Signature:.*$/gim, "")
     .replace(/^Dr .*$/gim, "")
@@ -492,10 +515,29 @@ export async function POST(req: Request) {
       : null;
 
     const pdfDoc = await PDFDocument.create();
+    pdfDoc.registerFontkit(fontkit);
 
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    const italicFont = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+    let font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    let boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    let italicFont = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+
+    try {
+      const bwGradualRegularBytes = await downloadStorageFile(
+        "fonts/BWGradual-Regular.otf",
+      );
+      const bwGradualBoldBytes = await downloadStorageFile(
+        "fonts/BWGradual-Bold.otf",
+      );
+
+      font = await pdfDoc.embedFont(bwGradualRegularBytes);
+      boldFont = await pdfDoc.embedFont(bwGradualBoldBytes);
+      italicFont = font;
+    } catch (fontError) {
+      console.warn(
+        "BW Gradual font unavailable; falling back to Helvetica:",
+        fontError,
+      );
+    }
 
     const letterheadImage = await pdfDoc.embedPng(letterheadBytes);
 
@@ -739,7 +781,8 @@ export async function POST(req: Request) {
 
     drawLetterhead();
 
-    const today = new Date().toLocaleDateString("en-AU");
+    const rawLetterText = draft.edited_text || draft.ai_generated_text || "";
+    const today = formatPdfLetterDate(extractPdfDateText(rawLetterText));
     drawLine(today);
 
     y -= lineHeight;
@@ -758,7 +801,7 @@ export async function POST(req: Request) {
       }
     }
 
-    y -= lineHeight;
+    y -= lineHeight * 3;
 
     drawLine(getDearLine(pdfReferrerName));
 
@@ -773,7 +816,6 @@ export async function POST(req: Request) {
 
     y -= lineHeight;
 
-    const rawLetterText = draft.edited_text || draft.ai_generated_text || "";
     const pdfCcLine = formatPdfCcLine(extractPdfCcText(rawLetterText));
     const letterText = cleanLetterText(rawLetterText);
 
