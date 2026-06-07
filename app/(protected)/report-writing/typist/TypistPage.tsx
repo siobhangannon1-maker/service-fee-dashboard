@@ -5,6 +5,7 @@ import JSZip from "jszip";
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
 import DraftImagePanel from "@/components/report-writing/DraftImagePanel";
 import PraktikaToolsPopup from "@/components/report-writing/PraktikaToolsPopup";
+import MedirefToolsPopup from "@/components/report-writing/MedirefToolsPopup";
 
 type Provider = {
   id: string;
@@ -490,6 +491,7 @@ export default function TypistPage() {
   );
   const [mounted, setMounted] = useState(false);
   const [showPraktikaTools, setShowPraktikaTools] = useState(false);
+  const [showMedirefTools, setShowMedirefTools] = useState(false);
   const [praktikaPreSyncMessage, setPraktikaPreSyncMessage] =
     useState<string | null>(null);
   const [praktikaNeedsReconnect, setPraktikaNeedsReconnect] = useState(false);
@@ -3804,13 +3806,28 @@ export default function TypistPage() {
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => setShowPraktikaTools(true)}
-        className="fixed bottom-6 right-6 z-40 rounded-full bg-slate-950 px-6 py-4 text-sm font-bold text-white shadow-2xl hover:bg-slate-800"
-      >
-        Praktika tools
-      </button>
+      <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end gap-3">
+        <button
+          type="button"
+          onClick={() => setShowMedirefTools(true)}
+          className="rounded-full bg-emerald-600 px-6 py-4 text-sm font-bold text-white shadow-2xl hover:bg-emerald-700"
+        >
+          MediRef tools
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowPraktikaTools(true)}
+          className="rounded-full bg-slate-950 px-6 py-4 text-sm font-bold text-white shadow-2xl hover:bg-slate-800"
+        >
+          Praktika tools
+        </button>
+      </div>
+
+      <MedirefToolsPopup
+        open={showMedirefTools}
+        onOpenChange={setShowMedirefTools}
+      />
 
       <PraktikaToolsPopup
         open={showPraktikaTools}

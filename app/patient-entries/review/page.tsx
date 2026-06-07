@@ -8,11 +8,17 @@ const ALLOWED_ROLES = [
   "practice_manager",
   "admin",
   "super_admin",
-];
+] as const;
+
+type AllowedRole = (typeof ALLOWED_ROLES)[number];
 
 type ProfileRow = {
   id: string;
   full_name: string | null;
+  role: string | null;
+};
+
+type UserRoleRow = {
   role: string | null;
 };
 
@@ -77,6 +83,31 @@ function getInitials(name: string) {
   return `${first[0]}${second[0]}`.toUpperCase();
 }
 
+function normaliseRole(role: string | null | undefined) {
+  return String(role || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/-/g, "_");
+}
+
+function getBestClientRole(roles: string[], fallbackRole: string | null) {
+  const normalisedRoles = roles.map(normaliseRole).filter(Boolean);
+
+  if (normalisedRoles.includes("practice_manager")) return "practice_manager";
+  if (normalisedRoles.includes("admin")) return "admin";
+  if (normalisedRoles.includes("super_admin")) return "super_admin";
+  if (normalisedRoles.includes("billing_staff")) return "billing_staff";
+
+  return normaliseRole(fallbackRole) || "staff";
+}
+
+function hasAllowedRole(roles: string[]) {
+  const allowedRoleSet = new Set<string>(ALLOWED_ROLES);
+
+  return roles.some((role) => allowedRoleSet.has(normaliseRole(role)));
+}
+
 export default async function PatientEntriesReviewPage() {
   const supabase = await createClient();
 
@@ -101,9 +132,31 @@ export default async function PatientEntriesReviewPage() {
 
   const typedProfile = profile as ProfileRow;
 
-  if (!typedProfile.role || !ALLOWED_ROLES.includes(typedProfile.role)) {
+  const { data: roleRows, error: roleRowsError } = await supabaseAdmin
+    .from("user_roles")
+    .select("role")
+    .eq("user_id", user.id);
+
+  if (roleRowsError) {
+    throw new Error(roleRowsError.message);
+  }
+
+  const allUserRoles = Array.from(
+    new Set(
+      [
+        typedProfile.role,
+        ...((roleRows || []) as UserRoleRow[]).map((row) => row.role),
+      ]
+        .map(normaliseRole)
+        .filter(Boolean)
+    )
+  );
+
+  if (!hasAllowedRole(allUserRoles)) {
     redirect("/");
   }
+
+  const clientRole = getBestClientRole(allUserRoles, typedProfile.role);
 
   const [
     { data: providers, error: providersError },
@@ -202,7 +255,7 @@ export default async function PatientEntriesReviewPage() {
         id: user.id,
         displayName: currentUserDisplayName,
         initials: getInitials(currentUserDisplayName),
-        role: typedProfile.role,
+        role: clientRole,
       }}
       providers={(providers || []) as Provider[]}
       billingPeriods={(billingPeriods || []) as BillingPeriod[]}
