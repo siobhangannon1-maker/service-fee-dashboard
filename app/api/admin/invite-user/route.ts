@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { createClient as createSupabaseJsClient } from "@supabase/supabase-js";
+import {
+  createClient as createSupabaseJsClient,
+  type SupabaseClient,
+} from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
@@ -9,9 +12,16 @@ type Role =
   | "practice_manager"
   | "billing_staff"
   | "provider_readonly"
+  | "staff"
   | "typist";
 
 type InviteMethod = "email" | "sms";
+
+type ProviderRow = {
+  id: string;
+  name: string;
+  user_id: string | null;
+};
 
 function getBaseUrl() {
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
@@ -45,6 +55,14 @@ function getFallbackName(email: string, phone: string) {
   if (email) return email.split("@")[0];
   if (phone) return phone;
   return "Unknown User";
+}
+
+function normaliseName(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/^dr\.?\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function sendTwilioSms(to: string, body: string) {
@@ -84,6 +102,63 @@ async function sendTwilioSms(to: string, body: string) {
   }
 
   return result;
+}
+
+async function linkProviderByName({
+  supabaseAdmin,
+  invitedUserId,
+  fullName,
+}: {
+ supabaseAdmin: SupabaseClient<any, "public", any>;
+  invitedUserId: string;
+  fullName: string;
+}) {
+  const { data, error } = await supabaseAdmin
+    .from("providers")
+    .select("id, name, user_id");
+
+  if (error) {
+    throw new Error(`Could not check provider records: ${error.message}`);
+  }
+
+  const providers: ProviderRow[] = Array.isArray(data)
+    ? (data as unknown as ProviderRow[])
+    : [];
+
+  const targetName = normaliseName(fullName);
+
+  const matches = providers.filter((provider: ProviderRow) => {
+    return normaliseName(provider.name) === targetName;
+  });
+
+  if (matches.length === 0) {
+    throw new Error(
+      `Provider login created, but no provider record matched the name "${fullName}". Please make sure the invited full name exactly matches the provider name in Supabase.`
+    );
+  }
+
+  if (matches.length > 1) {
+    throw new Error(
+      `Provider login created, but multiple provider records matched "${fullName}". Please manually link the correct provider row.`
+    );
+  }
+
+  const provider = matches[0];
+
+  if (provider.user_id && provider.user_id !== invitedUserId) {
+    throw new Error(
+      `Provider login created, but "${provider.name}" is already linked to another user ID.`
+    );
+  }
+
+  const { error: linkError } = await supabaseAdmin
+    .from("providers")
+    .update({ user_id: invitedUserId })
+    .eq("id", provider.id);
+
+  if (linkError) {
+    throw new Error(`Could not link provider record: ${linkError.message}`);
+  }
 }
 
 export async function POST(request: Request) {
@@ -214,16 +289,28 @@ export async function POST(request: Request) {
         );
 
       if (profileError) {
-        return NextResponse.json({ error: profileError.message }, { status: 500 });
+        return NextResponse.json(
+          { error: profileError.message },
+          { status: 500 }
+        );
       }
 
-      await supabaseAdmin.from("user_roles").upsert(
-        {
-          user_id: invitedUser.id,
-          role,
-        },
-        { onConflict: "user_id" }
-      );
+      const { error: userRoleError } = await supabaseAdmin
+        .from("user_roles")
+        .upsert(
+          {
+            user_id: invitedUser.id,
+            role,
+          },
+          { onConflict: "user_id" }
+        );
+
+      if (userRoleError) {
+        return NextResponse.json(
+          { error: userRoleError.message },
+          { status: 500 }
+        );
+      }
 
       await supabaseAdmin.from("user_status").upsert(
         {
@@ -233,6 +320,14 @@ export async function POST(request: Request) {
         },
         { onConflict: "user_id" }
       );
+
+      if (role === "provider_readonly") {
+        await linkProviderByName({
+          supabaseAdmin,
+          invitedUserId: invitedUser.id,
+          fullName,
+        });
+      }
 
       return NextResponse.json({
         success: true,
@@ -279,16 +374,28 @@ export async function POST(request: Request) {
     );
 
     if (profileError) {
-      return NextResponse.json({ error: profileError.message }, { status: 500 });
+      return NextResponse.json(
+        { error: profileError.message },
+        { status: 500 }
+      );
     }
 
-    await supabaseAdmin.from("user_roles").upsert(
-      {
-        user_id: invitedUser.id,
-        role,
-      },
-      { onConflict: "user_id" }
-    );
+    const { error: userRoleError } = await supabaseAdmin
+      .from("user_roles")
+      .upsert(
+        {
+          user_id: invitedUser.id,
+          role,
+        },
+        { onConflict: "user_id" }
+      );
+
+    if (userRoleError) {
+      return NextResponse.json(
+        { error: userRoleError.message },
+        { status: 500 }
+      );
+    }
 
     await supabaseAdmin.from("user_status").upsert(
       {
@@ -298,6 +405,14 @@ export async function POST(request: Request) {
       },
       { onConflict: "user_id" }
     );
+
+    if (role === "provider_readonly") {
+      await linkProviderByName({
+        supabaseAdmin,
+        invitedUserId: invitedUser.id,
+        fullName,
+      });
+    }
 
     const loginUrl = `${baseUrl}/login`;
     const smsBody = `Focus Dental Specialists: you have been invited to access the dashboard. Sign in with this mobile number here: ${loginUrl}`;

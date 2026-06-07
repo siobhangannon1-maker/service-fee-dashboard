@@ -11,8 +11,7 @@
     "import:obsidian": "tsx scripts/import-obsidian.ts",
     "refresh:praktika-session": "tsx scripts/refresh-praktika-session.ts",
     "watch:mediref-refresh": "tsx scripts/watch-mediref-refresh.ts",
-     "refresh:mediref-session": "tsx scripts/refresh-mediref-session.ts"
-
+    "refresh:mediref-session": "tsx scripts/refresh-mediref-session.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.93.0",

@@ -268,6 +268,32 @@ async function hasExistingBrowserSession(page: Page, context: BrowserContext) {
 }
 
 async function switchToPasswordLoginIfNeeded(page: Page) {
+ const inputDebug = await page
+  .locator("input")
+  .evaluateAll((inputs) =>
+    inputs.map((input) => {
+      const element = input as HTMLInputElement;
+
+      return {
+        type: element.getAttribute("type"),
+        name: element.getAttribute("name"),
+        id: element.getAttribute("id"),
+        placeholder: element.getAttribute("placeholder"),
+        autocomplete: element.getAttribute("autocomplete"),
+        ariaLabel: element.getAttribute("aria-label"),
+        valueLength: element.value?.length || 0,
+        visible: Boolean(
+          element.offsetWidth ||
+            element.offsetHeight ||
+            element.getClientRects().length,
+        ),
+      };
+    }),
+  )
+  .catch((error) => [{ error: String(error) }]);
+
+console.log("MediRef login input debug:", JSON.stringify(inputDebug, null, 2));
+
   if (await pageHasVisiblePasswordInput(page)) return;
 
   const loginWithPassword = page
@@ -305,12 +331,33 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
   }
 
   const emailField = page
-    .locator(
-      'input[type="email"], input[name="email"], input[name="username"], input[name="login"], input[type="text"]',
-    )
-    .first();
+  .locator(
+    [
+      'input[type="email"]',
+      'input[name*="email" i]',
+      'input[id*="email" i]',
+      'input[placeholder*="email" i]',
+      'input[autocomplete="email"]',
+      'input[name*="username" i]',
+      'input[id*="username" i]',
+      'input[placeholder*="username" i]',
+      'input[type="text"]',
+    ].join(", "),
+  )
+  .filter({ hasNotText: "" })
+  .first();
 
-  const passwordField = page.locator('input[type="password"]').first();
+const passwordField = page
+  .locator(
+    [
+      'input[type="password"]',
+      'input[name*="password" i]',
+      'input[id*="password" i]',
+      'input[placeholder*="password" i]',
+      'input[autocomplete="current-password"]',
+    ].join(", "),
+  )
+  .first();
 
   if ((await emailField.count()) === 0 || (await passwordField.count()) === 0) {
     return false;
