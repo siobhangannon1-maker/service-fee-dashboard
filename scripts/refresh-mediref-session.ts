@@ -267,8 +267,34 @@ async function hasExistingBrowserSession(page: Page, context: BrowserContext) {
   return (await isBrowserUiLoggedIn(page)) && (await validateSessionCookie(context));
 }
 
+async function switchToPasswordLoginIfNeeded(page: Page) {
+  if (await pageHasVisiblePasswordInput(page)) return;
+
+  const loginWithPassword = page
+    .locator(
+      [
+        'button:has-text("login with password")',
+        'button:has-text("Login with password")',
+        'a:has-text("login with password")',
+        'a:has-text("Login with password")',
+        'text=login with password',
+        'text=Login with password',
+      ].join(", "),
+    )
+    .first();
+
+  if ((await loginWithPassword.count().catch(() => 0)) === 0) return;
+
+  console.log("MediRef is showing code-login screen. Switching to password login.");
+
+  await loginWithPassword.click({ force: true });
+  await page.waitForTimeout(2000);
+}
+
 async function fillLoginIfCredentialsAvailable(page: Page) {
   const session = await getSession();
+
+  await switchToPasswordLoginIfNeeded(page);
 
   let email = session.pending_mediref_email || "";
   let password = session.pending_mediref_password || "";
