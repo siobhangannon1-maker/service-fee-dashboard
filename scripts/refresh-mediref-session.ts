@@ -242,7 +242,11 @@ async function validateSessionCookie(context: BrowserContext) {
 
   const text = await response.text().catch(() => "");
 
-  return response.ok && !text.includes("/login") && !text.includes('"type":"redirect"');
+  return (
+    response.ok &&
+    !text.includes("/login") &&
+    !text.includes('"type":"redirect"')
+  );
 }
 
 async function hasExistingBrowserSession(page: Page, context: BrowserContext) {
@@ -253,7 +257,10 @@ async function hasExistingBrowserSession(page: Page, context: BrowserContext) {
 
   await page.waitForTimeout(2500);
 
-  if ((await isBrowserUiLoggedIn(page)) && (await validateSessionCookie(context))) {
+  if (
+    (await isBrowserUiLoggedIn(page)) &&
+    (await validateSessionCookie(context))
+  ) {
     return true;
   }
 
@@ -264,74 +271,33 @@ async function hasExistingBrowserSession(page: Page, context: BrowserContext) {
 
   await page.waitForTimeout(2500);
 
-  return (await isBrowserUiLoggedIn(page)) && (await validateSessionCookie(context));
+  return (
+    (await isBrowserUiLoggedIn(page)) &&
+    (await validateSessionCookie(context))
+  );
 }
 
-async function switchToPasswordLoginIfNeeded(page: Page) {
- const inputDebug = await page
-  .locator("input")
-  .evaluateAll((inputs) =>
-    inputs.map((input) => {
-      const element = input as HTMLInputElement;
+async function clickFirstVisible(page: Page, selectors: string[]) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector);
+    const count = await locator.count().catch(() => 0);
 
-      return {
-        type: element.getAttribute("type"),
-        name: element.getAttribute("name"),
-        id: element.getAttribute("id"),
-        placeholder: element.getAttribute("placeholder"),
-        autocomplete: element.getAttribute("autocomplete"),
-        ariaLabel: element.getAttribute("aria-label"),
-        valueLength: element.value?.length || 0,
-        visible: Boolean(
-          element.offsetWidth ||
-            element.offsetHeight ||
-            element.getClientRects().length,
-        ),
-      };
-    }),
-  )
-  .catch((error) => [{ error: String(error) }]);
+    for (let i = 0; i < count; i += 1) {
+      const item = locator.nth(i);
+      const visible = await item.isVisible().catch(() => false);
 
-console.log("MediRef login input debug:", JSON.stringify(inputDebug, null, 2));
-
-  if (await pageHasVisiblePasswordInput(page)) return;
-
-  const loginWithPassword = page
-    .locator(
-      [
-        'button:has-text("login with password")',
-        'button:has-text("Login with password")',
-        'a:has-text("login with password")',
-        'a:has-text("Login with password")',
-        'text=login with password',
-        'text=Login with password',
-      ].join(", "),
-    )
-    .first();
-
-  if ((await loginWithPassword.count().catch(() => 0)) === 0) return;
-
-  console.log("MediRef is showing code-login screen. Switching to password login.");
-
-  await loginWithPassword.click({ force: true });
-  await page.waitForTimeout(2000);
-}
-
-async function fillLoginIfCredentialsAvailable(page: Page) {
-  const session = await getSession();
-
-  await switchToPasswordLoginIfNeeded(page);
-
-  let email = session.pending_mediref_email || "";
-  let password = session.pending_mediref_password || "";
-
-  if (session.scope === "practice" && (!email || !password)) {
-    email = process.env.MEDIREF_EMAIL || "";
-    password = process.env.MEDIREF_PASSWORD || "";
+      if (visible) {
+        await item.click({ force: true });
+        return true;
+      }
+    }
   }
 
-  const emailField = page
-  .locator(
+  return false;
+}
+
+async function getVisibleEmailField(page: Page) {
+  const locator = page.locator(
     [
       'input[type="email"]',
       'input[name*="email" i]',
@@ -343,12 +309,21 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
       'input[placeholder*="username" i]',
       'input[type="text"]',
     ].join(", "),
-  )
-  .filter({ hasNotText: "" })
-  .first();
+  );
 
-const passwordField = page
-  .locator(
+  const count = await locator.count().catch(() => 0);
+
+  for (let i = 0; i < count; i += 1) {
+    const field = locator.nth(i);
+    const visible = await field.isVisible().catch(() => false);
+    if (visible) return field;
+  }
+
+  return null;
+}
+
+async function getVisiblePasswordField(page: Page) {
+  const locator = page.locator(
     [
       'input[type="password"]',
       'input[name*="password" i]',
@@ -356,20 +331,47 @@ const passwordField = page
       'input[placeholder*="password" i]',
       'input[autocomplete="current-password"]',
     ].join(", "),
-  )
-  .first();
+  );
 
-  if ((await emailField.count()) === 0 || (await passwordField.count()) === 0) {
+  const count = await locator.count().catch(() => 0);
+
+  for (let i = 0; i < count; i += 1) {
+    const field = locator.nth(i);
+    const visible = await field.isVisible().catch(() => false);
+    if (visible) return field;
+  }
+
+  return null;
+}
+
+async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
+  const session = await getSession();
+
+  if (session.scope !== "practice") {
+    await updateSession({
+      status: "expired",
+      message: "MediRef uses the shared practice session only.",
+      refresh_requested_at: null,
+      current_url: await safePageUrl(page),
+    });
+
     return false;
   }
+
+  const email =
+    session.pending_mediref_email ||
+    process.env.MEDIREF_EMAIL ||
+    session.mediref_email ||
+    "";
+
+  const password =
+    session.pending_mediref_password || process.env.MEDIREF_PASSWORD || "";
 
   if (!email || !password) {
     await updateSession({
       status: "waiting_for_credentials",
       message:
-        session.scope === "user"
-          ? "Enter your MediRef email and password in DocuDental."
-          : "Practice MediRef credentials are missing. Enter credentials or configure environment variables.",
+        "Practice MediRef credentials are missing. Enter credentials in MediRef tools or configure MEDIREF_EMAIL and MEDIREF_PASSWORD on the Mac Mini.",
       current_url: await safePageUrl(page),
       refresh_requested_at: null,
     });
@@ -377,29 +379,113 @@ const passwordField = page
     return false;
   }
 
-  console.log("Submitting MediRef credentials from saved pending credentials.");
+  const passwordFieldBeforeEmail = await getVisiblePasswordField(page);
 
-  await emailField.fill(email);
-  await passwordField.fill(password);
+  if (passwordFieldBeforeEmail) {
+    console.log("MediRef password field is visible. Entering password.");
 
-  await page
-    .locator(
-      'button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Log in"), button:has-text("Sign in"), button:has-text("Continue")',
-    )
-    .first()
-    .click({ force: true });
+    await passwordFieldBeforeEmail.fill(password);
 
-  await page.waitForTimeout(4000);
+    await clickFirstVisible(page, [
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'button:has-text("Login")',
+      'button:has-text("Log in")',
+      'button:has-text("Sign in")',
+      'button:has-text("Continue")',
+    ]);
 
-  if (session.scope === "user") {
-    await clearTemporaryPassword({
+    await updateSession({
       status: "refreshing",
       message:
-        "MediRef credentials were submitted. Checking whether MFA is required.",
+        "Practice MediRef password was submitted. Checking whether verification is required.",
       current_url: await safePageUrl(page),
     });
+
+    await page.waitForTimeout(4000);
+    return true;
   }
 
+  const emailField = await getVisibleEmailField(page);
+
+  if (emailField) {
+    const currentValue = await emailField.inputValue().catch(() => "");
+
+    if (!currentValue.trim()) {
+      console.log("Entering MediRef practice email.");
+      await emailField.fill(email);
+      await page.waitForTimeout(800);
+    }
+
+    console.log("Clicking MediRef Continue after email.");
+
+    await clickFirstVisible(page, [
+      'button:has-text("Continue")',
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'button:has-text("Next")',
+    ]);
+
+    await updateSession({
+      status: "refreshing",
+      message:
+        "Practice MediRef email was submitted. Waiting for password option.",
+      current_url: await safePageUrl(page),
+    });
+
+    await page.waitForTimeout(2500);
+  }
+
+  const clickedUsePassword = await clickFirstVisible(page, [
+    'button:has-text("Use password")',
+    'button:has-text("use password")',
+    'a:has-text("Use password")',
+    'a:has-text("use password")',
+    'button:has-text("Login with password")',
+    'button:has-text("login with password")',
+    'a:has-text("Login with password")',
+    'a:has-text("login with password")',
+  ]);
+
+  if (clickedUsePassword) {
+    console.log("Clicked MediRef Use password.");
+    await page.waitForTimeout(2000);
+  }
+
+  const passwordField = await getVisiblePasswordField(page);
+
+  if (!passwordField) {
+    await updateSession({
+      status: "refreshing",
+      message:
+        "Practice MediRef email was entered. Waiting for the password field to appear.",
+      current_url: await safePageUrl(page),
+    });
+
+    return true;
+  }
+
+  console.log("Entering MediRef practice password.");
+
+  await passwordField.fill(password);
+
+  await clickFirstVisible(page, [
+    'button[type="submit"]',
+    'input[type="submit"]',
+    'button:has-text("Login")',
+    'button:has-text("Log in")',
+    'button:has-text("Sign in")',
+    'button:has-text("Continue")',
+  ]);
+
+  await updateSession({
+    status: "refreshing",
+    message:
+      "Practice MediRef password was submitted. Checking whether verification is required.",
+    current_url: await safePageUrl(page),
+  });
+
+  await page.waitForTimeout(4000);
   return true;
 }
 
@@ -411,7 +497,7 @@ async function submitMfaCodeIfAvailable(page: Page) {
   if (!code) {
     await updateSession({
       status: "waiting_for_mfa",
-      message: "MediRef requires an MFA code. Enter it in DocuDental.",
+      message: "MediRef requires a verification code. Enter it in DocuDental.",
       current_url: await safePageUrl(page),
     });
 
@@ -436,7 +522,7 @@ async function submitMfaCodeIfAvailable(page: Page) {
 
   await updateSession({
     status: "refreshing",
-    message: "MFA code submitted. Waiting for MediRef to finish signing in.",
+    message: "Verification code submitted. Waiting for MediRef to finish signing in.",
     current_url: await safePageUrl(page),
   });
 
@@ -458,10 +544,15 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
 
   const session = await getSession();
 
+  if (session.scope !== "practice") {
+    throw new Error("MediRef helper only supports the practice session.");
+  }
+
   const emailToDisplay =
     session.pending_mediref_email ||
     session.mediref_email ||
-    (session.scope === "practice" ? process.env.MEDIREF_EMAIL || null : null);
+    process.env.MEDIREF_EMAIL ||
+    null;
 
   const now = nowIso();
 
@@ -471,8 +562,8 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
     message:
       message ||
       (KEEP_BROWSER_OPEN
-        ? "MediRef helper browser is connected."
-        : "MediRef session refreshed successfully."),
+        ? "MediRef practice helper browser is connected."
+        : "MediRef practice session refreshed successfully."),
     current_url: await safePageUrl(page),
     mediref_email: emailToDisplay,
     mfa_code: null,
@@ -487,7 +578,7 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
 
 async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
   console.log(
-    `MediRef browser left open. Helper will refresh cookies every ${Math.round(
+    `MediRef practice browser left open. Helper will refresh cookies every ${Math.round(
       KEEP_ALIVE_INTERVAL_MS / 1000,
     )} seconds.`,
   );
@@ -496,44 +587,34 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
     try {
       const session = await getSession();
 
+      if (session.scope !== "practice") {
+        await updateSession({
+          status: "expired",
+          message: "MediRef uses the shared practice session only.",
+          refresh_requested_at: null,
+          last_used_at: nowIso(),
+        });
+
+        process.exit(0);
+      }
+
       if (session.mfa_code && (await pageHasMfaInput(page))) {
         await submitMfaCodeIfAvailable(page);
       }
 
-      if ((await isBrowserUiLoggedIn(page)) && (await validateSessionCookie(context))) {
+      if (
+        (await isBrowserUiLoggedIn(page)) &&
+        (await validateSessionCookie(context))
+      ) {
         await saveCookies(
           context,
           page,
-          "MediRef helper browser is connected. Helper jobs can run for this user.",
+          "MediRef practice helper browser is connected. Helper jobs can run.",
         );
       } else if (await pageHasMfaInput(page)) {
         await submitMfaCodeIfAvailable(page);
-      } else if (await pageHasVisiblePasswordInput(page)) {
-        const hasNewCredentials = Boolean(
-          session.pending_mediref_email && session.pending_mediref_password,
-        );
-
-        if (hasNewCredentials) {
-          await fillLoginIfCredentialsAvailable(page);
-        } else {
-          await updateSession({
-            status: "waiting_for_credentials",
-            message: "MediRef helper browser is open but needs login details.",
-            current_url: await safePageUrl(page),
-            refresh_requested_at: null,
-          });
-        }
       } else {
-        await updateSession({
-          status: "refreshing",
-          message: "MediRef helper is checking whether the browser is still logged in.",
-          current_url: await safePageUrl(page),
-        });
-
-        await page.goto(`${MEDIREF_BASE_URL}/inbox`, {
-          waitUntil: "domcontentloaded",
-          timeout: 90_000,
-        });
+        await fillPracticeLoginIfCredentialsAvailable(page);
       }
     } catch (error: any) {
       const message = String(error?.message || "");
@@ -558,7 +639,9 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
 
       await updateSession({
         status: "error",
-        message: error?.message || "Could not refresh cookies from open MediRef browser.",
+        message:
+          error?.message ||
+          "Could not refresh cookies from open MediRef browser.",
         current_url: await safePageUrl(page),
       });
     }
@@ -570,21 +653,24 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
 async function refreshOnce() {
   const session = await getSession();
 
-  const profileName =
-    session.scope === "practice"
-      ? "practice"
-      : `user_${session.app_user_id || session.id}`;
+  if (session.scope !== "practice") {
+    await updateSession({
+      status: "expired",
+      message: "MediRef uses the shared practice session only.",
+      refresh_requested_at: null,
+    });
+
+    throw new Error("MediRef helper only supports the practice session.");
+  }
 
   await updateSession({
     status: "refreshing",
     message:
-      session.scope === "practice"
-        ? "Local helper is checking the saved practice MediRef browser session."
-        : "Local helper is checking your saved MediRef browser session.",
+      "Local helper is checking the saved practice MediRef browser session.",
   });
 
   const context = await chromium.launchPersistentContext(
-    path.join(PROFILE_ROOT, profileName),
+    path.join(PROFILE_ROOT, "practice"),
     {
       headless: HEADLESS,
       viewport: { width: 1280, height: 900 },
@@ -614,13 +700,11 @@ async function refreshOnce() {
     await updateSession({
       status: "refreshing",
       message:
-        session.scope === "practice"
-          ? "Saved browser session was not active. Local helper is signing into the practice MediRef account."
-          : "Saved browser session was not active. Local helper is signing into your MediRef account.",
+        "Saved browser session was not active. Local helper is signing into the practice MediRef account.",
       current_url: await safePageUrl(page),
     });
 
-    await page.goto(`${MEDIREF_BASE_URL}/login`, {
+    await page.goto(`${MEDIREF_BASE_URL}/login?redirectTo=%2Fsearch`, {
       waitUntil: "domcontentloaded",
       timeout: 90_000,
     });
@@ -628,10 +712,12 @@ async function refreshOnce() {
     await page.waitForTimeout(2500);
 
     const startedAt = Date.now();
-    let attemptedCredentials = false;
 
     while (Date.now() - startedAt < LOGIN_TIMEOUT_MS) {
-      if ((await isBrowserUiLoggedIn(page)) && (await validateSessionCookie(context))) {
+      if (
+        (await isBrowserUiLoggedIn(page)) &&
+        (await validateSessionCookie(context))
+      ) {
         await page.waitForTimeout(2000);
         const saved = await saveCookies(context, page);
 
@@ -650,32 +736,15 @@ async function refreshOnce() {
         continue;
       }
 
-      if (!attemptedCredentials) {
-        attemptedCredentials = await fillLoginIfCredentialsAvailable(page);
-        await page.waitForTimeout(2500);
-        continue;
-      }
-
-      if (await pageHasVisiblePasswordInput(page)) {
-        await fillLoginIfCredentialsAvailable(page);
-        await page.waitForTimeout(2500);
-        continue;
-      }
-
-      await updateSession({
-        status: "refreshing",
-        message: "Local helper is waiting for MediRef login to complete.",
-        current_url: await safePageUrl(page),
-      });
-
+      await fillPracticeLoginIfCredentialsAvailable(page);
       await page.waitForTimeout(2500);
     }
 
-    throw new Error("Timed out waiting for MediRef login/MFA completion.");
+    throw new Error("Timed out waiting for MediRef practice login completion.");
   } catch (error: any) {
     await clearTemporaryPassword({
       status: "error",
-      message: error?.message || "MediRef session refresh failed.",
+      message: error?.message || "MediRef practice session refresh failed.",
       current_url: await safePageUrl(page),
     });
 
@@ -688,7 +757,7 @@ async function refreshOnce() {
 }
 
 refreshOnce().catch((error) => {
-  console.error("Failed to refresh MediRef session:");
+  console.error("Failed to refresh MediRef practice session:");
   console.error(error);
   process.exit(1);
 });
