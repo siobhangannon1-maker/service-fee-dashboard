@@ -36,12 +36,49 @@ function splitPatientName(name: string | null | undefined) {
   };
 }
 
-function parseCc(value: unknown) {
-  return String(value || "")
-    .split(/[;,]/)
-    .map((email) => email.trim())
-    .filter(Boolean)
-    .map((email) => ({ email }));
+function normaliseAdditionalRecipients(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  const seen = new Set<string>();
+
+  return value
+    .map((item) => ({
+      name: String(item?.name || "").trim(),
+      practiceName: String(
+        item?.practiceName ||
+          item?.practice_name ||
+          item?.practice ||
+          "",
+      ).trim(),
+      address: String(item?.address || "").trim(),
+      email: String(item?.email || "").trim(),
+      providerNumber: String(
+        item?.providerNumber ||
+          item?.provider_number ||
+          "",
+      ).trim(),
+    }))
+    .filter(
+      (item) =>
+        item.name ||
+        item.practiceName ||
+        item.address ||
+        item.email ||
+        item.providerNumber,
+    )
+    .filter((item) => {
+      const key = [
+        item.name.toLowerCase(),
+        item.practiceName.toLowerCase(),
+        item.email.toLowerCase(),
+        item.providerNumber.toLowerCase(),
+      ].join("|");
+
+      if (seen.has(key)) return false;
+
+      seen.add(key);
+      return true;
+    });
 }
 
 async function getAppointmentDateForDraft(draftId: string) {
@@ -113,11 +150,27 @@ export async function POST(req: Request) {
 
     const draftId = String(body.draftId || "").trim();
     const referrerName = String(body.referrerName || "").trim();
+    const referrerPracticeName = String(
+      body.referrerPracticeName ||
+        body.referrerPractice ||
+        body.practiceName ||
+        "",
+    ).trim();
+    const medirefAutoMatchRecipient =
+      body.medirefAutoMatchRecipient !== false;
     const referrerEmail = String(body.referrerEmail || "").trim();
     const referrerProviderNumber = String(
       body.referrerProviderNumber || "",
     ).trim();
-    const cc = String(body.cc || body.ccEmails || "").trim();
+    const patientEmail = String(
+      body.patientEmail || body.patient_email || "",
+    ).trim();
+    const additionalRecipients = normaliseAdditionalRecipients(
+      body.additionalRecipients,
+    );
+    const additionalRecipientsText = String(
+      body.additionalRecipientsText || "",
+    ).trim();
     const message = String(body.message || "").trim();
     const attachPeriodontalChart = Boolean(body.attachPeriodontalChart);
     const requestedPraktikaPatientId = String(
@@ -314,10 +367,11 @@ export async function POST(req: Request) {
         },
         recipient: {
           name: finalReferrerName,
+          practiceName: referrerPracticeName || null,
           email: referrerEmail || null,
           providerNumber: referrerProviderNumber || null,
         },
-        cc: parseCc(cc),
+        medirefAutoMatchRecipient,
         attachments,
         message:
           message ||
@@ -330,7 +384,8 @@ export async function POST(req: Request) {
       .from("report_drafts")
       .update({
         emailed_to_referrer_at: new Date().toISOString(),
-        emailed_to_referrer_email: referrerEmail || finalReferrerName || null,
+        emailed_to_referrer_email:
+          referrerEmail || finalReferrerName || null,
         emailed_to_referrer_resend_id: `mediref:${job.id}`,
         emailed_by_initials: actor.actorInitials,
         emailed_by_name: actor.actorFullName,
@@ -347,10 +402,13 @@ export async function POST(req: Request) {
         jobId: job.id,
         recipient: {
           name: finalReferrerName,
+          practiceName: referrerPracticeName || null,
           email: referrerEmail || null,
           providerNumber: referrerProviderNumber || null,
         },
-        cc: parseCc(cc),
+        patientEmail: patientEmail || null,
+        additionalRecipients,
+        additionalRecipientsText,
         attachments: attachments.map((item) => ({
           fileName: item.fileName,
           storagePath: item.storagePath,

@@ -74,6 +74,20 @@ function formatPdfLetterDate(value: string) {
   return date.toLocaleDateString("en-AU");
 }
 
+function formatDob(value: string | null | undefined) {
+  const cleanValue = String(value || "").trim();
+
+  if (!cleanValue) return "";
+
+  const date = new Date(`${cleanValue}T00:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return cleanValue;
+  }
+
+  return date.toLocaleDateString("en-AU");
+}
+
 function formatPdfCcLine(value: string) {
   const cleanValue = String(value || "").trim();
 
@@ -779,6 +793,191 @@ export async function POST(req: Request) {
       }
     }
 
+
+
+    async function drawImageWithSideText(image: DraftImage, sideText: string) {
+      const embeddedImage = await embedStorageImage(pdfDoc, image);
+
+      const displayWidthPercent = Number(image.display_width_percent ?? 45);
+
+      // Side-wrapped images work best when they are not too wide.
+      // This keeps enough room for a readable text column beside the image.
+      const imageWidth =
+        (contentWidth * Math.min(Math.max(displayWidthPercent, 30), 55)) /
+        100;
+
+      const embeddedDims = embeddedImage.scale(1);
+      const actualAspectRatio = embeddedDims.width / embeddedDims.height;
+
+      const frameWidth = imageWidth;
+      const frameHeight = frameWidth / actualAspectRatio;
+
+      const gap = 18;
+      const alignment = image.display_alignment === "right" ? "right" : "left";
+
+      const imageX =
+        alignment === "right"
+          ? marginLeft + contentWidth - frameWidth
+          : marginLeft;
+
+      const textX =
+        alignment === "right" ? marginLeft : imageX + frameWidth + gap;
+
+      const textWidth = contentWidth - frameWidth - gap;
+
+      const captionLines = image.caption ? wrapText(image.caption, 45) : [];
+      const captionHeight =
+        captionLines.length > 0 ? captionLines.length * 12 + 18 : 0;
+
+      const totalBlockHeight = frameHeight + captionHeight + 12;
+
+      if (image.display_page_break_before || y - totalBlockHeight < bottomLimit) {
+        y = newPage();
+      }
+
+      const startY = y;
+      const frameY = y - frameHeight;
+
+      page.pushOperators(
+        pushGraphicsState(),
+        moveTo(imageX, frameY),
+        lineTo(imageX + frameWidth, frameY),
+        lineTo(imageX + frameWidth, frameY + frameHeight),
+        lineTo(imageX, frameY + frameHeight),
+        closePath(),
+        clip(),
+        endPath(),
+      );
+
+      page.drawImage(embeddedImage, {
+        x: imageX,
+        y: frameY,
+        width: frameWidth,
+        height: frameHeight,
+      });
+
+      page.pushOperators(popGraphicsState());
+
+      function wrapRunsToWidth(runs: TextRun[], maxWidth: number) {
+        const pieces: TextRun[] = [];
+
+        for (const run of runs) {
+          const splitPieces = run.text
+            .split(/(\s+)/)
+            .filter((piece) => piece.length > 0);
+
+          for (const piece of splitPieces) {
+            pieces.push({ text: piece, bold: run.bold });
+          }
+        }
+
+        const lines: TextRun[][] = [];
+        let line: TextRun[] = [];
+        let lineWidth = 0;
+
+        function measure(run: TextRun) {
+          return (run.bold ? boldFont : font).widthOfTextAtSize(
+            run.text,
+            fontSize,
+          );
+        }
+
+        for (const piece of pieces) {
+          const width = measure(piece);
+
+          if (line.length > 0 && lineWidth + width > maxWidth) {
+            lines.push(line);
+            line = [];
+            lineWidth = 0;
+
+            if (/^\s+$/.test(piece.text)) continue;
+          }
+
+          line.push(piece);
+          lineWidth += width;
+        }
+
+        if (line.length > 0) {
+          lines.push(line);
+        }
+
+        return lines;
+      }
+
+      const wrappedLines = wrapRunsToWidth(parseBoldMarkdown(sideText), textWidth);
+      const remainingLines: TextRun[][] = [];
+      let textY = startY - lineHeight;
+
+      function drawRunLine(line: TextRun[], x: number, lineY: number) {
+        let currentX = x;
+
+        for (const run of line) {
+          page.drawText(run.text, {
+            x: currentX,
+            y: lineY,
+            size: fontSize,
+            font: run.bold ? boldFont : font,
+            color: rgb(0, 0, 0),
+          });
+
+          currentX += (run.bold ? boldFont : font).widthOfTextAtSize(
+            run.text,
+            fontSize,
+          );
+        }
+      }
+
+      for (const line of wrappedLines) {
+        if (textY < frameY) {
+          remainingLines.push(line);
+          continue;
+        }
+
+        drawRunLine(line, textX, textY);
+        textY -= lineHeight;
+      }
+
+      y = frameY - 12;
+
+      if (captionLines.length > 0) {
+        for (const captionLine of captionLines) {
+          if (y < bottomLimit) {
+            y = newPage();
+          }
+
+          const captionWidth = boldFont.widthOfTextAtSize(captionLine, 9);
+          const captionX = imageX + frameWidth / 2 - captionWidth / 2;
+
+          page.drawText(captionLine, {
+            x: captionX,
+            y,
+            size: 9,
+            font: boldFont,
+            color: rgb(0, 0, 0),
+          });
+
+          y -= 12;
+        }
+
+        y -= 8;
+      }
+
+      if (remainingLines.length > 0) {
+        const remainingText = remainingLines
+          .map((line) => line.map((run) => run.text).join(""))
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        if (remainingText) {
+          drawRichParagraph(remainingText);
+          y -= 8;
+        }
+      } else {
+        y -= 8;
+      }
+    }
+
     drawLetterhead();
 
     const rawLetterText = draft.edited_text || draft.ai_generated_text || "";
@@ -808,11 +1007,13 @@ export async function POST(req: Request) {
     y -= lineHeight;
 
     drawLine(
-      `RE: ${draft.patient_name || "Patient"}${
-        draft.patient_dob ? ` (DOB: ${draft.patient_dob})` : ""
-      }`,
-      { bold: true },
-    );
+  `RE: ${draft.patient_name || "Patient"}${
+    draft.patient_dob
+      ? ` (DOB: ${formatDob(draft.patient_dob)})`
+      : ""
+  }`,
+  { bold: true },
+);
 
     y -= lineHeight;
 
@@ -821,8 +1022,8 @@ export async function POST(req: Request) {
 
     const paragraphs = letterText.split(/\n+/);
 
-    for (const paragraph of paragraphs) {
-      const cleanParagraph = paragraph.trim();
+    for (let paragraphIndex = 0; paragraphIndex < paragraphs.length; paragraphIndex++) {
+      const cleanParagraph = paragraphs[paragraphIndex].trim();
 
       if (!cleanParagraph) continue;
 
@@ -832,7 +1033,21 @@ export async function POST(req: Request) {
         const image = images[inlineImageNumber - 1];
 
         if (image) {
-          await drawImageBlock(image);
+          const nextParagraph = paragraphs[paragraphIndex + 1]?.trim() || "";
+          const nextParagraphImageNumber = getInlineImageMarker(nextParagraph);
+
+          const canWrapNextParagraphBesideImage =
+            nextParagraph.length > 0 &&
+            !nextParagraphImageNumber &&
+            ["left", "right"].includes(image.display_alignment || "");
+
+          if (canWrapNextParagraphBesideImage) {
+            await drawImageWithSideText(image, nextParagraph);
+            paragraphIndex += 1;
+          } else {
+            await drawImageBlock(image);
+          }
+
           usedInlineImageIds.add(image.id);
         }
 

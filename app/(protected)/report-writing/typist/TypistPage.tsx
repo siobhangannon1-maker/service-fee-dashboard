@@ -103,6 +103,13 @@ type LatestPraktikaReferral = {
   reason: string;
 };
 
+type MedirefAdditionalRecipient = {
+  id: string;
+  name: string;
+  practiceName: string;
+  address: string;
+};
+
 type PatientGender = "male" | "female" | "neutral";
 
 function splitPatientName(name: string | null) {
@@ -177,6 +184,31 @@ function getMedirefPracticeNameFromAddress(value: string | null | undefined) {
   if (lines.length === 0) return "";
 
   return lines[0];
+}
+
+function parsePdfCcRecipientsForMediref(value: string) {
+  return String(value || "")
+    .split(/\n|;/)
+    .map((line) => line.replace(/^cc\.?\s*/i, "").trim())
+    .filter(Boolean)
+    .map((line, index) => ({
+      id: `pdf-cc-${index}-${line}`,
+      name: line,
+      practiceName: "",
+      address: "",
+    }));
+}
+
+function medirefRecipientKey(recipient: {
+  name: string;
+  practiceName?: string;
+  address?: string;
+}) {
+  return [
+    cleanString(recipient.name).toLowerCase(),
+    cleanString(recipient.practiceName).toLowerCase(),
+    cleanString(recipient.address).toLowerCase(),
+  ].join("|");
 }
 
 function getDraftClinicalNotes(draft: Draft) {
@@ -515,9 +547,12 @@ export default function TypistPage() {
   const [medirefRecipientEmail, setMedirefRecipientEmail] = useState("");
   const [medirefRecipientProviderNumber, setMedirefRecipientProviderNumber] =
     useState("");
-  const [medirefCc, setMedirefCc] = useState("");
+  const [medirefPatientEmail, setMedirefPatientEmail] = useState("");
+  const [medirefAdditionalRecipients, setMedirefAdditionalRecipients] =
+    useState<MedirefAdditionalRecipient[]>([]);
   const [medirefMessage, setMedirefMessage] = useState("");
   const [medirefConfirmed, setMedirefConfirmed] = useState(false);
+  const [medirefCompleteWorkflow, setMedirefCompleteWorkflow] = useState(false);
 
   const [pdfPreviewModalOpen, setPdfPreviewModalOpen] = useState(false);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
@@ -1388,7 +1423,43 @@ export default function TypistPage() {
     }.`;
   }
 
-  function openMedirefModal() {
+  function addMedirefAdditionalRecipient(referrer: any) {
+    const name = cleanString(referrer?.name);
+    const address = formatManualReferrerAddress(referrer);
+    const practiceName = getMedirefPracticeNameFromAddress(address);
+
+    if (!name) return;
+
+    const nextRecipient: MedirefAdditionalRecipient = {
+      id: `ref-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      name,
+      practiceName,
+      address,
+    };
+
+    setMedirefAdditionalRecipients((current) => {
+      const nextKey = medirefRecipientKey(nextRecipient);
+
+      if (
+        current.some((recipient) => medirefRecipientKey(recipient) === nextKey)
+      ) {
+        return current;
+      }
+
+      return [...current, nextRecipient];
+    });
+
+    setMedirefConfirmed(false);
+  }
+
+  function removeMedirefAdditionalRecipient(id: string) {
+    setMedirefAdditionalRecipients((current) =>
+      current.filter((recipient) => recipient.id !== id),
+    );
+    setMedirefConfirmed(false);
+  }
+
+  function openMedirefModal(options?: { completeWorkflow?: boolean }) {
     if (!selectedDraft) return;
 
     if (!["approved", "uploaded_to_praktika"].includes(selectedDraft.status)) {
@@ -1396,18 +1467,94 @@ export default function TypistPage() {
       return;
     }
 
+    const completeWorkflow = Boolean(options?.completeWorkflow);
+    const finalPraktikaPatientId =
+      selectedPraktikaPatientId || selectedDraft.praktika_patient_id || "";
+
+    if (completeWorkflow && !finalPraktikaPatientId) {
+      alert(
+        "Please search/select the Praktika patient match before completing.",
+      );
+      return;
+    }
+
     setMedirefRecipientName(referrerName || selectedDraft.referrer_name || "");
     setMedirefRecipientPracticeName(
-      getMedirefPracticeNameFromAddress(referrerAddress || selectedDraft.referrer_address || ""),
+      getMedirefPracticeNameFromAddress(
+        referrerAddress || selectedDraft.referrer_address || "",
+      ),
     );
     setMedirefAutoMatchRecipient(true);
-    setMedirefRecipientEmail(selectedDraft.emailed_to_referrer_email || "");
+    setMedirefRecipientEmail("");
     setMedirefRecipientProviderNumber("");
-    setMedirefCc(pdfCcText || "");
+    setMedirefPatientEmail("");
+    setMedirefAdditionalRecipients(parsePdfCcRecipientsForMediref(pdfCcText));
     setMedirefMessage(getDefaultMedirefMessage());
     setAttachPeriodontalChart(false);
+    setMedirefCompleteWorkflow(completeWorkflow);
+    setCompleteStep("");
     setMedirefConfirmed(false);
     setMedirefModalOpen(true);
+  }
+
+  async function uploadToPraktikaAndUpdateIconForMediref() {
+    if (!selectedDraft) return false;
+
+    const finalPraktikaPatientId =
+      selectedPraktikaPatientId || selectedDraft.praktika_patient_id || "";
+
+    if (!finalPraktikaPatientId) {
+      alert("Please select the correct Praktika patient first.");
+      return false;
+    }
+
+    setCompleteStep("Uploading approved PDF to Praktika...");
+
+    const uploadResponse = await fetch(
+      "/api/report-writing/upload-to-praktika",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          draftId: selectedDraft.id,
+          praktikaPatientId: finalPraktikaPatientId,
+        }),
+      },
+    );
+
+    const uploadData = await uploadResponse.json();
+
+    if (!uploadData.success) {
+      alert(uploadData.error || "Failed to upload to Praktika.");
+      console.error("Praktika upload error:", uploadData);
+      return false;
+    }
+
+    setCompleteStep("Updating Praktika letter icon and queue item...");
+
+    const iconResponse = await fetch(
+      "/api/report-writing/update-praktika-letter-icons",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          queueId: activeQueueItemId,
+          draftId: selectedDraft.id,
+        }),
+      },
+    );
+
+    const iconData = await iconResponse.json();
+
+    if (!iconData.success) {
+      console.warn("Praktika icon update skipped or failed:", iconData);
+    }
+
+    return true;
   }
 
   async function sendViaMedirefFromModal() {
@@ -1423,13 +1570,16 @@ export default function TypistPage() {
       return;
     }
 
-    if (medirefRecipientEmail.trim() && hasInvalidEmail(medirefRecipientEmail)) {
+    if (
+      medirefRecipientEmail.trim() &&
+      hasInvalidEmail(medirefRecipientEmail)
+    ) {
       alert("Please check the recipient email address.");
       return;
     }
 
-    if (hasInvalidEmail(medirefCc)) {
-      alert("Please check the CC email address(es). Use commas to separate multiple addresses.");
+    if (medirefPatientEmail.trim() && hasInvalidEmail(medirefPatientEmail)) {
+      alert("Please check the patient email address.");
       return;
     }
 
@@ -1438,9 +1588,36 @@ export default function TypistPage() {
       return;
     }
 
+    if (medirefCompleteWorkflow) {
+      const alreadyDoneParts = [
+        selectedDraftUploadedToPraktika ? "already uploaded to Praktika" : "",
+        selectedDraftEmailed ? "already queued/sent through MediRef" : "",
+      ].filter(Boolean);
+
+      if (alreadyDoneParts.length > 0) {
+        const continueAnyway = confirm(
+          `This letter has ${alreadyDoneParts.join(" and ")}. Continue anyway?`,
+        );
+
+        if (!continueAnyway) return;
+      }
+    }
+
     setLoading(true);
 
     try {
+      if (medirefCompleteWorkflow) {
+        const uploaded = await uploadToPraktikaAndUpdateIconForMediref();
+
+        if (!uploaded) return;
+      }
+
+      setCompleteStep(
+        medirefCompleteWorkflow
+          ? "Queuing MediRef send..."
+          : "",
+      );
+
       const response = await fetch("/api/report-writing/send-via-mediref", {
         method: "POST",
         headers: {
@@ -1453,7 +1630,13 @@ export default function TypistPage() {
           medirefAutoMatchRecipient,
           referrerEmail: medirefRecipientEmail.trim(),
           referrerProviderNumber: medirefRecipientProviderNumber.trim(),
-          cc: medirefCc,
+          patientEmail: medirefPatientEmail.trim(),
+          additionalRecipients: medirefAdditionalRecipients.map((recipient) => ({
+            name: recipient.name,
+            practiceName: recipient.practiceName,
+            address: recipient.address,
+          })),
+          additionalRecipientsText: pdfCcText,
           message: medirefMessage,
           attachPeriodontalChart,
           praktikaPatientId:
@@ -1470,8 +1653,33 @@ export default function TypistPage() {
         return;
       }
 
+      const sentAt = new Date().toISOString();
+
+      setSelectedDraft({
+        ...selectedDraft,
+        uploaded_to_praktika: medirefCompleteWorkflow
+          ? true
+          : selectedDraft.uploaded_to_praktika,
+        uploaded_to_praktika_at: medirefCompleteWorkflow
+          ? sentAt
+          : selectedDraft.uploaded_to_praktika_at,
+        emailed_to_referrer_at: sentAt,
+        emailed_to_referrer_email:
+          data.recipient ||
+          medirefRecipientEmail.trim() ||
+          medirefRecipientName.trim(),
+        emailed_to_referrer_resend_id: data.jobId
+          ? `mediref:${data.jobId}`
+          : null,
+      });
+
+      if (medirefCompleteWorkflow) {
+        setActiveQueueItemId(null);
+        setCompleteStep("Complete.");
+      }
+
       alert(
-        `MediRef send queued.${
+        `${medirefCompleteWorkflow ? "Workflow complete. " : ""}MediRef send queued.${
           attachPeriodontalChart
             ? data.periodontalChartAttached
               ? " Periodontal chart attached."
@@ -1482,19 +1690,11 @@ export default function TypistPage() {
         }`,
       );
 
-      const sentAt = new Date().toISOString();
-
-      setSelectedDraft({
-        ...selectedDraft,
-        emailed_to_referrer_at: sentAt,
-        emailed_to_referrer_email:
-          data.recipient || medirefRecipientEmail.trim() || medirefRecipientName.trim(),
-        emailed_to_referrer_resend_id: data.jobId ? `mediref:${data.jobId}` : null,
-      });
-
       setMedirefModalOpen(false);
       setMedirefConfirmed(false);
       setAttachPeriodontalChart(false);
+      setMedirefCompleteWorkflow(false);
+      setCompleteStep("");
 
       await loadDrafts(selectedProviderId);
       await loadQueue(selectedProviderId, queueStatusTab);
@@ -1750,7 +1950,7 @@ export default function TypistPage() {
     setMedirefAutoMatchRecipient(true);
     setMedirefRecipientEmail("");
     setMedirefRecipientProviderNumber("");
-    setMedirefCc("");
+    setMedirefAdditionalRecipients([]);
     setMedirefMessage("");
     setMedirefConfirmed(false);
     setImageDraftId(null);
@@ -3834,7 +4034,7 @@ export default function TypistPage() {
 
             {selectedDraft?.emailed_to_referrer_at ? (
               <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-                <div className="font-bold">Secure email sent</div>
+                <div className="font-bold">Email sent via Mediref</div>
                 <div className="mt-1">
                   To: {selectedDraft.emailed_to_referrer_email || "Referrer"}
                 </div>
@@ -4028,13 +4228,25 @@ export default function TypistPage() {
                 ) : null}
 
                 <button
-                  onClick={openMedirefModal}
+                  onClick={() => openMedirefModal()}
                   disabled={loading || !selectedDraftCanComplete}
                   className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                 >
                   {selectedDraft.emailed_to_referrer_at
                     ? "Send Again Via MediRef"
                     : "Send Via MediRef"}
+                </button>
+
+                <button
+                  onClick={() => openMedirefModal({ completeWorkflow: true })}
+                  disabled={
+                    loading ||
+                    !selectedDraftCanComplete ||
+                    !selectedDraftHasPraktikaPatient
+                  }
+                  className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Complete: Upload + Send Via MediRef
                 </button>
 
                 <button
@@ -4475,19 +4687,73 @@ export default function TypistPage() {
                 </div>
               </details>
 
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-700">
+                    Additional MediRef recipient(s)
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    These are searched in MediRef as extra recipients. The list is prefilled from the PDF CC field when possible.
+                  </p>
+                </div>
+
+                <ReferrerSearchBox
+                  onSelect={(referrer) => addMedirefAdditionalRecipient(referrer)}
+                />
+
+                {medirefAdditionalRecipients.length > 0 ? (
+                  <div className="space-y-2">
+                    {medirefAdditionalRecipients.map((recipient) => (
+                      <div
+                        key={recipient.id}
+                        className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 text-sm"
+                      >
+                        <div>
+                          <div className="font-semibold text-slate-900">
+                            {recipient.name}
+                          </div>
+                          {recipient.practiceName ? (
+                            <div className="text-xs text-slate-500">
+                              {recipient.practiceName}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            removeMedirefAdditionalRecipient(recipient.id)
+                          }
+                          className="text-xs font-semibold text-red-600"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3 text-xs text-slate-500">
+                    No additional MediRef recipients selected.
+                  </div>
+                )}
+              </div>
+
               <label className="block">
                 <div className="mb-1 text-sm font-semibold text-slate-700">
-                  CC email address(es), optional
+                  Cc to the patient, optional
                 </div>
                 <input
                   className="w-full rounded-xl border border-slate-300 p-3"
-                  value={medirefCc}
+                  value={medirefPatientEmail}
                   onChange={(event) => {
-                    setMedirefCc(event.target.value);
+                    setMedirefPatientEmail(event.target.value);
                     setMedirefConfirmed(false);
                   }}
-                  placeholder="second.referrer@example.com, practice@example.com"
+                  placeholder="patient@example.com"
                 />
+                <p className="mt-1 text-xs text-slate-500">
+                  This fills the patient email field in MediRef. It is separate from doctor/referrer CC recipients.
+                </p>
               </label>
 
               <label className="block">
@@ -4526,8 +4792,7 @@ export default function TypistPage() {
                   className="mt-1"
                 />
                 <span>
-                  I have checked the patient, recipient/referrer, CC details,
-                  and attachments before sending via MediRef.
+                  I have checked the patient, recipient/referrer, additional recipients, patient email, and attachments before sending via MediRef.
                 </span>
               </label>
             </div>
@@ -4547,24 +4812,13 @@ export default function TypistPage() {
               </button>
 
               <button
-                type="button"
-                onClick={sendViaMedirefFromModal}
-                disabled={
-                  loading ||
-                  !medirefConfirmed ||
-                  (!medirefRecipientName.trim() &&
-                    !medirefRecipientPracticeName.trim() &&
-                    !medirefRecipientEmail.trim() &&
-                    !medirefRecipientProviderNumber.trim()) ||
-                  (medirefRecipientEmail.trim()
-                    ? hasInvalidEmail(medirefRecipientEmail)
-                    : false) ||
-                  hasInvalidEmail(medirefCc)
-                }
-                className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
-              >
-                {loading ? "Queuing..." : "Queue MediRef Send"}
-              </button>
+  type="button"
+  onClick={sendViaMedirefFromModal}
+  disabled={loading || !medirefConfirmed}
+  className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+>
+  {loading ? (medirefCompleteWorkflow ? "Completing..." : "Queuing...") : medirefCompleteWorkflow ? "Complete Workflow + Queue MediRef Send" : "Queue MediRef Send"}
+</button>
             </div>
           </div>
         </div>

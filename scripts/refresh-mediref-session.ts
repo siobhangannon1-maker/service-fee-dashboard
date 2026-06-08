@@ -768,16 +768,7 @@ function normaliseForMatching(value: unknown) {
 }
 
 function formatDobForMediref(value: unknown) {
-  const clean = String(value || "").trim();
-
-  if (!clean) return "";
-
-  const isoMatch = clean.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (isoMatch) {
-    return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
-  }
-
-  return clean;
+  return normaliseDateForHtmlDateInput(value);
 }
 
 function getRecipientPracticeName(request: any) {
@@ -790,6 +781,106 @@ function getRecipientPracticeName(request: any) {
       request?.practice_name ||
       "",
   ).trim();
+}
+
+function parseAdditionalRecipientsFromRequest(request: any) {
+  const explicitRecipients = Array.isArray(request?.additionalRecipients)
+    ? request.additionalRecipients
+    : [];
+
+  const textRecipients = String(request?.additionalRecipientsText || "")
+    .split(/\n|;/)
+    .map((line) => line.replace(/^cc\.?\s*/i, "").trim())
+    .filter(Boolean)
+    .map((line) => ({
+      name: line,
+      practiceName: "",
+      email: "",
+      providerNumber: "",
+    }));
+
+  const combined = [...explicitRecipients, ...textRecipients];
+
+  const seen = new Set<string>();
+
+  return combined
+    .map((recipient) => ({
+      name: String(recipient?.name || "").trim(),
+      practiceName: String(
+        recipient?.practiceName ||
+          recipient?.practice_name ||
+          recipient?.practice ||
+          "",
+      ).trim(),
+      email: String(recipient?.email || "").trim(),
+      providerNumber: String(
+        recipient?.providerNumber || recipient?.provider_number || "",
+      ).trim(),
+    }))
+    .filter(
+      (recipient) =>
+        recipient.name ||
+        recipient.practiceName ||
+        recipient.email ||
+        recipient.providerNumber,
+    )
+    .filter((recipient) => {
+      const key = [
+        recipient.name.toLowerCase(),
+        recipient.practiceName.toLowerCase(),
+        recipient.email.toLowerCase(),
+        recipient.providerNumber.toLowerCase(),
+      ].join("|");
+
+      if (seen.has(key)) return false;
+
+      seen.add(key);
+      return true;
+    });
+}
+
+async function fillPatientEmailIfAvailable(page: Page, request: any) {
+  const patientEmail = String(
+    request?.patient?.email ||
+      request?.patientEmail ||
+      request?.patient_email ||
+      "",
+  ).trim();
+
+  if (!patientEmail) return false;
+
+  const locator = page.locator(
+    [
+      'input[data-testid*="patient" i][data-testid*="email" i]',
+      'input[name*="patient" i][name*="email" i]',
+      'input[id*="patient" i][id*="email" i]',
+      'input[placeholder*="patient" i][placeholder*="email" i]',
+      'input[aria-label*="patient" i][aria-label*="email" i]',
+      'input[name="patientEmail"]',
+      'input[name="patient_email"]',
+      'input[id="patientEmail"]',
+      'input[id="patient_email"]',
+    ].join(", "),
+  );
+
+  const count = await locator.count().catch(() => 0);
+
+  for (let i = 0; i < count; i += 1) {
+    const field = locator.nth(i);
+    const visible = await field.isVisible().catch(() => false);
+
+    if (!visible) continue;
+
+    console.log("Entering MediRef patient email.");
+    await field.fill(patientEmail);
+    return true;
+  }
+
+  console.warn(
+    "Patient email was provided, but no specific MediRef patient email field was found.",
+  );
+
+  return false;
 }
 
 async function debugVisibleInputs(page: Page) {
@@ -902,6 +993,8 @@ async function fillComposePatientDetails(page: Page, request: any) {
       await page.getByLabel(/date of birth|dob/i).fill(dob).catch(() => null);
     }
   }
+
+  await fillPatientEmailIfAvailable(page, request);
 }
 
 async function getRecipientSearchInput(page: Page) {
@@ -1098,6 +1191,17 @@ async function sendMedirefLetterWithBrowser(
   await fillComposePatientDetails(page, request);
 
   await searchAndSelectMedirefRecipient(page, request);
+
+  const additionalRecipients = parseAdditionalRecipientsFromRequest(request);
+
+  for (const additionalRecipient of additionalRecipients) {
+    console.log("Searching additional MediRef recipient:", additionalRecipient);
+
+    await searchAndSelectMedirefRecipient(page, {
+      ...request,
+      recipient: additionalRecipient,
+    });
+  }
 
   if (cc.length > 0) {
     await fillFirstVisibleTextFieldByHints(
