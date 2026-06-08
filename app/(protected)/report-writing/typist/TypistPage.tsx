@@ -68,7 +68,7 @@ type QueueItem = {
   raw_json?: Record<string, unknown> | null;
 };
 
-type ListTab = "queue" | "drafts" | "awaiting" | "completed";
+type ListTab = "queue" | "awaiting" | "completed";
 
 type QueueStatusTab = "active" | "queued" | "started" | "completed";
 
@@ -585,12 +585,6 @@ export default function TypistPage() {
     selectedProvider?.typist_letters_require_approval !== false;
 
   const filteredDrafts = useMemo(() => {
-    if (listTab === "drafts") {
-      return drafts.filter((draft) =>
-        ["draft", "edited_by_typist"].includes(draft.status),
-      );
-    }
-
     if (listTab === "awaiting") {
       return drafts.filter(
         (draft) => draft.status === "awaiting_provider_approval",
@@ -3332,7 +3326,7 @@ export default function TypistPage() {
           <div className="border-b p-4">
             <h1 className="text-2xl font-bold text-slate-950">Typist Portal</h1>
             <p className="mt-1 text-sm text-slate-500">
-              Queue, draft, approve, export, upload, and email letters.
+              Queue, approve, export, upload, and send letters via MediRef.
             </p>
 
             <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 p-4">
@@ -3357,6 +3351,16 @@ export default function TypistPage() {
                   : "Provider approval required before final upload/email."}
               </div>
             </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                window.location.href = "/report-writing/history";
+              }}
+              className="mt-4 w-full rounded-2xl border bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50"
+            >
+              History / Archive
+            </button>
           </div>
         </div>
 
@@ -3373,10 +3377,9 @@ export default function TypistPage() {
               New Letter
             </button>
 
-            <div className="mt-4 grid grid-cols-2 gap-2">
+            <div className="mt-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
               {[
                 ["queue", `Queue (${queue.length})`],
-                ["drafts", `Drafts (${countDrafts})`],
                 ["awaiting", `Awaiting Approval (${countAwaiting})`],
                 ["completed", `Approved (${countCompleted})`],
               ].map(([key, label]) => (
@@ -3387,29 +3390,19 @@ export default function TypistPage() {
                     setSelectedDraftIds([]);
                   }}
                   className={[
-                    "rounded-xl border px-3 py-2 text-xs font-semibold",
+                    "rounded-xl px-3 py-2 text-xs font-bold transition",
                     listTab === key && key === "awaiting"
-                      ? "border-red-600 bg-red-50 text-red-800"
+                      ? "bg-white text-amber-800 shadow-sm"
                       : listTab === key && key === "completed"
-                        ? "border-green-600 bg-green-50 text-green-800"
+                        ? "bg-white text-green-800 shadow-sm"
                         : listTab === key
-                          ? "border-blue-600 bg-blue-50 text-blue-900"
-                          : "bg-white text-slate-600",
+                          ? "bg-white text-blue-800 shadow-sm"
+                          : "text-slate-600 hover:text-slate-950",
                   ].join(" ")}
                 >
                   {label}
                 </button>
               ))}
-
-              <button
-                type="button"
-                onClick={() => {
-                  window.location.href = "/report-writing/history";
-                }}
-                className="rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                History / Archive
-              </button>
             </div>
 
             {listTab !== "queue" ? (
@@ -3910,12 +3903,27 @@ export default function TypistPage() {
                   PDF cc line after signature, optional
                 </div>
                 <div className="mt-1 text-xs text-indigo-900">
-                  Type the doctor name and address. The PDF will show this under
-                  the signature as italic.
+                  Search for a referrer to add a CC line, or type/edit the CC text manually.
+                  The PDF will show this under the signature as italic.
                 </div>
-                <input
-                  className="mt-2 w-full rounded-xl border border-indigo-200 bg-white p-3 text-sm"
-                  placeholder="Dr Smith, Brisbane Dental Clinic, 111 Brisbane Rd, Brisbane."
+                <div className="mt-3">
+                  <ReferrerSearchBox
+                    onSelect={(referrer) => {
+                      const name = cleanString(referrer?.name);
+                      const address = formatManualReferrerAddress(referrer);
+                      const entry = [name, address].filter(Boolean).join("\n");
+
+                      if (!entry.trim()) return;
+
+                      setPdfCcText((current) =>
+                        current.trim() ? `${current.trim()}\n${entry}` : entry,
+                      );
+                    }}
+                  />
+                </div>
+                <textarea
+                  className="mt-2 h-28 w-full rounded-xl border border-indigo-200 bg-white p-3 text-sm"
+                  placeholder={"Dr Smith\nBrisbane Dental Clinic\n111 Brisbane Rd, Brisbane."}
                   value={pdfCcText}
                   onChange={(e) => setPdfCcText(e.target.value)}
                 />
@@ -4167,14 +4175,6 @@ export default function TypistPage() {
               </>
             ) : (
               <>
-                <button
-                  onClick={() => updateExistingDraft("edited_by_typist")}
-                  disabled={loading}
-                  className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                >
-                  Save Draft
-                </button>
-
                 {selectedDraft.status !== "approved" ? (
                   <>
                     <button

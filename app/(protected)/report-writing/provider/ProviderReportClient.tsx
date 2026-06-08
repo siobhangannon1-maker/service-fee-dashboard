@@ -637,11 +637,53 @@ export default function ProviderReportClient({
       return;
     }
 
-    await saveLetterAsDraft({
-      text,
-      sourceType: "dictation",
-      showToast: false,
-    });
+    setLoading(true);
+    setSavedMessage("");
+
+    try {
+      const response = await fetch("/api/report-writing/save-draft", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          providerId,
+          patientName,
+          patientDob,
+          referrerName,
+          referrerAddress,
+          reportType: dictatedLetter ? "dictated_letter" : reportType,
+          clinicalNotes: text,
+          typistInstructions,
+          generatedReport: text,
+          editedText: text,
+          originalAiText: originalGeneratedReport || text,
+          finalApprovedText: text,
+          sourceType: dictatedLetter ? "dictation" : "clinical_notes",
+          status: "approved",
+          learnFromEdits: false,
+          praktikaPatientId: null,
+        }),
+      });
+
+      const data = await readJsonSafely(response);
+
+      if (!data.success) {
+        alert(data.error || "Failed to approve letter");
+        return;
+      }
+
+      showSavedConfirmation(
+        "Letter approved",
+        "The letter has moved to Approved Letters.",
+      );
+      resetLetterEditor();
+      setActiveTab("approved");
+      setSidebarView("approved");
+      await loadDrafts();
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleGenerateFromNotes() {
@@ -787,7 +829,7 @@ export default function ProviderReportClient({
           generatedReport: dictatedLetter,
           editedText: dictatedLetter,
           sourceType: "dictation",
-          status: "draft",
+          status: "approved",
           learnFromEdits: false,
           praktikaPatientId: null,
         }),
@@ -804,9 +846,11 @@ export default function ProviderReportClient({
         "Dictated letter saved and automatically approved.";
 
       setSavedMessage(successMessage);
-      showSavedConfirmation("Letter saved", successMessage);
+      showSavedConfirmation("Letter approved", successMessage);
       setDictatedLetter("");
       setTypistInstructions("");
+      setActiveTab("approved");
+      setSidebarView("approved");
       await loadDrafts();
     } finally {
       setLoading(false);

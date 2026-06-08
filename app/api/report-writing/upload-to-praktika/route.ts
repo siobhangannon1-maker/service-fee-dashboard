@@ -184,7 +184,7 @@ export async function POST(req: Request) {
             "patient_communication[file][name]": fileName,
             "patient_communication[file][notes]":
               notes ||
-              `Specialist report uploaded from AI report-writing assistant for ${
+              `Report sent via Mediref for ${
                 draft.patient_name || "patient"
               }.`,
             "patient_communication[file][modifiedDate]": formatPraktikaDateTime(),
