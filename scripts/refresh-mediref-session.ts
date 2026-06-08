@@ -73,6 +73,36 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normaliseDateForHtmlDateInput(value: unknown) {
+  const clean = String(value || "").trim();
+
+  if (!clean) return "";
+
+  // Already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    return clean;
+  }
+
+  // DD/MM/YYYY or DD-MM-YYYY
+  const auMatch = clean.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+
+  if (auMatch) {
+    const day = auMatch[1].padStart(2, "0");
+    const month = auMatch[2].padStart(2, "0");
+    const year = auMatch[3];
+
+    return `${year}-${month}-${day}`;
+  }
+
+  const parsed = new Date(clean);
+
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  return clean;
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -838,7 +868,7 @@ async function fillComposePatientDetails(page: Page, request: any) {
   const firstName = String(patient.firstName || patient.first_name || "").trim();
   const lastName = String(patient.lastName || patient.last_name || "").trim();
   const fullName = [firstName, lastName].filter(Boolean).join(" ");
-  const dob = formatDobForMediref(patient.dob || patient.dateOfBirth);
+  const dob = normaliseDateForHtmlDateInput(patient.dob || patient.dateOfBirth);
 
   const nameField = page
     .locator(
