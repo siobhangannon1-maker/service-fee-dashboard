@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type MedirefToolsPopupProps = {
   open: boolean;
@@ -23,52 +23,32 @@ type SessionStatus = {
   mfaCodeUpdatedAt?: string | null;
 };
 
-function statusLabel(status?: string) {
-  if (status === "connected") return "Connected";
-  if (status === "refreshing") return "Reconnecting";
-  if (status === "refresh_requested") return "Reconnect requested";
-  if (status === "waiting_for_credentials") return "Login needed";
-  if (status === "waiting_for_mfa") return "Code needed";
-  if (status === "expired") return "Expired";
-  if (status === "error") return "Error";
-  return "Not connected";
-}
+type ConnectionState = "connected" | "connecting" | "disconnected";
 
-function dotClass(status?: string) {
-  if (status === "connected") return "bg-emerald-500";
-
-  if (status === "refreshing" || status === "refresh_requested") {
-    return "bg-blue-500";
-  }
+function getConnectionState(status?: string, connected?: boolean): ConnectionState {
+  if (connected || status === "connected") return "connected";
 
   if (
-    status === "waiting_for_credentials" ||
-    status === "waiting_for_mfa" ||
-    status === "expired" ||
-    status === "not_started"
+    status === "refreshing" ||
+    status === "refresh_requested" ||
+    status === "waiting_for_mfa"
   ) {
-    return "bg-amber-500";
+    return "connecting";
   }
 
-  if (status === "error") return "bg-red-500";
-
-  return "bg-slate-400";
+  return "disconnected";
 }
 
-function formatTime(value?: string | null) {
-  if (!value) return "";
+function connectionLabel(state: ConnectionState) {
+  if (state === "connected") return "Connected";
+  if (state === "connecting") return "Connection underway";
+  return "No connection";
+}
 
-  try {
-    return new Date(value).toLocaleString("en-AU", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "";
-  }
+function dotClass(state: ConnectionState) {
+  if (state === "connected") return "bg-emerald-500";
+  if (state === "connecting") return "bg-orange-500";
+  return "bg-red-500";
 }
 
 export default function MedirefToolsPopup({
@@ -87,21 +67,29 @@ export default function MedirefToolsPopup({
   const [mfaCode, setMfaCode] = useState("");
   const [localMessage, setLocalMessage] = useState<string | null>(null);
 
-  const currentStatus = session?.status || "not_started";
-  const lastEmail = session?.medirefEmail || session?.email || "";
-  const isConnected =
-    currentStatus === "connected" || Boolean(session?.connected);
+  const [displayStatus, setDisplayStatus] = useState("not_started");
+  const [displayConnected, setDisplayConnected] = useState(false);
+  const failedStatusChecksRef = useRef(0);
+  const pendingStatusRef = useRef<string | null>(null);
+  const pendingConnectedRef = useRef(false);
+  const pendingStatusCountRef = useRef(0);
+
+  const currentStatus = displayStatus;
+  const lastEmail = session?.medirefEmail || session?.email || email || "";
+  const currentConnectionState = getConnectionState(
+    currentStatus,
+    displayConnected,
+  );
+  const isConnected = currentConnectionState === "connected";
+  const isConnecting = currentConnectionState === "connecting";
 
   const shouldShowCredentialForm =
-    !isConnected &&
+    currentConnectionState === "disconnected" &&
     ["waiting_for_credentials", "expired", "error", "not_started"].includes(
       currentStatus,
     );
 
-  const shouldShowMfaForm =
-    currentStatus === "waiting_for_mfa" ||
-    currentStatus === "refreshing" ||
-    currentStatus === "refresh_requested";
+  const shouldShowMfaForm = currentStatus === "waiting_for_mfa";
 
   function closePopup() {
     if (onOpenChange) {
@@ -111,6 +99,56 @@ export default function MedirefToolsPopup({
 
     if (onClose) {
       onClose();
+    }
+  }
+
+  function commitDisplayStatus(status: string, connected: boolean) {
+    setDisplayStatus(status || "not_started");
+    setDisplayConnected(Boolean(connected || status === "connected"));
+  }
+
+  function handleStableStatusUpdate(data: SessionStatus | null) {
+    if (!data) return;
+
+    const nextStatus = data.status || "not_started";
+    const nextConnected = Boolean(data.connected || nextStatus === "connected");
+    const nextState = getConnectionState(nextStatus, nextConnected);
+    const currentState = getConnectionState(displayStatus, displayConnected);
+
+    // Connected is a positive signal. Show it immediately.
+    if (nextState === "connected") {
+      failedStatusChecksRef.current = 0;
+      pendingStatusRef.current = null;
+      pendingStatusCountRef.current = 0;
+      commitDisplayStatus(nextStatus, nextConnected);
+      return;
+    }
+
+    // Connecting is also useful for staff to see quickly, but do not downgrade
+    // from connected unless we see the same non-connected state more than once.
+    if (currentState !== "connected" && nextState === "connecting") {
+      failedStatusChecksRef.current = 0;
+      pendingStatusRef.current = null;
+      pendingStatusCountRef.current = 0;
+      commitDisplayStatus(nextStatus, nextConnected);
+      return;
+    }
+
+    const pendingKey = `${nextStatus}:${nextConnected ? "1" : "0"}`;
+
+    if (pendingStatusRef.current === pendingKey) {
+      pendingStatusCountRef.current += 1;
+    } else {
+      pendingStatusRef.current = pendingKey;
+      pendingConnectedRef.current = nextConnected;
+      pendingStatusCountRef.current = 1;
+    }
+
+    const requiredConfirmations = currentState === "connected" ? 4 : 2;
+
+    if (pendingStatusCountRef.current >= requiredConfirmations) {
+      failedStatusChecksRef.current = 0;
+      commitDisplayStatus(nextStatus, pendingConnectedRef.current);
     }
   }
 
@@ -125,14 +163,25 @@ export default function MedirefToolsPopup({
 
       const data = await response.json().catch(() => null);
 
-      if (data) {
-        setSession(data);
+      if (!response.ok || !data) {
+        failedStatusChecksRef.current += 1;
 
-        const returnedEmail = data.medirefEmail || data.email || "";
-        if (returnedEmail && !email) {
-          setEmail(returnedEmail);
+        // Do not turn red on a single missed status check. This prevents flicker.
+        if (failedStatusChecksRef.current >= 4) {
+          commitDisplayStatus("error", false);
         }
+
+        return;
       }
+
+      setSession(data);
+
+      const returnedEmail = data.medirefEmail || data.email || "";
+      if (returnedEmail && !email) {
+        setEmail(returnedEmail);
+      }
+
+      handleStableStatusUpdate(data);
     } finally {
       setChecking(false);
     }
@@ -149,11 +198,12 @@ export default function MedirefToolsPopup({
 
     return () => window.clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, displayStatus, displayConnected]);
 
   async function requestReconnect() {
     setLocalMessage(null);
     setRefreshSubmitting(true);
+    commitDisplayStatus("refresh_requested", false);
 
     try {
       const response = await fetch("/api/mediref/session/refresh", {
@@ -170,14 +220,13 @@ export default function MedirefToolsPopup({
 
       if (!response.ok || data.success === false || data.ok === false) {
         setLocalMessage(
-          data.error || data.message || "Could not request MediRef reconnect.",
+          data.error || data.message || "Could not connect to MediRef.",
         );
+        commitDisplayStatus("error", false);
         return;
       }
 
-      setLocalMessage(
-        "Reconnect requested. Keep the Mac Mini MediRef watcher running.",
-      );
+      setLocalMessage("Connect requested. Keep the Mac Mini MediRef watcher running.");
       await loadStatus();
     } finally {
       setRefreshSubmitting(false);
@@ -192,6 +241,7 @@ export default function MedirefToolsPopup({
 
     setLocalMessage(null);
     setCredentialsSubmitting(true);
+    commitDisplayStatus("refresh_requested", false);
 
     try {
       const response = await fetch("/api/mediref/session/credentials", {
@@ -213,6 +263,7 @@ export default function MedirefToolsPopup({
         setLocalMessage(
           data.error || data.message || "Could not submit MediRef credentials.",
         );
+        commitDisplayStatus("error", false);
         return;
       }
 
@@ -237,6 +288,7 @@ export default function MedirefToolsPopup({
 
     setLocalMessage(null);
     setMfaSubmitting(true);
+    commitDisplayStatus("refreshing", false);
 
     try {
       const response = await fetch("/api/mediref/session/mfa-code", {
@@ -256,11 +308,12 @@ export default function MedirefToolsPopup({
         setLocalMessage(
           data.error || data.message || "Could not submit the MediRef code.",
         );
+        commitDisplayStatus("waiting_for_mfa", false);
         return;
       }
 
       setMfaCode("");
-      setLocalMessage("Code submitted. Waiting for MediRef to reconnect.");
+      setLocalMessage("Code submitted. Waiting for MediRef to connect.");
       await loadStatus();
     } finally {
       setMfaSubmitting(false);
@@ -294,10 +347,12 @@ export default function MedirefToolsPopup({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span
-                  className={`h-3 w-3 rounded-full ${dotClass(currentStatus)}`}
+                  className={`h-3 w-3 rounded-full ${dotClass(
+                    currentConnectionState,
+                  )}`}
                 />
                 <h3 className="text-sm font-bold text-slate-950">
-                  MediRef: {statusLabel(currentStatus)}
+                  MediRef: {connectionLabel(currentConnectionState)}
                 </h3>
               </div>
 
@@ -308,33 +363,9 @@ export default function MedirefToolsPopup({
                 </span>
               </p>
 
-              {isConnected ? (
-                <p className="mt-2 text-xs font-semibold text-emerald-700">
-                  MediRef is connected. Delivery jobs can be processed by the
-                  Mac Mini helper.
-                </p>
-              ) : (
-                <p className="mt-2 text-xs font-semibold text-amber-700">
-                  Not currently connected. Reconnect before sending via MediRef.
-                </p>
-              )}
-
-              {session?.message ? (
-                <p className="mt-2 break-words text-xs text-slate-500">
-                  {session.message}
-                </p>
-              ) : null}
-
-              {session?.currentUrl ? (
-                <p className="mt-2 break-all text-[11px] text-slate-400">
-                  Current page: {session.currentUrl}
-                </p>
-              ) : null}
-
-              {session?.refreshedAt || session?.updatedAt ? (
-                <p className="mt-2 text-[11px] text-slate-400">
-                  Last update:{" "}
-                  {formatTime(session.refreshedAt || session.updatedAt)}
+              {currentConnectionState === "disconnected" ? (
+                <p className="mt-2 text-xs font-semibold text-red-700">
+                  Not currently connected. Connect before sending via MediRef.
                 </p>
               ) : null}
 
@@ -345,32 +376,22 @@ export default function MedirefToolsPopup({
               ) : null}
             </div>
 
-            <div className="flex shrink-0 flex-col gap-2">
-              <button
-                type="button"
-                onClick={loadStatus}
-                disabled={checking}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                {checking ? "Checking..." : "Check"}
-              </button>
-
+            {currentConnectionState === "disconnected" ? (
               <button
                 type="button"
                 onClick={requestReconnect}
                 disabled={refreshSubmitting}
-                className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                className="shrink-0 rounded-xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
               >
-                {refreshSubmitting ? "Requesting..." : "Reconnect"}
+                {refreshSubmitting ? "Connecting..." : "Connect"}
               </button>
-            </div>
+            ) : null}
           </div>
         </div>
-                {shouldShowCredentialForm && (
+
+        {shouldShowCredentialForm ? (
           <div className="rounded-2xl border border-slate-200 p-3">
-            <h3 className="text-sm font-bold text-slate-950">
-              MediRef login
-            </h3>
+            <h3 className="text-sm font-bold text-slate-950">MediRef login</h3>
 
             <p className="mt-1 text-xs text-slate-500">
               If your helper opens the MediRef login screen that asks for an
@@ -387,7 +408,7 @@ export default function MedirefToolsPopup({
                 <input
                   type="email"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(event) => setEmail(event.target.value)}
                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
                   placeholder="email@example.com"
                 />
@@ -401,7 +422,7 @@ export default function MedirefToolsPopup({
                 <input
                   type="password"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(event) => setPassword(event.target.value)}
                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
                   placeholder="Password"
                 />
@@ -413,21 +434,19 @@ export default function MedirefToolsPopup({
                 disabled={credentialsSubmitting}
                 className="w-full rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
               >
-                {credentialsSubmitting
-                  ? "Submitting..."
-                  : "Save credentials"}
+                {credentialsSubmitting ? "Submitting..." : "Save credentials"}
               </button>
             </div>
           </div>
-        )}
+        ) : null}
 
-        {shouldShowMfaForm && (
-          <div className="rounded-2xl border border-slate-200 p-3">
-            <h3 className="text-sm font-bold text-slate-950">
+        {shouldShowMfaForm ? (
+          <div className="rounded-2xl border border-orange-200 bg-orange-50 p-3">
+            <h3 className="text-sm font-bold text-orange-950">
               Verification code
             </h3>
 
-            <p className="mt-1 text-xs text-slate-500">
+            <p className="mt-1 text-xs text-orange-900">
               Enter the code sent by MediRef. The helper on the Mac Mini will
               continue the login automatically.
             </p>
@@ -436,8 +455,8 @@ export default function MedirefToolsPopup({
               <input
                 type="text"
                 value={mfaCode}
-                onChange={(e) => setMfaCode(e.target.value)}
-                className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                onChange={(event) => setMfaCode(event.target.value)}
+                className="flex-1 rounded-xl border border-orange-200 bg-white px-3 py-2 text-sm"
                 placeholder="Verification code"
               />
 
@@ -445,63 +464,14 @@ export default function MedirefToolsPopup({
                 type="button"
                 onClick={submitMfaCode}
                 disabled={mfaSubmitting}
-                className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                className="rounded-xl bg-orange-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
               >
                 {mfaSubmitting ? "Sending..." : "Submit"}
               </button>
             </div>
           </div>
-        )}
+        ) : null}
 
-        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
-          <h3 className="text-sm font-bold text-blue-950">
-            Mac Mini helper
-          </h3>
-
-          <div className="mt-2 space-y-1 text-xs text-blue-900">
-            <p>
-              The MediRef watcher should run on the Mac Mini:
-            </p>
-
-            <pre className="mt-2 overflow-x-auto rounded-xl bg-white p-2 text-[11px]">
-{`npm run watch:mediref-refresh`}
-            </pre>
-
-            <p>
-              Keep this watcher running continuously so referral delivery and
-              session refreshes can be processed automatically.
-            </p>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-          <h3 className="text-sm font-bold text-slate-950">
-            Troubleshooting
-          </h3>
-
-          <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-slate-600">
-            <li>
-              If the helper keeps opening the emailed-code screen, click
-              <strong> Login with password </strong>
-              once.
-            </li>
-
-            <li>
-              Make sure MEDIREF_EMAIL and MEDIREF_PASSWORD exist in the Mac
-              Mini .env.local file.
-            </li>
-
-            <li>
-              If the helper is stuck, press Reconnect and check the watcher
-              terminal.
-            </li>
-
-            <li>
-              Only one MediRef practice session is required because your clinic
-              uses a shared MediRef account.
-            </li>
-          </ul>
-        </div>
       </div>
     </div>
   );

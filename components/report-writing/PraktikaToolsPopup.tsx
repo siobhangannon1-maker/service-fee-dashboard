@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type PraktikaToolsPopupProps = {
   open: boolean;
@@ -38,35 +38,64 @@ type SessionStatus = {
   has_cookie?: boolean;
 };
 
-function statusLabel(status?: string) {
-  if (status === "connected") return "Connected";
-  if (status === "refreshing") return "Reconnecting";
-  if (status === "refresh_requested") return "Reconnect requested";
-  if (status === "waiting_for_credentials") return "Login needed";
-  if (status === "waiting_for_mfa") return "MFA needed";
-  if (status === "expired") return "Expired";
-  if (status === "error") return "Error";
-  return "Not connected";
+type ConnectionDisplayState = "connected" | "connecting" | "disconnected";
+
+function addDays(dateString: string, days: number) {
+  const date = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
-function dotClass(status?: string) {
-  if (status === "connected") return "bg-emerald-500";
+function getInclusiveDateRangeDays(fromDate: string, toDate: string) {
+  const from = new Date(`${fromDate}T00:00:00`);
+  const to = new Date(`${toDate}T00:00:00`);
 
-  if (status === "refreshing" || status === "refresh_requested") {
-    return "bg-blue-500";
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    return null;
   }
+
+  return Math.floor((to.getTime() - from.getTime()) / 86_400_000) + 1;
+}
+
+function connectionState(
+  status: string,
+  busy: boolean,
+): ConnectionDisplayState {
+  if (busy) return "connecting";
+  if (status === "connected") return "connected";
 
   if (
-    status === "waiting_for_credentials" ||
-    status === "waiting_for_mfa" ||
-    status === "expired"
+    status === "refreshing" ||
+    status === "refresh_requested" ||
+    status === "waiting_for_mfa"
   ) {
-    return "bg-amber-500";
+    return "connecting";
   }
 
-  if (status === "error") return "bg-red-500";
+  return "disconnected";
+}
 
-  return "bg-slate-400";
+function connectionLabel(state: ConnectionDisplayState) {
+  if (state === "connected") return "Connected";
+  if (state === "connecting") return "Connection underway";
+  return "No connection";
+}
+
+function dotClass(state: ConnectionDisplayState) {
+  if (state === "connected") return "bg-emerald-500";
+  if (state === "connecting") return "bg-orange-500";
+  return "bg-red-500";
+}
+
+function isPositiveSessionStatus(status: string) {
+  return (
+    status === "connected" ||
+    status === "refreshing" ||
+    status === "refresh_requested" ||
+    status === "waiting_for_mfa" ||
+    status === "waiting_for_credentials"
+  );
 }
 
 export default function PraktikaToolsPopup({
@@ -90,6 +119,8 @@ export default function PraktikaToolsPopup({
   needsReconnect = false,
 }: PraktikaToolsPopupProps) {
   const [session, setSession] = useState<SessionStatus | null>(null);
+  const [displayStatus, setDisplayStatus] = useState("not_started");
+  const [failedStatusChecks, setFailedStatusChecks] = useState(0);
   const [checking, setChecking] = useState(false);
   const [credentialsSubmitting, setCredentialsSubmitting] = useState(false);
   const [mfaSubmitting, setMfaSubmitting] = useState(false);
@@ -100,7 +131,7 @@ export default function PraktikaToolsPopup({
   const [mfaCode, setMfaCode] = useState("");
   const [localMessage, setLocalMessage] = useState<string | null>(null);
 
-  const currentStatus = session?.status || "not_started";
+  const currentStatus = displayStatus;
   const lastUsername =
     session?.praktikaUsername ||
     session?.praktika_username ||
@@ -110,13 +141,36 @@ export default function PraktikaToolsPopup({
   const finalSyncingQueue = Boolean(loadingQueue ?? syncingQueue);
   const finalSyncingReferrers = Boolean(loadingReferrers ?? syncingReferrers);
   const finalMessage = message ?? preSyncMessage ?? null;
-  const isConnected = currentStatus === "connected";
+
+  const isBusy =
+    credentialsSubmitting ||
+    mfaSubmitting ||
+    refreshSubmitting ||
+    finalSyncingQueue ||
+    finalSyncingReferrers;
+
+  const currentConnectionState = connectionState(currentStatus, isBusy);
+  const isConnected = currentConnectionState === "connected";
 
   // Helper-job syncs use the live local helper browser.
   // Do not require a saved copied cookie here; copied-cookie checks were causing
   // false "reconnect required" states even when the helper browser was connected.
   const shouldShowReconnectWarning = needsReconnect && !isConnected;
-  const shouldShowCredentialForm = !isConnected;
+
+  const shouldShowCredentialForm =
+    currentConnectionState === "disconnected" ||
+    currentStatus === "waiting_for_credentials" ||
+    currentStatus === "expired" ||
+    currentStatus === "error" ||
+    currentStatus === "not_started";
+
+  // Only show the MFA box when Praktika specifically asks for MFA.
+  const shouldShowMfaBox = currentStatus === "waiting_for_mfa";
+
+  const maxQueueToDate = useMemo(() => {
+    if (!queueFromDate) return "";
+    return addDays(queueFromDate, 6);
+  }, [queueFromDate]);
 
   function closePopup() {
     if (onOpenChange) {
@@ -132,15 +186,39 @@ export default function PraktikaToolsPopup({
   function updateQueueFromDate(value: string) {
     if (onQueueFromDateChange) {
       onQueueFromDateChange(value);
-      return;
+    } else if (setQueueFromDate) {
+      setQueueFromDate(value);
     }
 
-    if (setQueueFromDate) {
-      setQueueFromDate(value);
+    const maxToDate = addDays(value, 6);
+
+    if (queueToDate && maxToDate && queueToDate > maxToDate) {
+      if (onQueueToDateChange) {
+        onQueueToDateChange(maxToDate);
+      } else if (setQueueToDate) {
+        setQueueToDate(maxToDate);
+      }
+
+      setLocalMessage("Queue sync range capped to 7 days.");
     }
   }
 
   function updateQueueToDate(value: string) {
+    if (queueFromDate) {
+      const maxToDate = addDays(queueFromDate, 6);
+
+      if (maxToDate && value > maxToDate) {
+        if (onQueueToDateChange) {
+          onQueueToDateChange(maxToDate);
+        } else if (setQueueToDate) {
+          setQueueToDate(maxToDate);
+        }
+
+        setLocalMessage("Queue sync range capped to 7 days.");
+        return;
+      }
+    }
+
     if (onQueueToDateChange) {
       onQueueToDateChange(value);
       return;
@@ -162,9 +240,44 @@ export default function PraktikaToolsPopup({
 
       const data = await response.json().catch(() => null);
 
-      if (data) {
-        setSession(data);
+      if (!response.ok || !data) {
+        setFailedStatusChecks((current) => {
+          const next = current + 1;
+
+          // Keep the last good displayed status unless the status endpoint fails
+          // several times in a row. This prevents green/red flicker from brief
+          // helper/API polling hiccups.
+          if (next >= 5) {
+            setDisplayStatus("error");
+          }
+
+          return next;
+        });
+
+        return;
       }
+
+      setSession(data);
+
+      const nextStatus = data.status || "not_started";
+
+      if (isPositiveSessionStatus(nextStatus)) {
+        setFailedStatusChecks(0);
+        setDisplayStatus(nextStatus);
+        return;
+      }
+
+      setFailedStatusChecks((current) => {
+        const next = current + 1;
+
+        // If the last displayed status was connected/connecting, do not show red
+        // until several consecutive checks agree it is actually disconnected.
+        if (next >= 5) {
+          setDisplayStatus(nextStatus);
+        }
+
+        return next;
+      });
     } finally {
       setChecking(false);
     }
@@ -185,6 +298,7 @@ export default function PraktikaToolsPopup({
   async function requestReconnect() {
     setLocalMessage(null);
     setRefreshSubmitting(true);
+    setDisplayStatus("refresh_requested");
 
     try {
       const response = await fetch("/api/praktika/session/refresh", {
@@ -200,11 +314,11 @@ export default function PraktikaToolsPopup({
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok || data.success === false) {
-        setLocalMessage(data.error || "Could not request Praktika reconnect.");
+        setLocalMessage(data.error || "Could not connect to Praktika.");
         return;
       }
 
-      setLocalMessage("Reconnect requested. Keep the local Praktika watcher open.");
+      setLocalMessage("Connect requested. Keep the local Praktika watcher open.");
       await loadStatus();
     } finally {
       setRefreshSubmitting(false);
@@ -219,6 +333,7 @@ export default function PraktikaToolsPopup({
 
     setLocalMessage(null);
     setCredentialsSubmitting(true);
+    setDisplayStatus("refreshing");
 
     try {
       const response = await fetch("/api/praktika/session/credentials", {
@@ -261,6 +376,7 @@ export default function PraktikaToolsPopup({
 
     setLocalMessage(null);
     setMfaSubmitting(true);
+    setDisplayStatus("refreshing");
 
     try {
       const response = await fetch("/api/praktika/session/mfa-code", {
@@ -282,11 +398,27 @@ export default function PraktikaToolsPopup({
       }
 
       setMfaCode("");
-      setLocalMessage("MFA code submitted. Waiting for Praktika to reconnect.");
+      setLocalMessage("MFA code submitted. Waiting for Praktika to connect.");
       await loadStatus();
     } finally {
       setMfaSubmitting(false);
     }
+  }
+
+  async function syncQueueWithDateLimit() {
+    const rangeDays = getInclusiveDateRangeDays(queueFromDate, queueToDate);
+
+    if (!rangeDays || rangeDays < 1) {
+      setLocalMessage("Choose a valid queue sync date range.");
+      return;
+    }
+
+    if (rangeDays > 7) {
+      setLocalMessage("Queue sync range must be 7 days or less.");
+      return;
+    }
+
+    await onSyncQueue();
   }
 
   if (!open) return null;
@@ -316,37 +448,36 @@ export default function PraktikaToolsPopup({
             <div>
               <div className="flex items-center gap-2">
                 <span
-                  className={`h-3 w-3 rounded-full ${dotClass(currentStatus)}`}
+                  className={`h-3 w-3 rounded-full ${dotClass(
+                    currentConnectionState,
+                  )}`}
                 />
                 <h3 className="text-sm font-bold text-slate-950">
-                  Praktika: {statusLabel(currentStatus)}
+                  Praktika: {connectionLabel(currentConnectionState)}
                 </h3>
               </div>
 
               <p className="mt-2 text-xs text-slate-500">
-                {currentStatus === "connected"
-                  ? "Logged in as"
-                  : "Last Praktika username"}{" "}
+                {isConnected ? "Logged in as" : "Last Praktika username"}{" "}
                 <span className="font-semibold">
                   {lastUsername || "No username saved"}
                 </span>
               </p>
 
-              {currentStatus !== "connected" ? (
-                <p className="mt-2 text-xs font-semibold text-amber-700">
-                  Not currently connected. Reconnect before syncing.
+
+              {currentConnectionState === "disconnected" ? (
+                <p className="mt-2 text-xs font-semibold text-red-700">
+                  Not currently connected. Connect before syncing.
                 </p>
               ) : null}
 
               {shouldShowReconnectWarning ? (
                 <p className="mt-2 text-xs font-semibold text-amber-700">
-                  Reconnect is required before the next sync.
+                  Connect is required before the next sync.
                 </p>
               ) : null}
 
-              {session?.message ? (
-                <p className="mt-2 text-xs text-slate-500">{session.message}</p>
-              ) : null}
+
 
               {localMessage ? (
                 <p className="mt-2 text-xs font-semibold text-blue-700">
@@ -355,25 +486,16 @@ export default function PraktikaToolsPopup({
               ) : null}
             </div>
 
-            <div className="flex shrink-0 flex-col gap-2">
-              <button
-                type="button"
-                onClick={loadStatus}
-                disabled={checking}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                {checking ? "Checking..." : "Check"}
-              </button>
-
+            {currentConnectionState === "disconnected" ? (
               <button
                 type="button"
                 onClick={requestReconnect}
                 disabled={refreshSubmitting}
-                className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                className="shrink-0 rounded-xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
               >
-                {refreshSubmitting ? "Requesting..." : "Reconnect"}
+                {refreshSubmitting ? "Connecting..." : "Connect"}
               </button>
-            </div>
+            ) : null}
           </div>
 
           {shouldShowCredentialForm ? (
@@ -416,12 +538,10 @@ export default function PraktikaToolsPopup({
             </div>
           ) : null}
 
-          {currentStatus === "waiting_for_mfa" ||
-          currentStatus === "refreshing" ||
-          currentStatus === "refresh_requested" ? (
-            <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
-              <label className="text-xs font-bold text-blue-950">
-                MFA code, if Praktika asks for one
+          {shouldShowMfaBox ? (
+            <div className="mt-3 rounded-xl border border-orange-200 bg-orange-50 p-3">
+              <label className="text-xs font-bold text-orange-950">
+                MFA code
               </label>
 
               <div className="mt-1 flex gap-2">
@@ -430,14 +550,14 @@ export default function PraktikaToolsPopup({
                   onChange={(event) => setMfaCode(event.target.value)}
                   inputMode="numeric"
                   placeholder="123456"
-                  className="min-w-0 flex-1 rounded-xl border border-blue-200 bg-white px-3 py-2 text-sm text-slate-950"
+                  className="min-w-0 flex-1 rounded-xl border border-orange-200 bg-white px-3 py-2 text-sm text-slate-950"
                 />
 
                 <button
                   type="button"
                   onClick={submitMfaCode}
                   disabled={mfaSubmitting}
-                  className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-bold text-white disabled:opacity-50"
+                  className="rounded-xl bg-orange-600 px-3 py-2 text-sm font-bold text-white disabled:opacity-50"
                 >
                   {mfaSubmitting ? "Sending..." : "Submit"}
                 </button>
@@ -456,7 +576,7 @@ export default function PraktikaToolsPopup({
         <div className="rounded-2xl border border-slate-200 bg-white p-3">
           <h3 className="text-sm font-bold text-slate-950">Sync Referrers</h3>
           <p className="text-xs text-slate-500">
-            Pull referrer/provider details from Praktika.
+            Pull recently added referrer details from Praktika.
           </p>
 
           <button
@@ -472,7 +592,7 @@ export default function PraktikaToolsPopup({
         <div className="rounded-2xl border border-slate-200 bg-white p-3">
           <h3 className="text-sm font-bold text-slate-950">Sync Queue</h3>
           <p className="text-xs text-slate-500">
-            Pull Praktika letter-icon appointments.
+            Pull Praktika letter-icon appointments. Maximum range: 7 days.
           </p>
 
           <div className="mt-3 grid grid-cols-2 gap-2">
@@ -491,6 +611,8 @@ export default function PraktikaToolsPopup({
               <input
                 type="date"
                 value={queueToDate}
+                min={queueFromDate || undefined}
+                max={maxQueueToDate || undefined}
                 onChange={(event) => updateQueueToDate(event.target.value)}
                 className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
               />
@@ -499,7 +621,7 @@ export default function PraktikaToolsPopup({
 
           <button
             type="button"
-            onClick={onSyncQueue}
+            onClick={syncQueueWithDateLimit}
             disabled={finalSyncingQueue}
             className="mt-3 w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"
           >

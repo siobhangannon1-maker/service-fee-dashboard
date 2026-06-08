@@ -275,42 +275,45 @@ export default function LoginClient() {
                     Focus Dental Specialists
                   </div>
                   <div className="text-2xl font-semibold tracking-tight">
-                    Service Fee Dashboard
+                    Focus Dental Specialists Dashboard
                   </div>
                 </div>
               </div>
 
               <div className="mt-16 max-w-xl">
                 <h1 className="text-5xl font-semibold leading-tight">
-                  Practice financials,
+                  One secure workspace
                   <br />
-                  billing, and provider statements
+                  for daily practice
                   <br />
-                  in one place.
+                  workflows.
                 </h1>
 
                 <p className="mt-6 max-w-lg text-lg leading-8 text-slate-300">
-                  Securely manage monthly service fee generation, patient costs
-                  entries, provider statements, and financial reporting.
+                  Quickly access report writing, provider workflows, patient
+                  entries, billing, and practice administration from one central
+                  dashboard.
                 </p>
               </div>
             </div>
 
             <div className="grid gap-4 text-sm text-slate-300 sm:grid-cols-3">
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <div className="font-medium text-white">Monthly billing</div>
-                <div className="mt-1">Service fee calculation and locking</div>
+                <div className="font-medium text-white">Report writing</div>
+                <div className="mt-1">Typist and provider workflows</div>
               </div>
+
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <div className="font-medium text-white">
-                  Provider statements
-                </div>
-                <div className="mt-1">Export and email draft statements</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <div className="font-medium text-white">Admin controls</div>
+                <div className="font-medium text-white">Patient entries</div>
                 <div className="mt-1">
-                  Roles, materials, and financial insights
+                  Lab costs, implants, materials, and corrections
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="font-medium text-white">Practice tools</div>
+                <div className="mt-1">
+                  Billing, reporting, and administration
                 </div>
               </div>
             </div>
@@ -337,7 +340,7 @@ export default function LoginClient() {
                   Focus Dental Specialists
                 </div>
                 <div className="text-xl font-semibold tracking-tight text-slate-900">
-                  Service Fee Dashboard
+                  Focus Dental Specialists Dashboard
                 </div>
               </div>
             </div>
@@ -350,10 +353,6 @@ export default function LoginClient() {
                 <h2 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">
                   Sign in to continue
                 </h2>
-                <p className="mt-2 text-sm leading-6 text-slate-600">
-                  Access your billing dashboard, statements, provider records,
-                  and admin tools securely.
-                </p>
               </div>
 
               <div className="mt-6 grid grid-cols-2 rounded-2xl bg-slate-100 p-1">

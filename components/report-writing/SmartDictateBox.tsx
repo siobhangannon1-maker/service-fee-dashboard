@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 type ReportTypeOption = {
   value: string
@@ -29,18 +29,21 @@ type Props = {
   onResult: (result: SmartDictateResult) => void
 }
 
+function formatDuration(seconds: number) {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+}
+
 async function readJsonSafely(response: Response, label: string) {
   const text = await response.text()
 
-  if (!text.trim()) {
-    return { success: false, error: `${label} returned an empty response.` }
-  }
+  if (!text.trim()) return { success: false, error: `${label} returned an empty response.` }
 
   try {
     return JSON.parse(text)
   } catch {
     console.error(`${label} non-JSON response:`, text.slice(0, 1000))
-
     return {
       success: false,
       error: `${label} returned a web page instead of JSON. Status: ${response.status}.`,
@@ -61,13 +64,25 @@ export default function SmartDictateBox({
 }: Props) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
 
   const [recording, setRecording] = useState(false)
   const [paused, setPaused] = useState(false)
   const [working, setWorking] = useState(false)
   const [manualText, setManualText] = useState("")
+  const [seconds, setSeconds] = useState(0)
 
   const patientName = `${patientFirstName} ${patientLastName}`.trim()
+
+  useEffect(() => {
+    if (!recording || paused) return
+
+    const interval = window.setInterval(() => {
+      setSeconds((current) => current + 1)
+    }, 1000)
+
+    return () => window.clearInterval(interval)
+  }, [recording, paused])
 
   async function transcribeAudio(blob: Blob) {
     const formData = new FormData()
@@ -80,9 +95,7 @@ export default function SmartDictateBox({
 
     const data = await readJsonSafely(response, "Transcribe audio API")
 
-    if (!response.ok || !data.success) {
-      throw new Error(data.error || "Failed to transcribe audio.")
-    }
+    if (!response.ok || !data.success) throw new Error(data.error || "Failed to transcribe audio.")
 
     return data.text || data.transcript || ""
   }
@@ -136,38 +149,46 @@ export default function SmartDictateBox({
       return
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    chunksRef.current = []
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+      chunksRef.current = []
+      setSeconds(0)
 
-    const recorder = new MediaRecorder(stream)
-    mediaRecorderRef.current = recorder
+      const recorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = recorder
 
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunksRef.current.push(event.data)
-    }
-
-    recorder.onstop = async () => {
-      stream.getTracks().forEach((track) => track.stop())
-
-      const blob = new Blob(chunksRef.current, { type: "audio/webm" })
-
-      try {
-        setWorking(true)
-        const text = await transcribeAudio(blob)
-        setManualText(text)
-        await runSmartDictate(text)
-      } catch (error) {
-        alert(error instanceof Error ? error.message : "Failed to process dictation.")
-      } finally {
-        setWorking(false)
-        setRecording(false)
-        setPaused(false)
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data)
       }
-    }
 
-    recorder.start()
-    setRecording(true)
-    setPaused(false)
+      recorder.onstop = async () => {
+        streamRef.current?.getTracks().forEach((track) => track.stop())
+        streamRef.current = null
+
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" })
+
+        try {
+          setWorking(true)
+          const text = await transcribeAudio(blob)
+          setManualText(text)
+          await runSmartDictate(text)
+        } catch (error) {
+          alert(error instanceof Error ? error.message : "Failed to process dictation.")
+        } finally {
+          setWorking(false)
+          setRecording(false)
+          setPaused(false)
+        }
+      }
+
+      recorder.start()
+      setRecording(true)
+      setPaused(false)
+    } catch (error) {
+      console.error("Could not start Smart Dictate:", error)
+      alert("Could not access the microphone. Please check browser permissions.")
+    }
   }
 
   function pauseRecording() {
@@ -187,16 +208,41 @@ export default function SmartDictateBox({
   function stopRecording() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop()
+      setWorking(true)
     }
   }
 
+  const statusLabel = recording ? (paused ? "Paused" : "Recording") : working ? "Generating" : "Ready"
+
   return (
     <div className="space-y-4 rounded-2xl border border-purple-200 bg-purple-50 p-5">
-      <div>
-        <h2 className="text-xl font-bold text-purple-950">Smart Dictate</h2>
-        <p className="mt-1 text-sm text-purple-900">
-          Enter the patient first and last name first, then dictate or type the instruction.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold text-purple-950">Smart Dictate</h2>
+          <p className="mt-1 text-sm text-purple-900">
+            Enter the patient first and last name first, then dictate or type the instruction.
+          </p>
+        </div>
+
+        <div
+          className={[
+            "flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold",
+            recording && !paused
+              ? "bg-red-50 text-red-700"
+              : paused
+                ? "bg-amber-50 text-amber-700"
+                : "bg-white text-slate-600",
+          ].join(" ")}
+        >
+          <span
+            className={[
+              "h-3 w-3 rounded-full",
+              recording && !paused ? "animate-pulse bg-red-600" : paused ? "bg-amber-500" : "bg-slate-400",
+            ].join(" ")}
+          />
+          <span>{statusLabel}</span>
+          <span className="font-mono">{formatDuration(seconds)}</span>
+        </div>
       </div>
 
       {disabled ? (
@@ -225,7 +271,7 @@ export default function SmartDictateBox({
             disabled={working || disabled}
             className="rounded-xl bg-purple-700 px-5 py-3 font-semibold text-white disabled:opacity-50"
           >
-            Start Smart Dictate
+            {working ? "Generating..." : "Start Smart Dictate"}
           </button>
         ) : (
           <>
@@ -242,7 +288,7 @@ export default function SmartDictateBox({
               onClick={stopRecording}
               className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white"
             >
-              Stop and Generate
+              Stop, Generate and Save Draft
             </button>
           </>
         )}

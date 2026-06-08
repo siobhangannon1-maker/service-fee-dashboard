@@ -24,6 +24,7 @@ export async function GET(req: Request) {
       .from("report_drafts")
       .select("*")
       .eq("provider_id", providerId)
+      .in("status", ["draft", "awaiting_provider_approval", "approved", "edited_by_typist"])
       .order("created_at", { ascending: false })
 
     if (error) {
@@ -35,8 +36,7 @@ export async function GET(req: Request) {
 
     const drafts = (data || []).map((draft: any) => ({
       ...draft,
-
-      // These aliases keep older drafts/API fields working with the frontend.
+      status: draft.status || "draft",
       clinical_notes:
         draft.clinical_notes ||
         draft.source_clinical_notes ||
@@ -47,26 +47,17 @@ export async function GET(req: Request) {
         draft.clinical_notes ||
         draft.source_text ||
         null,
-
-      // New provider-to-typist instruction field.
-      // These notes are for workflow actions only and should not be included in the letter.
       typist_instructions: draft.typist_instructions || null,
     }))
 
-    return NextResponse.json({
-      success: true,
-      drafts,
-    })
+    return NextResponse.json({ success: true, drafts })
   } catch (error) {
     console.error("Get report drafts failed:", error)
 
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to load report drafts.",
+        error: error instanceof Error ? error.message : "Failed to load report drafts.",
       },
       { status: 500 }
     )

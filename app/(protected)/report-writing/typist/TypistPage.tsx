@@ -401,6 +401,17 @@ function buildLetterTextForSave(
   return `${cleanBody}\n\n${markers.join("\n")}`;
 }
 
+function getInclusiveDateRangeDays(fromDate: string, toDate: string) {
+  const from = new Date(`${fromDate}T00:00:00`);
+  const to = new Date(`${toDate}T00:00:00`);
+
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    return null;
+  }
+
+  return Math.floor((to.getTime() - from.getTime()) / 86_400_000) + 1;
+}
+
 export default function TypistPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState("");
@@ -2105,6 +2116,13 @@ export default function TypistPage() {
 
     if (queueFromDate > queueToDate) {
       alert("From date cannot be after to date.");
+      return;
+    }
+
+    const rangeDays = getInclusiveDateRangeDays(queueFromDate, queueToDate);
+
+    if (!rangeDays || rangeDays > 7) {
+      alert("Please choose a queue sync range of 7 days or less.");
       return;
     }
 
