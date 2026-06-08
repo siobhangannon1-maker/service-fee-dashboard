@@ -24,16 +24,41 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function startHelperForSession(session: any, reason: string) {
+async function getPracticeSession() {
+  const { data, error } = await supabase
+    .from("mediref_sessions")
+    .select("id, scope, app_user_id, status, message, refresh_requested_at")
+    .eq("scope", "practice")
+    .is("app_user_id", null)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Could not load MediRef practice session: ${error.message}`);
+  }
+
+  if (!data) {
+    throw new Error(
+      "No MediRef practice session row exists. Create one in mediref_sessions.",
+    );
+  }
+
+  return data;
+}
+
+async function startHelperForPracticeSession(reason: string) {
+  const session = await getPracticeSession();
+
   if (running.has(session.id)) {
-    console.log(`MediRef helper already running for ${session.id}. Reason: ${reason}`);
+    console.log(
+      `MediRef helper already running for practice session ${session.id}. Reason: ${reason}`,
+    );
     return;
   }
 
   running.add(session.id);
 
   console.log(
-    `Starting MediRef helper for ${session.scope} session ${session.id}. Reason: ${reason}`,
+    `Starting MediRef helper for practice session ${session.id}. Reason: ${reason}`,
   );
 
   await supabase
@@ -42,7 +67,7 @@ async function startHelperForSession(session: any, reason: string) {
       status: "refreshing",
       message:
         reason === "pending_job"
-          ? "Local MediRef helper is starting to process queued jobs."
+          ? "Local MediRef helper is starting to process queued practice jobs."
           : "Local MediRef helper is starting.",
       updated_at: nowIso(),
     })
@@ -50,7 +75,12 @@ async function startHelperForSession(session: any, reason: string) {
 
   const child = spawn(
     "npm",
-    ["run", "refresh:mediref-session", "--", `--session-id=${session.id}`],
+    [
+      "run",
+      "refresh:mediref-session",
+      "--",
+      `--session-id=${session.id}`,
+    ],
     {
       cwd: process.cwd(),
       stdio: "inherit",
@@ -60,7 +90,9 @@ async function startHelperForSession(session: any, reason: string) {
 
   child.on("exit", async (code) => {
     running.delete(session.id);
-    console.log(`MediRef helper for ${session.id} exited with code ${code}`);
+    console.log(
+      `MediRef helper for practice session ${session.id} exited with code ${code}`,
+    );
 
     await supabase
       .from("mediref_sessions")
@@ -76,7 +108,10 @@ async function startHelperForSession(session: any, reason: string) {
   child.on("error", async (error) => {
     running.delete(session.id);
 
-    console.error(`MediRef helper for ${session.id} failed to start:`, error);
+    console.error(
+      `MediRef helper for practice session ${session.id} failed to start:`,
+      error,
+    );
 
     await supabase
       .from("mediref_sessions")
@@ -93,17 +128,20 @@ async function checkRefreshRequests() {
   const { data, error } = await supabase
     .from("mediref_sessions")
     .select("id, scope, app_user_id, status, message, refresh_requested_at")
+    .eq("scope", "practice")
+    .is("app_user_id", null)
     .eq("status", "refresh_requested")
     .not("refresh_requested_at", "is", null)
-    .order("refresh_requested_at", { ascending: true });
+    .order("refresh_requested_at", { ascending: true })
+    .limit(1);
 
   if (error) {
     console.error("Could not check MediRef refresh requests:", error.message);
     return;
   }
 
-  for (const session of data || []) {
-    await startHelperForSession(session, "refresh_requested");
+  if ((data || []).length > 0) {
+    await startHelperForPracticeSession("refresh_requested");
   }
 }
 
@@ -115,7 +153,7 @@ async function checkPendingJobs() {
     .lte("available_at", nowIso())
     .order("priority", { ascending: true })
     .order("created_at", { ascending: true })
-    .limit(20);
+    .limit(1);
 
   if (error) {
     console.error("Could not check MediRef helper jobs:", error.message);
@@ -124,40 +162,7 @@ async function checkPendingJobs() {
 
   if (!jobs || jobs.length === 0) return;
 
-  const userIds = Array.from(
-    new Set(
-      jobs
-        .map((job) => job.app_user_id)
-        .filter((value): value is string => Boolean(value)),
-    ),
-  );
-
-  if (userIds.length === 0) {
-    console.warn("Pending MediRef helper jobs have no app_user_id.");
-    return;
-  }
-
-  const { data: sessions, error: sessionError } = await supabase
-    .from("mediref_sessions")
-    .select("id, scope, app_user_id, status, message, refresh_requested_at")
-    .eq("scope", "user")
-    .in("app_user_id", userIds);
-
-  if (sessionError) {
-    console.error("Could not load MediRef sessions for jobs:", sessionError.message);
-    return;
-  }
-
-  for (const userId of userIds) {
-    const session = sessions?.find((item) => item.app_user_id === userId);
-
-    if (!session) {
-      console.warn(`No MediRef session exists for app user ${userId}.`);
-      continue;
-    }
-
-    await startHelperForSession(session, "pending_job");
-  }
+  await startHelperForPracticeSession("pending_job");
 }
 
 async function check() {
@@ -167,7 +172,7 @@ async function check() {
 
 async function main() {
   console.log(
-    `Watching MediRef refresh requests and helper jobs every ${Math.round(
+    `Watching MediRef practice refresh requests and helper jobs every ${Math.round(
       POLL_INTERVAL_MS / 1000,
     )} seconds...`,
   );
