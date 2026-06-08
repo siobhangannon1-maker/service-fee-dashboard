@@ -1,6 +1,8 @@
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs/promises";
 import dotenv from "dotenv";
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, type BrowserContext, type Page, type Locator } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 
 dotenv.config({ path: ".env.local" });
@@ -24,6 +26,9 @@ const LOGIN_TIMEOUT_MS = Number(
   process.env.MEDIREF_LOGIN_TIMEOUT_MS || 10 * 60 * 1000,
 );
 
+const AUTO_SEND =
+  String(process.env.MEDIREF_AUTO_SEND ?? "false").toLowerCase() === "true";
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -45,6 +50,25 @@ type SessionRow = {
   pending_mediref_email: string | null;
   pending_mediref_password: string | null;
   mediref_email: string | null;
+};
+
+type MedirefHelperJob = {
+  id: string;
+  app_user_id: string | null;
+  job_type: string;
+  status: string;
+  priority: number;
+  request: any;
+  response: any;
+  error_message: string | null;
+  attempts: number | null;
+  locked_at: string | null;
+  locked_by: string | null;
+  available_at: string;
+  completed_at: string | null;
+  failed_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 function nowIso() {
@@ -522,7 +546,8 @@ async function submitMfaCodeIfAvailable(page: Page) {
 
   await updateSession({
     status: "refreshing",
-    message: "Verification code submitted. Waiting for MediRef to finish signing in.",
+    message:
+      "Verification code submitted. Waiting for MediRef to finish signing in.",
     current_url: await safePageUrl(page),
   });
 
@@ -531,7 +556,11 @@ async function submitMfaCodeIfAvailable(page: Page) {
   return true;
 }
 
-async function saveCookies(context: BrowserContext, page: Page, message?: string) {
+async function saveCookies(
+  context: BrowserContext,
+  page: Page,
+  message?: string,
+) {
   const { cookieHeader, hasSession } = await buildCookieHeader(context);
 
   if (!cookieHeader) {
@@ -576,6 +605,372 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
   return true;
 }
 
+function workerId() {
+  return `mediref-session-${sessionId}-${process.pid}`;
+}
+
+async function claimNextPendingMedirefJob() {
+  const { data: candidates, error } = await supabase
+    .from("mediref_helper_jobs")
+    .select("*")
+    .eq("status", "pending")
+    .lte("available_at", nowIso())
+    .order("priority", { ascending: true })
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (error) {
+    console.error("Could not check pending MediRef jobs:", error.message);
+    return null;
+  }
+
+  const candidate = candidates?.[0] as MedirefHelperJob | undefined;
+  if (!candidate) return null;
+
+  const { data: claimed, error: claimError } = await supabase
+    .from("mediref_helper_jobs")
+    .update({
+      status: "processing",
+      attempts: Number(candidate.attempts || 0) + 1,
+      locked_at: nowIso(),
+      locked_by: workerId(),
+      updated_at: nowIso(),
+    })
+    .eq("id", candidate.id)
+    .eq("status", "pending")
+    .select("*")
+    .single();
+
+  if (claimError || !claimed) {
+    return null;
+  }
+
+  return claimed as MedirefHelperJob;
+}
+
+async function completeMedirefJob(
+  jobId: string,
+  response: Record<string, unknown>,
+) {
+  const { error } = await supabase
+    .from("mediref_helper_jobs")
+    .update({
+      status: "completed",
+      response,
+      error_message: null,
+      completed_at: nowIso(),
+      locked_at: null,
+      locked_by: null,
+      updated_at: nowIso(),
+    })
+    .eq("id", jobId);
+
+  if (error) {
+    throw new Error(`Could not complete MediRef job: ${error.message}`);
+  }
+}
+
+async function failMedirefJob(jobId: string, message: string) {
+  const { error } = await supabase
+    .from("mediref_helper_jobs")
+    .update({
+      status: "failed",
+      error_message: message,
+      failed_at: nowIso(),
+      locked_at: null,
+      locked_by: null,
+      updated_at: nowIso(),
+    })
+    .eq("id", jobId);
+
+  if (error) {
+    throw new Error(`Could not fail MediRef job: ${error.message}`);
+  }
+}
+
+async function downloadStagedAttachment(job: MedirefHelperJob) {
+  const attachment = job.request?.attachment;
+
+  if (!attachment?.bucket || !attachment?.storagePath || !attachment?.fileName) {
+    throw new Error("MediRef job is missing attachment details.");
+  }
+
+  const { data, error } = await supabase.storage
+    .from(attachment.bucket)
+    .download(attachment.storagePath);
+
+  if (error || !data) {
+    throw new Error(
+      `Could not download staged MediRef PDF: ${
+        error?.message || "No file returned."
+      }`,
+    );
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mediref-send-"));
+  const localPath = path.join(tempDir, attachment.fileName);
+
+  await fs.writeFile(localPath, Buffer.from(await data.arrayBuffer()));
+
+  return {
+    tempDir,
+    localPath,
+    fileName: attachment.fileName,
+  };
+}
+
+async function debugVisibleInputs(page: Page) {
+  const inputs = await page
+    .locator("input, textarea, select, button")
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const htmlElement = element as HTMLElement;
+        return {
+          tag: element.tagName,
+          type: element.getAttribute("type"),
+          name: element.getAttribute("name"),
+          id: element.getAttribute("id"),
+          placeholder: element.getAttribute("placeholder"),
+          ariaLabel: element.getAttribute("aria-label"),
+          text: htmlElement.innerText?.slice(0, 80) || "",
+          visible: Boolean(
+            htmlElement.offsetWidth ||
+              htmlElement.offsetHeight ||
+              htmlElement.getClientRects().length,
+          ),
+        };
+      }),
+    )
+    .catch((error) => [{ error: String(error) }]);
+
+  console.log("MediRef send page element debug:", JSON.stringify(inputs, null, 2));
+}
+
+async function fillFirstVisibleTextFieldByHints(
+  page: Page,
+  hints: string[],
+  value: string,
+) {
+  if (!value.trim()) return false;
+
+  const hintSelector = hints
+    .flatMap((hint) => [
+      `input[name*="${hint}" i]`,
+      `input[id*="${hint}" i]`,
+      `input[placeholder*="${hint}" i]`,
+      `input[aria-label*="${hint}" i]`,
+      `textarea[name*="${hint}" i]`,
+      `textarea[id*="${hint}" i]`,
+      `textarea[placeholder*="${hint}" i]`,
+      `textarea[aria-label*="${hint}" i]`,
+    ])
+    .join(", ");
+
+  const locator = page.locator(hintSelector);
+  const count = await locator.count().catch(() => 0);
+
+  for (let i = 0; i < count; i += 1) {
+    const field = locator.nth(i);
+    const visible = await field.isVisible().catch(() => false);
+    if (!visible) continue;
+
+    await field.fill(value);
+    return true;
+  }
+
+  return false;
+}
+
+async function uploadPdfToFirstFileInput(page: Page, localPath: string) {
+  const fileInput = page.locator('input[type="file"]').first();
+
+  if ((await fileInput.count().catch(() => 0)) === 0) {
+    return false;
+  }
+
+  await fileInput.setInputFiles(localPath);
+  return true;
+}
+
+async function sendMedirefLetterWithBrowser(
+  page: Page,
+  job: MedirefHelperJob,
+  localPdfPath: string,
+) {
+  const request = job.request;
+  const patient = request.patient || {};
+  const recipient = request.recipient || {};
+  const cc = Array.isArray(request.cc) ? request.cc : [];
+
+  await page.goto(`${MEDIREF_BASE_URL}/search`, {
+    waitUntil: "domcontentloaded",
+    timeout: 90_000,
+  });
+
+  await page.waitForTimeout(2500);
+
+  await clickFirstVisible(page, [
+    'a:has-text("New")',
+    'button:has-text("New")',
+    'a:has-text("Send")',
+    'button:has-text("Send")',
+    'a:has-text("Referral")',
+    'button:has-text("Referral")',
+    'a:has-text("Compose")',
+    'button:has-text("Compose")',
+  ]);
+
+  await page.waitForTimeout(2500);
+
+  await fillFirstVisibleTextFieldByHints(
+    page,
+    ["first", "given", "patient"],
+    String(patient.firstName || ""),
+  );
+
+  await fillFirstVisibleTextFieldByHints(
+    page,
+    ["last", "surname", "family"],
+    String(patient.lastName || ""),
+  );
+
+  await fillFirstVisibleTextFieldByHints(
+    page,
+    ["dob", "birth", "date"],
+    String(patient.dob || ""),
+  );
+
+  await fillFirstVisibleTextFieldByHints(
+    page,
+    ["recipient", "referrer", "provider", "doctor", "to"],
+    String(recipient.name || recipient.email || recipient.providerNumber || ""),
+  );
+
+  if (recipient.email) {
+    await fillFirstVisibleTextFieldByHints(
+      page,
+      ["email"],
+      String(recipient.email || ""),
+    );
+  }
+
+  if (cc.length > 0) {
+    await fillFirstVisibleTextFieldByHints(
+      page,
+      ["cc", "copy"],
+      cc
+        .map((item: any) => item.email || item.name || item.providerNumber)
+        .filter(Boolean)
+        .join(", "),
+    );
+  }
+
+  await fillFirstVisibleTextFieldByHints(
+    page,
+    ["message", "note", "body", "details"],
+    String(request.message || ""),
+  );
+
+  const uploaded = await uploadPdfToFirstFileInput(page, localPdfPath);
+
+  await page.waitForTimeout(2500);
+  await debugVisibleInputs(page);
+
+  if (!uploaded) {
+    throw new Error(
+      "Could not find a MediRef PDF upload field. The helper opened MediRef and filled what it could; inspect the element debug output to add the exact selector.",
+    );
+  }
+
+  if (!AUTO_SEND) {
+    console.log(
+      "MediRef job prepared but not sent because MEDIREF_AUTO_SEND is not true.",
+    );
+
+    return {
+      prepared: true,
+      sent: false,
+      autoSend: false,
+      currentUrl: await safePageUrl(page),
+      message:
+        "MediRef form was prepared and PDF was attached. Final send was not clicked because MEDIREF_AUTO_SEND is false.",
+    };
+  }
+
+  const clickedSend = await clickFirstVisible(page, [
+    'button:has-text("Send")',
+    'button:has-text("Submit")',
+    'button:has-text("Deliver")',
+    'button:has-text("Continue")',
+    'input[type="submit"]',
+  ]);
+
+  if (!clickedSend) {
+    throw new Error("Could not find the final MediRef Send button.");
+  }
+
+  await page.waitForTimeout(6000);
+
+  return {
+    prepared: true,
+    sent: true,
+    autoSend: true,
+    currentUrl: await safePageUrl(page),
+  };
+}
+
+async function processOnePendingMedirefJob(page: Page, context: BrowserContext) {
+  if (
+    !(await isBrowserUiLoggedIn(page)) ||
+    !(await validateSessionCookie(context))
+  ) {
+    return false;
+  }
+
+  const job = await claimNextPendingMedirefJob();
+
+  if (!job) return false;
+
+  console.log(`Processing MediRef job ${job.id} (${job.job_type}).`);
+
+  let tempDir: string | null = null;
+
+  try {
+    if (job.job_type !== "send_mediref_letter") {
+      throw new Error(`Unsupported MediRef job type: ${job.job_type}`);
+    }
+
+    const downloaded = await downloadStagedAttachment(job);
+    tempDir = downloaded.tempDir;
+
+    const result = await sendMedirefLetterWithBrowser(
+      page,
+      job,
+      downloaded.localPath,
+    );
+
+    await completeMedirefJob(job.id, {
+      ...result,
+      completedAt: nowIso(),
+    });
+
+    console.log(`Completed MediRef job ${job.id}.`);
+    return true;
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "MediRef job failed.";
+
+    console.error(`MediRef job ${job.id} failed:`, error);
+
+    await failMedirefJob(job.id, message);
+    return true;
+  } finally {
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => null);
+    }
+  }
+}
+
 async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
   console.log(
     `MediRef practice browser left open. Helper will refresh cookies every ${Math.round(
@@ -611,6 +1006,8 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           page,
           "MediRef practice helper browser is connected. Helper jobs can run.",
         );
+
+        await processOnePendingMedirefJob(page, context);
       } else if (await pageHasMfaInput(page)) {
         await submitMfaCodeIfAvailable(page);
       } else {
