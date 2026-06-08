@@ -688,35 +688,49 @@ async function failMedirefJob(jobId: string, message: string) {
   }
 }
 
-async function downloadStagedAttachment(job: MedirefHelperJob) {
-  const attachment = job.request?.attachment;
+async function downloadStagedAttachments(job: MedirefHelperJob) {
+  const rawAttachments =
+    Array.isArray(job.request?.attachments) && job.request.attachments.length > 0
+      ? job.request.attachments
+      : job.request?.attachment
+        ? [job.request.attachment]
+        : [];
 
-  if (!attachment?.bucket || !attachment?.storagePath || !attachment?.fileName) {
+  if (rawAttachments.length === 0) {
     throw new Error("MediRef job is missing attachment details.");
   }
 
-  const { data, error } = await supabase.storage
-    .from(attachment.bucket)
-    .download(attachment.storagePath);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mediref-send-"));
 
-  if (error || !data) {
-    throw new Error(
-      `Could not download staged MediRef PDF: ${
-        error?.message || "No file returned."
-      }`,
-    );
+  const files = [];
+
+  for (const attachment of rawAttachments) {
+    if (!attachment?.bucket || !attachment?.storagePath || !attachment?.fileName) {
+      throw new Error("MediRef job has an invalid attachment.");
+    }
+
+    const { data, error } = await supabase.storage
+      .from(attachment.bucket)
+      .download(attachment.storagePath);
+
+    if (error || !data) {
+      throw new Error(
+        `Could not download staged MediRef PDF: ${
+          error?.message || "No file returned."
+        }`,
+      );
+    }
+
+    const localPath = path.join(tempDir, attachment.fileName);
+    await fs.writeFile(localPath, Buffer.from(await data.arrayBuffer()));
+
+    files.push({
+      localPath,
+      fileName: attachment.fileName,
+    });
   }
 
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mediref-send-"));
-  const localPath = path.join(tempDir, attachment.fileName);
-
-  await fs.writeFile(localPath, Buffer.from(await data.arrayBuffer()));
-
-  return {
-    tempDir,
-    localPath,
-    fileName: attachment.fileName,
-  };
+  return { tempDir, files };
 }
 
 async function debugVisibleInputs(page: Page) {
@@ -781,21 +795,21 @@ async function fillFirstVisibleTextFieldByHints(
   return false;
 }
 
-async function uploadPdfToFirstFileInput(page: Page, localPath: string) {
+async function uploadPdfsToFileInput(page: Page, localPaths: string[]) {
   const fileInput = page.locator('input[type="file"]').first();
 
   if ((await fileInput.count().catch(() => 0)) === 0) {
     return false;
   }
 
-  await fileInput.setInputFiles(localPath);
+  await fileInput.setInputFiles(localPaths);
   return true;
 }
 
 async function sendMedirefLetterWithBrowser(
   page: Page,
   job: MedirefHelperJob,
-  localPdfPath: string,
+  localPdfPaths: string[],
 ) {
   const request = job.request;
   const patient = request.patient || {};
@@ -871,7 +885,7 @@ async function sendMedirefLetterWithBrowser(
     String(request.message || ""),
   );
 
-  const uploaded = await uploadPdfToFirstFileInput(page, localPdfPath);
+  const uploaded = await uploadPdfsToFileInput(page, localPdfPaths);
 
   await page.waitForTimeout(2500);
   await debugVisibleInputs(page);
@@ -940,14 +954,14 @@ async function processOnePendingMedirefJob(page: Page, context: BrowserContext) 
       throw new Error(`Unsupported MediRef job type: ${job.job_type}`);
     }
 
-    const downloaded = await downloadStagedAttachment(job);
-    tempDir = downloaded.tempDir;
+    const downloaded = await downloadStagedAttachments(job);
+tempDir = downloaded.tempDir;
 
-    const result = await sendMedirefLetterWithBrowser(
-      page,
-      job,
-      downloaded.localPath,
-    );
+const result = await sendMedirefLetterWithBrowser(
+  page,
+  job,
+  downloaded.files.map((file) => file.localPath),
+);
 
     await completeMedirefJob(job.id, {
       ...result,

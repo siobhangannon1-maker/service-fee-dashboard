@@ -31,12 +31,12 @@ export type MedirefHelperRequest = {
     email?: string | null;
     providerNumber?: string | null;
   }>;
-  attachment: {
-    bucket: string;
-    storagePath: string;
-    fileName: string;
-    contentType: "application/pdf";
-  };
+  attachments: Array<{
+  bucket: string;
+  storagePath: string;
+  fileName: string;
+  contentType: "application/pdf";
+}>;
   message?: string | null;
 };
 

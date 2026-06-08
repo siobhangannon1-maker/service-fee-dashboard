@@ -5,6 +5,7 @@ import {
   createReportAuditEvent,
   getAuditActor,
 } from "@/lib/report-writing/audit";
+import { generatePeriodontalChartPdf } from "@/lib/praktika/periodontal-chart";
 
 export const runtime = "nodejs";
 
@@ -16,17 +17,11 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
-function getSafePatientName(patientName: string | null | undefined) {
-  return patientName
-    ? String(patientName)
-        .trim()
-        .replace(/[^a-z0-9]+/gi, "_")
-        .replace(/^_+|_+$/g, "")
-    : "Patient";
-}
-
-function getFileDate() {
-  return new Date().toISOString().slice(0, 10);
+function safeFileName(name: string | null | undefined) {
+  return String(name || "Patient")
+    .trim()
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function splitPatientName(name: string | null | undefined) {
@@ -42,24 +37,6 @@ function splitPatientName(name: string | null | undefined) {
 }
 
 function parseCc(value: unknown) {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => {
-        if (typeof item === "string") {
-          return { email: item.trim() };
-        }
-
-        return {
-          name: item?.name ? String(item.name).trim() : null,
-          email: item?.email ? String(item.email).trim() : null,
-          providerNumber: item?.providerNumber
-            ? String(item.providerNumber).trim()
-            : null,
-        };
-      })
-      .filter((item) => item.email || item.providerNumber || item.name);
-  }
-
   return String(value || "")
     .split(/[;,]/)
     .map((email) => email.trim())
@@ -67,20 +44,88 @@ function parseCc(value: unknown) {
     .map((email) => ({ email }));
 }
 
+async function getAppointmentDateForDraft(draftId: string) {
+  const { data } = await supabase
+    .from("report_letter_queue")
+    .select("appointment_time")
+    .eq("report_draft_id", draftId)
+    .order("appointment_time", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return data?.appointment_time
+    ? String(data.appointment_time).slice(0, 10)
+    : null;
+}
+
+async function updatePerioStatus(params: {
+  draftId: string;
+  attachedAt?: string | null;
+  attachmentName?: string | null;
+  error?: string | null;
+}) {
+  await supabase
+    .from("report_drafts")
+    .update({
+      periodontal_chart_attached_at: params.attachedAt || null,
+      periodontal_chart_attachment_name: params.attachmentName || null,
+      periodontal_chart_attachment_error: params.error || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.draftId);
+}
+
+async function stagePdf(params: {
+  buffer: Buffer;
+  draftId: string;
+  fileName: string;
+  folder: string;
+}) {
+  const storagePath = `${params.folder}/${params.draftId}/${Date.now()}-${
+    params.fileName
+  }`;
+
+  const { error } = await supabase.storage
+    .from(HELPER_UPLOAD_BUCKET)
+    .upload(storagePath, params.buffer, {
+      contentType: "application/pdf",
+      upsert: true,
+    });
+
+  if (error) {
+    throw new Error(`Could not stage PDF for MediRef: ${error.message}`);
+  }
+
+  return {
+    bucket: HELPER_UPLOAD_BUCKET,
+    storagePath,
+    fileName: params.fileName,
+    contentType: "application/pdf" as const,
+  };
+}
+
 export async function POST(req: Request) {
-  let storagePath: string | null = null;
+  const stagedPaths: string[] = [];
 
   try {
     const body = await req.json();
+    const actor = await getAuditActor();
 
-    const {
-      draftId,
-      referrerName,
-      referrerEmail,
-      referrerProviderNumber,
-      cc,
-      message,
-    } = body;
+    const draftId = String(body.draftId || "").trim();
+    const referrerName = String(body.referrerName || "").trim();
+    const referrerEmail = String(body.referrerEmail || "").trim();
+    const referrerProviderNumber = String(
+      body.referrerProviderNumber || "",
+    ).trim();
+    const cc = String(body.cc || body.ccEmails || "").trim();
+    const message = String(body.message || "").trim();
+    const attachPeriodontalChart = Boolean(body.attachPeriodontalChart);
+    const requestedPraktikaPatientId = String(
+      body.praktikaPatientId ||
+        body.praktika_patient_id ||
+        body.patientId ||
+        "",
+    ).trim();
 
     if (!draftId) {
       return NextResponse.json(
@@ -88,8 +133,6 @@ export async function POST(req: Request) {
         { status: 400 },
       );
     }
-
-    const actor = await getAuditActor();
 
     const { data: draft, error: draftError } = await supabase
       .from("report_drafts")
@@ -115,15 +158,14 @@ export async function POST(req: Request) {
     }
 
     const finalReferrerName =
-      String(referrerName || "").trim() ||
-      String(draft.referrer_name || "").trim();
+      referrerName || String(draft.referrer_name || "").trim();
 
     if (!finalReferrerName && !referrerEmail && !referrerProviderNumber) {
       return NextResponse.json(
         {
           success: false,
           error:
-            "Please select a MediRef referrer or enter recipient details before sending.",
+            "Please enter a MediRef recipient name, email, or provider number.",
         },
         { status: 400 },
       );
@@ -150,29 +192,115 @@ export async function POST(req: Request) {
       );
     }
 
-    const pdfBlob = await pdfResponse.blob();
-    const pdfBuffer = Buffer.from(await pdfBlob.arrayBuffer());
-
-    const patientName = String(draft.patient_name || "").trim();
+    const patientName = String(draft.patient_name || "Patient").trim();
     const splitName = splitPatientName(patientName);
 
-    const fileName = `${getFileDate()} ${getSafePatientName(
+    const letterFileName = `${new Date().toISOString().slice(0, 10)} ${safeFileName(
       patientName,
     )} Letter.pdf`;
 
-    storagePath = `mediref-uploads/${draftId}/${Date.now()}-${fileName}`;
+    const letterAttachment = await stagePdf({
+      buffer: Buffer.from(await pdfResponse.arrayBuffer()),
+      draftId,
+      fileName: letterFileName,
+      folder: "mediref-uploads",
+    });
 
-    const { error: uploadError } = await supabase.storage
-      .from(HELPER_UPLOAD_BUCKET)
-      .upload(storagePath, pdfBuffer, {
-        contentType: "application/pdf",
-        upsert: true,
+    stagedPaths.push(letterAttachment.storagePath);
+
+    const attachments = [letterAttachment];
+
+    let periodontalChartAttached = false;
+    let periodontalChartAttachmentName: string | null = null;
+    let periodontalChartError: string | null = null;
+
+    if (attachPeriodontalChart) {
+      const finalPraktikaPatientId =
+        requestedPraktikaPatientId ||
+        String(draft.praktika_patient_id || "").trim();
+
+      if (!finalPraktikaPatientId) {
+        periodontalChartError =
+          "Periodontal chart was requested, but no Praktika patient ID is linked.";
+
+        await updatePerioStatus({
+          draftId,
+          attachedAt: null,
+          attachmentName: null,
+          error: periodontalChartError,
+        });
+      } else {
+        try {
+          const appointmentDate = await getAppointmentDateForDraft(draftId);
+
+          let perioChart = await generatePeriodontalChartPdf({
+            patientId: finalPraktikaPatientId,
+            appointmentDate,
+            patientName,
+            providerName: actor.actorFullName || null,
+          });
+
+          if (!perioChart && appointmentDate) {
+            perioChart = await generatePeriodontalChartPdf({
+              patientId: finalPraktikaPatientId,
+              appointmentDate: null,
+              patientName,
+              providerName: actor.actorFullName || null,
+            });
+          }
+
+          if (perioChart) {
+            const perioAttachment = await stagePdf({
+              buffer: perioChart.buffer,
+              draftId,
+              fileName: perioChart.fileName,
+              folder: "mediref-uploads",
+            });
+
+            stagedPaths.push(perioAttachment.storagePath);
+            attachments.push(perioAttachment);
+
+            periodontalChartAttached = true;
+            periodontalChartAttachmentName = perioChart.fileName;
+
+            await updatePerioStatus({
+              draftId,
+              attachedAt: new Date().toISOString(),
+              attachmentName: perioChart.fileName,
+              error: null,
+            });
+          } else {
+            periodontalChartError =
+              "Periodontal chart was requested, but no periodontal chart was found.";
+
+            await updatePerioStatus({
+              draftId,
+              attachedAt: null,
+              attachmentName: null,
+              error: periodontalChartError,
+            });
+          }
+        } catch (error) {
+          periodontalChartError =
+            error instanceof Error
+              ? error.message
+              : "Failed to generate periodontal chart.";
+
+          await updatePerioStatus({
+            draftId,
+            attachedAt: null,
+            attachmentName: null,
+            error: periodontalChartError,
+          });
+        }
+      }
+    } else {
+      await updatePerioStatus({
+        draftId,
+        attachedAt: null,
+        attachmentName: null,
+        error: null,
       });
-
-    if (uploadError) {
-      throw new Error(
-        `Could not stage PDF for MediRef helper: ${uploadError.message}`,
-      );
     }
 
     const job = await createSendMedirefLetterJob({
@@ -186,24 +314,29 @@ export async function POST(req: Request) {
         },
         recipient: {
           name: finalReferrerName,
-          email: referrerEmail ? String(referrerEmail).trim() : null,
-          providerNumber: referrerProviderNumber
-            ? String(referrerProviderNumber).trim()
-            : null,
+          email: referrerEmail || null,
+          providerNumber: referrerProviderNumber || null,
         },
         cc: parseCc(cc),
-        attachment: {
-          bucket: HELPER_UPLOAD_BUCKET,
-          storagePath,
-          fileName,
-          contentType: "application/pdf",
-        },
+        attachments,
         message:
-          String(message || "").trim() ||
+          message ||
           `Specialist correspondence for ${patientName || "patient"}.`,
       },
       priority: 20,
     });
+
+    await supabase
+      .from("report_drafts")
+      .update({
+        emailed_to_referrer_at: new Date().toISOString(),
+        emailed_to_referrer_email: referrerEmail || finalReferrerName || null,
+        emailed_to_referrer_resend_id: `mediref:${job.id}`,
+        emailed_by_initials: actor.actorInitials,
+        emailed_by_name: actor.actorFullName,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", draftId);
 
     await createReportAuditEvent({
       reportDraftId: draft.id,
@@ -218,26 +351,35 @@ export async function POST(req: Request) {
           providerNumber: referrerProviderNumber || null,
         },
         cc: parseCc(cc),
-        fileName,
-        stagedStoragePath: storagePath,
-        queuedByInitials: actor.actorInitials,
-        queuedByName: actor.actorFullName,
+        attachments: attachments.map((item) => ({
+          fileName: item.fileName,
+          storagePath: item.storagePath,
+        })),
+        periodontalChartAttached,
+        periodontalChartAttachmentName,
+        periodontalChartError,
+        actorInitials: actor.actorInitials,
+        actorFullName: actor.actorFullName,
       },
     });
 
     return NextResponse.json({
       success: true,
       jobId: job.id,
+      recipient: referrerEmail || finalReferrerName,
+      periodontalChartAttached,
+      periodontalChartAttachmentName,
+      periodontalChartError,
       message:
         "MediRef send has been queued. The Mac Mini helper will process it.",
     });
   } catch (error) {
     console.error("Failed to queue MediRef send:", error);
 
-    if (storagePath) {
+    if (stagedPaths.length > 0) {
       await supabase.storage
         .from(HELPER_UPLOAD_BUCKET)
-        .remove([storagePath])
+        .remove(stagedPaths)
         .catch(() => null);
     }
 

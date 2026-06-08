@@ -491,6 +491,15 @@ export default function TypistPage() {
   const [secureEmailPreviewLoading, setSecureEmailPreviewLoading] =
     useState(false);
 
+  const [medirefModalOpen, setMedirefModalOpen] = useState(false);
+  const [medirefRecipientName, setMedirefRecipientName] = useState("");
+  const [medirefRecipientEmail, setMedirefRecipientEmail] = useState("");
+  const [medirefRecipientProviderNumber, setMedirefRecipientProviderNumber] =
+    useState("");
+  const [medirefCc, setMedirefCc] = useState("");
+  const [medirefMessage, setMedirefMessage] = useState("");
+  const [medirefConfirmed, setMedirefConfirmed] = useState(false);
+
   const [completeModalOpen, setCompleteModalOpen] = useState(false);
   const [completeConfirmed, setCompleteConfirmed] = useState(false);
   const [completeStep, setCompleteStep] = useState("");
@@ -599,10 +608,10 @@ export default function TypistPage() {
     }
 
     if (!selectedDraftEmailed) {
-      return "Email the encrypted PDF to the referrer.";
+      return "Send the approved PDF to the referrer via MediRef.";
     }
 
-    return "Completed: uploaded and emailed.";
+    return "Completed: uploaded and sent via MediRef.";
   }
 
   function getAutoGenerateStatusLabel() {
@@ -1340,6 +1349,121 @@ export default function TypistPage() {
 
       setSecureEmailModalOpen(false);
       setSecureEmailConfirmed(false);
+      setAttachPeriodontalChart(false);
+
+      await loadDrafts(selectedProviderId);
+      await loadQueue(selectedProviderId, queueStatusTab);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+
+  function getDefaultMedirefMessage() {
+    return `Specialist correspondence for ${
+      selectedDraft?.patient_name || patientName || "this patient"
+    }.`;
+  }
+
+  function openMedirefModal() {
+    if (!selectedDraft) return;
+
+    if (!["approved", "uploaded_to_praktika"].includes(selectedDraft.status)) {
+      alert("Only approved reports can be sent via MediRef.");
+      return;
+    }
+
+    setMedirefRecipientName(referrerName || selectedDraft.referrer_name || "");
+    setMedirefRecipientEmail(selectedDraft.emailed_to_referrer_email || "");
+    setMedirefRecipientProviderNumber("");
+    setMedirefCc(pdfCcText || "");
+    setMedirefMessage(getDefaultMedirefMessage());
+    setAttachPeriodontalChart(false);
+    setMedirefConfirmed(false);
+    setMedirefModalOpen(true);
+  }
+
+  async function sendViaMedirefFromModal() {
+    if (!selectedDraft) return;
+
+    if (
+      !medirefRecipientName.trim() &&
+      !medirefRecipientEmail.trim() &&
+      !medirefRecipientProviderNumber.trim()
+    ) {
+      alert("Enter a MediRef recipient name, email, or provider number.");
+      return;
+    }
+
+    if (medirefRecipientEmail.trim() && hasInvalidEmail(medirefRecipientEmail)) {
+      alert("Please check the recipient email address.");
+      return;
+    }
+
+    if (hasInvalidEmail(medirefCc)) {
+      alert("Please check the CC email address(es). Use commas to separate multiple addresses.");
+      return;
+    }
+
+    if (!medirefConfirmed) {
+      alert("Please tick the confirmation checkbox.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const response = await fetch("/api/report-writing/send-via-mediref", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          draftId: selectedDraft.id,
+          referrerName: medirefRecipientName.trim(),
+          referrerEmail: medirefRecipientEmail.trim(),
+          referrerProviderNumber: medirefRecipientProviderNumber.trim(),
+          cc: medirefCc,
+          message: medirefMessage,
+          attachPeriodontalChart,
+          praktikaPatientId:
+            selectedPraktikaPatientId ||
+            selectedDraft.praktika_patient_id ||
+            null,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success) {
+        alert(data.error || "Failed to queue MediRef send.");
+        return;
+      }
+
+      alert(
+        `MediRef send queued.${
+          attachPeriodontalChart
+            ? data.periodontalChartAttached
+              ? " Periodontal chart attached."
+              : ` Periodontal chart was NOT attached: ${
+                  data.periodontalChartError || "unknown reason"
+                }`
+            : ""
+        }`,
+      );
+
+      const sentAt = new Date().toISOString();
+
+      setSelectedDraft({
+        ...selectedDraft,
+        emailed_to_referrer_at: sentAt,
+        emailed_to_referrer_email:
+          data.recipient || medirefRecipientEmail.trim() || medirefRecipientName.trim(),
+        emailed_to_referrer_resend_id: data.jobId ? `mediref:${data.jobId}` : null,
+      });
+
+      setMedirefModalOpen(false);
+      setMedirefConfirmed(false);
       setAttachPeriodontalChart(false);
 
       await loadDrafts(selectedProviderId);
@@ -2685,6 +2809,56 @@ export default function TypistPage() {
     }
   }
 
+
+  async function previewPdf(draft: Draft) {
+    setLoading(true);
+
+    try {
+      if (selectedDraft?.id === draft.id) {
+        const persisted = await persistCurrentReferrerDetails({ quiet: false });
+
+        if (!persisted) {
+          alert("Could not save the referrer details before previewing the PDF. Please try again.");
+          return;
+        }
+      }
+
+      const response = await fetch("/api/report-writing/generate-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draftId: draft.id }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = "Failed to generate PDF preview";
+
+        try {
+          const parsed = JSON.parse(errorText);
+          errorMessage = parsed.error || errorMessage;
+        } catch {
+          if (errorText.trim()) {
+            errorMessage = errorText.slice(0, 500);
+          }
+        }
+
+        console.error("Preview PDF failed:", errorMessage);
+        alert(errorMessage);
+        return;
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+
+      window.setTimeout(() => {
+        window.URL.revokeObjectURL(url);
+      }, 60_000);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function bulkGenerateApprovedPdfs() {
     const selectedDrafts = drafts.filter((draft) =>
       selectedDraftIds.includes(draft.id),
@@ -3772,11 +3946,19 @@ export default function TypistPage() {
                 {selectedDraftCanComplete ? (
                   <>
                     <button
+                      onClick={() => previewPdf(selectedDraft)}
+                      disabled={loading}
+                      className="rounded-xl bg-slate-700 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                    >
+                      Preview PDF
+                    </button>
+
+                    <button
                       onClick={() => generatePdf(selectedDraft)}
                       disabled={loading}
                       className="rounded-xl bg-purple-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                     >
-                      {loading ? "Generating PDF..." : "Generate Branded PDF"}
+                      {loading ? "Generating PDF..." : "Download PDF"}
                     </button>
 
                     <button
@@ -3791,24 +3973,14 @@ export default function TypistPage() {
                   </>
                 ) : null}
 
-                {selectedDraftCanComplete ? (
-                  <button
-                    onClick={openOneClickCompleteModal}
-                    disabled={loading}
-                    className="rounded-xl bg-emerald-700 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                  >
-                    Complete: Upload + Email
-                  </button>
-                ) : null}
-
                 <button
-                  onClick={openSecureEmailModal}
+                  onClick={openMedirefModal}
                   disabled={loading || !selectedDraftCanComplete}
                   className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                 >
                   {selectedDraft.emailed_to_referrer_at
-                    ? "Resend Secure PDF To Referrer"
-                    : "Email Secure PDF To Referrer"}
+                    ? "Send Again Via MediRef"
+                    : "Send Via MediRef"}
                 </button>
 
                 <button
@@ -4071,6 +4243,172 @@ export default function TypistPage() {
                 className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
               >
                 {loading ? "Completing..." : "Upload + Email + Complete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+
+      {medirefModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-slate-950">
+                Send via MediRef
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                This will queue the branded PDF for the Mac Mini MediRef helper.
+                The helper will attach the PDF and send it through the shared
+                practice MediRef session.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                <div>
+                  <span className="font-semibold">Patient:</span>{" "}
+                  {selectedDraft?.patient_name || patientName || "Not selected"}
+                </div>
+                <div>
+                  <span className="font-semibold">DOB:</span>{" "}
+                  {selectedDraft?.patient_dob || patientDob || "Not entered"}
+                </div>
+              </div>
+
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  Recipient / referrer name
+                </div>
+                <input
+                  className="w-full rounded-xl border border-slate-300 p-3"
+                  value={medirefRecipientName}
+                  onChange={(event) => {
+                    setMedirefRecipientName(event.target.value);
+                    setMedirefConfirmed(false);
+                  }}
+                  placeholder="Dr Smith"
+                />
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  Recipient email, optional
+                </div>
+                <input
+                  className="w-full rounded-xl border border-slate-300 p-3"
+                  value={medirefRecipientEmail}
+                  onChange={(event) => {
+                    setMedirefRecipientEmail(event.target.value);
+                    setMedirefConfirmed(false);
+                  }}
+                  placeholder="referrer@example.com"
+                />
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  MediRef provider number, optional
+                </div>
+                <input
+                  className="w-full rounded-xl border border-slate-300 p-3"
+                  value={medirefRecipientProviderNumber}
+                  onChange={(event) => {
+                    setMedirefRecipientProviderNumber(event.target.value);
+                    setMedirefConfirmed(false);
+                  }}
+                  placeholder="Provider number if known"
+                />
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  CC email address(es), optional
+                </div>
+                <input
+                  className="w-full rounded-xl border border-slate-300 p-3"
+                  value={medirefCc}
+                  onChange={(event) => {
+                    setMedirefCc(event.target.value);
+                    setMedirefConfirmed(false);
+                  }}
+                  placeholder="second.referrer@example.com, practice@example.com"
+                />
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-sm font-semibold text-slate-700">
+                  Message
+                </div>
+                <textarea
+                  className="h-32 w-full rounded-xl border border-slate-300 p-3"
+                  value={medirefMessage}
+                  onChange={(event) => setMedirefMessage(event.target.value)}
+                />
+              </label>
+
+              <label className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+                <input
+                  type="checkbox"
+                  checked={attachPeriodontalChart}
+                  disabled={
+                    !(selectedPraktikaPatientId || selectedDraft?.praktika_patient_id)
+                  }
+                  onChange={(event) => setAttachPeriodontalChart(event.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-semibold">Attach periodontal chart</span>
+                  <br />
+                  Optional. Only available when a Praktika patient is linked.
+                </span>
+              </label>
+
+              <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                <input
+                  type="checkbox"
+                  checked={medirefConfirmed}
+                  onChange={(event) => setMedirefConfirmed(event.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  I have checked the patient, recipient/referrer, CC details,
+                  and attachments before sending via MediRef.
+                </span>
+              </label>
+            </div>
+
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setMedirefModalOpen(false);
+                  setMedirefConfirmed(false);
+                  setAttachPeriodontalChart(false);
+                }}
+                disabled={loading}
+                className="rounded-xl border px-5 py-3 font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={sendViaMedirefFromModal}
+                disabled={
+                  loading ||
+                  !medirefConfirmed ||
+                  (!medirefRecipientName.trim() &&
+                    !medirefRecipientEmail.trim() &&
+                    !medirefRecipientProviderNumber.trim()) ||
+                  (medirefRecipientEmail.trim()
+                    ? hasInvalidEmail(medirefRecipientEmail)
+                    : false) ||
+                  hasInvalidEmail(medirefCc)
+                }
+                className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+              >
+                {loading ? "Queuing..." : "Queue MediRef Send"}
               </button>
             </div>
           </div>
