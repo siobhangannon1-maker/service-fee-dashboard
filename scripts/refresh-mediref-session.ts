@@ -60,7 +60,7 @@ type MedirefHelperJob = {
   priority: number;
   request: any;
   response: any;
-  error_message: string | null;
+  error: string | null;
   attempts: number | null;
   locked_at: string | null;
   locked_by: string | null;
@@ -657,7 +657,7 @@ async function completeMedirefJob(
     .update({
       status: "completed",
       response,
-      error_message: null,
+      error: null,
       completed_at: nowIso(),
       locked_at: null,
       locked_by: null,
@@ -675,7 +675,7 @@ async function failMedirefJob(jobId: string, message: string) {
     .from("mediref_helper_jobs")
     .update({
       status: "failed",
-      error_message: message,
+      error: message,
       failed_at: nowIso(),
       locked_at: null,
       locked_by: null,

@@ -48,7 +48,7 @@ export type MedirefHelperJob = {
   priority: number;
   request: MedirefHelperRequest;
   response: Record<string, unknown> | null;
-  error_message: string | null;
+  error: string | null;
   attempts: number;
   locked_at: string | null;
   locked_by: string | null;
@@ -87,7 +87,7 @@ export async function createMedirefHelperJob({
       priority,
       request,
       response: null,
-      error_message: null,
+      error: null,
       attempts: 0,
       locked_at: null,
       locked_by: null,
@@ -162,7 +162,7 @@ export async function completeMedirefHelperJob({
     .update({
       status: "completed",
       response,
-      error_message: null,
+      error: null,
       completed_at: nowIso(),
       locked_at: null,
       locked_by: null,
@@ -190,7 +190,7 @@ export async function failMedirefHelperJob({
     .from("mediref_helper_jobs")
     .update({
       status,
-      error_message: errorMessage,
+      error: errorMessage,
       failed_at: retry ? null : nowIso(),
       locked_at: null,
       locked_by: null,
