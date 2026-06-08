@@ -58,15 +58,13 @@ type MedirefHelperJob = {
   job_type: string;
   status: string;
   priority: number;
-  request: any;
-  response: any;
+  payload: any;
+  result: any;
   error: string | null;
   attempts: number | null;
   locked_at: string | null;
   locked_by: string | null;
   available_at: string;
-  completed_at: string | null;
-  failed_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -656,9 +654,8 @@ async function completeMedirefJob(
     .from("mediref_helper_jobs")
     .update({
       status: "completed",
-      response,
+      result: response,
       error: null,
-      completed_at: nowIso(),
       locked_at: null,
       locked_by: null,
       updated_at: nowIso(),
@@ -676,7 +673,6 @@ async function failMedirefJob(jobId: string, message: string) {
     .update({
       status: "failed",
       error: message,
-      failed_at: nowIso(),
       locked_at: null,
       locked_by: null,
       updated_at: nowIso(),
@@ -690,10 +686,10 @@ async function failMedirefJob(jobId: string, message: string) {
 
 async function downloadStagedAttachments(job: MedirefHelperJob) {
   const rawAttachments =
-    Array.isArray(job.request?.attachments) && job.request.attachments.length > 0
-      ? job.request.attachments
-      : job.request?.attachment
-        ? [job.request.attachment]
+    Array.isArray(job.payload?.attachments) && job.payload.attachments.length > 0
+      ? job.payload.attachments
+      : job.payload?.attachment
+        ? [job.payload.attachment]
         : [];
 
   if (rawAttachments.length === 0) {
@@ -1062,7 +1058,7 @@ async function sendMedirefLetterWithBrowser(
   job: MedirefHelperJob,
   localPdfPaths: string[],
 ) {
-  const request = job.request;
+  const request = job.payload;
   const recipient = request.recipient || {};
   const cc = Array.isArray(request.cc) ? request.cc : [];
   const practiceName = getRecipientPracticeName(request);
