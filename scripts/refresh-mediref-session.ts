@@ -2,7 +2,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import dotenv from "dotenv";
-import { chromium, type BrowserContext, type Page, type Locator } from "playwright";
+import { chromium, type BrowserContext, type Page } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 
 dotenv.config({ path: ".env.local" });
@@ -701,8 +701,7 @@ async function downloadStagedAttachments(job: MedirefHelperJob) {
   }
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mediref-send-"));
-
-  const files = [];
+  const files: Array<{ localPath: string; fileName: string }> = [];
 
   for (const attachment of rawAttachments) {
     if (!attachment?.bucket || !attachment?.storagePath || !attachment?.fileName) {
@@ -733,6 +732,40 @@ async function downloadStagedAttachments(job: MedirefHelperJob) {
   return { tempDir, files };
 }
 
+function normaliseForMatching(value: unknown) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/^dr\s+/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatDobForMediref(value: unknown) {
+  const clean = String(value || "").trim();
+
+  if (!clean) return "";
+
+  const isoMatch = clean.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+  }
+
+  return clean;
+}
+
+function getRecipientPracticeName(request: any) {
+  return String(
+    request?.recipient?.practiceName ||
+      request?.recipient?.practice_name ||
+      request?.referrerPracticeName ||
+      request?.referrer_practice_name ||
+      request?.practiceName ||
+      request?.practice_name ||
+      "",
+  ).trim();
+}
+
 async function debugVisibleInputs(page: Page) {
   const inputs = await page
     .locator("input, textarea, select, button")
@@ -746,7 +779,7 @@ async function debugVisibleInputs(page: Page) {
           id: element.getAttribute("id"),
           placeholder: element.getAttribute("placeholder"),
           ariaLabel: element.getAttribute("aria-label"),
-          text: htmlElement.innerText?.slice(0, 80) || "",
+          text: htmlElement.innerText?.slice(0, 100) || "",
           visible: Boolean(
             htmlElement.offsetWidth ||
               htmlElement.offsetHeight ||
@@ -758,6 +791,15 @@ async function debugVisibleInputs(page: Page) {
     .catch((error) => [{ error: String(error) }]);
 
   console.log("MediRef send page element debug:", JSON.stringify(inputs, null, 2));
+}
+
+async function debugRecipientResults(page: Page) {
+  const results = await page
+    .locator("body")
+    .innerText({ timeout: 5000 })
+    .catch(() => "");
+
+  console.log("MediRef recipient/search page text:", results.slice(0, 4000));
 }
 
 async function fillFirstVisibleTextFieldByHints(
@@ -795,6 +837,196 @@ async function fillFirstVisibleTextFieldByHints(
   return false;
 }
 
+async function fillComposePatientDetails(page: Page, request: any) {
+  const patient = request.patient || {};
+  const firstName = String(patient.firstName || patient.first_name || "").trim();
+  const lastName = String(patient.lastName || patient.last_name || "").trim();
+  const fullName = [firstName, lastName].filter(Boolean).join(" ");
+  const dob = formatDobForMediref(patient.dob || patient.dateOfBirth);
+
+  const nameField = page
+    .locator(
+      [
+        'input[name*="patient" i]',
+        'input[id*="patient" i]',
+        'input[placeholder*="patient" i]',
+        'input[name*="name" i]',
+        'input[id*="name" i]',
+        'input[placeholder*="name" i]',
+      ].join(", "),
+    )
+    .first();
+
+  if (fullName && (await nameField.count().catch(() => 0)) > 0) {
+    await nameField.fill(fullName).catch(async () => {
+      await fillFirstVisibleTextFieldByHints(page, ["patient", "name"], fullName);
+    });
+  } else if (fullName) {
+    await fillFirstVisibleTextFieldByHints(page, ["patient", "name"], fullName);
+  }
+
+  if (dob) {
+    const dobFilled = await fillFirstVisibleTextFieldByHints(
+      page,
+      ["dob", "birth", "date"],
+      dob,
+    );
+
+    if (!dobFilled) {
+      await page.getByLabel(/date of birth|dob/i).fill(dob).catch(() => null);
+    }
+  }
+}
+
+async function getRecipientSearchInput(page: Page) {
+  const candidates = page.locator(
+    [
+      'input[placeholder*="Search directory" i]',
+      'input[placeholder*="directory" i]',
+      'input[placeholder*="recipient" i]',
+      'input[name*="recipient" i]',
+      'input[id*="recipient" i]',
+      'input[aria-label*="recipient" i]',
+      'input[aria-label*="directory" i]',
+      'input[type="search"]',
+      'input[type="text"]',
+    ].join(", "),
+  );
+
+  const count = await candidates.count().catch(() => 0);
+
+  for (let i = 0; i < count; i += 1) {
+    const candidate = candidates.nth(i);
+    const visible = await candidate.isVisible().catch(() => false);
+    if (!visible) continue;
+
+    const box = await candidate.boundingBox().catch(() => null);
+    if (box && box.width > 250) return candidate;
+  }
+
+  return null;
+}
+
+async function chooseBestRecipientResult(params: {
+  page: Page;
+  recipientName: string;
+  practiceName: string;
+}) {
+  const { page, recipientName, practiceName } = params;
+  const nameKey = normaliseForMatching(recipientName);
+  const practiceKey = normaliseForMatching(practiceName);
+
+  const candidateSelectors = [
+    '[role="option"]',
+    '[cmdk-item]',
+    '[data-radix-collection-item]',
+    'li',
+    'button',
+    'div:has-text("@")',
+  ];
+
+  let best: { index: number; score: number; selector: string; text: string } | null = null;
+
+  for (const selector of candidateSelectors) {
+    const locator = page.locator(selector);
+    const count = Math.min(await locator.count().catch(() => 0), 50);
+
+    for (let i = 0; i < count; i += 1) {
+      const item = locator.nth(i);
+      const visible = await item.isVisible().catch(() => false);
+      if (!visible) continue;
+
+      const text = await item.innerText().catch(() => "");
+      const normalisedText = normaliseForMatching(text);
+
+      if (!normalisedText || normalisedText.length < 4) continue;
+
+      let score = 0;
+
+      if (practiceKey && normalisedText.includes(practiceKey)) score += 100;
+      if (nameKey && normalisedText.includes(nameKey)) score += 80;
+
+      const nameWords = nameKey.split(" ").filter((word) => word.length > 2);
+      const practiceWords = practiceKey.split(" ").filter((word) => word.length > 2);
+
+      for (const word of nameWords) {
+        if (normalisedText.includes(word)) score += 15;
+      }
+
+      for (const word of practiceWords) {
+        if (normalisedText.includes(word)) score += 12;
+      }
+
+      if (text.includes("@")) score += 10;
+
+      if (score > 0 && (!best || score > best.score)) {
+        best = { index: i, score, selector, text };
+      }
+    }
+
+    if (best && best.score >= 100) break;
+  }
+
+  if (!best) return false;
+
+  console.log("Best MediRef recipient match:", {
+    score: best.score,
+    selector: best.selector,
+    text: best.text.slice(0, 500),
+  });
+
+  await page.locator(best.selector).nth(best.index).click({ force: true });
+  await page.waitForTimeout(1500);
+
+  return true;
+}
+
+async function searchAndSelectMedirefRecipient(page: Page, request: any) {
+  const recipient = request.recipient || {};
+  const recipientName = String(recipient.name || "").trim();
+  const recipientEmail = String(recipient.email || "").trim();
+  const providerNumber = String(recipient.providerNumber || "").trim();
+  const practiceName = getRecipientPracticeName(request);
+
+  const searchInput = await getRecipientSearchInput(page);
+
+  if (!searchInput) {
+    await debugVisibleInputs(page);
+    throw new Error("Could not find MediRef recipient directory search field.");
+  }
+
+  const queries = [
+    practiceName && recipientName ? `${practiceName} ${recipientName}` : "",
+    practiceName,
+    recipientName,
+    providerNumber,
+    recipientEmail,
+  ].filter(Boolean);
+
+  for (const query of queries) {
+    console.log("Searching MediRef directory:", query);
+
+    await searchInput.fill("");
+    await page.waitForTimeout(250);
+    await searchInput.fill(query);
+    await page.waitForTimeout(2500);
+
+    const selected = await chooseBestRecipientResult({
+      page,
+      recipientName,
+      practiceName,
+    });
+
+    if (selected) return true;
+  }
+
+  await debugRecipientResults(page);
+
+  throw new Error(
+    `Could not automatically match MediRef recipient. Tried referrer "${recipientName}" and practice "${practiceName}".`,
+  );
+}
+
 async function uploadPdfsToFileInput(page: Page, localPaths: string[]) {
   const fileInput = page.locator('input[type="file"]').first();
 
@@ -806,67 +1038,40 @@ async function uploadPdfsToFileInput(page: Page, localPaths: string[]) {
   return true;
 }
 
+async function openComposePage(page: Page) {
+  await page.goto(`${MEDIREF_BASE_URL}/compose`, {
+    waitUntil: "domcontentloaded",
+    timeout: 90_000,
+  });
+
+  await page.waitForTimeout(3000);
+
+  if (!page.url().toLowerCase().includes("/compose")) {
+    await clickFirstVisible(page, [
+      'a:has-text("Compose")',
+      'button:has-text("Compose")',
+      'a[href*="compose"]',
+    ]);
+
+    await page.waitForTimeout(3000);
+  }
+}
+
 async function sendMedirefLetterWithBrowser(
   page: Page,
   job: MedirefHelperJob,
   localPdfPaths: string[],
 ) {
   const request = job.request;
-  const patient = request.patient || {};
   const recipient = request.recipient || {};
   const cc = Array.isArray(request.cc) ? request.cc : [];
+  const practiceName = getRecipientPracticeName(request);
 
-  await page.goto(`${MEDIREF_BASE_URL}/search`, {
-    waitUntil: "domcontentloaded",
-    timeout: 90_000,
-  });
+  await openComposePage(page);
 
-  await page.waitForTimeout(2500);
+  await fillComposePatientDetails(page, request);
 
-  await clickFirstVisible(page, [
-    'a:has-text("New")',
-    'button:has-text("New")',
-    'a:has-text("Send")',
-    'button:has-text("Send")',
-    'a:has-text("Referral")',
-    'button:has-text("Referral")',
-    'a:has-text("Compose")',
-    'button:has-text("Compose")',
-  ]);
-
-  await page.waitForTimeout(2500);
-
-  await fillFirstVisibleTextFieldByHints(
-    page,
-    ["first", "given", "patient"],
-    String(patient.firstName || ""),
-  );
-
-  await fillFirstVisibleTextFieldByHints(
-    page,
-    ["last", "surname", "family"],
-    String(patient.lastName || ""),
-  );
-
-  await fillFirstVisibleTextFieldByHints(
-    page,
-    ["dob", "birth", "date"],
-    String(patient.dob || ""),
-  );
-
-  await fillFirstVisibleTextFieldByHints(
-    page,
-    ["recipient", "referrer", "provider", "doctor", "to"],
-    String(recipient.name || recipient.email || recipient.providerNumber || ""),
-  );
-
-  if (recipient.email) {
-    await fillFirstVisibleTextFieldByHints(
-      page,
-      ["email"],
-      String(recipient.email || ""),
-    );
-  }
+  await searchAndSelectMedirefRecipient(page, request);
 
   if (cc.length > 0) {
     await fillFirstVisibleTextFieldByHints(
@@ -906,6 +1111,12 @@ async function sendMedirefLetterWithBrowser(
       sent: false,
       autoSend: false,
       currentUrl: await safePageUrl(page),
+      recipient: {
+        name: recipient.name || null,
+        practiceName: practiceName || null,
+        email: recipient.email || null,
+        providerNumber: recipient.providerNumber || null,
+      },
       message:
         "MediRef form was prepared and PDF was attached. Final send was not clicked because MEDIREF_AUTO_SEND is false.",
     };
@@ -930,6 +1141,12 @@ async function sendMedirefLetterWithBrowser(
     sent: true,
     autoSend: true,
     currentUrl: await safePageUrl(page),
+    recipient: {
+      name: recipient.name || null,
+      practiceName: practiceName || null,
+      email: recipient.email || null,
+      providerNumber: recipient.providerNumber || null,
+    },
   };
 }
 
@@ -955,13 +1172,13 @@ async function processOnePendingMedirefJob(page: Page, context: BrowserContext) 
     }
 
     const downloaded = await downloadStagedAttachments(job);
-tempDir = downloaded.tempDir;
+    tempDir = downloaded.tempDir;
 
-const result = await sendMedirefLetterWithBrowser(
-  page,
-  job,
-  downloaded.files.map((file) => file.localPath),
-);
+    const result = await sendMedirefLetterWithBrowser(
+      page,
+      job,
+      downloaded.files.map((file) => file.localPath),
+    );
 
     await completeMedirefJob(job.id, {
       ...result,

@@ -164,6 +164,21 @@ function formatManualReferrerAddress(referrer: any) {
 
 
 
+function getMedirefPracticeNameFromAddress(value: string | null | undefined) {
+  const cleanValue = String(value || "").trim();
+
+  if (!cleanValue) return "";
+
+  const lines = cleanValue
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return "";
+
+  return lines[0];
+}
+
 function getDraftClinicalNotes(draft: Draft) {
   return (
     cleanString(draft.clinical_notes) ||
@@ -493,12 +508,20 @@ export default function TypistPage() {
 
   const [medirefModalOpen, setMedirefModalOpen] = useState(false);
   const [medirefRecipientName, setMedirefRecipientName] = useState("");
+  const [medirefRecipientPracticeName, setMedirefRecipientPracticeName] =
+    useState("");
+  const [medirefAutoMatchRecipient, setMedirefAutoMatchRecipient] =
+    useState(true);
   const [medirefRecipientEmail, setMedirefRecipientEmail] = useState("");
   const [medirefRecipientProviderNumber, setMedirefRecipientProviderNumber] =
     useState("");
   const [medirefCc, setMedirefCc] = useState("");
   const [medirefMessage, setMedirefMessage] = useState("");
   const [medirefConfirmed, setMedirefConfirmed] = useState(false);
+
+  const [pdfPreviewModalOpen, setPdfPreviewModalOpen] = useState(false);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [pdfPreviewTitle, setPdfPreviewTitle] = useState("PDF preview");
 
   const [completeModalOpen, setCompleteModalOpen] = useState(false);
   const [completeConfirmed, setCompleteConfirmed] = useState(false);
@@ -1374,6 +1397,10 @@ export default function TypistPage() {
     }
 
     setMedirefRecipientName(referrerName || selectedDraft.referrer_name || "");
+    setMedirefRecipientPracticeName(
+      getMedirefPracticeNameFromAddress(referrerAddress || selectedDraft.referrer_address || ""),
+    );
+    setMedirefAutoMatchRecipient(true);
     setMedirefRecipientEmail(selectedDraft.emailed_to_referrer_email || "");
     setMedirefRecipientProviderNumber("");
     setMedirefCc(pdfCcText || "");
@@ -1388,10 +1415,11 @@ export default function TypistPage() {
 
     if (
       !medirefRecipientName.trim() &&
+      !medirefRecipientPracticeName.trim() &&
       !medirefRecipientEmail.trim() &&
       !medirefRecipientProviderNumber.trim()
     ) {
-      alert("Enter a MediRef recipient name, email, or provider number.");
+      alert("Enter a referrer name, practice name, email, or provider number.");
       return;
     }
 
@@ -1421,6 +1449,8 @@ export default function TypistPage() {
         body: JSON.stringify({
           draftId: selectedDraft.id,
           referrerName: medirefRecipientName.trim(),
+          referrerPracticeName: medirefRecipientPracticeName.trim(),
+          medirefAutoMatchRecipient,
           referrerEmail: medirefRecipientEmail.trim(),
           referrerProviderNumber: medirefRecipientProviderNumber.trim(),
           cc: medirefCc,
@@ -1568,6 +1598,14 @@ export default function TypistPage() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (pdfPreviewUrl) {
+        window.URL.revokeObjectURL(pdfPreviewUrl);
+      }
+    };
+  }, [pdfPreviewUrl]);
+
+  useEffect(() => {
     loadProviders();
   }, []);
 
@@ -1707,6 +1745,14 @@ export default function TypistPage() {
     setPraktikaCandidates([]);
     setSelectedPraktikaPatientId("");
     setAttachPeriodontalChart(false);
+    setMedirefRecipientName("");
+    setMedirefRecipientPracticeName("");
+    setMedirefAutoMatchRecipient(true);
+    setMedirefRecipientEmail("");
+    setMedirefRecipientProviderNumber("");
+    setMedirefCc("");
+    setMedirefMessage("");
+    setMedirefConfirmed(false);
     setImageDraftId(null);
     setImageDraftError(null);
     autoImageDraftQueueIdRef.current = null;
@@ -2849,11 +2895,19 @@ export default function TypistPage() {
 
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener,noreferrer");
 
-      window.setTimeout(() => {
-        window.URL.revokeObjectURL(url);
-      }, 60_000);
+      if (pdfPreviewUrl) {
+        window.URL.revokeObjectURL(pdfPreviewUrl);
+      }
+
+      setPdfPreviewTitle(
+        getFilenameFromResponse(
+          response,
+          `${safeFileName(draft.patient_name)} Letter.pdf`,
+        ),
+      );
+      setPdfPreviewUrl(url);
+      setPdfPreviewModalOpen(true);
     } finally {
       setLoading(false);
     }
@@ -4250,6 +4304,49 @@ export default function TypistPage() {
       ) : null}
 
 
+      {pdfPreviewModalOpen && pdfPreviewUrl ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="flex h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-950">Preview PDF</h2>
+                <p className="text-sm text-slate-500">{pdfPreviewTitle}</p>
+              </div>
+
+              <div className="flex gap-2">
+                <a
+                  href={pdfPreviewUrl}
+                  download={pdfPreviewTitle}
+                  className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Download
+                </a>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPdfPreviewModalOpen(false);
+                    if (pdfPreviewUrl) {
+                      window.URL.revokeObjectURL(pdfPreviewUrl);
+                    }
+                    setPdfPreviewUrl(null);
+                  }}
+                  className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <iframe
+              title="PDF preview"
+              src={pdfPreviewUrl}
+              className="h-full w-full flex-1 bg-slate-100"
+            />
+          </div>
+        </div>
+      ) : null}
+
+
       {medirefModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
@@ -4274,11 +4371,25 @@ export default function TypistPage() {
                   <span className="font-semibold">DOB:</span>{" "}
                   {selectedDraft?.patient_dob || patientDob || "Not entered"}
                 </div>
+                <div>
+                  <span className="font-semibold">Report:</span>{" "}
+                  {reportTypes.find((type) => type.value === selectedDraft?.report_type)?.label ||
+                    reportTypes.find((type) => type.value === reportType)?.label ||
+                    selectedDraft?.report_type ||
+                    reportType}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
+                <div className="font-semibold">Automatic MediRef recipient matching</div>
+                <p className="mt-1 text-sm">
+                  The Mac Mini helper will search the MediRef directory using the referrer name and practice name below, then select the best matching directory result before attaching the PDF.
+                </p>
               </div>
 
               <label className="block">
                 <div className="mb-1 text-sm font-semibold text-slate-700">
-                  Recipient / referrer name
+                  Referrer name
                 </div>
                 <input
                   className="w-full rounded-xl border border-slate-300 p-3"
@@ -4293,33 +4404,76 @@ export default function TypistPage() {
 
               <label className="block">
                 <div className="mb-1 text-sm font-semibold text-slate-700">
-                  Recipient email, optional
+                  Practice name
                 </div>
                 <input
                   className="w-full rounded-xl border border-slate-300 p-3"
-                  value={medirefRecipientEmail}
+                  value={medirefRecipientPracticeName}
                   onChange={(event) => {
-                    setMedirefRecipientEmail(event.target.value);
+                    setMedirefRecipientPracticeName(event.target.value);
                     setMedirefConfirmed(false);
                   }}
-                  placeholder="referrer@example.com"
+                  placeholder="Practice name from the selected referrer"
                 />
+                <p className="mt-1 text-xs text-slate-500">
+                  Pulled from the first line of the saved referrer address. You can edit it if MediRef uses a slightly different practice name.
+                </p>
               </label>
 
-              <label className="block">
-                <div className="mb-1 text-sm font-semibold text-slate-700">
-                  MediRef provider number, optional
-                </div>
+              <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
                 <input
-                  className="w-full rounded-xl border border-slate-300 p-3"
-                  value={medirefRecipientProviderNumber}
+                  type="checkbox"
+                  checked={medirefAutoMatchRecipient}
                   onChange={(event) => {
-                    setMedirefRecipientProviderNumber(event.target.value);
+                    setMedirefAutoMatchRecipient(event.target.checked);
                     setMedirefConfirmed(false);
                   }}
-                  placeholder="Provider number if known"
+                  className="mt-1"
                 />
+                <span>
+                  <span className="font-semibold">Match recipient in MediRef automatically</span>
+                  <br />
+                  Searches by referrer name first, then practice name if needed.
+                </span>
               </label>
+
+              <details className="rounded-xl border border-slate-200 bg-white p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-700">
+                  Optional manual fallback details
+                </summary>
+
+                <div className="mt-3 space-y-4">
+                  <label className="block">
+                    <div className="mb-1 text-sm font-semibold text-slate-700">
+                      Recipient email, optional
+                    </div>
+                    <input
+                      className="w-full rounded-xl border border-slate-300 p-3"
+                      value={medirefRecipientEmail}
+                      onChange={(event) => {
+                        setMedirefRecipientEmail(event.target.value);
+                        setMedirefConfirmed(false);
+                      }}
+                      placeholder="referrer@example.com"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-sm font-semibold text-slate-700">
+                      MediRef provider number, optional
+                    </div>
+                    <input
+                      className="w-full rounded-xl border border-slate-300 p-3"
+                      value={medirefRecipientProviderNumber}
+                      onChange={(event) => {
+                        setMedirefRecipientProviderNumber(event.target.value);
+                        setMedirefConfirmed(false);
+                      }}
+                      placeholder="Provider number if known"
+                    />
+                  </label>
+                </div>
+              </details>
 
               <label className="block">
                 <div className="mb-1 text-sm font-semibold text-slate-700">
@@ -4399,6 +4553,7 @@ export default function TypistPage() {
                   loading ||
                   !medirefConfirmed ||
                   (!medirefRecipientName.trim() &&
+                    !medirefRecipientPracticeName.trim() &&
                     !medirefRecipientEmail.trim() &&
                     !medirefRecipientProviderNumber.trim()) ||
                   (medirefRecipientEmail.trim()
