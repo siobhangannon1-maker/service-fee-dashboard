@@ -968,7 +968,9 @@ export default function TypistPage() {
           learningSource: "typist_image_workspace",
           praktikaPatientId: selectedPraktikaPatientId || null,
           queueId: activeQueueItemId,
-          status: "draft",
+          // Typist queue workspaces should not appear in the provider Drafts folder.
+          // The provider Drafts folder intentionally shows only provider-created drafts with status "draft".
+          status: "edited_by_typist",
         }),
       });
 
@@ -2828,7 +2830,9 @@ export default function TypistPage() {
             ? "Letter approved."
             : status === "awaiting_provider_approval"
               ? "Letter sent to provider approval."
-              : "Draft saved for provider.",
+              : status === "edited_by_typist"
+                ? "Draft saved for typist."
+                : "Draft saved.",
         );
 
         if (activeQueueItemId) {
@@ -2892,7 +2896,9 @@ export default function TypistPage() {
           ? "Letter approved."
           : status === "awaiting_provider_approval"
             ? "Letter sent to provider approval."
-            : "Draft saved for provider.",
+            : status === "edited_by_typist"
+              ? "Draft saved for typist."
+              : "Draft saved.",
       );
 
       if (activeQueueItemId) {
@@ -4222,7 +4228,7 @@ export default function TypistPage() {
             {!selectedDraft ? (
               <>
                 <button
-                  onClick={() => saveNewDraft("draft")}
+                  onClick={() => saveNewDraft("edited_by_typist")}
                   disabled={loading}
                   className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
                 >
