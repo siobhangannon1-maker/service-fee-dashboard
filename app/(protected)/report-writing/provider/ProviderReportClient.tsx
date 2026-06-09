@@ -515,77 +515,81 @@ export default function ProviderReportClient({
   }
 
   async function saveLetterAsDraft(options?: {
-    text?: string;
-    sourceType?: "dictation" | "smart_dictation" | "clinical_notes";
-    showToast?: boolean;
-  }) {
-    const text = String(
-      options?.text ?? dictatedLetter ?? generatedReport ?? "",
-    ).trim();
+  text?: string;
+  sourceType?: "dictation" | "smart_dictation" | "clinical_notes";
+  showToast?: boolean;
+}) {
+  const text = String(
+    options?.text ?? dictatedLetter ?? generatedReport ?? "",
+  ).trim();
 
-    if (!validatePatientName()) return null;
+  if (!validatePatientName()) return null;
 
-    if (!text) {
-      alert(
-        "Dictate, smart dictate, or write the letter before saving a draft.",
-      );
+  if (!text) {
+    alert("Dictate, smart dictate, or write the letter before saving a draft.");
+    return null;
+  }
+
+  setRecordingState((current) =>
+    current === "recording" || current === "paused" ? "saving" : current,
+  );
+  setLoading(true);
+  setSavedMessage("");
+
+  try {
+    const sourceType = options?.sourceType || "dictation";
+
+    const response = await fetch("/api/report-writing/save-draft", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId,
+        patientName,
+        patientDob,
+        referrerName,
+        referrerAddress,
+        reportType: sourceType === "dictation" ? "dictated_letter" : reportType,
+        clinicalNotes: text,
+        typistInstructions,
+        generatedReport: text,
+        editedText: text,
+        sourceType,
+        status: "draft",
+        learnFromEdits: false,
+        praktikaPatientId: null,
+      }),
+    });
+
+    const data = await readJsonSafely(response);
+
+    if (!data.success) {
+      alert(data.error || "Failed to save draft");
       return null;
     }
 
-    setRecordingState((current) =>
-      current === "recording" || current === "paused" ? "saving" : current,
-    );
-    setLoading(true);
-    setSavedMessage("");
-
-    try {
-      const sourceType = options?.sourceType || "dictation";
-      const response = await fetch("/api/report-writing/save-draft", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          providerId,
-          patientName,
-          patientDob,
-          referrerName,
-          referrerAddress,
-          reportType:
-            sourceType === "dictation" ? "dictated_letter" : reportType,
-          clinicalNotes: text,
-          typistInstructions,
-          generatedReport: text,
-          editedText: text,
-          sourceType,
-          status: "draft",
-          learnFromEdits: false,
-          praktikaPatientId: null,
-        }),
-      });
-
-      const data = await readJsonSafely(response);
-
-      if (!data.success) {
-        alert(data.error || "Failed to save draft");
-        return null;
-      }
-
-      const successMessage =
-        "Draft saved. You can reopen it from the Drafts panel.";
-      setSavedMessage(successMessage);
-
-      if (options?.showToast !== false) {
-        showSavedConfirmation("Draft saved", successMessage);
-      }
-
-      await loadDrafts();
-      return data;
-    } finally {
-      setLoading(false);
-      setRecordingState("idle");
+    if (data.draft) {
+      setSelectedDraft(data.draft);
     }
+
+    const successMessage =
+      "Draft saved. You can reopen it from the Drafts panel.";
+
+    setSavedMessage(successMessage);
+
+    if (options?.showToast !== false) {
+      showSavedConfirmation("Draft saved", successMessage);
+    }
+
+    await loadDrafts();
+
+    return data;
+  } finally {
+    setLoading(false);
+    setRecordingState("idle");
   }
+}
 
   async function approveCurrentDraft() {
     const text = (
