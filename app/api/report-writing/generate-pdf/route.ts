@@ -109,25 +109,58 @@ function cleanLetterText(text: string) {
 type TextRun = {
   text: string;
   bold: boolean;
+  italic: boolean;
+  underline: boolean;
 };
 
-function parseBoldMarkdown(text: string): TextRun[] {
+function parseMarkdownRuns(text: string): TextRun[] {
   const runs: TextRun[] = [];
-  const parts = String(text || "").split(/(\*\*)/);
+  let current = "";
   let bold = false;
+  let italic = false;
+  let underline = false;
 
-  for (const part of parts) {
-    if (part === "**") {
+  function flush() {
+    if (!current) return;
+    runs.push({ text: current, bold, italic, underline });
+    current = "";
+  }
+
+  for (let i = 0; i < text.length; i++) {
+    const nextTwo = text.slice(i, i + 2);
+
+    if (nextTwo === "**") {
+      flush();
       bold = !bold;
+      i++;
       continue;
     }
 
-    if (part) {
-      runs.push({ text: part, bold });
+    if (nextTwo === "__") {
+      flush();
+      underline = !underline;
+      i++;
+      continue;
     }
+
+    if (text[i] === "_") {
+      flush();
+      italic = !italic;
+      continue;
+    }
+
+    current += text[i];
   }
 
+  flush();
   return runs;
+}
+
+function stripMarkdownMarkers(text: string) {
+  return String(text || "")
+    .replace(/\*\*/g, "")
+    .replace(/__/g, "")
+    .replace(/_/g, "");
 }
 
 function wrapText(text: string, maxChars: number) {
@@ -545,7 +578,7 @@ export async function POST(req: Request) {
 
       font = await pdfDoc.embedFont(bwGradualRegularBytes);
       boldFont = await pdfDoc.embedFont(bwGradualBoldBytes);
-      italicFont = font;
+      // Keep Helvetica Oblique for italic markdown, because no BW Gradual italic file is loaded here.
     } catch (fontError) {
       console.warn(
         "BW Gradual font unavailable; falling back to Helvetica:",
@@ -624,11 +657,28 @@ export async function POST(req: Request) {
     }
 
     function drawParagraph(text: string, options?: { bold?: boolean }) {
-      const wrapped = wrapText(text.replace(/\*\*/g, ""), maxChars);
+      const wrapped = wrapText(stripMarkdownMarkers(text), maxChars);
 
       for (const line of wrapped) {
         drawLine(line, { bold: options?.bold });
       }
+    }
+
+    function getRunFont(run: TextRun) {
+      if (run.bold) return boldFont;
+      if (run.italic) return italicFont;
+      return font;
+    }
+
+    function drawUnderline(x: number, baselineY: number, width: number) {
+      if (width <= 0) return;
+
+      page.drawLine({
+        start: { x, y: baselineY - 2 },
+        end: { x: x + width, y: baselineY - 2 },
+        thickness: 0.5,
+        color: rgb(0, 0, 0),
+      });
     }
 
     function drawInlineRuns(runs: TextRun[]) {
@@ -639,8 +689,14 @@ export async function POST(req: Request) {
         const pieces = run.text
           .split(/(\s+)/)
           .filter((piece) => piece.length > 0);
+
         for (const piece of pieces) {
-          words.push({ text: piece, bold: run.bold });
+          words.push({
+            text: piece,
+            bold: run.bold,
+            italic: run.italic,
+            underline: run.underline,
+          });
         }
       }
 
@@ -648,10 +704,7 @@ export async function POST(req: Request) {
       let lineWidth = 0;
 
       function measure(run: TextRun) {
-        return (run.bold ? boldFont : font).widthOfTextAtSize(
-          run.text,
-          fontSize,
-        );
+        return getRunFont(run).widthOfTextAtSize(run.text, fontSize);
       }
 
       function flushLine() {
@@ -664,15 +717,22 @@ export async function POST(req: Request) {
         let x = marginLeft;
 
         for (const run of line) {
+          const runFont = getRunFont(run);
+          const runWidth = runFont.widthOfTextAtSize(run.text, fontSize);
+
           page.drawText(run.text, {
             x,
             y,
             size: fontSize,
-            font: run.bold ? boldFont : font,
+            font: runFont,
             color: rgb(0, 0, 0),
           });
 
-          x += measure(run);
+          if (run.underline && run.text.trim()) {
+            drawUnderline(x, y, runWidth);
+          }
+
+          x += runWidth;
         }
 
         y -= lineHeight;
@@ -702,7 +762,7 @@ export async function POST(req: Request) {
         return;
       }
 
-      drawInlineRuns(parseBoldMarkdown(text));
+      drawInlineRuns(parseMarkdownRuns(text));
     }
 
     const usedInlineImageIds = new Set<string>();
@@ -867,7 +927,7 @@ export async function POST(req: Request) {
             .filter((piece) => piece.length > 0);
 
           for (const piece of splitPieces) {
-            pieces.push({ text: piece, bold: run.bold });
+            pieces.push({ text: piece, bold: run.bold, italic: run.italic, underline: run.underline });
           }
         }
 
@@ -876,10 +936,7 @@ export async function POST(req: Request) {
         let lineWidth = 0;
 
         function measure(run: TextRun) {
-          return (run.bold ? boldFont : font).widthOfTextAtSize(
-            run.text,
-            fontSize,
-          );
+          return getRunFont(run).widthOfTextAtSize(run.text, fontSize);
         }
 
         for (const piece of pieces) {
@@ -904,7 +961,7 @@ export async function POST(req: Request) {
         return lines;
       }
 
-      const wrappedLines = wrapRunsToWidth(parseBoldMarkdown(sideText), textWidth);
+      const wrappedLines = wrapRunsToWidth(parseMarkdownRuns(sideText), textWidth);
       const remainingLines: TextRun[][] = [];
       let textY = startY - lineHeight;
 
@@ -912,18 +969,22 @@ export async function POST(req: Request) {
         let currentX = x;
 
         for (const run of line) {
+          const runFont = getRunFont(run);
+          const runWidth = runFont.widthOfTextAtSize(run.text, fontSize);
+
           page.drawText(run.text, {
             x: currentX,
             y: lineY,
             size: fontSize,
-            font: run.bold ? boldFont : font,
+            font: runFont,
             color: rgb(0, 0, 0),
           });
 
-          currentX += (run.bold ? boldFont : font).widthOfTextAtSize(
-            run.text,
-            fontSize,
-          );
+          if (run.underline && run.text.trim()) {
+            drawUnderline(currentX, lineY, runWidth);
+          }
+
+          currentX += runWidth;
         }
       }
 

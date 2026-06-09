@@ -6,6 +6,9 @@ import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
 import DraftImagePanel from "@/components/report-writing/DraftImagePanel";
 import PraktikaToolsPopup from "@/components/report-writing/PraktikaToolsPopup";
 import MedirefToolsPopup from "@/components/report-writing/MedirefToolsPopup";
+import RichTextLetterEditor, {
+  type RichTextLetterEditorHandle,
+} from "@/components/report-writing/RichTextLetterEditor";
 
 type Provider = {
   id: string;
@@ -526,7 +529,7 @@ export default function TypistPage() {
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAutosavedTextRef = useRef("");
-  const letterTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const letterEditorRef = useRef<RichTextLetterEditorHandle | null>(null);
   const referrerAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [secureEmailModalOpen, setSecureEmailModalOpen] = useState(false);
   const [secureEmailRecipient, setSecureEmailRecipient] = useState("");
@@ -917,56 +920,18 @@ export default function TypistPage() {
   }
 
   function insertImagePlaceholder(imageNumber: number) {
-    const textarea = letterTextareaRef.current;
-    const placeholder = `\n\n[[IMAGE:${imageNumber}]]\n\n`;
+    const placeholder = `
 
-    if (!textarea) {
-      handleLetterTextChange(`${letterText}${placeholder}`);
+[[IMAGE:${imageNumber}]]
+
+`;
+
+    if (letterEditorRef.current) {
+      letterEditorRef.current.insertTextAtCursor(placeholder);
       return;
     }
 
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const before = letterText.slice(0, start);
-    const after = letterText.slice(end);
-    const nextText = `${before}${placeholder}${after}`;
-
-    handleLetterTextChange(nextText);
-
-    window.requestAnimationFrame(() => {
-      textarea.focus();
-      const nextCursorPosition = start + placeholder.length;
-      textarea.setSelectionRange(nextCursorPosition, nextCursorPosition);
-    });
-  }
-
-  function toggleBoldSelectedText() {
-    const textarea = letterTextareaRef.current;
-
-    if (!textarea) return;
-
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const selected = letterText.slice(start, end);
-
-    if (!selected) {
-      alert("Highlight the words you want to bold first, then click Bold.");
-      return;
-    }
-
-    const before = letterText.slice(0, start);
-    const after = letterText.slice(end);
-    const alreadyBold = selected.startsWith("**") && selected.endsWith("**");
-    const replacement = alreadyBold
-      ? selected.replace(/^\*\*/, "").replace(/\*\*$/, "")
-      : `**${selected}**`;
-
-    handleLetterTextChange(`${before}${replacement}${after}`);
-
-    window.requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start, start + replacement.length);
-    });
+    handleLetterTextChange(`${letterText}${placeholder}`);
   }
 
   async function pullSameDayClinicalNotes(params: {
@@ -3829,23 +3794,13 @@ export default function TypistPage() {
             ) : null}
 
             <section className="rounded-2xl border border-slate-200 bg-white p-4">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-bold text-slate-900">
-                    Letter text
-                  </div>
-                  <div className="text-xs text-slate-500">
-                    Highlight words and click Bold. Bold text will appear bold
-                    in the final PDF.
-                  </div>
+              <div className="mb-3">
+                <div className="text-sm font-bold text-slate-900">
+                  Letter text
                 </div>
-                <button
-                  type="button"
-                  onClick={toggleBoldSelectedText}
-                  className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-800 hover:bg-slate-50"
-                >
-                  Bold selected text
-                </button>
+                <div className="text-xs text-slate-500">
+                  Highlight text, then use the toolbar for bold, italic, underline, bullets, or numbered lists.
+                </div>
               </div>
 
               <div className="mt-3 rounded-2xl border border-blue-100 bg-blue-50 p-3">
@@ -3890,12 +3845,12 @@ export default function TypistPage() {
                 />
               </label>
 
-              <textarea
-                ref={letterTextareaRef}
-                className="h-96 w-full rounded-xl border p-4"
-                placeholder="Letter text..."
+              <RichTextLetterEditor
+                ref={letterEditorRef}
                 value={letterText}
-                onChange={(e) => handleLetterTextChange(e.target.value)}
+                onChange={handleLetterTextChange}
+                placeholder="Letter text..."
+                minHeightClassName="min-h-96"
               />
 
               <label className="mt-4 block rounded-xl border border-indigo-100 bg-indigo-50 p-3">

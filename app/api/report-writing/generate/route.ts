@@ -228,6 +228,43 @@ async function getProviderTraining(
   }
 }
 
+
+async function enforceExactPatientFirstName(report: string, patientFirstName: string) {
+  const exactName = cleanString(patientFirstName)
+
+  if (!exactName) return report
+  if (report.includes(exactName)) return report
+
+  const repair = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You repair patient-name spelling only. Do not change clinical content, wording, punctuation, formatting, or structure except the patient first name.",
+      },
+      {
+        role: "user",
+        content: `
+The exact patient first name is:
+${exactName}
+
+The report below may have changed or misspelled the patient's first name.
+
+Replace any patient first-name variant with the exact name above.
+Return the full corrected report only.
+
+Report:
+${report}
+`,
+      },
+    ],
+  })
+
+  return repair.choices[0]?.message?.content?.trim() || report
+}
+
 function getReportTypeLabel(reportType: string) {
   const labels: Record<string, string> = {
     consultation_report: "consultation report",
@@ -530,6 +567,8 @@ You are an AI specialist dental report writing assistant.
 Write a polished specialist dental ${reportTypeLabel}.
 
 The report must:
+- CRITICAL: The exact patient first name is "${patientFirstName || patientName}". Use this spelling exactly every time.
+- Never autocorrect this name. For example, if the entered name is "Sarrah", never write "Sarah".
 - Always use the exact patient first name provided in the patientFirstName field.
 - Never change, infer, shorten, replace or hallucinate the patient name from clinical notes or dictation.
 - Follow the supplied patient gender/pronoun setting exactly.
@@ -624,7 +663,10 @@ Now write the final report body only.
       ],
     })
 
-    const report = completion.choices[0]?.message?.content?.trim()
+    const rawReport = completion.choices[0]?.message?.content?.trim() || ""
+    const report = rawReport
+      ? await enforceExactPatientFirstName(rawReport, patientFirstName || patientName)
+      : ""
 
     if (!report) {
       return NextResponse.json(

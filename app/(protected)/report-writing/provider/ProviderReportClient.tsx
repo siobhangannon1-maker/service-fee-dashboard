@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
 import OpenAIDictationBox from "@/components/report-writing/OpenAIDictationBox";
 import SmartDictateBox from "@/components/report-writing/SmartDictateBox";
+import RichTextLetterEditor from "@/components/report-writing/RichTextLetterEditor";
 
 type ReportTypeOption = {
   value: string;
@@ -1384,11 +1385,11 @@ export default function ProviderReportClient({
                   }}
                 />
 
-                <textarea
-                  className="h-96 w-full rounded-xl border border-slate-300 p-4"
-                  placeholder="Smart Dictate generated report..."
+                <RichTextLetterEditor
                   value={generatedReport}
-                  onChange={(e) => setGeneratedReport(e.target.value)}
+                  onChange={setGeneratedReport}
+                  placeholder="Smart Dictate generated report..."
+                  minHeightClassName="min-h-96"
                 />
 
                 <button
@@ -1432,11 +1433,11 @@ export default function ProviderReportClient({
                 }}
               />
 
-              <textarea
-                className="h-96 w-full rounded-xl border border-slate-300 p-4"
-                placeholder="Dictated letter will appear here after dictation stops..."
+              <RichTextLetterEditor
                 value={dictatedLetter}
-                onChange={(e) => setDictatedLetter(e.target.value)}
+                onChange={setDictatedLetter}
+                placeholder="Dictated letter will appear here after dictation stops..."
+                minHeightClassName="min-h-96"
               />
 
               <div className="flex flex-wrap gap-3">
@@ -1483,11 +1484,11 @@ export default function ProviderReportClient({
                 {loading ? "Working..." : "Generate Report From Clinical Notes"}
               </button>
 
-              <textarea
-                className="h-96 w-full rounded-xl border border-slate-300 p-4"
-                placeholder="Generated report..."
+              <RichTextLetterEditor
                 value={generatedReport}
-                onChange={(e) => setGeneratedReport(e.target.value)}
+                onChange={setGeneratedReport}
+                placeholder="Generated report..."
+                minHeightClassName="min-h-96"
               />
 
               <button
@@ -1595,13 +1596,14 @@ export default function ProviderReportClient({
 
                     {sharedPatientFields}
 
-                    <textarea
-                      className="h-[36rem] w-full rounded-xl border border-slate-300 p-4"
+                    <RichTextLetterEditor
                       value={dictatedLetter || generatedReport}
-                      onChange={(e) => {
-                        setDictatedLetter(e.target.value);
-                        setGeneratedReport(e.target.value);
+                      onChange={(value) => {
+                        setDictatedLetter(value);
+                        setGeneratedReport(value);
                       }}
+                      placeholder="Review or edit the draft letter..."
+                      minHeightClassName="min-h-[36rem]"
                     />
 
                     <div className="flex flex-wrap gap-3 border-t pt-4">
@@ -1795,40 +1797,39 @@ export default function ProviderReportClient({
                           <div className="mb-2 text-sm font-semibold text-slate-700">
                             Original AI version
                           </div>
-                          <textarea
-                            className="h-[32rem] w-full rounded-xl border border-slate-300 bg-slate-50 p-4 text-sm"
+                          <RichTextLetterEditor
+                            value={selectedApprovalDraft.ai_generated_text || ""}
                             readOnly
-                            value={
-                              selectedApprovalDraft.ai_generated_text || ""
-                            }
+                            minHeightClassName="min-h-[32rem]"
+                            showToolbar={false}
                           />
                         </div>
                         <div>
                           <div className="mb-2 text-sm font-semibold text-slate-700">
                             Final edited version
                           </div>
-                          <textarea
-                            className="h-[32rem] w-full rounded-xl border border-slate-300 p-4 text-sm"
+                          <RichTextLetterEditor
                             value={selectedApprovalDraft.edited_text || ""}
-                            onChange={(e) =>
+                            onChange={(value) =>
                               setSelectedApprovalDraft({
                                 ...selectedApprovalDraft,
-                                edited_text: e.target.value,
+                                edited_text: value,
                               })
                             }
+                            minHeightClassName="min-h-[32rem]"
                           />
                         </div>
                       </div>
                     ) : (
-                      <textarea
-                        className="h-[36rem] w-full rounded-xl border border-slate-300 p-4"
+                      <RichTextLetterEditor
                         value={selectedApprovalDraft.edited_text || ""}
-                        onChange={(e) =>
+                        onChange={(value) =>
                           setSelectedApprovalDraft({
                             ...selectedApprovalDraft,
-                            edited_text: e.target.value,
+                            edited_text: value,
                           })
                         }
+                        minHeightClassName="min-h-[36rem]"
                       />
                     )}
 
@@ -1927,10 +1928,11 @@ export default function ProviderReportClient({
                       </span>
                     </div>
 
-                    <textarea
-                      className="h-[36rem] w-full rounded-xl border border-slate-300 bg-slate-50 p-4"
-                      readOnly
+                    <RichTextLetterEditor
                       value={getReportText(selectedApprovedDraft)}
+                      readOnly
+                      minHeightClassName="min-h-[36rem]"
+                      showToolbar={false}
                     />
 
                     {selectedApprovedDraft.typist_instructions?.trim() ? (
