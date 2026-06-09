@@ -531,6 +531,7 @@ export default function TypistPage() {
   const lastAutosavedTextRef = useRef("");
   const letterEditorRef = useRef<RichTextLetterEditorHandle | null>(null);
   const referrerAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const patientDetailsAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [secureEmailModalOpen, setSecureEmailModalOpen] = useState(false);
   const [secureEmailRecipient, setSecureEmailRecipient] = useState("");
   const [secureEmailCc, setSecureEmailCc] = useState("");
@@ -801,6 +802,88 @@ export default function TypistPage() {
       return true;
     } catch (error) {
       console.error("Failed to persist referrer details:", error);
+      if (!options?.quiet) {
+        setSaveStatus("error");
+      }
+      return false;
+    }
+  }
+
+  async function persistCurrentPatientDetails(options?: { quiet?: boolean }) {
+    if (!selectedDraft) return true;
+
+    const currentPatientName = cleanString(patientName);
+    const currentPatientDob = cleanString(patientDob);
+
+    const savedPatientName = cleanString(selectedDraft.patient_name);
+    const savedPatientDob = cleanString(selectedDraft.patient_dob);
+
+    if (
+      currentPatientName === savedPatientName &&
+      currentPatientDob === savedPatientDob
+    ) {
+      return true;
+    }
+
+    try {
+      if (!options?.quiet) {
+        setSaveStatus("saving");
+      }
+
+      const response = await fetch("/api/report-writing/update-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draftId: selectedDraft.id,
+          patientName: currentPatientName,
+          patientDob: currentPatientDob,
+          referrerName,
+          referrerAddress,
+          reportType,
+          clinicalNotes,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        console.error("Failed to save patient details:", data);
+        if (!options?.quiet) {
+          setSaveStatus("error");
+        }
+        return false;
+      }
+
+      setSelectedDraft((current) =>
+        current && current.id === selectedDraft.id
+          ? {
+              ...current,
+              patient_name: currentPatientName || null,
+              patient_dob: currentPatientDob || null,
+              referrer_name: referrerName || current.referrer_name,
+              referrer_address: referrerAddress || current.referrer_address,
+              report_type: reportType || current.report_type,
+            }
+          : current,
+      );
+
+      setDrafts((current) =>
+        current.map((draft) =>
+          draft.id === selectedDraft.id
+            ? {
+                ...draft,
+                patient_name: currentPatientName || null,
+                patient_dob: currentPatientDob || null,
+              }
+            : draft,
+        ),
+      );
+
+      setLastSavedAt(new Date().toISOString());
+      setSaveStatus("saved");
+      return true;
+    } catch (error) {
+      console.error("Failed to persist patient details:", error);
       if (!options?.quiet) {
         setSaveStatus("error");
       }
@@ -1877,6 +1960,40 @@ export default function TypistPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDraft?.id, referrerName, referrerAddress]);
+
+  useEffect(() => {
+    if (!selectedDraft) return;
+
+    const currentPatientName = cleanString(patientName);
+    const currentPatientDob = cleanString(patientDob);
+
+    const savedPatientName = cleanString(selectedDraft.patient_name);
+    const savedPatientDob = cleanString(selectedDraft.patient_dob);
+
+    if (
+      currentPatientName === savedPatientName &&
+      currentPatientDob === savedPatientDob
+    ) {
+      return;
+    }
+
+    setSaveStatus("unsaved");
+
+    if (patientDetailsAutosaveTimerRef.current) {
+      clearTimeout(patientDetailsAutosaveTimerRef.current);
+    }
+
+    patientDetailsAutosaveTimerRef.current = setTimeout(() => {
+      persistCurrentPatientDetails({ quiet: true });
+    }, 700);
+
+    return () => {
+      if (patientDetailsAutosaveTimerRef.current) {
+        clearTimeout(patientDetailsAutosaveTimerRef.current);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDraft?.id, patientName, patientDob]);
 
   function clearForm() {
     setSelectedDraft(null);
