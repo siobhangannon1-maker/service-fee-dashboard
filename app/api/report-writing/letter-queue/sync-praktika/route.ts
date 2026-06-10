@@ -53,8 +53,29 @@ type QueueUpsertRow = {
   updated_at: string;
 };
 
+type HydrationJobInsert = {
+  app_user_id: string;
+  job_type: string;
+  status: string;
+  priority: number;
+  request: {
+    queueId: string;
+    patientId: string;
+    practiceId: string;
+    appointmentId: string;
+    appointmentDate: string;
+  };
+  attempts: number;
+  available_at: string;
+};
+
 function clean(value: unknown) {
   return String(value ?? "").trim();
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
 }
 
 function normaliseProviderName(value: unknown) {
@@ -101,6 +122,12 @@ function isQueueUpsertRow(row: QueueUpsertRow | null): row is QueueUpsertRow {
   return row !== null;
 }
 
+function isHydrationJobInsert(
+  job: HydrationJobInsert | null,
+): job is HydrationJobInsert {
+  return job !== null;
+}
+
 async function fetchAppointmentRowsFromPraktika({
   fromDate,
   toDate,
@@ -116,7 +143,7 @@ async function fetchAppointmentRowsFromPraktika({
     mode,
     jobType: "sync_letter_queue_appointments",
     priority: 20,
-    timeoutMs: 120_000,
+    timeoutMs: 300_000,
     path: "/php/json/db_reportingDataWarehouse.php",
     contentType: "form",
     referer:
@@ -137,6 +164,106 @@ async function fetchAppointmentRowsFromPraktika({
   return rows;
 }
 
+async function getHydrationAppUserId() {
+  const { data } = await supabase
+    .from("praktika_sessions")
+    .select("app_user_id, updated_at")
+    .eq("scope", "user")
+    .not("app_user_id", "is", null)
+    .in("status", ["connected", "refreshing", "refresh_requested"])
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return clean(data?.app_user_id) || null;
+}
+
+async function enqueueHydrationJobs(queueRows: any[], practiceId: string) {
+  const appUserId = await getHydrationAppUserId();
+
+  if (!appUserId) {
+    return {
+      enqueued: 0,
+      skipped: queueRows.length,
+      message:
+        "No user-scoped Praktika session was found, so hydration jobs were not enqueued.",
+    };
+  }
+
+  const jobsToInsert = queueRows
+    .map((row): HydrationJobInsert | null => {
+      const raw = asObject(row.raw_json);
+      const patientId = clean(row.praktika_patient_id);
+      const queueId = clean(row.id);
+      const appointmentId =
+        clean(row.appointment_id) || clean(raw.iAppointmentId);
+      const appointmentDate =
+        clean(row.appointment_time).slice(0, 10) ||
+        clean(raw.dtAppointment).slice(0, 10) ||
+        clean(raw.vchAppDate).slice(0, 10);
+
+      if (!queueId || !patientId) return null;
+
+      const hasLatestReferral =
+        Object.keys(asObject(raw.latest_referral || raw.latestReferral)).length >
+        0;
+
+      const hasReferrer =
+        Boolean(clean(row.referrer_name)) &&
+        Boolean(clean(row.referrer_address)) &&
+        hasLatestReferral;
+
+      const hasClinicalNotes = Boolean(clean(raw.cached_clinical_notes));
+
+      if (hasReferrer && hasClinicalNotes) return null;
+
+      return {
+        app_user_id: appUserId,
+        job_type: "hydrate_report_letter_queue_item",
+        status: "pending",
+        priority: 35,
+        request: {
+          queueId,
+          patientId,
+          practiceId,
+          appointmentId,
+          appointmentDate,
+        },
+        attempts: 0,
+        available_at: new Date().toISOString(),
+      };
+    })
+    .filter(isHydrationJobInsert);
+
+  if (jobsToInsert.length === 0) {
+    return {
+      enqueued: 0,
+      skipped: queueRows.length,
+      message: "All queue rows already have cached referral and clinical-note data.",
+    };
+  }
+
+  const { error } = await supabase
+    .from("praktika_helper_jobs")
+    .insert(jobsToInsert);
+
+  if (error) {
+    console.warn("Could not enqueue queue hydration jobs:", error.message);
+
+    return {
+      enqueued: 0,
+      skipped: queueRows.length,
+      message: error.message,
+    };
+  }
+
+  return {
+    enqueued: jobsToInsert.length,
+    skipped: queueRows.length - jobsToInsert.length,
+    message: "Hydration jobs enqueued for the local Praktika helper.",
+  };
+}
+
 export async function POST(req: Request) {
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
@@ -152,11 +279,8 @@ export async function POST(req: Request) {
       );
     }
 
-    const practiceId = process.env.PRAKTIKA_PRACTICE_ID || "1181";
+    const practiceId = clean(process.env.PRAKTIKA_PRACTICE_ID) || "1181";
 
-    // Original model: keep this sync fast. It creates/updates queue rows only.
-    // Referral and same-day clinical notes are loaded live when a queue item is opened,
-    // then cached back into report_letter_queue.
     const parsedRows = await fetchAppointmentRowsFromPraktika({
       fromDate,
       toDate,
@@ -255,6 +379,7 @@ export async function POST(req: Request) {
         referrerFilled: 0,
         referrerAddressFilled: 0,
         clinicalNotesFilled: 0,
+        hydrationJobsEnqueued: 0,
         fromDate,
         toDate,
         message: "No appointments with Typist Letter icon found.",
@@ -265,7 +390,9 @@ export async function POST(req: Request) {
 
     const { data: existingRows, error: existingError } = await supabase
       .from("report_letter_queue")
-      .select("appointment_id, status, report_draft_id, referrer_name, referrer_address, source_clinical_notes, raw_json")
+      .select(
+        "appointment_id, status, report_draft_id, referrer_name, referrer_address, source_clinical_notes, raw_json",
+      )
       .in("appointment_id", appointmentIds);
 
     if (existingError) {
@@ -281,38 +408,43 @@ export async function POST(req: Request) {
 
     const rowsToUpsert = incomingQueueRows.map((row) => {
       const existing = existingByAppointmentId.get(row.appointment_id) as any;
-      const existingRaw =
-        existing?.raw_json && typeof existing.raw_json === "object"
-          ? existing.raw_json
-          : {};
+      const existingRaw = asObject(existing?.raw_json);
 
       const existingCachedNotes = clean(existingRaw.cached_clinical_notes);
       const existingSourceClinicalNotes = clean(existing?.source_clinical_notes);
       const appointmentOnlyNotes = row.source_clinical_notes;
 
+      const existingLatestReferral = asObject(
+        existingRaw.latest_referral || existingRaw.latestReferral,
+      );
+
       return {
         ...row,
         status: existing?.status || "queued",
         report_draft_id: existing?.report_draft_id || null,
-        // Preserve manually/live-filled referral details when resyncing appointments.
         referrer_name: clean(existing?.referrer_name) || row.referrer_name,
         referrer_address: clean(existing?.referrer_address) || row.referrer_address,
-        // Preserve real cached clinical notes if they were already loaded on open.
         source_clinical_notes:
           existingCachedNotes
-            ? [appointmentOnlyNotes, "Same-day Praktika clinical notes:", existingCachedNotes]
-                .filter(Boolean)
-                .join("\n\n")
-            : existingSourceClinicalNotes && existingSourceClinicalNotes.includes("Same-day Praktika clinical notes:")
+            ? existingCachedNotes
+            : existingSourceClinicalNotes &&
+                !existingSourceClinicalNotes.startsWith("Appointment notes:")
               ? existingSourceClinicalNotes
               : appointmentOnlyNotes,
         raw_json: {
           ...row.raw_json,
+          latest_referral:
+            Object.keys(existingLatestReferral).length > 0
+              ? existingLatestReferral
+              : null,
           cached_clinical_notes: existingCachedNotes || null,
           cached_clinical_notes_source:
             clean(existingRaw.cached_clinical_notes_source) || null,
-          cached_clinical_notes_at: clean(existingRaw.cached_clinical_notes_at) || null,
-          previous_raw_json_preserved_at: existingRaw ? new Date().toISOString() : null,
+          cached_clinical_notes_at:
+            clean(existingRaw.cached_clinical_notes_at) || null,
+          previous_raw_json_preserved_at: existingRaw
+            ? new Date().toISOString()
+            : null,
         },
       };
     });
@@ -348,6 +480,8 @@ export async function POST(req: Request) {
       );
     }
 
+    const hydrationResult = await enqueueHydrationJobs(data || [], practiceId);
+
     return NextResponse.json({
       success: true,
       totalRows: parsedRows.length,
@@ -358,6 +492,9 @@ export async function POST(req: Request) {
       referrerFilled: rowsToUpsert.filter((row) => row.referrer_name).length,
       referrerAddressFilled: rowsToUpsert.filter((row) => row.referrer_address).length,
       clinicalNotesFilled,
+      hydrationJobsEnqueued: hydrationResult.enqueued,
+      hydrationJobsSkipped: hydrationResult.skipped,
+      hydrationMessage: hydrationResult.message,
       fromDate,
       toDate,
       lightweight: true,
