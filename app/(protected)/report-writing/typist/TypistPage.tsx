@@ -3085,11 +3085,6 @@ export default function TypistPage() {
     */
   }, []);
 
-  async function markQueueItemStarted(item: QueueItem) {
-    await updateQueueStatus(item.id, "started");
-    await loadQueue(selectedProviderId);
-  }
-
   async function updatePraktikaLetterIconsForCurrentDraft() {
     if (!selectedDraft) return;
 
