@@ -221,6 +221,18 @@ const navGroups: NavGroup[] = [
         description:
           "Upload template examples and add rules for AI letter generation",
       },
+      {
+        href: "/clinical-scribe",
+        label: "Clinical Scribe",
+        description:
+          "Listen in and generate intelligent notes from your appointment",
+      },
+      {
+        href: "/clinical-scribe/training",
+        label: "Clinical Scribe Training",
+        description:
+          "Upload clinical notes templates and train your clinical scribe",
+      },
     ],
   },
   {

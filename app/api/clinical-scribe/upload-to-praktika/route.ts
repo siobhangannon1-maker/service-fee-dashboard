@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { addPraktikaClinicalNote } from "@/lib/praktika/clinical-notes";
+import { addPraktikaScribeClinicalNote } from "@/lib/praktika/scribe-clinical-notes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,7 +34,7 @@ export async function POST(request: Request) {
 
     if (!praktikaPatientId) {
       return NextResponse.json(
-        { success: false, error: "Missing Praktika patient ID." },
+        { success: false, error: "Match a Praktika patient before writing the clinical note." },
         { status: 400 },
       );
     }
@@ -46,7 +46,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const uploadResult = await addPraktikaClinicalNote({
+    const uploadResult = await addPraktikaScribeClinicalNote({
       praktikaPatientId,
       noteText: editedNote,
       practiceId,
@@ -69,10 +69,7 @@ export async function POST(request: Request) {
 
     if (updateResult.error) {
       return NextResponse.json(
-        {
-          success: false,
-          error: updateResult.error.message,
-        },
+        { success: false, error: updateResult.error.message },
         { status: 500 },
       );
     }
@@ -82,7 +79,7 @@ export async function POST(request: Request) {
       praktikaNoteId: uploadResult.praktikaNoteId || null,
     });
   } catch (error) {
-    console.error("Upload clinical note to Praktika error:", error);
+    console.error("Upload scribe clinical note to Praktika error:", error);
 
     return NextResponse.json(
       {
@@ -90,7 +87,7 @@ export async function POST(request: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Failed to upload clinical note to Praktika.",
+            : "Failed to write clinical note to Praktika.",
       },
       { status: 500 },
     );

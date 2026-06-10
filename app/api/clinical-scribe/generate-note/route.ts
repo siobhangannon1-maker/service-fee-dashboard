@@ -18,6 +18,14 @@ function cleanString(value: unknown) {
   return String(value ?? "").trim();
 }
 
+function hasStructuredData(data: any) {
+  if (!data || typeof data !== "object") return false;
+
+  return Object.values(data).some((value) =>
+    String(value ?? "").trim(),
+  );
+}
+
 function formatStructuredData(data: any) {
   if (!data || typeof data !== "object") {
     return "No structured clinical data entered.";
@@ -42,35 +50,90 @@ function formatStructuredData(data: any) {
   ].join("\n");
 }
 
-async function getProviderTraining(providerId: string, noteType: string) {
-  const [rulesResult, terminologyResult, examplesResult] = await Promise.all([
-    supabase
-      .from("provider_report_rules")
-      .select("report_type, rule_text")
-      .eq("provider_id", providerId)
-      .in("report_type", [noteType, "all", "consultation_report"]),
+async function getProviderTraining(providerId: string, appointmentType: string) {
+  const [appointmentTypeResult, rulesResult, examplesResult, terminologyResult] =
+    await Promise.all([
+      supabase
+        .from("provider_scribe_appointment_types")
+        .select("type_key, label, default_template")
+        .eq("provider_id", providerId)
+        .eq("type_key", appointmentType)
+        .maybeSingle(),
 
-    supabase
-      .from("provider_terminology_rules")
-      .select("spoken_or_written_text, preferred_text")
-      .eq("provider_id", providerId),
+      supabase
+        .from("provider_scribe_rules")
+        .select("appointment_type, rule_text")
+        .eq("provider_id", providerId)
+        .in("appointment_type", [appointmentType, "all"]),
 
-    supabase
-      .from("provider_report_examples")
-      .select("title, report_type, example_text, is_preferred, created_at")
-      .eq("provider_id", providerId)
-      .in("report_type", [noteType, "consultation_report", "SPT_report"])
-      .order("is_preferred", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(5),
-  ]);
+      supabase
+        .from("provider_scribe_examples")
+        .select("title, appointment_type, example_note, is_preferred, created_at")
+        .eq("provider_id", providerId)
+        .eq("appointment_type", appointmentType)
+        .order("is_preferred", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(5),
+
+      supabase
+        .from("provider_terminology_rules")
+        .select("spoken_or_written_text, preferred_text")
+        .eq("provider_id", providerId),
+    ]);
+
+  if (appointmentTypeResult.error) {
+    console.error("Scribe appointment type lookup error:", appointmentTypeResult.error);
+  }
+
+  if (rulesResult.error) {
+    console.error("Scribe rules lookup error:", rulesResult.error);
+  }
+
+  if (examplesResult.error) {
+    console.error("Scribe examples lookup error:", examplesResult.error);
+  }
+
+  if (terminologyResult.error) {
+    console.error("Terminology lookup error:", terminologyResult.error);
+  }
+
+  const templateText =
+    appointmentTypeResult.data?.default_template?.trim() ||
+    [
+      "Use these headings where relevant:",
+      "",
+      "Reason for attendance:",
+      "History:",
+      "Clinical findings:",
+      "Periodontal findings:",
+      "Radiographic findings:",
+      "Diagnosis:",
+      "Discussion:",
+      "Treatment options:",
+      "Risks/consent:",
+      "Plan:",
+    ].join("\n");
 
   const rulesText =
     rulesResult.data && rulesResult.data.length > 0
       ? rulesResult.data
           .map((rule, index) => `${index + 1}. ${rule.rule_text}`)
           .join("\n")
-      : "No provider-specific rules saved.";
+      : "No provider-specific scribe rules saved.";
+
+  const examplesText =
+    examplesResult.data && examplesResult.data.length > 0
+      ? examplesResult.data
+          .map((example, index) =>
+            [
+              `Example ${index + 1}: ${example.title || "Untitled"}`,
+              `Appointment type: ${example.appointment_type}`,
+              `Preferred: ${example.is_preferred ? "yes" : "no"}`,
+              example.example_note,
+            ].join("\n"),
+          )
+          .join("\n\n---\n\n")
+      : "No provider-specific scribe examples saved.";
 
   const terminologyText =
     terminologyResult.data && terminologyResult.data.length > 0
@@ -82,23 +145,11 @@ async function getProviderTraining(providerId: string, noteType: string) {
           .join("\n")
       : "No provider terminology preferences saved.";
 
-  const examplesText =
-    examplesResult.data && examplesResult.data.length > 0
-      ? examplesResult.data
-          .map((example, index) =>
-            [
-              `Example ${index + 1}: ${example.title || "Untitled"}`,
-              `Report type: ${example.report_type}`,
-              example.example_text,
-            ].join("\n"),
-          )
-          .join("\n\n---\n\n")
-      : "No provider examples saved.";
-
   return {
+    templateText,
     rulesText,
-    terminologyText,
     examplesText,
+    terminologyText,
   };
 }
 
@@ -117,6 +168,7 @@ export async function POST(request: Request) {
     const patientFirstName = cleanString(body.patientFirstName);
     const patientLastName = cleanString(body.patientLastName);
     const patientDob = cleanString(body.patientDob);
+    const praktikaPatientId = cleanString(body.praktikaPatientId);
     const appointmentType =
       cleanString(body.appointmentType) || "periodontal_consultation";
     const transcript = cleanString(body.transcript);
@@ -136,7 +188,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!transcript && !Object.keys(structuredData || {}).length) {
+    if (!transcript && !hasStructuredData(structuredData)) {
       return NextResponse.json(
         {
           success: false,
@@ -150,36 +202,45 @@ export async function POST(request: Request) {
     const structuredDataText = formatStructuredData(structuredData);
 
     const prompt = `
-You are an expert periodontal and oral surgery clinical scribe.
+You are an expert periodontal and oral and maxillofacial surgery clinical scribe.
 
 Generate a clinical note for the patient's record.
 
 Important rules:
 - Do not invent clinical facts.
-- If something is not stated, omit it or write "not recorded" only where clinically useful.
+- Do not infer unstated findings.
+- If something is not stated, omit it unless the provider template specifically requires a heading.
 - Use Australian English.
 - Use concise clinical language.
 - Use FDI tooth numbering.
 - Do not write a referral letter.
+- Do not include a greeting.
 - Do not include a signature block.
+- Do not include markdown tables.
 - This note will be reviewed and edited by the clinician before upload.
-- Give priority to structured clinical data over transcript if they conflict.
+- Give priority to structured clinical data over the transcript if they conflict.
 - Preserve provider style and terminology preferences.
+- Use the provider clinical note template as the main structure.
+- If the provider template is incomplete, use sensible clinical note headings appropriate to the appointment type.
 
 Patient:
 ${patientFirstName} ${patientLastName}
 DOB: ${patientDob || "Not entered"}
+Praktika patient ID: ${praktikaPatientId || "Not selected"}
 
 Appointment type:
 ${appointmentType}
 
-Provider rules:
+Provider clinical note template:
+${training.templateText}
+
+Provider scribe rules:
 ${training.rulesText}
 
 Provider terminology:
 ${training.terminologyText}
 
-Provider examples:
+Provider example notes:
 ${training.examplesText}
 
 Consultation transcript:
@@ -188,18 +249,7 @@ ${transcript || "No transcript provided."}
 Structured clinical data:
 ${structuredDataText}
 
-Create the clinical note using this structure where relevant:
-
-Reason for attendance:
-History:
-Clinical findings:
-Periodontal findings:
-Radiographic findings:
-Diagnosis:
-Discussion:
-Treatment options:
-Risks/consent:
-Plan:
+Generate the clinical note now.
 `;
 
     const completion = await openai.chat.completions.create({
@@ -209,7 +259,7 @@ Plan:
         {
           role: "system",
           content:
-            "You generate accurate dental clinical notes from transcripts and structured data. You never invent facts.",
+            "You generate accurate dental clinical notes from transcripts, templates and structured data. You never invent facts.",
         },
         {
           role: "user",
@@ -234,7 +284,7 @@ Plan:
         patient_first_name: patientFirstName,
         patient_last_name: patientLastName,
         patient_dob: patientDob || null,
-        praktika_patient_id: cleanString(body.praktikaPatientId) || null,
+        praktika_patient_id: praktikaPatientId || null,
         appointment_type: appointmentType,
         transcript,
         structured_data: structuredData,
