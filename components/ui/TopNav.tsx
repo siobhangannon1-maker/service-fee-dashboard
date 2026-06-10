@@ -327,6 +327,12 @@ const navGroups: NavGroup[] = [
         label: "Edit Benchmarks",
         description: "Edit benchmarks for KPI categories",
       },
+      {
+        href: "/clinical-scribe/universal-rules",
+        label: "Clinical Scribe Universal Rules",
+        description:
+          "Enter universal rules for safety and efficiency of clinical scribe note writing",
+      },
     ],
   },
 ];

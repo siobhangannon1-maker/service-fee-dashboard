@@ -149,7 +149,11 @@ export default function PraktikaToolsPopup({
     finalSyncingQueue ||
     finalSyncingReferrers;
 
-  const currentConnectionState = connectionState(currentStatus, isBusy);
+  const currentConnectionState: ConnectionDisplayState =
+    needsReconnect && currentStatus !== "connected"
+      ? "disconnected"
+      : connectionState(currentStatus, isBusy);
+
   const isConnected = currentConnectionState === "connected";
 
   // Helper-job syncs use the live local helper browser.
@@ -158,11 +162,13 @@ export default function PraktikaToolsPopup({
   const shouldShowReconnectWarning = needsReconnect && !isConnected;
 
   const shouldShowCredentialForm =
-    currentConnectionState === "disconnected" ||
-    currentStatus === "waiting_for_credentials" ||
-    currentStatus === "expired" ||
-    currentStatus === "error" ||
-    currentStatus === "not_started";
+    currentStatus !== "connected" &&
+    (currentConnectionState === "disconnected" ||
+      needsReconnect ||
+      currentStatus === "waiting_for_credentials" ||
+      currentStatus === "expired" ||
+      currentStatus === "error" ||
+      currentStatus === "not_started");
 
   // Only show the MFA box when Praktika specifically asks for MFA.
   const shouldShowMfaBox = currentStatus === "waiting_for_mfa";
@@ -259,6 +265,11 @@ export default function PraktikaToolsPopup({
 
       setSession(data);
 
+      if (data.status === "connected") {
+        setLocalMessage(null);
+        setPassword("");
+      }
+
       const nextStatus = data.status || "not_started";
 
       if (isPositiveSessionStatus(nextStatus)) {
@@ -351,14 +362,32 @@ export default function PraktikaToolsPopup({
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok || data.success === false) {
-        setLocalMessage(data.error || "Could not submit Praktika credentials.");
+        setLocalMessage(data.error || "Could not connect to Praktika.");
+        return;
+      }
+
+      const refreshResponse = await fetch("/api/praktika/session/refresh", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          scope: "user",
+        }),
+      });
+
+      const refreshData = await refreshResponse.json().catch(() => ({}));
+
+      if (!refreshResponse.ok || refreshData.success === false) {
+        setLocalMessage(
+          refreshData.error ||
+            "Credentials were saved, but Praktika could not start connecting.",
+        );
         return;
       }
 
       setPassword("");
-      setLocalMessage(
-        "Credentials submitted. The local helper will continue the login.",
-      );
+      setLocalMessage("Connecting to Praktika...");
 
       await loadStatus();
     } finally {
@@ -502,7 +531,7 @@ export default function PraktikaToolsPopup({
             <div className="mt-3 space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
               <div>
                 <label className="text-xs font-bold text-amber-950">
-                  Praktika username
+                  Username
                 </label>
                 <input
                   value={username}
@@ -514,13 +543,13 @@ export default function PraktikaToolsPopup({
 
               <div>
                 <label className="text-xs font-bold text-amber-950">
-                  Praktika password
+                  Password
                 </label>
                 <input
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   type="password"
-                  placeholder="Praktika password"
+                  placeholder="Password"
                   className="mt-1 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-slate-950"
                 />
               </div>
@@ -531,9 +560,7 @@ export default function PraktikaToolsPopup({
                 disabled={credentialsSubmitting}
                 className="w-full rounded-xl bg-amber-600 px-3 py-2 text-sm font-bold text-white disabled:opacity-50"
               >
-                {credentialsSubmitting
-                  ? "Submitting credentials..."
-                  : "Submit credentials"}
+                {credentialsSubmitting ? "Connecting..." : "Connect"}
               </button>
             </div>
           ) : null}
@@ -576,7 +603,7 @@ export default function PraktikaToolsPopup({
         <div className="rounded-2xl border border-slate-200 bg-white p-3">
           <h3 className="text-sm font-bold text-slate-950">Sync Referrers</h3>
           <p className="text-xs text-slate-500">
-            Pull recently added referrer details from Praktika.
+            Pull referrer/provider details from Praktika.
           </p>
 
           <button

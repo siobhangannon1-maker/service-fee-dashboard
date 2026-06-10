@@ -36,12 +36,25 @@ type PraktikaAppointmentRow = {
   [key: string]: unknown;
 };
 
+type QueueUpsertRow = {
+  provider_id: string | null;
+  praktika_patient_id: string | null;
+  patient_first_name: string | null;
+  patient_last_name: string | null;
+  patient_dob: string | null;
+  patient_gender: PatientGender;
+  referrer_name: string | null;
+  referrer_address: string | null;
+  source_clinical_notes: string | null;
+  appointment_id: string;
+  appointment_time: string | null;
+  queue_reason: string;
+  raw_json: Record<string, unknown>;
+  updated_at: string;
+};
+
 function clean(value: unknown) {
   return String(value ?? "").trim();
-}
-
-function isoDateOnly(value: unknown) {
-  return clean(value).slice(0, 10);
 }
 
 function normaliseProviderName(value: unknown) {
@@ -70,7 +83,7 @@ function inferPatientGenderFromTitle(row: PraktikaAppointmentRow): PatientGender
   return "neutral";
 }
 
-function getQueueClinicalNotes(row: PraktikaAppointmentRow) {
+function getAppointmentNotes(row: PraktikaAppointmentRow) {
   const appointmentNotes = clean(row.vchAppointmentNotes);
   const treatmentType = clean(row.vchTxType);
   const treatmentLabel = clean(row.vchTxLabel);
@@ -82,6 +95,10 @@ function getQueueClinicalNotes(row: PraktikaAppointmentRow) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function isQueueUpsertRow(row: QueueUpsertRow | null): row is QueueUpsertRow {
+  return row !== null;
 }
 
 async function fetchAppointmentRowsFromPraktika({
@@ -125,8 +142,7 @@ export async function POST(req: Request) {
     const mode = await getCurrentUserPraktikaSessionMode();
     const body = await req.json().catch(() => ({}));
 
-    const fromDate =
-      clean(body.fromDate) || new Date().toISOString().slice(0, 10);
+    const fromDate = clean(body.fromDate) || new Date().toISOString().slice(0, 10);
     const toDate = clean(body.toDate) || fromDate;
 
     if (fromDate > toDate) {
@@ -138,9 +154,9 @@ export async function POST(req: Request) {
 
     const practiceId = process.env.PRAKTIKA_PRACTICE_ID || "1181";
 
-    // Keep queue sync deliberately fast and reliable:
-    // only fetch the appointment report here. Detailed patient form, referral,
-    // and clinical note lookups can still run later when a queue item is opened.
+    // Original model: keep this sync fast. It creates/updates queue rows only.
+    // Referral and same-day clinical notes are loaded live when a queue item is opened,
+    // then cached back into report_letter_queue.
     const parsedRows = await fetchAppointmentRowsFromPraktika({
       fromDate,
       toDate,
@@ -187,8 +203,8 @@ export async function POST(req: Request) {
 
     const typedAppointmentRows = parsedRows.filter(hasTypistLetterIcon);
 
-    const incomingQueueRows = typedAppointmentRows
-      .map((row) => {
+    const incomingQueueRows: QueueUpsertRow[] = typedAppointmentRows
+      .map((row): QueueUpsertRow | null => {
         const appointmentId = clean(row.iAppointmentId);
         if (!appointmentId) return null;
 
@@ -197,7 +213,8 @@ export async function POST(req: Request) {
           providerMap.get(normaliseProviderName(rawProviderName)) || null;
 
         const patientId = clean(row.iPatientId);
-        const appointmentNotes = getQueueClinicalNotes(row);
+        const appointmentNotes = getAppointmentNotes(row);
+        const gender = inferPatientGenderFromTitle(row);
 
         return {
           provider_id: providerId,
@@ -205,7 +222,7 @@ export async function POST(req: Request) {
           patient_first_name: clean(row.vchPatientFirstName) || null,
           patient_last_name: clean(row.vchPatientLastName) || null,
           patient_dob: clean(row.dtDOB) || null,
-          patient_gender: inferPatientGenderFromTitle(row),
+          patient_gender: gender,
           referrer_name: null,
           referrer_address: null,
           source_clinical_notes: appointmentNotes || null,
@@ -214,7 +231,7 @@ export async function POST(req: Request) {
           queue_reason: "Typist Letter icon on Praktika appointment",
           raw_json: {
             ...row,
-            patient_gender: inferPatientGenderFromTitle(row),
+            patient_gender: gender,
             cached_clinical_notes: null,
             cached_clinical_notes_source: null,
             cached_clinical_notes_at: null,
@@ -225,22 +242,7 @@ export async function POST(req: Request) {
           updated_at: new Date().toISOString(),
         };
       })
-      .filter(Boolean) as Array<{
-        provider_id: string | null;
-        praktika_patient_id: string | null;
-        patient_first_name: string | null;
-        patient_last_name: string | null;
-        patient_dob: string | null;
-        patient_gender: PatientGender;
-        referrer_name: string | null;
-        referrer_address: string | null;
-        source_clinical_notes: string | null;
-        appointment_id: string;
-        appointment_time: string | null;
-        queue_reason: string;
-        raw_json: Record<string, unknown>;
-        updated_at: string;
-      }>;
+      .filter(isQueueUpsertRow);
 
     if (incomingQueueRows.length === 0) {
       return NextResponse.json({
@@ -263,7 +265,7 @@ export async function POST(req: Request) {
 
     const { data: existingRows, error: existingError } = await supabase
       .from("report_letter_queue")
-      .select("appointment_id, status, report_draft_id")
+      .select("appointment_id, status, report_draft_id, referrer_name, referrer_address, source_clinical_notes, raw_json")
       .in("appointment_id", appointmentIds);
 
     if (existingError) {
@@ -278,12 +280,40 @@ export async function POST(req: Request) {
     );
 
     const rowsToUpsert = incomingQueueRows.map((row) => {
-      const existing = existingByAppointmentId.get(row.appointment_id);
+      const existing = existingByAppointmentId.get(row.appointment_id) as any;
+      const existingRaw =
+        existing?.raw_json && typeof existing.raw_json === "object"
+          ? existing.raw_json
+          : {};
+
+      const existingCachedNotes = clean(existingRaw.cached_clinical_notes);
+      const existingSourceClinicalNotes = clean(existing?.source_clinical_notes);
+      const appointmentOnlyNotes = row.source_clinical_notes;
 
       return {
         ...row,
         status: existing?.status || "queued",
         report_draft_id: existing?.report_draft_id || null,
+        // Preserve manually/live-filled referral details when resyncing appointments.
+        referrer_name: clean(existing?.referrer_name) || row.referrer_name,
+        referrer_address: clean(existing?.referrer_address) || row.referrer_address,
+        // Preserve real cached clinical notes if they were already loaded on open.
+        source_clinical_notes:
+          existingCachedNotes
+            ? [appointmentOnlyNotes, "Same-day Praktika clinical notes:", existingCachedNotes]
+                .filter(Boolean)
+                .join("\n\n")
+            : existingSourceClinicalNotes && existingSourceClinicalNotes.includes("Same-day Praktika clinical notes:")
+              ? existingSourceClinicalNotes
+              : appointmentOnlyNotes,
+        raw_json: {
+          ...row.raw_json,
+          cached_clinical_notes: existingCachedNotes || null,
+          cached_clinical_notes_source:
+            clean(existingRaw.cached_clinical_notes_source) || null,
+          cached_clinical_notes_at: clean(existingRaw.cached_clinical_notes_at) || null,
+          previous_raw_json_preserved_at: existingRaw ? new Date().toISOString() : null,
+        },
       };
     });
 
@@ -299,8 +329,8 @@ export async function POST(req: Request) {
       {} as Record<string, number>,
     );
 
-    const clinicalNotesFilled = rowsToUpsert.filter(
-      (row) => row.source_clinical_notes,
+    const clinicalNotesFilled = rowsToUpsert.filter((row: any) =>
+      clean(row.raw_json?.cached_clinical_notes),
     ).length;
 
     const { data, error } = await supabase
@@ -325,8 +355,8 @@ export async function POST(req: Request) {
       matchedProviders,
       unmatchedProviders,
       genderCounts,
-      referrerFilled: 0,
-      referrerAddressFilled: 0,
+      referrerFilled: rowsToUpsert.filter((row) => row.referrer_name).length,
+      referrerAddressFilled: rowsToUpsert.filter((row) => row.referrer_address).length,
       clinicalNotesFilled,
       fromDate,
       toDate,

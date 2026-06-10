@@ -155,7 +155,7 @@ function formatManualReferrerAddress(referrer: any) {
       referrer?.clinicName ||
       referrer?.practice ||
       referrer?.raw_json?.vchClinic ||
-      ""
+      "",
   ).trim();
 
   const address = String(referrer?.address || "").trim();
@@ -171,8 +171,6 @@ function formatManualReferrerAddress(referrer: any) {
 
   return [practiceName, address].filter(Boolean).join("\n");
 }
-
-
 
 function getMedirefPracticeNameFromAddress(value: string | null | undefined) {
   const cleanValue = String(value || "").trim();
@@ -387,12 +385,482 @@ function getSuggestedReportTypeLabel(
   );
 }
 
-function getQueueClinicalNotes(item: QueueItem) {
-  const raw = item.raw_json || {};
+function asPlainObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
 
-  const appointmentNotes = cleanString(raw.vchAppointmentNotes);
-  const treatmentType = cleanString(raw.vchTxType);
-  const treatmentLabel = cleanString(raw.vchTxLabel);
+  return value as Record<string, unknown>;
+}
+
+function getFirstCleanString(source: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = cleanString(source[key]);
+
+    if (value) return value;
+  }
+
+  return "";
+}
+
+function getNestedPlainObjects(
+  source: Record<string, unknown>,
+  keys: string[],
+) {
+  return keys
+    .map((key) => asPlainObject(source[key]))
+    .filter((value) => Object.keys(value).length > 0);
+}
+
+function normaliseKey(value: string) {
+  return String(value || "")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+}
+
+type DeepStringMatch = {
+  key: string;
+  value: string;
+  path: string;
+};
+
+function collectDeepStringMatches(
+  value: unknown,
+  keyMatcher: (normalisedKey: string, rawKey: string) => boolean,
+  options?: { maxDepth?: number; path?: string; seen?: WeakSet<object> },
+): DeepStringMatch[] {
+  const maxDepth = options?.maxDepth ?? 8;
+  const path = options?.path ?? "root";
+  const seen = options?.seen ?? new WeakSet<object>();
+
+  if (maxDepth < 0 || !value || typeof value !== "object") return [];
+  if (seen.has(value as object)) return [];
+  seen.add(value as object);
+
+  const matches: DeepStringMatch[] = [];
+
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      matches.push(
+        ...collectDeepStringMatches(entry, keyMatcher, {
+          maxDepth: maxDepth - 1,
+          path: `${path}[${index}]`,
+          seen,
+        }),
+      );
+    });
+    return matches;
+  }
+
+  for (const [rawKey, rawValue] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    const key = normaliseKey(rawKey);
+    const nextPath = `${path}.${rawKey}`;
+
+    if (typeof rawValue === "string" || typeof rawValue === "number") {
+      const cleanValue = cleanString(rawValue);
+      if (cleanValue && keyMatcher(key, rawKey)) {
+        matches.push({ key: rawKey, value: cleanValue, path: nextPath });
+      }
+      continue;
+    }
+
+    matches.push(
+      ...collectDeepStringMatches(rawValue, keyMatcher, {
+        maxDepth: maxDepth - 1,
+        path: nextPath,
+        seen,
+      }),
+    );
+  }
+
+  return matches;
+}
+
+function firstDeepStringMatch(
+  value: unknown,
+  keyMatcher: (normalisedKey: string, rawKey: string) => boolean,
+) {
+  return collectDeepStringMatches(value, keyMatcher)[0]?.value || "";
+}
+
+function joinUniqueNonEmptyLines(parts: string[]) {
+  const seen = new Set<string>();
+
+  return parts
+    .flatMap((part) => String(part || "").split(/\n+/))
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => {
+      const key = part.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join("\n");
+}
+
+function isAppointmentOnlyClinicalText(value: unknown) {
+  const text = cleanString(value).toLowerCase();
+
+  if (!text) return true;
+
+  const appointmentMarkers = [
+    "appointment notes:",
+    "treatment type:",
+    "treatment label:",
+    "has surgeon approved suitability",
+    "949 code added",
+    "fasting 6 hours prior",
+  ];
+
+  const hasAppointmentMarker = appointmentMarkers.some((marker) =>
+    text.includes(marker),
+  );
+
+  // If it mainly looks like appointment-admin text, do not treat it as real
+  // same-day clinical notes. This prevents duplicated appointment notes from
+  // being displayed or cached as clinical notes.
+  if (
+    hasAppointmentMarker &&
+    !/\b(la:|lignocaine|irrigated|closed|suture|ha,|poig|extraction completed|implant|flap|curett|debrid|socket|bone graft)\b/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+
+  if (text.includes("same-day praktika clinical notes could not be loaded")) {
+    return true;
+  }
+
+  return false;
+}
+
+function cleanClinicalNoteText(value: unknown) {
+  const text = cleanString(value);
+
+  if (!text || isAppointmentOnlyClinicalText(text)) return "";
+
+  return text;
+}
+
+function joinUniqueAddressLines(parts: string[]) {
+  const seen = new Set<string>();
+
+  return parts
+    .flatMap((part) => String(part || "").split(/\n+/))
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => {
+      const key = part.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join("\n");
+}
+
+function getAddressFromObject(source: Record<string, unknown>) {
+  const wholeAddress = getFirstCleanString(source, [
+    "referrerAddress",
+    "referrer_address",
+    "providerAddress",
+    "provider_address",
+    "practiceAddress",
+    "practice_address",
+    "clinicAddress",
+    "clinic_address",
+    "address",
+    "formattedAddress",
+    "formatted_address",
+    "vchReferrerAddress",
+    "vchReferralProviderAddress",
+    "vchProviderAddress",
+    "vchPracticeAddress",
+    "vchClinicAddress",
+  ]);
+
+  const practiceName = getFirstCleanString(source, [
+    "practiceName",
+    "practice_name",
+    "clinicName",
+    "clinic_name",
+    "businessName",
+    "business_name",
+    "organisationName",
+    "organizationName",
+    "organisation_name",
+    "organization_name",
+    "facilityName",
+    "facility_name",
+    "vchClinic",
+    "vchClinicName",
+    "vchPractice",
+    "vchPracticeName",
+    "vchBusinessName",
+  ]);
+
+  const addressLines = [
+    getFirstCleanString(source, [
+      "addressLine1",
+      "address_line_1",
+      "line1",
+      "vchAddress1",
+      "vchAddressLine1",
+    ]),
+    getFirstCleanString(source, [
+      "addressLine2",
+      "address_line_2",
+      "line2",
+      "vchAddress2",
+      "vchAddressLine2",
+    ]),
+    getFirstCleanString(source, [
+      "suburb",
+      "city",
+      "town",
+      "vchSuburb",
+      "vchCity",
+    ]),
+    getFirstCleanString(source, ["state", "province", "vchState"]),
+    getFirstCleanString(source, [
+      "postcode",
+      "postCode",
+      "postalCode",
+      "postal_code",
+      "zip",
+      "vchPostcode",
+      "vchPostCode",
+    ]),
+  ].filter(Boolean);
+
+  return joinUniqueAddressLines([practiceName, wholeAddress, ...addressLines]);
+}
+
+function getQueueRawObject(item: QueueItem) {
+  return asPlainObject(item.raw_json);
+}
+
+function getQueueReferralObject(item: QueueItem) {
+  const raw = getQueueRawObject(item);
+
+  return {
+    referral: asPlainObject(raw.referral),
+    latestReferral: asPlainObject(raw.latest_referral || raw.latestReferral),
+    referrer: asPlainObject(raw.referrer),
+  };
+}
+
+function getQueueReferrerName(item: QueueItem) {
+  const raw = getQueueRawObject(item);
+  const { referral, latestReferral, referrer } = getQueueReferralObject(item);
+
+  return (
+    cleanString(item.referrer_name) ||
+    getFirstCleanString(raw, [
+      "referrer_name",
+      "referrerName",
+      "referring_provider_name",
+      "referringProviderName",
+      "referral_provider_name",
+      "referralProviderName",
+      "vchReferrerName",
+      "vchReferralProvider",
+      "vchReferralProviderName",
+      "vchProviderName",
+    ]) ||
+    getFirstCleanString(referral, [
+      "referrerName",
+      "referrer_name",
+      "providerName",
+      "name",
+    ]) ||
+    getFirstCleanString(latestReferral, [
+      "referrerName",
+      "referrer_name",
+      "providerName",
+      "name",
+    ]) ||
+    getFirstCleanString(referrer, [
+      "referrerName",
+      "referrer_name",
+      "providerName",
+      "name",
+    ])
+  );
+}
+
+function getQueueReferrerAddress(item: QueueItem) {
+  const raw = getQueueRawObject(item);
+  const { referral, latestReferral, referrer } = getQueueReferralObject(item);
+
+  const directItemAddress = cleanString(item.referrer_address);
+  if (directItemAddress) return directItemAddress;
+
+  const itemAsObject = item as unknown as Record<string, unknown>;
+
+  const directPracticeName =
+    getFirstCleanString(itemAsObject, [
+      "practice_name",
+      "practiceName",
+      "clinic_name",
+      "clinicName",
+      "referrer_practice_name",
+      "referrerPracticeName",
+      "referrer_clinic_name",
+      "referrerClinicName",
+    ]) ||
+    firstDeepStringMatch(raw, (key) =>
+      [
+        "practicename",
+        "clinicname",
+        "businessname",
+        "organisationname",
+        "organizationname",
+        "facilityname",
+        "referrerpracticename",
+        "referrerclinicname",
+        "providerpracticename",
+        "providerclinicname",
+        "vchclinic",
+        "vchclinicname",
+        "vchpractice",
+        "vchpracticename",
+      ].includes(key),
+    );
+
+  const wholeAddress =
+    getFirstCleanString(itemAsObject, [
+      "practice_address",
+      "practiceAddress",
+      "clinic_address",
+      "clinicAddress",
+      "referrer_address",
+      "referrerAddress",
+      "provider_address",
+      "providerAddress",
+    ]) ||
+    firstDeepStringMatch(raw, (key) =>
+      [
+        "referreraddress",
+        "provideraddress",
+        "practiceaddress",
+        "clinicaddress",
+        "formattedaddress",
+        "address",
+        "vchreferreraddress",
+        "vchreferralprovideraddress",
+        "vchprovideraddress",
+        "vchpracticeaddress",
+        "vchclinicaddress",
+      ].includes(key),
+    );
+
+  const line1 = firstDeepStringMatch(raw, (key) =>
+    [
+      "addressline1",
+      "address1",
+      "line1",
+      "vchaddress1",
+      "vchaddressline1",
+    ].includes(key),
+  );
+  const line2 = firstDeepStringMatch(raw, (key) =>
+    [
+      "addressline2",
+      "address2",
+      "line2",
+      "vchaddress2",
+      "vchaddressline2",
+    ].includes(key),
+  );
+  const suburb = firstDeepStringMatch(raw, (key) =>
+    ["suburb", "city", "town", "vchsuburb", "vchcity"].includes(key),
+  );
+  const state = firstDeepStringMatch(raw, (key) =>
+    ["state", "province", "vchstate"].includes(key),
+  );
+  const postcode = firstDeepStringMatch(raw, (key) =>
+    ["postcode", "postalcode", "zipcode", "zip", "vchpostcode"].includes(key),
+  );
+
+  const deepAddress = joinUniqueNonEmptyLines([
+    directPracticeName,
+    wholeAddress,
+    line1,
+    line2,
+    [suburb, state, postcode].filter(Boolean).join(" "),
+  ]);
+
+  if (deepAddress) return deepAddress;
+
+  const candidates = [
+    itemAsObject,
+    raw,
+    referral,
+    latestReferral,
+    referrer,
+    ...getNestedPlainObjects(raw, [
+      "clinic",
+      "practice",
+      "referrerClinic",
+      "referrer_clinic",
+      "referrerPractice",
+      "referrer_practice",
+      "providerClinic",
+      "provider_clinic",
+      "providerPractice",
+      "provider_practice",
+      "latestReferral",
+      "latest_referral",
+      "referral",
+      "referrer",
+    ]),
+    ...getNestedPlainObjects(referral, [
+      "clinic",
+      "practice",
+      "provider",
+      "referrer",
+    ]),
+    ...getNestedPlainObjects(latestReferral, [
+      "clinic",
+      "practice",
+      "provider",
+      "referrer",
+    ]),
+    ...getNestedPlainObjects(referrer, ["clinic", "practice", "provider"]),
+  ];
+
+  for (const candidate of candidates) {
+    const address = getAddressFromObject(candidate);
+    if (address) return address;
+  }
+
+  return "";
+}
+
+function getQueueAppointmentNotes(item: QueueItem) {
+  const raw = getQueueRawObject(item);
+
+  const appointmentNotes = getFirstCleanString(raw, [
+    "vchAppointmentNotes",
+    "appointment_notes",
+    "appointmentNotes",
+    "notes",
+  ]);
+  const treatmentType = getFirstCleanString(raw, [
+    "vchTxType",
+    "vchTreatmentType",
+    "treatment_type",
+    "appointment_type",
+  ]);
+  const treatmentLabel = getFirstCleanString(raw, [
+    "vchTxLabel",
+    "treatment_label",
+    "appointment_label",
+  ]);
 
   const lines = [
     appointmentNotes ? `Appointment notes: ${appointmentNotes}` : "",
@@ -401,6 +869,77 @@ function getQueueClinicalNotes(item: QueueItem) {
   ].filter(Boolean);
 
   return lines.join("\n");
+}
+
+function getQueueSyncedClinicalNotes(item: QueueItem) {
+  const raw = getQueueRawObject(item);
+
+  /*
+    Important:
+    item.source_clinical_notes and raw.source_clinical_notes are often only
+    appointment notes from the lightweight queue sync. Do NOT treat those as
+    true same-day clinical notes. Real same-day notes should come from the
+    cached Praktika clinical-note lookup fields below.
+  */
+  const directNotes = getFirstCleanString(raw, [
+    "cached_clinical_notes",
+    "same_day_clinical_notes",
+    "sameDayClinicalNotes",
+    "praktika_clinical_notes",
+    "praktikaClinicalNotes",
+    "patient_clinical_notes",
+    "patientClinicalNotes",
+    "clinical_notes",
+    "clinicalNotes",
+    "clinical_notes_text",
+    "clinicalNotesText",
+    "progress_notes",
+    "progressNotes",
+    "treatment_notes",
+    "treatmentNotes",
+    "vchClinicalNotes",
+    "vchClinicalNote",
+    "vchProgressNotes",
+    "vchTreatmentNotes",
+  ]);
+
+  const cleanedDirectNotes = cleanClinicalNoteText(directNotes);
+
+  if (cleanedDirectNotes) return cleanedDirectNotes;
+
+  const noteMatches = collectDeepStringMatches(raw, (key) => {
+    if (key.includes("appointment")) return false;
+    if (key.includes("referral")) return false;
+    if (key.includes("referrer")) return false;
+
+    return (
+      (key.includes("clinical") && key.includes("note")) ||
+      (key.includes("progress") && key.includes("note")) ||
+      (key.includes("treatment") && key.includes("note")) ||
+      key === "notetext" ||
+      key === "notebody" ||
+      key === "vchclinicalnotes" ||
+      key === "vchprogressnotes" ||
+      key === "vchtreatmentnotes"
+    );
+  });
+
+  return joinUniqueNonEmptyLines(noteMatches.map((match) => match.value));
+}
+
+function getQueueClinicalNotes(item: QueueItem) {
+  const appointmentNotes = getQueueAppointmentNotes(item);
+  const syncedClinicalNotes = getQueueSyncedClinicalNotes(item);
+
+  if (appointmentNotes && syncedClinicalNotes) {
+    return [
+      appointmentNotes,
+      "Same-day Praktika clinical notes:",
+      syncedClinicalNotes,
+    ].join("\n\n");
+  }
+
+  return syncedClinicalNotes || appointmentNotes;
 }
 
 function parseEmailList(value: string) {
@@ -530,8 +1069,12 @@ export default function TypistPage() {
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAutosavedTextRef = useRef("");
   const letterEditorRef = useRef<RichTextLetterEditorHandle | null>(null);
-  const referrerAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const patientDetailsAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const referrerAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const patientDetailsAutosaveTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const [secureEmailModalOpen, setSecureEmailModalOpen] = useState(false);
   const [secureEmailRecipient, setSecureEmailRecipient] = useState("");
   const [secureEmailCc, setSecureEmailCc] = useState("");
@@ -574,8 +1117,9 @@ export default function TypistPage() {
   const [mounted, setMounted] = useState(false);
   const [showPraktikaTools, setShowPraktikaTools] = useState(false);
   const [showMedirefTools, setShowMedirefTools] = useState(false);
-  const [praktikaPreSyncMessage, setPraktikaPreSyncMessage] =
-    useState<string | null>(null);
+  const [praktikaPreSyncMessage, setPraktikaPreSyncMessage] = useState<
+    string | null
+  >(null);
   const [praktikaNeedsReconnect, setPraktikaNeedsReconnect] = useState(false);
   const [praktikaSyncingQueue, setPraktikaSyncingQueue] = useState(false);
   const [praktikaSyncingReferrers, setPraktikaSyncingReferrers] =
@@ -891,7 +1435,6 @@ export default function TypistPage() {
     }
   }
 
-
   function getQueueStatusLabel(status: QueueStatusTab) {
     if (status === "active") return "Active";
     if (status === "queued") return "Queued";
@@ -934,7 +1477,8 @@ export default function TypistPage() {
     }
 
     if (!patientFirstName.trim() || !patientLastName.trim()) {
-      const message = "Patient first name and last name are required before uploading images.";
+      const message =
+        "Patient first name and last name are required before uploading images.";
       setImageDraftError(message);
       if (!options?.quiet) alert(message);
       return null;
@@ -990,13 +1534,19 @@ export default function TypistPage() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok || !data.success) {
-        throw new Error(data?.error || "Could not prepare image upload workspace.");
+        throw new Error(
+          data?.error || "Could not prepare image upload workspace.",
+        );
       }
 
-      const createdDraftId = String(data.draft?.id || data.draftId || data.id || "").trim();
+      const createdDraftId = String(
+        data.draft?.id || data.draftId || data.id || "",
+      ).trim();
 
       if (!createdDraftId) {
-        throw new Error("Image workspace was created but no draft ID was returned.");
+        throw new Error(
+          "Image workspace was created but no draft ID was returned.",
+        );
       }
 
       setImageDraftId(createdDraftId);
@@ -1048,6 +1598,10 @@ export default function TypistPage() {
           patientId: params.patientId,
           appointmentDate: params.appointmentDate,
           appointmentId: params.appointmentId || null,
+          // Important: do not use old report_drafts cache here.
+          // Some existing drafts contain duplicated appointment notes, which can
+          // incorrectly block the live Praktika clinical-note lookup.
+          useCache: false,
         }),
       },
     );
@@ -1069,8 +1623,24 @@ export default function TypistPage() {
     }
 
     if (!response.ok || !data.success) {
+      const details = [
+        data?.error,
+        data?.message,
+        data?.debug?.message,
+        data?.source ? `source: ${data.source}` : "",
+        typeof data?.matchedCount !== "undefined"
+          ? `matched: ${data.matchedCount}`
+          : "",
+        typeof data?.totalNotes !== "undefined"
+          ? `total notes: ${data.totalNotes}`
+          : "",
+      ]
+        .map((part) => String(part || "").trim())
+        .filter(Boolean)
+        .join(" | ");
+
       throw new Error(
-        data?.error ||
+        details ||
           `Clinical notes request failed with status ${response.status}.`,
       );
     }
@@ -1473,7 +2043,6 @@ export default function TypistPage() {
     }
   }
 
-
   function getDefaultMedirefMessage() {
     return `Specialist correspondence for ${
       selectedDraft?.patient_name || patientName || "this patient"
@@ -1669,11 +2238,7 @@ export default function TypistPage() {
         if (!uploaded) return;
       }
 
-      setCompleteStep(
-        medirefCompleteWorkflow
-          ? "Queuing MediRef send..."
-          : "",
-      );
+      setCompleteStep(medirefCompleteWorkflow ? "Queuing MediRef send..." : "");
 
       const response = await fetch("/api/report-writing/send-via-mediref", {
         method: "POST",
@@ -1688,11 +2253,13 @@ export default function TypistPage() {
           referrerEmail: medirefRecipientEmail.trim(),
           referrerProviderNumber: medirefRecipientProviderNumber.trim(),
           patientEmail: medirefPatientEmail.trim(),
-          additionalRecipients: medirefAdditionalRecipients.map((recipient) => ({
-            name: recipient.name,
-            practiceName: recipient.practiceName,
-            address: recipient.address,
-          })),
+          additionalRecipients: medirefAdditionalRecipients.map(
+            (recipient) => ({
+              name: recipient.name,
+              practiceName: recipient.practiceName,
+              address: recipient.address,
+            }),
+          ),
           additionalRecipientsText: pdfCcText,
           message: medirefMessage,
           attachPeriodontalChart,
@@ -1944,7 +2511,6 @@ export default function TypistPage() {
     };
   }, [letterText, pdfCcText, pdfLetterDate, selectedDraft]);
 
-
   useEffect(() => {
     if (!selectedDraft) return;
 
@@ -2089,6 +2655,7 @@ export default function TypistPage() {
 
   async function autoFillReferrerFromLatestPraktikaReferral(
     praktikaPatientId: string,
+    queueIdForCache?: string | null,
   ) {
     if (!praktikaPatientId) {
       console.warn("Auto-referrer lookup skipped: no Praktika patient ID", {
@@ -2098,7 +2665,9 @@ export default function TypistPage() {
         patientName,
       });
       setLatestPraktikaReferral(null);
-      setReferralAutoFillError("No Praktika patient ID is linked to this queue item or draft.");
+      setReferralAutoFillError(
+        "No Praktika patient ID is linked to this queue item or draft.",
+      );
       setReferralAutoFillStatus("not_found");
       return;
     }
@@ -2169,15 +2738,57 @@ export default function TypistPage() {
         return;
       }
 
+      // This is the referring provider's name from the Praktika referral.
       setReferrerName(referral.referrerName);
 
-      if (referral.referrerAddress) {
-        setReferrerAddress(referral.referrerAddress);
-      }
-
+      // Important: always set this, even when blank.
+      // Otherwise stale raw appointment/practice address values can remain visible.
+      setReferrerAddress(referral.referrerAddress || "");
       setLatestPraktikaReferral(referral);
       setReferralAutoFillError("");
-      setReferralAutoFillStatus("found");
+      setReferralAutoFillStatus(referral.referrerAddress ? "filled" : "found");
+
+      const queueId = queueIdForCache || activeQueueItemId;
+
+      if (queueId) {
+        try {
+          await fetch("/api/report-writing/letter-queue", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              queueId,
+              status: "started",
+              referrerName: referral.referrerName,
+              referrerAddress: referral.referrerAddress || "",
+              latestReferral: referral,
+            }),
+          });
+
+          setQueue((current) =>
+            current.map((queueItem) => {
+              if (queueItem.id !== queueId) return queueItem;
+
+              return {
+                ...queueItem,
+                status:
+                  queueItem.status === "completed" ? "completed" : "started",
+                referrer_name: referral.referrerName,
+                referrer_address: referral.referrerAddress || null,
+                raw_json: {
+                  ...(queueItem.raw_json || {}),
+                  latest_referral: referral,
+                  referral_autofill_at: new Date().toISOString(),
+                },
+              };
+            }),
+          );
+        } catch (cacheError) {
+          console.warn(
+            "Could not cache referrer details to queue:",
+            cacheError,
+          );
+        }
+      }
     } catch (error) {
       const message =
         error instanceof Error
@@ -2212,155 +2823,208 @@ export default function TypistPage() {
       String(raw.iAppointmentId || raw.appointment_id || "").trim() ||
       null;
 
+    const appointmentDate = item.appointment_time?.slice(0, 10) || "";
+
     setAutoGenerateStatus("selecting_report_type");
 
     const inferredReportType = inferReportTypeFromQueueItem(item, reportTypes);
-    const appointmentNotes = getQueueClinicalNotes(item);
-    const savedClinicalNotes = cleanString(item.source_clinical_notes);
+
+    const appointmentNotes = getQueueAppointmentNotes(item);
+    const cachedClinicalNotes = cleanClinicalNoteText(raw.cached_clinical_notes);
+
+    // Important referral rule:
+    // Only trust the dedicated queue columns for cached referral details.
+    // Do NOT call getQueueReferrerAddress(item) here because that deep-scans raw
+    // appointment JSON and can incorrectly find your own practice address
+    // (Focus Dental Specialists) instead of the external referrer's clinic.
+    const cachedReferrerName = cleanString(item.referrer_name);
+    const cachedReferrerAddress = cleanString(item.referrer_address);
+    const cachedLatestReferral =
+      raw.latest_referral && typeof raw.latest_referral === "object"
+        ? (raw.latest_referral as LatestPraktikaReferral)
+        : null;
 
     setPatientFirstName(firstName);
     setPatientLastName(lastName);
     setPatientDob(dob);
     setPatientGender(item.patient_gender || "neutral");
-    setReferrerName(item.referrer_name || "");
-    setReferrerAddress(item.referrer_address || "");
     setReportType(inferredReportType);
     setPreferredExampleId("");
+    setLetterText("");
+    setGeneratedAiLetterText("");
+    setPdfCcText("");
+    setPdfLetterDate(new Date().toISOString().slice(0, 10));
+    setPraktikaCandidates([]);
+    setSelectedPraktikaPatientId(linkedPraktikaPatientId);
 
-    if (item.referrer_name || item.referrer_address) {
-      setReferralAutoFillStatus("filled");
+    if (cachedReferrerName) {
+      setReferrerName(cachedReferrerName);
+      setReferrerAddress(cachedReferrerAddress);
+      setLatestPraktikaReferral(cachedLatestReferral);
+      setReferralAutoFillError("");
+      setReferralAutoFillStatus(cachedReferrerAddress ? "filled" : "found");
+    } else if (linkedPraktikaPatientId) {
+      setReferrerName("");
+      setReferrerAddress("");
+      void autoFillReferrerFromLatestPraktikaReferral(
+        linkedPraktikaPatientId,
+        item.id,
+      );
     } else {
-      setReferralAutoFillStatus("idle");
+      setReferrerName("");
+      setReferrerAddress("");
+      setLatestPraktikaReferral(null);
+      setReferralAutoFillError(
+        "No Praktika patient ID is linked to this queue item.",
+      );
+      setReferralAutoFillStatus("not_found");
     }
 
-    const shouldAutoFillReferral =
-      Boolean(linkedPraktikaPatientId) &&
-      !item.referrer_name &&
-      !item.referrer_address;
+    if (cachedClinicalNotes) {
+      const cachedCombinedNotes = [
+        appointmentNotes,
+        "Same-day Praktika clinical notes:",
+        cachedClinicalNotes,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
 
-    if (shouldAutoFillReferral) {
-      void autoFillReferrerFromLatestPraktikaReferral(linkedPraktikaPatientId);
-    }
-
-    if (savedClinicalNotes) {
-      setClinicalNotes(savedClinicalNotes);
-      setLetterText("");
-      setGeneratedAiLetterText("");
-      setPdfCcText("");
-      setPdfLetterDate(new Date().toISOString().slice(0, 10));
-      setPraktikaCandidates([]);
-      setSelectedPraktikaPatientId(linkedPraktikaPatientId);
+      setClinicalNotes(cachedCombinedNotes || appointmentNotes);
       setAutoGenerateStatus("ready");
-    } else {
-      const cachedClinicalNotes = cleanString(raw.cached_clinical_notes);
 
-      if (cachedClinicalNotes) {
-        const combinedCachedNotes = [
-          appointmentNotes,
-          "Same-day Praktika clinical notes:",
-          cachedClinicalNotes,
-        ]
-          .filter(Boolean)
-          .join("\n\n");
+      await fetch("/api/report-writing/letter-queue", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          queueId: item.id,
+          status: item.status === "completed" ? "completed" : "started",
+        }),
+      }).catch((error) => {
+        console.warn("Could not mark cached queue item as started:", error);
+      });
 
-        setClinicalNotes(combinedCachedNotes);
-        setLetterText("");
-        setGeneratedAiLetterText("");
-        setPdfCcText("");
-        setPdfLetterDate(new Date().toISOString().slice(0, 10));
-        setPraktikaCandidates([]);
-        setSelectedPraktikaPatientId(linkedPraktikaPatientId);
-        setAutoGenerateStatus("ready");
-      } else {
-        const initialClinicalNotes = [
-          appointmentNotes,
-          linkedPraktikaPatientId && item.appointment_time
-            ? "Loading same-day Praktika clinical notes..."
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n");
+      return;
+    }
 
-        setClinicalNotes(initialClinicalNotes);
-        setLetterText("");
-        setGeneratedAiLetterText("");
-        setPdfCcText("");
-        setPdfLetterDate(new Date().toISOString().slice(0, 10));
-        setPraktikaCandidates([]);
-        setSelectedPraktikaPatientId(linkedPraktikaPatientId);
+    const initialClinicalNotes = [
+      appointmentNotes,
+      linkedPraktikaPatientId && appointmentDate
+        ? "Loading same-day Praktika clinical notes..."
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
-        let sameDayClinicalNotes = "";
-        let clinicalNotesLoadFailed = false;
+    setClinicalNotes(initialClinicalNotes || appointmentNotes);
 
-        if (linkedPraktikaPatientId && item.appointment_time) {
-          try {
-            sameDayClinicalNotes = await pullSameDayClinicalNotes({
-              patientId: linkedPraktikaPatientId,
-              appointmentDate: item.appointment_time.slice(0, 10),
-              appointmentId,
-            });
+    let sameDayClinicalNotes = "";
 
-            if (sameDayClinicalNotes.trim()) {
-              await fetch("/api/report-writing/letter-queue", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
+    if (linkedPraktikaPatientId && appointmentDate) {
+      try {
+        sameDayClinicalNotes = await pullSameDayClinicalNotes({
+          patientId: linkedPraktikaPatientId,
+          appointmentDate,
+          appointmentId,
+        });
+
+        sameDayClinicalNotes = cleanClinicalNoteText(sameDayClinicalNotes);
+
+        if (sameDayClinicalNotes.trim()) {
+          await fetch("/api/report-writing/letter-queue", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              queueId: item.id,
+              status: item.status === "completed" ? "completed" : "started",
+              cachedClinicalNotes: sameDayClinicalNotes,
+              cachedClinicalNotesSource: "praktika_live",
+            }),
+          });
+
+          setQueue((current) =>
+            current.map((queueItem) => {
+              if (queueItem.id !== item.id) return queueItem;
+
+              return {
+                ...queueItem,
+                status: item.status === "completed" ? "completed" : "started",
+                source_clinical_notes: sameDayClinicalNotes,
+                raw_json: {
+                  ...(queueItem.raw_json || {}),
+                  cached_clinical_notes: sameDayClinicalNotes,
+                  cached_clinical_notes_source: "praktika_live",
+                  cached_clinical_notes_at: new Date().toISOString(),
                 },
-                body: JSON.stringify({
-                  queueId: item.id,
-                  status: item.status === "completed" ? "completed" : "started",
-                  cachedClinicalNotes: sameDayClinicalNotes,
-                  cachedClinicalNotesSource: "praktika_live",
-                }),
-              });
-
-              setQueue((current) =>
-                current.map((queueItem) => {
-                  if (queueItem.id !== item.id) return queueItem;
-
-                  return {
-                    ...queueItem,
-                    status: item.status === "completed" ? "completed" : "started",
-                    raw_json: {
-                      ...(queueItem.raw_json || {}),
-                      cached_clinical_notes: sameDayClinicalNotes,
-                      cached_clinical_notes_source: "praktika_live",
-                      cached_clinical_notes_at: new Date().toISOString(),
-                    },
-                  };
-                }),
-              );
-            }
-          } catch (error) {
-            clinicalNotesLoadFailed = true;
-            console.error("Failed to pull Praktika clinical notes:", error);
-
-            const fallbackNotes = [
-              appointmentNotes,
-              "Same-day Praktika clinical notes could not be loaded. Praktika may be disconnected, refreshing, or waiting for MFA. Existing appointment notes have been preserved.",
-            ]
-              .filter(Boolean)
-              .join("\n\n");
-
-            setClinicalNotes(fallbackNotes);
-            setAutoGenerateStatus("error");
-          }
+              };
+            }),
+          );
         }
+      } catch (error) {
+        console.error("Failed to pull Praktika clinical notes:", error);
 
-        if (!clinicalNotesLoadFailed) {
-          const combinedClinicalNotes = [
+        const fallbackCachedNotes = cleanClinicalNoteText(
+          raw.cached_clinical_notes,
+        );
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : "Unknown clinical notes lookup error.";
+
+        if (fallbackCachedNotes) {
+          const fallbackCombinedNotes = [
             appointmentNotes,
-            sameDayClinicalNotes ? "Same-day Praktika clinical notes:" : "",
-            sameDayClinicalNotes,
+            "Same-day Praktika clinical notes:",
+            fallbackCachedNotes,
+            `Clinical notes live refresh warning: ${errorMessage}`,
           ]
             .filter(Boolean)
             .join("\n\n");
 
-          setClinicalNotes(combinedClinicalNotes || appointmentNotes);
-          setAutoGenerateStatus("ready");
+          setClinicalNotes(fallbackCombinedNotes);
+        } else {
+          const fallbackNotes = [
+            appointmentNotes,
+            `Same-day Praktika clinical notes could not be loaded: ${errorMessage}`,
+            "Existing appointment notes have been preserved.",
+          ]
+            .filter(Boolean)
+            .join("\n\n");
+
+          setClinicalNotes(fallbackNotes);
         }
+
+        setAutoGenerateStatus("error");
+        return;
       }
+    } else {
+      await fetch("/api/report-writing/letter-queue", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          queueId: item.id,
+          status: item.status === "completed" ? "completed" : "started",
+        }),
+      }).catch((error) => {
+        console.warn("Could not mark queue item as started:", error);
+      });
     }
+
+    const combinedClinicalNotes = [
+      appointmentNotes,
+      sameDayClinicalNotes ? "Same-day Praktika clinical notes:" : "",
+      sameDayClinicalNotes,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    setClinicalNotes(combinedClinicalNotes || appointmentNotes);
+    setAutoGenerateStatus("ready");
   }
 
   useEffect(() => {
@@ -2368,12 +3032,13 @@ export default function TypistPage() {
     if (selectedDraft || imageDraftId || imageDraftCreating) return;
     if (!patientFirstName.trim() || !patientLastName.trim()) return;
 
-    // Do not create the temporary image/draft workspace while same-day
-    // clinical notes or Praktika referral details are still loading.
-    // Otherwise the draft can be saved with placeholder/incomplete data.
-    if (autoGenerateStatus !== "ready" && autoGenerateStatus !== "error") return;
+    // Prevent creating the temporary image/draft workspace while live clinical
+    // notes or referral details are still loading. This is the race-condition fix.
+    if (autoGenerateStatus !== "ready" && autoGenerateStatus !== "error")
+      return;
     if (referralAutoFillStatus === "loading") return;
-    if (clinicalNotes.includes("Loading same-day Praktika clinical notes")) return;
+    if (clinicalNotes.includes("Loading same-day Praktika clinical notes"))
+      return;
 
     if (autoImageDraftQueueIdRef.current === activeQueueItemId) return;
 
@@ -2542,9 +3207,12 @@ export default function TypistPage() {
     setPraktikaSyncingReferrers(true);
 
     try {
-      const response = await fetch("/api/report-writing/referrers/sync-praktika", {
-        method: "POST",
-      });
+      const response = await fetch(
+        "/api/report-writing/referrers/sync-praktika",
+        {
+          method: "POST",
+        },
+      );
 
       const data = await response.json().catch(() => ({}));
 
@@ -2598,6 +3266,13 @@ export default function TypistPage() {
     }
   }
 
+  // Replace only the existing syncQueueRange() function in TypistPage.tsx with this version.
+  // It keeps appointment sync fast, then enriches a small batch of saved queue rows.
+
+  // Replace only the existing syncQueueRange() function in TypistPage.tsx with this version.
+  // It syncs appointments quickly, then automatically enriches queue rows one-at-a-time
+  // so staff do not need to keep clicking Sync.
+
   async function syncQueueRange() {
     if (!queueFromDate || !queueToDate) {
       alert("Please select both a from date and a to date.");
@@ -2647,17 +3322,7 @@ export default function TypistPage() {
         },
       );
 
-      const text = await response.text();
-      let data: any = {};
-
-      try {
-        data = text.trim() ? JSON.parse(text) : {};
-      } catch {
-        data = {
-          success: false,
-          error: `Queue sync returned non-JSON: ${text.slice(0, 300)}`,
-        };
-      }
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok || !data.success) {
         const needsReconnect =
@@ -2671,36 +3336,32 @@ export default function TypistPage() {
           setPraktikaNeedsReconnect(true);
           setShowPraktikaTools(true);
           setPraktikaPreSyncMessage(
-            data.error ||
+            data?.error ||
               "Praktika needs to be reconnected before the queue can be synced.",
           );
-        } else {
-          setPraktikaPreSyncMessage(
-            data.error || "Failed to sync letter queue.",
-          );
-          alert(data.error || "Failed to sync letter queue.");
         }
 
+        if (!needsReconnect) {
+          alert(data?.error || "Failed to sync Praktika letter queue.");
+        }
         return;
       }
 
       setPraktikaNeedsReconnect(false);
       setPraktikaPreSyncMessage(
-        `Queue synced. ${data.queued || 0} item(s) found.`,
+        `Queue synced. ${data.queued || 0} item(s) found. Open a queue item to load its latest Praktika referral and same-day clinical notes.`,
       );
 
-      alert(`Queue synced. ${data.queued || 0} item(s) found.`);
-
-      if (selectedProviderId) {
-        await loadQueue(selectedProviderId);
-      }
+      await loadQueue(selectedProviderId, queueStatusTab);
     } catch (error) {
+      console.error("Failed to sync Praktika queue:", error);
+
       const message =
         error instanceof DOMException && error.name === "AbortError"
           ? "Queue sync is taking too long. The helper may still be running in the background. Wait a minute, then refresh and check the queue."
           : error instanceof Error
             ? error.message
-            : "Failed to sync letter queue.";
+            : "Failed to sync Praktika queue.";
 
       setPraktikaPreSyncMessage(message);
       alert(message);
@@ -3130,7 +3791,9 @@ export default function TypistPage() {
         const persisted = await persistCurrentReferrerDetails({ quiet: false });
 
         if (!persisted) {
-          alert("Could not save the referrer details before generating the PDF. Please try again.");
+          alert(
+            "Could not save the referrer details before generating the PDF. Please try again.",
+          );
           return;
         }
       }
@@ -3179,7 +3842,6 @@ export default function TypistPage() {
     }
   }
 
-
   async function previewPdf(draft: Draft) {
     setLoading(true);
 
@@ -3188,7 +3850,9 @@ export default function TypistPage() {
         const persisted = await persistCurrentReferrerDetails({ quiet: false });
 
         if (!persisted) {
-          alert("Could not save the referrer details before previewing the PDF. Please try again.");
+          alert(
+            "Could not save the referrer details before previewing the PDF. Please try again.",
+          );
           return;
         }
       }
@@ -3865,7 +4529,7 @@ export default function TypistPage() {
 
                 {referralAutoFillStatus === "loading" ? (
                   <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
-                    Looking for the most recent Praktika referral...
+                    Looking up latest Praktika referral...
                   </div>
                 ) : null}
 
@@ -3889,8 +4553,8 @@ export default function TypistPage() {
 
                 {referralAutoFillStatus === "error" ? (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    Could not auto-fill from Praktika. Use manual referrer
-                    search.
+                    Saved queue data did not include full referrer details. Use
+                    manual referrer search.
                     {referralAutoFillError ? (
                       <div className="mt-1 font-mono text-[11px] text-amber-900">
                         {referralAutoFillError}
@@ -3906,7 +4570,9 @@ export default function TypistPage() {
 
                   {referrerName || referrerAddress ? (
                     <div className="mt-2 whitespace-pre-line leading-6 text-slate-800">
-                      {[referrerName, referrerAddress].filter(Boolean).join("\n")}
+                      {[referrerName, referrerAddress]
+                        .filter(Boolean)
+                        .join("\n")}
                     </div>
                   ) : (
                     <div className="mt-2 text-slate-500">
@@ -3927,7 +4593,8 @@ export default function TypistPage() {
                           Provider instructions for typist
                         </div>
                         <div className="mt-1 text-xs text-amber-700">
-                          Internal action notes only — do not include this text in the letter.
+                          Internal action notes only — do not include this text
+                          in the letter.
                         </div>
                         <div className="mt-3 whitespace-pre-line rounded-xl border border-amber-200 bg-white p-3 leading-6 text-amber-950">
                           {selectedDraft.typist_instructions}
@@ -3964,7 +4631,8 @@ export default function TypistPage() {
                   Letter text
                 </div>
                 <div className="text-xs text-slate-500">
-                  Highlight text, then use the toolbar for bold, italic, underline, bullets, or numbered lists.
+                  Highlight text, then use the toolbar for bold, italic,
+                  underline, bullets, or numbered lists.
                 </div>
               </div>
 
@@ -3975,8 +4643,9 @@ export default function TypistPage() {
                       Place an image in the letter
                     </div>
                     <div className="mt-1 text-xs text-blue-800">
-                      Click in the letter where the image should appear, then choose an image number.
-                      Image size, crop and alignment are still controlled in the image panel below.
+                      Click in the letter where the image should appear, then
+                      choose an image number. Image size, crop and alignment are
+                      still controlled in the image panel below.
                     </div>
                   </div>
 
@@ -4023,8 +4692,9 @@ export default function TypistPage() {
                   PDF cc line after signature, optional
                 </div>
                 <div className="mt-1 text-xs text-indigo-900">
-                  Search for a referrer to add a CC line, or type/edit the CC text manually.
-                  The PDF will show this under the signature as italic.
+                  Search for a referrer to add a CC line, or type/edit the CC
+                  text manually. The PDF will show this under the signature as
+                  italic.
                 </div>
                 <div className="mt-3">
                   <ReferrerSearchBox
@@ -4043,7 +4713,9 @@ export default function TypistPage() {
                 </div>
                 <textarea
                   className="mt-2 h-28 w-full rounded-xl border border-indigo-200 bg-white p-3 text-sm"
-                  placeholder={"Dr Smith\nBrisbane Dental Clinic\n111 Brisbane Rd, Brisbane."}
+                  placeholder={
+                    "Dr Smith\nBrisbane Dental Clinic\n111 Brisbane Rd, Brisbane."
+                  }
                   value={pdfCcText}
                   onChange={(e) => setPdfCcText(e.target.value)}
                 />
@@ -4053,11 +4725,14 @@ export default function TypistPage() {
             <section className="rounded-2xl border border-slate-200 bg-white p-4">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-950">Images for this letter</h3>
+                  <h3 className="text-sm font-bold text-slate-950">
+                    Images for this letter
+                  </h3>
                   <p className="mt-1 text-xs text-slate-500">
-                    Upload images before or after the formal draft is saved. When you are working
-                    from the queue, a temporary draft workspace is prepared automatically so images
-                    can be attached straight away.
+                    Upload images before or after the formal draft is saved.
+                    When you are working from the queue, a temporary draft
+                    workspace is prepared automatically so images can be
+                    attached straight away.
                   </p>
                 </div>
 
@@ -4068,7 +4743,9 @@ export default function TypistPage() {
                     disabled={imageDraftCreating || loading}
                     className="rounded-xl bg-slate-950 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
                   >
-                    {imageDraftCreating ? "Preparing..." : "Enable image uploads"}
+                    {imageDraftCreating
+                      ? "Preparing..."
+                      : "Enable image uploads"}
                   </button>
                 ) : null}
               </div>
@@ -4087,8 +4764,9 @@ export default function TypistPage() {
                 <DraftImagePanel reportDraftId={currentImageDraftId} />
               ) : (
                 <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
-                  Select a queue item or enter patient details, then click Enable image uploads.
-                  You do not need to manually save the letter first.
+                  Select a queue item or enter patient details, then click
+                  Enable image uploads. You do not need to manually save the
+                  letter first.
                 </div>
               )}
             </section>
@@ -4635,13 +5313,14 @@ export default function TypistPage() {
         </div>
       ) : null}
 
-
       {pdfPreviewModalOpen && pdfPreviewUrl ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="flex h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
             <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-4">
               <div>
-                <h2 className="text-lg font-bold text-slate-950">Preview PDF</h2>
+                <h2 className="text-lg font-bold text-slate-950">
+                  Preview PDF
+                </h2>
                 <p className="text-sm text-slate-500">{pdfPreviewTitle}</p>
               </div>
 
@@ -4678,7 +5357,6 @@ export default function TypistPage() {
         </div>
       ) : null}
 
-
       {medirefModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
@@ -4705,17 +5383,24 @@ export default function TypistPage() {
                 </div>
                 <div>
                   <span className="font-semibold">Report:</span>{" "}
-                  {reportTypes.find((type) => type.value === selectedDraft?.report_type)?.label ||
-                    reportTypes.find((type) => type.value === reportType)?.label ||
+                  {reportTypes.find(
+                    (type) => type.value === selectedDraft?.report_type,
+                  )?.label ||
+                    reportTypes.find((type) => type.value === reportType)
+                      ?.label ||
                     selectedDraft?.report_type ||
                     reportType}
                 </div>
               </div>
 
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
-                <div className="font-semibold">Automatic MediRef recipient matching</div>
+                <div className="font-semibold">
+                  Automatic MediRef recipient matching
+                </div>
                 <p className="mt-1 text-sm">
-                  The Mac Mini helper will search the MediRef directory using the referrer name and practice name below, then select the best matching directory result before attaching the PDF.
+                  The Mac Mini helper will search the MediRef directory using
+                  the referrer name and practice name below, then select the
+                  best matching directory result before attaching the PDF.
                 </p>
               </div>
 
@@ -4748,7 +5433,9 @@ export default function TypistPage() {
                   placeholder="Practice name from the selected referrer"
                 />
                 <p className="mt-1 text-xs text-slate-500">
-                  Pulled from the first line of the saved referrer address. You can edit it if MediRef uses a slightly different practice name.
+                  Pulled from the first line of the saved referrer address. You
+                  can edit it if MediRef uses a slightly different practice
+                  name.
                 </p>
               </label>
 
@@ -4763,7 +5450,9 @@ export default function TypistPage() {
                   className="mt-1"
                 />
                 <span>
-                  <span className="font-semibold">Match recipient in MediRef automatically</span>
+                  <span className="font-semibold">
+                    Match recipient in MediRef automatically
+                  </span>
                   <br />
                   Searches by referrer name first, then practice name if needed.
                 </span>
@@ -4813,12 +5502,15 @@ export default function TypistPage() {
                     Additional MediRef recipient(s)
                   </div>
                   <p className="mt-1 text-xs text-slate-500">
-                    These are searched in MediRef as extra recipients. The list is prefilled from the PDF CC field when possible.
+                    These are searched in MediRef as extra recipients. The list
+                    is prefilled from the PDF CC field when possible.
                   </p>
                 </div>
 
                 <ReferrerSearchBox
-                  onSelect={(referrer) => addMedirefAdditionalRecipient(referrer)}
+                  onSelect={(referrer) =>
+                    addMedirefAdditionalRecipient(referrer)
+                  }
                 />
 
                 {medirefAdditionalRecipients.length > 0 ? (
@@ -4872,7 +5564,8 @@ export default function TypistPage() {
                   placeholder="patient@example.com"
                 />
                 <p className="mt-1 text-xs text-slate-500">
-                  This fills the patient email field in MediRef. It is separate from doctor/referrer CC recipients.
+                  This fills the patient email field in MediRef. It is separate
+                  from doctor/referrer CC recipients.
                 </p>
               </label>
 
@@ -4892,13 +5585,20 @@ export default function TypistPage() {
                   type="checkbox"
                   checked={attachPeriodontalChart}
                   disabled={
-                    !(selectedPraktikaPatientId || selectedDraft?.praktika_patient_id)
+                    !(
+                      selectedPraktikaPatientId ||
+                      selectedDraft?.praktika_patient_id
+                    )
                   }
-                  onChange={(event) => setAttachPeriodontalChart(event.target.checked)}
+                  onChange={(event) =>
+                    setAttachPeriodontalChart(event.target.checked)
+                  }
                   className="mt-1"
                 />
                 <span>
-                  <span className="font-semibold">Attach periodontal chart</span>
+                  <span className="font-semibold">
+                    Attach periodontal chart
+                  </span>
                   <br />
                   Optional. Only available when a Praktika patient is linked.
                 </span>
@@ -4908,11 +5608,15 @@ export default function TypistPage() {
                 <input
                   type="checkbox"
                   checked={medirefConfirmed}
-                  onChange={(event) => setMedirefConfirmed(event.target.checked)}
+                  onChange={(event) =>
+                    setMedirefConfirmed(event.target.checked)
+                  }
                   className="mt-1"
                 />
                 <span>
-                  I have checked the patient, recipient/referrer, additional recipients, patient email, and attachments before sending via MediRef.
+                  I have checked the patient, recipient/referrer, additional
+                  recipients, patient email, and attachments before sending via
+                  MediRef.
                 </span>
               </label>
             </div>
@@ -4932,13 +5636,19 @@ export default function TypistPage() {
               </button>
 
               <button
-  type="button"
-  onClick={sendViaMedirefFromModal}
-  disabled={loading || !medirefConfirmed}
-  className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
->
-  {loading ? (medirefCompleteWorkflow ? "Completing..." : "Queuing...") : medirefCompleteWorkflow ? "Complete Workflow + Queue MediRef Send" : "Queue MediRef Send"}
-</button>
+                type="button"
+                onClick={sendViaMedirefFromModal}
+                disabled={loading || !medirefConfirmed}
+                className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+              >
+                {loading
+                  ? medirefCompleteWorkflow
+                    ? "Completing..."
+                    : "Queuing..."
+                  : medirefCompleteWorkflow
+                    ? "Complete Workflow + Queue MediRef Send"
+                    : "Queue MediRef Send"}
+              </button>
             </div>
           </div>
         </div>

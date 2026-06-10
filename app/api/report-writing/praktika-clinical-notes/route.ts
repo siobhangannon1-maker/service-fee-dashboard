@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 
 import {
   getCurrentUserPraktikaSessionMode,
@@ -10,17 +9,26 @@ import { praktikaHelperPost } from "@/lib/praktika/helper-job-client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
-
 function clean(value: unknown) {
   return String(value ?? "").trim();
 }
 
 function isoDateOnly(value: unknown) {
-  return clean(value).slice(0, 10);
+  const text = clean(value);
+  if (!text) return "";
+
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+
+  const auMatch = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (auMatch) {
+    const day = auMatch[1].padStart(2, "0");
+    const month = auMatch[2].padStart(2, "0");
+    const year = auMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  return "";
 }
 
 function auDateFromIso(value: string) {
@@ -38,13 +46,25 @@ function auDateShortFromIso(value: string) {
 }
 
 type ClinicalNote = {
-  id?: string;
+  id?: string | number;
+  oldid?: string | number | null;
+  previd?: string | number | null;
   author?: string;
   date?: string;
   text?: string;
+  notes?: string;
+  note?: string;
+  body?: string;
+  content?: string;
+  value?: string;
   deleted?: boolean;
-  appointmentid?: string | null;
+  appointmentid?: string | number | null;
+  appointmentId?: string | number | null;
+  appointment_id?: string | number | null;
+  iAppointmentId?: string | number | null;
   dateCreated?: string;
+  createdDate?: string;
+  created?: string;
   history?: ClinicalNote[];
   [key: string]: unknown;
 };
@@ -76,30 +96,55 @@ function extractClinicalNotes(parsed: any): ClinicalNote[] {
   const unique = new Map<string, ClinicalNote>();
 
   for (const note of found) {
-    const key = clean(note.id) || JSON.stringify(note).slice(0, 200);
-
-    if (!unique.has(key)) {
-      unique.set(key, note);
-    }
+    const key = clean(note.id) || JSON.stringify(note).slice(0, 300);
+    if (!unique.has(key)) unique.set(key, note);
   }
 
   return Array.from(unique.values());
 }
 
-function noteMatchesDate(note: ClinicalNote, appointmentDate: string) {
-  const targetDate = isoDateOnly(appointmentDate);
+function getClinicalNoteText(note: ClinicalNote) {
+  const direct =
+    clean(note.text) ||
+    clean(note.notes) ||
+    clean(note.note) ||
+    clean(note.body) ||
+    clean(note.content) ||
+    clean(note.value);
 
-  if (!targetDate) return false;
+  if (direct) return direct;
 
-  const noteDate = isoDateOnly(note.date);
-  const createdDate = isoDateOnly(note.dateCreated);
+  const possibleTextKeys = [
+    "vchText",
+    "vchNote",
+    "vchNotes",
+    "clinicalNote",
+    "clinical_notes",
+    "clinicalNotes",
+    "noteText",
+    "note_text",
+    "description",
+  ];
 
-  if (noteDate === targetDate || createdDate === targetDate) {
-    return true;
+  for (const key of possibleTextKeys) {
+    const value = clean(note[key]);
+    if (value) return value;
   }
 
-  const text = clean(note.text).toLowerCase();
+  return "";
+}
 
+function noteMatchesDate(note: ClinicalNote, appointmentDate: string) {
+  const targetDate = isoDateOnly(appointmentDate);
+  if (!targetDate) return false;
+
+  const possibleDates = [note.date, note.dateCreated, note.createdDate, note.created]
+    .map(isoDateOnly)
+    .filter(Boolean);
+
+  if (possibleDates.includes(targetDate)) return true;
+
+  const text = getClinicalNoteText(note).toLowerCase();
   const auLong = auDateFromIso(targetDate).toLowerCase();
   const auShort = auDateShortFromIso(targetDate).toLowerCase();
 
@@ -114,51 +159,30 @@ function noteMatchesDate(note: ClinicalNote, appointmentDate: string) {
 function noteMatchesAppointment(note: ClinicalNote, appointmentId: string) {
   if (!appointmentId) return false;
 
-  return clean(note.appointmentid) === appointmentId;
+  return (
+    clean(note.appointmentid) === appointmentId ||
+    clean(note.appointmentId) === appointmentId ||
+    clean(note.appointment_id) === appointmentId ||
+    clean(note.iAppointmentId) === appointmentId
+  );
 }
 
-async function findCachedClinicalNotes(params: {
-  patientId: string;
-  appointmentDate?: string;
-}) {
-  const { data } = await supabase
-    .from("report_drafts")
-    .select("*")
-    .eq("praktika_patient_id", params.patientId)
-    .order("created_at", { ascending: false })
-    .limit(20);
+function looksLikeAppointmentOnlyText(value: unknown) {
+  const text = clean(value).toLowerCase();
+  if (!text) return true;
 
-  if (!data?.length) return null;
+  const hasAppointmentMarker =
+    text.includes("appointment notes:") ||
+    text.includes("treatment type:") ||
+    text.includes("treatment label:") ||
+    text.includes("has surgeon approved suitability") ||
+    text.includes("949 code added") ||
+    text.includes("fasting 6 hours prior");
 
-  const targetDate = isoDateOnly(params.appointmentDate);
+  const hasClinicalMarker =
+    /\b(la:|lignocaine|irrigated|closed|suture|ha,|poig|extraction completed|flap|socket|curett|debrid|implant|graft|probe|bpe|bleeding|calculus|plaque|periodontal|reviewed|consented|anaesthetic|sutured)\b/i.test(text);
 
-  const matchingDraft = data.find((draft: any) => {
-    const createdDate = isoDateOnly(draft.created_at);
-
-    return (
-      !targetDate ||
-      createdDate === targetDate ||
-      clean(draft.patient_dob) === targetDate
-    );
-  });
-
-  if (!matchingDraft) return null;
-
-  const savedText =
-    clean(matchingDraft.clinical_notes) ||
-    clean(matchingDraft.source_clinical_notes) ||
-    clean(matchingDraft.source_text);
-
-  if (!savedText) return null;
-
-  return {
-    success: true,
-    notes: [],
-    text: savedText,
-    matchedCount: 1,
-    totalNotes: 1,
-    source: "cached_draft",
-  };
+  return hasAppointmentMarker && !hasClinicalMarker;
 }
 
 async function fetchClinicalNotesFromPraktika({
@@ -178,6 +202,7 @@ async function fetchClinicalNotesFromPraktika({
     referer:
       "https://praktika.praktika.net.au/v2/patient-directory/patient-search",
     priority: 30,
+    timeoutMs: 300_000,
     body: [
       {
         parameters: [
@@ -195,66 +220,32 @@ async function fetchClinicalNotesFromPraktika({
 export async function POST(req: Request) {
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
-
     const body = await req.json().catch(() => ({}));
 
     const patientId = clean(body.patientId);
     const appointmentDate = clean(body.appointmentDate);
     const appointmentId = clean(body.appointmentId);
-
-    const practiceId =
-      clean(process.env.PRAKTIKA_PRACTICE_ID) || "1181";
+    const practiceId = clean(process.env.PRAKTIKA_PRACTICE_ID) || "1181";
 
     if (!patientId) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "Missing patientId.",
-        },
+        { success: false, error: "Missing patientId." },
         { status: 400 },
       );
     }
 
-    const cached = await findCachedClinicalNotes({
-      patientId,
-      appointmentDate,
-    });
+    const parsed = await fetchClinicalNotesFromPraktika({ patientId, practiceId, mode });
+    const notes = extractClinicalNotes(parsed).filter((note) => !note.deleted);
 
-    if (cached) {
-      return NextResponse.json(cached);
-    }
-
-    const parsed = await fetchClinicalNotesFromPraktika({
-      patientId,
-      practiceId,
-      mode,
-    });
-
-    if (!parsed) {
-      return NextResponse.json({
-        success: true,
-        notes: [],
-        text: "",
-        matchedCount: 0,
-        totalNotes: 0,
-        message: "Praktika returned an empty response.",
-      });
-    }
-
-    const notes = extractClinicalNotes(parsed).filter(
-      (note) => !note.deleted,
+    const matchingNotes = notes.filter((note) =>
+      noteMatchesAppointment(note, appointmentId) ||
+      noteMatchesDate(note, appointmentDate),
     );
 
-    const matchingNotes = notes.filter((note) => {
-      return (
-        noteMatchesAppointment(note, appointmentId) ||
-        noteMatchesDate(note, appointmentDate)
-      );
-    });
-
     const text = matchingNotes
-      .map((note) => clean(note.text))
+      .map((note) => getClinicalNoteText(note))
       .filter(Boolean)
+      .filter((noteText) => !looksLikeAppointmentOnlyText(noteText))
       .join("\n\n---\n\n");
 
     return NextResponse.json({
@@ -264,6 +255,25 @@ export async function POST(req: Request) {
       matchedCount: matchingNotes.length,
       totalNotes: notes.length,
       source: "praktika_live",
+      debug: {
+        patientId,
+        appointmentDate,
+        appointmentDateIso: isoDateOnly(appointmentDate),
+        appointmentId,
+        practiceId,
+        firstNotePreview: notes[0]
+          ? {
+              id: notes[0].id,
+              date: notes[0].date,
+              dateIso: isoDateOnly(notes[0].date),
+              appointmentid: notes[0].appointmentid,
+              appointmentId: notes[0].appointmentId,
+              appointment_id: notes[0].appointment_id,
+              textPreview: getClinicalNoteText(notes[0]).slice(0, 250),
+              keys: Object.keys(notes[0]).slice(0, 40),
+            }
+          : null,
+      },
     });
   } catch (error) {
     console.error("Fetch Praktika clinical notes failed:", error);

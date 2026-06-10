@@ -33,6 +33,21 @@ const LOGIN_TIMEOUT_MS = Number(
   process.env.PRAKTIKA_LOGIN_TIMEOUT_MS || 10 * 60 * 1000,
 );
 
+// Process queued helper jobs in short bursts instead of one job every keep-alive cycle.
+// This prevents report-writing referral/clinical-note requests from sitting in the
+// helper queue long enough for the Next.js route to time out.
+const HELPER_JOB_DRAIN_LIMIT = Number(
+  process.env.PRAKTIKA_HELPER_JOB_DRAIN_LIMIT || 20,
+);
+
+const HELPER_IDLE_POLL_INTERVAL_MS = Number(
+  process.env.PRAKTIKA_HELPER_IDLE_POLL_INTERVAL_MS || 2_000,
+);
+
+const HELPER_BUSY_PAUSE_MS = Number(
+  process.env.PRAKTIKA_HELPER_BUSY_PAUSE_MS || 250,
+);
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -487,18 +502,38 @@ async function performRealBrowserActivity(page: Page) {
   await dismissBlockingDialogs(page);
 }
 
+async function drainAvailableHelperJobs(context: BrowserContext, appUserId: string | null) {
+  let processedCount = 0;
+
+  while (processedCount < HELPER_JOB_DRAIN_LIMIT) {
+    const processed = await processOnePraktikaHelperJob(context, appUserId);
+
+    if (!processed) break;
+
+    processedCount += 1;
+    await sleep(HELPER_BUSY_PAUSE_MS);
+  }
+
+  return processedCount;
+}
+
 async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
   console.log(
     `Praktika browser left open. Helper will refresh cookies every ${Math.round(
       KEEP_ALIVE_INTERVAL_MS / 1000,
-    )} seconds and perform browser activity every ${Math.round(
+    )} seconds, check for jobs every ${Math.round(
+      HELPER_IDLE_POLL_INTERVAL_MS / 1000,
+    )} seconds, and perform browser activity every ${Math.round(
       REAL_ACTIVITY_INTERVAL_MS / 1000,
     )} seconds. Copied-cookie API validation is disabled.`,
   );
 
   let lastRealActivityAt = 0;
+  let lastCookieRefreshAt = 0;
 
   while (true) {
+    let sleepAfterCycleMs = HELPER_IDLE_POLL_INTERVAL_MS;
+
     try {
       const session = await getSession();
       const now = Date.now();
@@ -513,14 +548,32 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
       }
 
       if (await isBrowserUiLoggedIn(page)) {
-        await saveCookies(
-          context,
-          page,
-          "Praktika helper browser is connected. Helper jobs can run for this user.",
-        );
+        if (now - lastCookieRefreshAt >= KEEP_ALIVE_INTERVAL_MS) {
+          await saveCookies(
+            context,
+            page,
+            "Praktika helper browser is connected. Helper jobs can run for this user.",
+          );
+          lastCookieRefreshAt = now;
+        }
 
         // Only process jobs after the browser appears logged in, and only for this session's user.
-        await processOnePraktikaHelperJob(context, session.app_user_id);
+        // IMPORTANT: drain all currently available jobs in a burst. The previous version processed
+        // exactly one job then slept for KEEP_ALIVE_INTERVAL_MS, which caused report-writing jobs
+        // to wait in the queue long enough for the API route to time out.
+        const processedCount = await drainAvailableHelperJobs(
+          context,
+          session.app_user_id,
+        );
+
+        if (processedCount > 0) {
+          console.log(
+            `Processed ${processedCount} Praktika helper job${
+              processedCount === 1 ? "" : "s"
+            } for session ${session.id}.`,
+          );
+          sleepAfterCycleMs = HELPER_BUSY_PAUSE_MS;
+        }
       } else if (await pageHasMfaInput(page)) {
         await submitMfaCodeIfAvailable(page);
       } else if (await pageHasVisiblePasswordInput(page)) {
@@ -576,7 +629,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
       });
     }
 
-    await sleep(KEEP_ALIVE_INTERVAL_MS);
+    await sleep(sleepAfterCycleMs);
   }
 }
 
