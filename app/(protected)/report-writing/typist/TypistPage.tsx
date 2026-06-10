@@ -940,6 +940,19 @@ export default function TypistPage() {
       return null;
     }
 
+    const clinicalNotesStillLoading =
+      autoGenerateStatus === "loading_notes" ||
+      autoGenerateStatus === "selecting_report_type" ||
+      clinicalNotes.includes("Loading same-day Praktika clinical notes");
+
+    if (clinicalNotesStillLoading || referralAutoFillStatus === "loading") {
+      const message =
+        "Please wait until clinical notes and referral details have finished loading before uploading images.";
+      setImageDraftError(message);
+      if (!options?.quiet) alert(message);
+      return null;
+    }
+
     setImageDraftCreating(true);
     setImageDraftError(null);
 
@@ -2220,6 +2233,15 @@ export default function TypistPage() {
       setReferralAutoFillStatus("idle");
     }
 
+    const shouldAutoFillReferral =
+      Boolean(linkedPraktikaPatientId) &&
+      !item.referrer_name &&
+      !item.referrer_address;
+
+    if (shouldAutoFillReferral) {
+      void autoFillReferrerFromLatestPraktikaReferral(linkedPraktikaPatientId);
+    }
+
     if (savedClinicalNotes) {
       setClinicalNotes(savedClinicalNotes);
       setLetterText("");
@@ -2268,6 +2290,7 @@ export default function TypistPage() {
         setSelectedPraktikaPatientId(linkedPraktikaPatientId);
 
         let sameDayClinicalNotes = "";
+        let clinicalNotesLoadFailed = false;
 
         if (linkedPraktikaPatientId && item.appointment_time) {
           try {
@@ -2309,6 +2332,7 @@ export default function TypistPage() {
               );
             }
           } catch (error) {
+            clinicalNotesLoadFailed = true;
             console.error("Failed to pull Praktika clinical notes:", error);
 
             const fallbackNotes = [
@@ -2323,7 +2347,7 @@ export default function TypistPage() {
           }
         }
 
-        if (autoGenerateStatus !== "error") {
+        if (!clinicalNotesLoadFailed) {
           const combinedClinicalNotes = [
             appointmentNotes,
             sameDayClinicalNotes ? "Same-day Praktika clinical notes:" : "",
@@ -2343,12 +2367,30 @@ export default function TypistPage() {
     if (!activeQueueItemId) return;
     if (selectedDraft || imageDraftId || imageDraftCreating) return;
     if (!patientFirstName.trim() || !patientLastName.trim()) return;
+
+    // Do not create the temporary image/draft workspace while same-day
+    // clinical notes or Praktika referral details are still loading.
+    // Otherwise the draft can be saved with placeholder/incomplete data.
+    if (autoGenerateStatus !== "ready" && autoGenerateStatus !== "error") return;
+    if (referralAutoFillStatus === "loading") return;
+    if (clinicalNotes.includes("Loading same-day Praktika clinical notes")) return;
+
     if (autoImageDraftQueueIdRef.current === activeQueueItemId) return;
 
     autoImageDraftQueueIdRef.current = activeQueueItemId;
     void ensureImageDraftForCurrentWork({ quiet: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeQueueItemId, selectedDraft?.id, imageDraftId, imageDraftCreating, patientFirstName, patientLastName]);
+  }, [
+    activeQueueItemId,
+    selectedDraft?.id,
+    imageDraftId,
+    imageDraftCreating,
+    patientFirstName,
+    patientLastName,
+    autoGenerateStatus,
+    referralAutoFillStatus,
+    clinicalNotes,
+  ]);
 
   async function updateQueueStatus(queueId: string, status: string) {
     await fetch("/api/report-writing/letter-queue", {

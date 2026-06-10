@@ -5,9 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -18,161 +16,88 @@ function cleanString(value: unknown) {
   return String(value ?? "").trim();
 }
 
-function hasStructuredData(data: any) {
-  if (!data || typeof data !== "object") return false;
-
-  return Object.values(data).some((value) =>
-    String(value ?? "").trim(),
-  );
-}
-
-function formatStructuredData(data: any) {
-  if (!data || typeof data !== "object") {
-    return "No structured clinical data entered.";
-  }
-
-  return [
-    `Chief concern: ${cleanString(data.chiefConcern) || "Not entered"}`,
-    `Diagnosis: ${cleanString(data.diagnosis) || "Not entered"}`,
-    `Periodontal stage/grade: ${cleanString(data.stageGrade) || "Not entered"}`,
-    `Probing depths summary: ${cleanString(data.probingDepthsSummary) || "Not entered"}`,
-    `Bleeding on probing: ${cleanString(data.bopScore) || "Not entered"}`,
-    `Suppuration: ${cleanString(data.suppuration) || "Not entered"}`,
-    `Mobility: ${cleanString(data.mobility) || "Not entered"}`,
-    `Furcation involvement: ${cleanString(data.furcation) || "Not entered"}`,
-    `Recession: ${cleanString(data.recession) || "Not entered"}`,
-    `Plaque/calculus: ${cleanString(data.plaqueCalculus) || "Not entered"}`,
-    `Radiographic findings: ${cleanString(data.radiographicFindings) || "Not entered"}`,
-    `Risk factors: ${cleanString(data.riskFactors) || "Not entered"}`,
-    `Treatment discussed: ${cleanString(data.treatmentDiscussed) || "Not entered"}`,
-    `Consent/risk discussion: ${cleanString(data.consentDiscussion) || "Not entered"}`,
-    `Plan: ${cleanString(data.plan) || "Not entered"}`,
-  ].join("\n");
-}
-
 async function getProviderTraining(providerId: string, appointmentType: string) {
-  const [appointmentTypeResult, rulesResult, examplesResult, terminologyResult] =
+  const [templateResult, rulesResult, examplesResult, terminologyResult, fieldsResult] =
     await Promise.all([
       supabase
         .from("provider_scribe_appointment_types")
-        .select("type_key, label, default_template")
+        .select("default_template")
         .eq("provider_id", providerId)
         .eq("type_key", appointmentType)
         .maybeSingle(),
 
       supabase
         .from("provider_scribe_rules")
-        .select("appointment_type, rule_text")
+        .select("rule_text")
         .eq("provider_id", providerId)
         .in("appointment_type", [appointmentType, "all"]),
 
       supabase
         .from("provider_scribe_examples")
-        .select("title, appointment_type, example_note, is_preferred, created_at")
+        .select("title, example_note, is_preferred")
         .eq("provider_id", providerId)
         .eq("appointment_type", appointmentType)
         .order("is_preferred", { ascending: false })
-        .order("created_at", { ascending: false })
         .limit(5),
 
       supabase
         .from("provider_terminology_rules")
         .select("spoken_or_written_text, preferred_text")
         .eq("provider_id", providerId),
+
+      supabase
+        .from("provider_scribe_structured_fields")
+        .select("field_key, label")
+        .eq("provider_id", providerId)
+        .eq("appointment_type", appointmentType)
+        .order("display_order"),
     ]);
 
-  if (appointmentTypeResult.error) {
-    console.error("Scribe appointment type lookup error:", appointmentTypeResult.error);
-  }
-
-  if (rulesResult.error) {
-    console.error("Scribe rules lookup error:", rulesResult.error);
-  }
-
-  if (examplesResult.error) {
-    console.error("Scribe examples lookup error:", examplesResult.error);
-  }
-
-  if (terminologyResult.error) {
-    console.error("Terminology lookup error:", terminologyResult.error);
-  }
-
-  const templateText =
-    appointmentTypeResult.data?.default_template?.trim() ||
-    [
-      "Use these headings where relevant:",
-      "",
-      "Reason for attendance:",
-      "History:",
-      "Clinical findings:",
-      "Periodontal findings:",
-      "Radiographic findings:",
-      "Diagnosis:",
-      "Discussion:",
-      "Treatment options:",
-      "Risks/consent:",
-      "Plan:",
-    ].join("\n");
-
-  const rulesText =
-    rulesResult.data && rulesResult.data.length > 0
-      ? rulesResult.data
-          .map((rule, index) => `${index + 1}. ${rule.rule_text}`)
-          .join("\n")
-      : "No provider-specific scribe rules saved.";
-
-  const examplesText =
-    examplesResult.data && examplesResult.data.length > 0
-      ? examplesResult.data
-          .map((example, index) =>
-            [
-              `Example ${index + 1}: ${example.title || "Untitled"}`,
-              `Appointment type: ${example.appointment_type}`,
-              `Preferred: ${example.is_preferred ? "yes" : "no"}`,
-              example.example_note,
-            ].join("\n"),
-          )
-          .join("\n\n---\n\n")
-      : "No provider-specific scribe examples saved.";
-
-  const terminologyText =
-    terminologyResult.data && terminologyResult.data.length > 0
-      ? terminologyResult.data
-          .map(
-            (item, index) =>
-              `${index + 1}. Replace "${item.spoken_or_written_text}" with "${item.preferred_text}"`,
-          )
-          .join("\n")
-      : "No provider terminology preferences saved.";
-
   return {
-    templateText,
-    rulesText,
-    examplesText,
-    terminologyText,
+    templateText:
+      templateResult.data?.default_template ||
+      "Reason for attendance:\nHistory:\nClinical findings:\nDiagnosis:\nDiscussion:\nPlan:",
+
+    rulesText:
+      rulesResult.data?.map((r, i) => `${i + 1}. ${r.rule_text}`).join("\n") ||
+      "No provider-specific rules.",
+
+    examplesText:
+      examplesResult.data
+        ?.map(
+          (e, i) =>
+            `Example ${i + 1}: ${e.title || "Untitled"}\n${e.example_note}`,
+        )
+        .join("\n\n---\n\n") || "No provider examples.",
+
+    terminologyText:
+      terminologyResult.data
+        ?.map(
+          (t, i) =>
+            `${i + 1}. Replace "${t.spoken_or_written_text}" with "${t.preferred_text}"`,
+        )
+        .join("\n") || "No terminology rules.",
+
+    fields:
+      fieldsResult.data?.map((f) => ({
+        key: f.field_key,
+        label: f.label,
+      })) || [],
   };
 }
 
 export async function POST(request: Request) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json(
-        { success: false, error: "Missing OPENAI_API_KEY." },
-        { status: 500 },
-      );
-    }
-
     const body = await request.json();
 
     const providerId = cleanString(body.providerId);
+    const appointmentType =
+      cleanString(body.appointmentType) || "periodontal_consultation";
     const patientFirstName = cleanString(body.patientFirstName);
     const patientLastName = cleanString(body.patientLastName);
     const patientDob = cleanString(body.patientDob);
     const praktikaPatientId = cleanString(body.praktikaPatientId);
-    const appointmentType =
-      cleanString(body.appointmentType) || "periodontal_consultation";
     const transcript = cleanString(body.transcript);
-    const structuredData = body.structuredData || {};
 
     if (!providerId) {
       return NextResponse.json(
@@ -188,40 +113,52 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!transcript && !hasStructuredData(structuredData)) {
+    if (!transcript) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "Enter a transcript or structured clinical data first.",
-        },
+        { success: false, error: "No consultation audio text was available." },
         { status: 400 },
       );
     }
 
     const training = await getProviderTraining(providerId, appointmentType);
-    const structuredDataText = formatStructuredData(structuredData);
 
-    const prompt = `
-You are an expert periodontal and oral and maxillofacial surgery clinical scribe.
+    const structuredFieldsInstruction =
+      training.fields.length > 0
+        ? training.fields
+            .map((field) => `"${field.key}": "${field.label}"`)
+            .join("\n")
+        : `"chiefConcern": "Chief concern"
+"medicalHistory": "Medical history"
+"dentalHistory": "Dental history"
+"oralHygieneHabits": "Oral hygiene habits"
+"radiographicFindings": "Radiographic findings"
+"diagnosis": "Diagnosis"
+"treatmentPlan": "Treatment plan"`;
 
-Generate a clinical note for the patient's record.
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an expert periodontal and oral surgery clinical scribe. Return valid JSON only.",
+        },
+        {
+          role: "user",
+          content: `
+Generate a clinical note and extract structured findings from this consultation.
 
-Important rules:
+Rules:
 - Do not invent clinical facts.
-- Do not infer unstated findings.
-- If something is not stated, omit it unless the provider template specifically requires a heading.
+- Do not show or return the transcript.
+- Treatment plans may be inferred from the conversation only when the clinician/patient discussion clearly supports them.
+- Do not propose or suggest treatment plans independently.
+- If treatment was not discussed, leave treatmentPlan blank or write "Not discussed".
 - Use Australian English.
-- Use concise clinical language.
-- Use FDI tooth numbering.
-- Do not write a referral letter.
-- Do not include a greeting.
-- Do not include a signature block.
-- Do not include markdown tables.
-- This note will be reviewed and edited by the clinician before upload.
-- Give priority to structured clinical data over the transcript if they conflict.
-- Preserve provider style and terminology preferences.
-- Use the provider clinical note template as the main structure.
-- If the provider template is incomplete, use sensible clinical note headings appropriate to the appointment type.
+- Use FDI tooth notation.
+- Use provider style, rules and terminology.
 
 Patient:
 ${patientFirstName} ${patientLastName}
@@ -231,48 +168,48 @@ Praktika patient ID: ${praktikaPatientId || "Not selected"}
 Appointment type:
 ${appointmentType}
 
-Provider clinical note template:
+Provider template:
 ${training.templateText}
 
-Provider scribe rules:
+Provider rules:
 ${training.rulesText}
 
 Provider terminology:
 ${training.terminologyText}
 
-Provider example notes:
+Provider examples:
 ${training.examplesText}
 
-Consultation transcript:
-${transcript || "No transcript provided."}
+Structured fields to extract:
+${structuredFieldsInstruction}
 
-Structured clinical data:
-${structuredDataText}
+Temporary consultation transcript:
+${transcript}
 
-Generate the clinical note now.
-`;
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      temperature: 0.2,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You generate accurate dental clinical notes from transcripts, templates and structured data. You never invent facts.",
-        },
-        {
-          role: "user",
-          content: prompt,
+Return JSON exactly in this shape:
+{
+  "clinicalNote": "full clinical note here",
+  "structuredData": {
+    "fieldKey": "extracted value"
+  }
+}
+`,
         },
       ],
     });
 
-    const note = completion.choices[0]?.message?.content?.trim() || "";
+    const raw = completion.choices[0]?.message?.content || "{}";
+    const parsed = JSON.parse(raw);
 
-    if (!note) {
+    const clinicalNote = cleanString(parsed.clinicalNote);
+    const structuredData =
+      parsed.structuredData && typeof parsed.structuredData === "object"
+        ? parsed.structuredData
+        : {};
+
+    if (!clinicalNote) {
       return NextResponse.json(
-        { success: false, error: "AI returned an empty note." },
+        { success: false, error: "AI returned an empty clinical note." },
         { status: 500 },
       );
     }
@@ -286,10 +223,12 @@ Generate the clinical note now.
         patient_dob: patientDob || null,
         praktika_patient_id: praktikaPatientId || null,
         appointment_type: appointmentType,
-        transcript,
+        transcript: null,
+        transcript_stored: false,
+        extracted_structured_data: structuredData,
         structured_data: structuredData,
-        ai_generated_note: note,
-        edited_note: note,
+        ai_generated_note: clinicalNote,
+        edited_note: clinicalNote,
         status: "generated",
       })
       .select("id")
@@ -297,10 +236,7 @@ Generate the clinical note now.
 
     if (insertResult.error) {
       return NextResponse.json(
-        {
-          success: false,
-          error: insertResult.error.message,
-        },
+        { success: false, error: insertResult.error.message },
         { status: 500 },
       );
     }
@@ -308,7 +244,8 @@ Generate the clinical note now.
     return NextResponse.json({
       success: true,
       sessionId: insertResult.data.id,
-      note,
+      note: clinicalNote,
+      structuredData,
     });
   } catch (error) {
     console.error("Generate clinical scribe note error:", error);

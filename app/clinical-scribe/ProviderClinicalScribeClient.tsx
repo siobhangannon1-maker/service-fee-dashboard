@@ -584,40 +584,42 @@ export default function ProviderClinicalScribeClient({
   }
 
   async function transcribeAudio(audioBlob: Blob) {
-    try {
-      if (audioBlob.size === 0) {
-        alert("No audio was recorded.");
-        return;
-      }
-
-      const formData = new FormData();
-      formData.append("file", audioBlob, "clinical-scribe.webm");
-
-      const response = await fetch("/api/report-writing/transcribe-audio", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await readJsonSafely(response);
-
-      if (!response.ok || !data.success) {
-        alert(data.error || "Failed to transcribe audio.");
-        return;
-      }
-
-      const text = data.text || data.transcript || "";
-
-      setTranscript((current) => [current, text].filter(Boolean).join("\n\n"));
-
-      setMessage("Transcription complete. Review it, then save or generate.");
-    } catch (error) {
-      console.error(error);
-      alert("Error transcribing audio.");
-    } finally {
-      setWorking(false);
+  try {
+    if (audioBlob.size === 0) {
+      alert("No audio was recorded.");
+      return;
     }
-  }
 
+    const formData = new FormData();
+    formData.append("file", audioBlob, "clinical-scribe.webm");
+
+    const response = await fetch("/api/report-writing/transcribe-audio", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await readJsonSafely(response);
+
+    if (!response.ok || !data.success) {
+      alert(data.error || "Failed to transcribe audio.");
+      return;
+    }
+
+    const temporaryTranscript = data.text || data.transcript || "";
+
+    if (!temporaryTranscript.trim()) {
+      alert("No usable consultation text was produced.");
+      return;
+    }
+
+    await generateNoteFromTemporaryTranscript(temporaryTranscript);
+  } catch (error) {
+    console.error(error);
+    alert("Error processing consultation audio.");
+  } finally {
+    setWorking(false);
+  }
+}
   async function saveSession(status = "draft") {
     if (!patientFirstName.trim() || !patientLastName.trim()) {
       alert("Patient first and last name are required.");
