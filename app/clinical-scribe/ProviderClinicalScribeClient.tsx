@@ -1571,36 +1571,22 @@ async function updateNoteFromStructuredData() {
             </div>
 
             {generatedNote || editedNote ? (
-              <div className="mt-6 grid gap-4 lg:grid-cols-2">
-                <div>
-                  <h3 className="font-bold text-slate-950">
-                    Original AI note
-                  </h3>
+  <div className="mt-6">
+    <h3 className="font-bold text-slate-950">
+      Clinician note
+    </h3>
 
-                  <textarea
-                    className="mt-2 h-96 w-full rounded-2xl border bg-slate-50 p-4 text-sm"
-                    value={generatedNote}
-                    readOnly
-                  />
-                </div>
-
-                <div>
-                  <h3 className="font-bold text-slate-950">
-                    Clinician approved note
-                  </h3>
-
-                  <textarea
-                    className="mt-2 h-96 w-full rounded-2xl border p-4 text-sm"
-                    value={editedNote}
-                    onChange={(event) => {
-                      setEditedNote(event.target.value);
-                      setApproved(false);
-                      resetLetterPanel();
-                    }}
-                  />
-                </div>
-              </div>
-            ) : null}
+    <textarea
+      className="mt-2 h-[36rem] w-full rounded-2xl border p-4 text-sm"
+      value={editedNote}
+      onChange={(event) => {
+        setEditedNote(event.target.value);
+        setApproved(false);
+        resetLetterPanel();
+      }}
+    />
+  </div>
+) : null}
           </section>
 
           {approved ? (
