@@ -2802,6 +2802,17 @@ export default function TypistPage() {
   }
 
   async function startLetterFromQueue(item: QueueItem) {
+    /*
+      Fast path:
+      The queue pre-cache worker now saves referral details and same-day clinical
+      notes onto report_letter_queue before the typist opens the patient.
+
+      This function should therefore:
+      1. Hydrate the UI immediately from cached queue fields.
+      2. Avoid awaiting queue status updates.
+      3. Only call live Praktika if cached data is missing.
+    */
+
     setAutoGenerateStatus("loading_notes");
     setSaveStatus("idle");
     setLastSavedAt(null);
@@ -2823,26 +2834,42 @@ export default function TypistPage() {
       String(raw.iAppointmentId || raw.appointment_id || "").trim() ||
       null;
 
-    const appointmentDate = item.appointment_time?.slice(0, 10) || "";
-
-    setAutoGenerateStatus("selecting_report_type");
+    const appointmentDate =
+      item.appointment_time?.slice(0, 10) ||
+      cleanString(raw.dtAppointment).slice(0, 10) ||
+      cleanString(raw.vchAppDate).slice(0, 10);
 
     const inferredReportType = inferReportTypeFromQueueItem(item, reportTypes);
-
     const appointmentNotes = getQueueAppointmentNotes(item);
-    const cachedClinicalNotes = cleanClinicalNoteText(raw.cached_clinical_notes);
+
+    const rawCachedClinicalNotes = cleanClinicalNoteText(
+      raw.cached_clinical_notes,
+    );
+
+    const sourceClinicalNotes = cleanClinicalNoteText(item.source_clinical_notes);
+
+    const cachedClinicalNotes =
+      rawCachedClinicalNotes ||
+      (sourceClinicalNotes && sourceClinicalNotes !== appointmentNotes
+        ? sourceClinicalNotes
+        : "");
 
     // Important referral rule:
-    // Only trust the dedicated queue columns for cached referral details.
-    // Do NOT call getQueueReferrerAddress(item) here because that deep-scans raw
-    // appointment JSON and can incorrectly find your own practice address
-    // (Focus Dental Specialists) instead of the external referrer's clinic.
-    const cachedReferrerName = cleanString(item.referrer_name);
-    const cachedReferrerAddress = cleanString(item.referrer_address);
-    const cachedLatestReferral =
+    // Only trust the dedicated queue columns and latest_referral object.
+    // Do NOT deep-scan appointment raw_json for address because that can find
+    // Focus Dental Specialists or patient address instead of the external clinic.
+    const latestReferral =
       raw.latest_referral && typeof raw.latest_referral === "object"
         ? (raw.latest_referral as LatestPraktikaReferral)
         : null;
+
+    const cachedReferrerName =
+      cleanString(item.referrer_name) ||
+      cleanString(latestReferral?.referrerName);
+
+    const cachedReferrerAddress =
+      cleanString(item.referrer_address) ||
+      cleanString(latestReferral?.referrerAddress);
 
     setPatientFirstName(firstName);
     setPatientLastName(lastName);
@@ -2860,12 +2887,16 @@ export default function TypistPage() {
     if (cachedReferrerName) {
       setReferrerName(cachedReferrerName);
       setReferrerAddress(cachedReferrerAddress);
-      setLatestPraktikaReferral(cachedLatestReferral);
+      setLatestPraktikaReferral(latestReferral);
       setReferralAutoFillError("");
       setReferralAutoFillStatus(cachedReferrerAddress ? "filled" : "found");
     } else if (linkedPraktikaPatientId) {
       setReferrerName("");
       setReferrerAddress("");
+      setLatestPraktikaReferral(null);
+      setReferralAutoFillStatus("loading");
+      setReferralAutoFillError("");
+
       void autoFillReferrerFromLatestPraktikaReferral(
         linkedPraktikaPatientId,
         item.id,
@@ -2892,7 +2923,19 @@ export default function TypistPage() {
       setClinicalNotes(cachedCombinedNotes || appointmentNotes);
       setAutoGenerateStatus("ready");
 
-      await fetch("/api/report-writing/letter-queue", {
+      setQueue((current) =>
+        current.map((queueItem) =>
+          queueItem.id === item.id
+            ? {
+                ...queueItem,
+                status:
+                  queueItem.status === "completed" ? "completed" : "started",
+              }
+            : queueItem,
+        ),
+      );
+
+      void fetch("/api/report-writing/letter-queue", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -2932,7 +2975,7 @@ export default function TypistPage() {
         sameDayClinicalNotes = cleanClinicalNoteText(sameDayClinicalNotes);
 
         if (sameDayClinicalNotes.trim()) {
-          await fetch("/api/report-writing/letter-queue", {
+          void fetch("/api/report-writing/letter-queue", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -2943,6 +2986,8 @@ export default function TypistPage() {
               cachedClinicalNotes: sameDayClinicalNotes,
               cachedClinicalNotesSource: "praktika_live",
             }),
+          }).catch((error) => {
+            console.warn("Could not cache live clinical notes:", error);
           });
 
           setQueue((current) =>
@@ -3001,7 +3046,7 @@ export default function TypistPage() {
         return;
       }
     } else {
-      await fetch("/api/report-writing/letter-queue", {
+      void fetch("/api/report-writing/letter-queue", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -3028,47 +3073,17 @@ export default function TypistPage() {
   }
 
   useEffect(() => {
-    if (!activeQueueItemId) return;
-    if (selectedDraft || imageDraftId || imageDraftCreating) return;
-    if (!patientFirstName.trim() || !patientLastName.trim()) return;
+    /*
+      Disabled automatic image workspace creation.
 
-    // Prevent creating the temporary image/draft workspace while live clinical
-    // notes or referral details are still loading. This is the race-condition fix.
-    if (autoGenerateStatus !== "ready" && autoGenerateStatus !== "error")
-      return;
-    if (referralAutoFillStatus === "loading") return;
-    if (clinicalNotes.includes("Loading same-day Praktika clinical notes"))
-      return;
+      This used to create a temporary draft as soon as a queue item became ready.
+      It caused an extra background save/load cycle immediately after clicking a
+      patient, which made cached queue items still feel slightly laggy.
 
-    if (autoImageDraftQueueIdRef.current === activeQueueItemId) return;
-
-    autoImageDraftQueueIdRef.current = activeQueueItemId;
-    void ensureImageDraftForCurrentWork({ quiet: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    activeQueueItemId,
-    selectedDraft?.id,
-    imageDraftId,
-    imageDraftCreating,
-    patientFirstName,
-    patientLastName,
-    autoGenerateStatus,
-    referralAutoFillStatus,
-    clinicalNotes,
-  ]);
-
-  async function updateQueueStatus(queueId: string, status: string) {
-    await fetch("/api/report-writing/letter-queue", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        queueId,
-        status,
-      }),
-    });
-  }
+      Image workspaces are still created on demand by ensureImageDraftForCurrentWork()
+      when the user actually uploads/uses images.
+    */
+  }, []);
 
   async function markQueueItemStarted(item: QueueItem) {
     await updateQueueStatus(item.id, "started");
@@ -4269,11 +4284,10 @@ export default function TypistPage() {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={async () => {
+                  onClick={() => {
                     if (item.status === "completed") return;
 
-                    await startLetterFromQueue(item);
-                    await markQueueItemStarted(item);
+                    void startLetterFromQueue(item);
                   }}
                   className={[
                     "w-full rounded-xl border bg-white p-3 text-left",
