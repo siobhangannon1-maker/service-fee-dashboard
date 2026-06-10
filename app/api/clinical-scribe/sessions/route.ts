@@ -53,9 +53,7 @@ export async function POST(request: Request) {
   const patientLastName = cleanString(body.patientLastName);
   const patientDob = cleanString(body.patientDob);
   const praktikaPatientId = cleanString(body.praktikaPatientId);
-  const appointmentType =
-    cleanString(body.appointmentType) || "periodontal_consultation";
-  const transcript = cleanString(body.transcript);
+  const appointmentType = cleanString(body.appointmentType);
   const aiGeneratedNote = cleanString(body.aiGeneratedNote);
   const editedNote = cleanString(body.editedNote);
   const status = cleanString(body.status) || "draft";
@@ -71,6 +69,13 @@ export async function POST(request: Request) {
   if (!patientFirstName || !patientLastName) {
     return NextResponse.json(
       { success: false, error: "Patient first and last name are required." },
+      { status: 400 },
+    );
+  }
+
+  if (!appointmentType) {
+    return NextResponse.json(
+      { success: false, error: "Missing appointment type." },
       { status: 400 },
     );
   }

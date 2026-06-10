@@ -45,6 +45,8 @@ type ScribeSession = {
   praktika_patient_id: string | null;
   appointment_type: string;
   transcript: string | null;
+  transcript_stored?: boolean | null;
+  extracted_structured_data?: Record<string, string> | null;
   structured_data: Record<string, string> | null;
   ai_generated_note: string | null;
   edited_note: string | null;
@@ -174,13 +176,9 @@ export default function ProviderClinicalScribeClient({
     null,
   );
 
-  const [appointmentTypes, setAppointmentTypes] = useState<AppointmentType[]>([
-    { value: "periodontal_consultation", label: "Periodontal Consultation" },
-  ]);
+  const [appointmentTypes, setAppointmentTypes] = useState<AppointmentType[]>([]);
 
-  const [appointmentType, setAppointmentType] = useState(
-    "periodontal_consultation",
-  );
+  const [appointmentType, setAppointmentType] = useState("");
 
   const [structuredFields, setStructuredFields] = useState<StructuredField[]>(
     [],
@@ -195,7 +193,8 @@ export default function ProviderClinicalScribeClient({
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [matching, setMatching] = useState(false);
 
-  const [transcript, setTranscript] = useState("");
+  // Raw transcripts are intentionally not shown or stored. Audio is transcribed only
+  // long enough to generate the clinical note and extracted structured findings.
   const [structuredData, setStructuredData] = useState<Record<string, string>>(
     {},
   );
@@ -303,12 +302,14 @@ export default function ProviderClinicalScribeClient({
     if (data.success) {
       const types: AppointmentType[] = data.types || [];
 
-      if (types.length > 0) {
-        setAppointmentTypes(types);
+      setAppointmentTypes(types);
 
+      if (types.length > 0) {
         if (!types.some((type) => type.value === appointmentType)) {
           setAppointmentType(types[0].value);
         }
+      } else {
+        setAppointmentType("");
       }
     }
   }
@@ -334,6 +335,11 @@ export default function ProviderClinicalScribeClient({
   }
 
   async function loadStructuredFields() {
+    if (!appointmentType) {
+      setStructuredFields([]);
+      return;
+    }
+
     const response = await fetch(
       `/api/clinical-scribe/structured-fields?providerId=${providerId}&appointmentType=${appointmentType}`,
     );
@@ -385,7 +391,6 @@ export default function ProviderClinicalScribeClient({
     setPraktikaPatientId("");
     setPraktikaPatientNumber("");
     setCandidates([]);
-    setTranscript("");
     setStructuredData({});
     setSessionId("");
     setGeneratedNote("");
@@ -405,9 +410,8 @@ export default function ProviderClinicalScribeClient({
     setPatientDob(session.patient_dob || "");
     setPraktikaPatientId(session.praktika_patient_id || "");
     setPraktikaPatientNumber("");
-    setAppointmentType(session.appointment_type || "periodontal_consultation");
-    setTranscript(session.transcript || "");
-    setStructuredData(session.structured_data || {});
+    setAppointmentType(session.appointment_type || "");
+    setStructuredData(session.structured_data || session.extracted_structured_data || {});
     setSessionId(session.id);
     setGeneratedNote(session.ai_generated_note || "");
     setEditedNote(session.edited_note || "");
@@ -516,6 +520,11 @@ export default function ProviderClinicalScribeClient({
   }
 
   async function startRecording() {
+    if (!appointmentType) {
+      alert("Add and select an appointment template before recording.");
+      return;
+    }
+
     if (!patientFirstName.trim() || !patientLastName.trim()) {
       alert("Enter patient first and last name before recording.");
       return;
@@ -580,7 +589,7 @@ export default function ProviderClinicalScribeClient({
     setRecording(false);
     setPaused(false);
     setWorking(true);
-    setMessage("Transcribing consultation...");
+    setMessage("Processing consultation audio...");
   }
 
   async function transcribeAudio(audioBlob: Blob) {
@@ -620,6 +629,96 @@ export default function ProviderClinicalScribeClient({
     setWorking(false);
   }
 }
+
+async function generateNoteFromTemporaryTranscript(temporaryTranscript: string) {
+  setWorking(true);
+  setMessage("Generating clinical note and extracting structured findings...");
+
+  try {
+    const response = await fetch("/api/clinical-scribe/generate-note", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId,
+        patientFirstName,
+        patientLastName,
+        patientDob,
+        praktikaPatientId,
+        appointmentType,
+        transcript: temporaryTranscript,
+      }),
+    });
+
+    const data = await readJsonSafely(response);
+
+    if (!response.ok || !data.success) {
+      alert(data.error || "Failed to generate clinical note.");
+      return;
+    }
+
+    setSessionId(data.sessionId);
+    setGeneratedNote(data.note);
+    setEditedNote(data.note);
+    setStructuredData(data.structuredData || {});
+    setApproved(false);
+    setMessage(
+      "Clinical note generated. Structured findings were extracted for review.",
+    );
+
+    await loadSessions();
+  } finally {
+    setWorking(false);
+  }
+}
+
+async function updateNoteFromStructuredData() {
+  if (!sessionId) {
+    alert("Generate or save the note first.");
+    return;
+  }
+
+  if (!editedNote.trim()) {
+    alert("There is no clinical note to update.");
+    return;
+  }
+
+  setWorking(true);
+  setMessage("Updating clinical note from structured findings...");
+
+  try {
+    const response = await fetch("/api/clinical-scribe/update-note", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionId,
+        providerId,
+        currentNote: editedNote,
+        structuredData,
+      }),
+    });
+
+    const data = await readJsonSafely(response);
+
+    if (!response.ok || !data.success) {
+      alert(data.error || "Failed to update clinical note.");
+      return;
+    }
+
+    setEditedNote(data.note);
+    setGeneratedNote((current) => current || data.note);
+    setApproved(false);
+    resetLetterPanel();
+    setMessage("Clinical note updated from structured findings.");
+    await loadSessions();
+  } finally {
+    setWorking(false);
+  }
+}
+
   async function saveSession(status = "draft") {
     if (!patientFirstName.trim() || !patientLastName.trim()) {
       alert("Patient first and last name are required.");
@@ -642,7 +741,7 @@ export default function ProviderClinicalScribeClient({
           patientDob,
           praktikaPatientId,
           appointmentType,
-          transcript,
+          transcript: "",
           structuredData,
           aiGeneratedNote: generatedNote,
           editedNote,
@@ -663,59 +762,6 @@ export default function ProviderClinicalScribeClient({
       await loadSessions();
 
       return data.session as ScribeSession;
-    } finally {
-      setWorking(false);
-    }
-  }
-
-  async function generateNote() {
-    if (!patientFirstName.trim() || !patientLastName.trim()) {
-      alert("Enter patient first and last name.");
-      return;
-    }
-
-    if (!transcript.trim() && !Object.values(structuredData).some(Boolean)) {
-      alert("Enter a transcript or structured clinical data first.");
-      return;
-    }
-
-    setWorking(true);
-    setMessage("Generating clinical note...");
-
-    try {
-      const response = await fetch("/api/clinical-scribe/generate-note", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          providerId,
-          patientFirstName,
-          patientLastName,
-          patientDob,
-          praktikaPatientId,
-          appointmentType,
-          transcript,
-          structuredData,
-        }),
-      });
-
-      const data = await readJsonSafely(response);
-
-      if (!response.ok || !data.success) {
-        alert(data.error || "Failed to generate clinical note.");
-        return;
-      }
-
-      setSessionId(data.sessionId);
-      setGeneratedNote(data.note);
-      setEditedNote(data.note);
-      setApproved(false);
-      setMessage("Clinical note generated. Review and edit before approval.");
-      await loadSessions();
-    } catch (error) {
-      console.error(error);
-      alert("Error generating clinical note.");
     } finally {
       setWorking(false);
     }
@@ -1205,8 +1251,8 @@ export default function ProviderClinicalScribeClient({
                 </h2>
 
                 <p className="mt-1 text-sm text-slate-500">
-                  Match the patient, record or paste the consultation, add
-                  structured data, generate, approve, write to Praktika, or
+                  Match the patient, record the consultation, review extracted
+                  structured findings, update, approve, write to Praktika, or
                   create a provider letter.
                 </p>
               </div>
@@ -1362,15 +1408,20 @@ export default function ProviderClinicalScribeClient({
 
           <section className="rounded-3xl border bg-white p-6 shadow-sm">
             <h2 className="text-xl font-bold text-slate-950">
-              1. Consultation transcript
+              1. Record consultation
             </h2>
+
+            <p className="mt-1 text-sm text-slate-500">
+              Audio is transcribed temporarily to generate the note and extracted findings.
+              The raw transcript is not displayed or saved.
+            </p>
 
             <div className="mt-4 flex flex-wrap items-center gap-3">
               {!recording ? (
                 <button
                   type="button"
                   onClick={startRecording}
-                  disabled={working}
+                  disabled={working || !appointmentType}
                   className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                 >
                   Start Recording
@@ -1403,7 +1454,7 @@ export default function ProviderClinicalScribeClient({
                   onClick={stopRecording}
                   className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white"
                 >
-                  Stop and Transcribe
+                  Stop and Generate Note
                 </button>
               ) : null}
 
@@ -1412,18 +1463,23 @@ export default function ProviderClinicalScribeClient({
               </div>
             </div>
 
-            <textarea
-              className="mt-4 h-56 w-full rounded-2xl border p-4 text-sm"
-              placeholder="Transcript will appear here. You can also paste consultation notes manually."
-              value={transcript}
-              onChange={(event) => setTranscript(event.target.value)}
-            />
+            {!appointmentType ? (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                Add an appointment template in Clinical Scribe Training before recording.
+              </div>
+            ) : null}
           </section>
 
           <section className="rounded-3xl border bg-white p-6 shadow-sm">
             <h2 className="text-xl font-bold text-slate-950">
-              2. Structured clinical data
+              2. Extracted structured findings
             </h2>
+
+            <p className="mt-1 text-sm text-slate-500">
+              Review and edit the extracted findings, then use Update Clinical Note
+              to modify the note. Treatment plans are extracted only when supported
+              by the consultation.
+            </p>
 
             <div className="mt-4 grid gap-4 md:grid-cols-2">
               {structuredFields.map((field) => {
@@ -1473,7 +1529,7 @@ export default function ProviderClinicalScribeClient({
 
           <section className="rounded-3xl border bg-white p-6 shadow-sm">
             <h2 className="text-xl font-bold text-slate-950">
-              3. Generate, approve and write
+              3. Review, update, approve and write
             </h2>
 
             <div className="mt-4 flex flex-wrap gap-3">
@@ -1488,11 +1544,11 @@ export default function ProviderClinicalScribeClient({
 
               <button
                 type="button"
-                onClick={generateNote}
-                disabled={working}
-                className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                onClick={updateNoteFromStructuredData}
+                disabled={working || !editedNote.trim()}
+                className="rounded-xl bg-amber-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
               >
-                {working ? "Working..." : "Generate Clinical Note"}
+                Update Clinical Note
               </button>
 
               <button
