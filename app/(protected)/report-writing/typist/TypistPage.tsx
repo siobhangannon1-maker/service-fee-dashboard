@@ -990,6 +990,26 @@ function buildLetterTextForSave(
   return `${cleanBody}\n\n${markers.join("\n")}`;
 }
 
+function TrashBinIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4.5 w-4.5"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2}
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M19 7L18.132 19.142C18.058 20.173 17.199 21 16.165 21H7.835C6.801 21 5.942 20.173 5.868 19.142L5 7M10 11V17M14 11V17M4 7H20M9 7V4C9 3.448 9.448 3 10 3H14C14.552 3 15 3.448 15 4V7"
+      />
+    </svg>
+  );
+}
+
 function getInclusiveDateRangeDays(fromDate: string, toDate: string) {
   const from = new Date(`${fromDate}T00:00:00`);
   const to = new Date(`${toDate}T00:00:00`);
@@ -2738,15 +2758,11 @@ export default function TypistPage() {
         return;
       }
 
-      // This is the referring provider's name from the Praktika referral.
       setReferrerName(referral.referrerName);
 
-      // Important: always set this, even when blank.
-      // Otherwise stale raw appointment/practice address values can remain visible.
-      setReferrerAddress(referral.referrerAddress || "");
-      setLatestPraktikaReferral(referral);
-      setReferralAutoFillError("");
-      setReferralAutoFillStatus(referral.referrerAddress ? "filled" : "found");
+      if (referral.referrerAddress) {
+        setReferrerAddress(referral.referrerAddress);
+      }
 
       const queueId = queueIdForCache || activeQueueItemId;
 
@@ -2760,7 +2776,6 @@ export default function TypistPage() {
               status: "started",
               referrerName: referral.referrerName,
               referrerAddress: referral.referrerAddress || "",
-              latestReferral: referral,
             }),
           });
 
@@ -2773,7 +2788,8 @@ export default function TypistPage() {
                 status:
                   queueItem.status === "completed" ? "completed" : "started",
                 referrer_name: referral.referrerName,
-                referrer_address: referral.referrerAddress || null,
+                referrer_address:
+                  referral.referrerAddress || queueItem.referrer_address,
                 raw_json: {
                   ...(queueItem.raw_json || {}),
                   latest_referral: referral,
@@ -2789,6 +2805,10 @@ export default function TypistPage() {
           );
         }
       }
+
+      setLatestPraktikaReferral(referral);
+      setReferralAutoFillError("");
+      setReferralAutoFillStatus("found");
     } catch (error) {
       const message =
         error instanceof Error
@@ -2802,17 +2822,6 @@ export default function TypistPage() {
   }
 
   async function startLetterFromQueue(item: QueueItem) {
-    /*
-      Fast path:
-      The queue pre-cache worker now saves referral details and same-day clinical
-      notes onto report_letter_queue before the typist opens the patient.
-
-      This function should therefore:
-      1. Hydrate the UI immediately from cached queue fields.
-      2. Avoid awaiting queue status updates.
-      3. Only call live Praktika if cached data is missing.
-    */
-
     setAutoGenerateStatus("loading_notes");
     setSaveStatus("idle");
     setLastSavedAt(null);
@@ -2834,47 +2843,25 @@ export default function TypistPage() {
       String(raw.iAppointmentId || raw.appointment_id || "").trim() ||
       null;
 
-    const appointmentDate =
-      item.appointment_time?.slice(0, 10) ||
-      cleanString(raw.dtAppointment).slice(0, 10) ||
-      cleanString(raw.vchAppDate).slice(0, 10);
+    const appointmentDate = item.appointment_time?.slice(0, 10) || "";
+
+    setAutoGenerateStatus("selecting_report_type");
 
     const inferredReportType = inferReportTypeFromQueueItem(item, reportTypes);
+
+    // Important: source_clinical_notes on older/lightweight queue rows is often
+    // just appointment notes. Do not treat it as true same-day clinical notes.
     const appointmentNotes = getQueueAppointmentNotes(item);
 
-    const rawCachedClinicalNotes = cleanClinicalNoteText(
-      raw.cached_clinical_notes,
-    );
-
-    const sourceClinicalNotes = cleanClinicalNoteText(item.source_clinical_notes);
-
-    const cachedClinicalNotes =
-      rawCachedClinicalNotes ||
-      (sourceClinicalNotes && sourceClinicalNotes !== appointmentNotes
-        ? sourceClinicalNotes
-        : "");
-
-    // Important referral rule:
-    // Only trust the dedicated queue columns and latest_referral object.
-    // Do NOT deep-scan appointment raw_json for address because that can find
-    // Focus Dental Specialists or patient address instead of the external clinic.
-    const latestReferral =
-      raw.latest_referral && typeof raw.latest_referral === "object"
-        ? (raw.latest_referral as LatestPraktikaReferral)
-        : null;
-
-    const cachedReferrerName =
-      cleanString(item.referrer_name) ||
-      cleanString(latestReferral?.referrerName);
-
-    const cachedReferrerAddress =
-      cleanString(item.referrer_address) ||
-      cleanString(latestReferral?.referrerAddress);
-
+    // Do not trust stale referrer values written by earlier fallback experiments.
+    // Those values could be the treating provider / Focus Dental Specialists.
+    // Start blank and let the live Praktika latest-referral lookup fill this.
     setPatientFirstName(firstName);
     setPatientLastName(lastName);
     setPatientDob(dob);
     setPatientGender(item.patient_gender || "neutral");
+    setReferrerName("");
+    setReferrerAddress("");
     setReportType(inferredReportType);
     setPreferredExampleId("");
     setLetterText("");
@@ -2884,71 +2871,17 @@ export default function TypistPage() {
     setPraktikaCandidates([]);
     setSelectedPraktikaPatientId(linkedPraktikaPatientId);
 
-    if (cachedReferrerName) {
-      setReferrerName(cachedReferrerName);
-      setReferrerAddress(cachedReferrerAddress);
-      setLatestPraktikaReferral(latestReferral);
-      setReferralAutoFillError("");
-      setReferralAutoFillStatus(cachedReferrerAddress ? "filled" : "found");
-    } else if (linkedPraktikaPatientId) {
-      setReferrerName("");
-      setReferrerAddress("");
-      setLatestPraktikaReferral(null);
-      setReferralAutoFillStatus("loading");
-      setReferralAutoFillError("");
-
+    if (linkedPraktikaPatientId) {
       void autoFillReferrerFromLatestPraktikaReferral(
         linkedPraktikaPatientId,
         item.id,
       );
     } else {
-      setReferrerName("");
-      setReferrerAddress("");
       setLatestPraktikaReferral(null);
       setReferralAutoFillError(
         "No Praktika patient ID is linked to this queue item.",
       );
       setReferralAutoFillStatus("not_found");
-    }
-
-    if (cachedClinicalNotes) {
-      const cachedCombinedNotes = [
-        appointmentNotes,
-        "Same-day Praktika clinical notes:",
-        cachedClinicalNotes,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-
-      setClinicalNotes(cachedCombinedNotes || appointmentNotes);
-      setAutoGenerateStatus("ready");
-
-      setQueue((current) =>
-        current.map((queueItem) =>
-          queueItem.id === item.id
-            ? {
-                ...queueItem,
-                status:
-                  queueItem.status === "completed" ? "completed" : "started",
-              }
-            : queueItem,
-        ),
-      );
-
-      void fetch("/api/report-writing/letter-queue", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          queueId: item.id,
-          status: item.status === "completed" ? "completed" : "started",
-        }),
-      }).catch((error) => {
-        console.warn("Could not mark cached queue item as started:", error);
-      });
-
-      return;
     }
 
     const initialClinicalNotes = [
@@ -2975,7 +2908,7 @@ export default function TypistPage() {
         sameDayClinicalNotes = cleanClinicalNoteText(sameDayClinicalNotes);
 
         if (sameDayClinicalNotes.trim()) {
-          void fetch("/api/report-writing/letter-queue", {
+          await fetch("/api/report-writing/letter-queue", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -2986,8 +2919,6 @@ export default function TypistPage() {
               cachedClinicalNotes: sameDayClinicalNotes,
               cachedClinicalNotesSource: "praktika_live",
             }),
-          }).catch((error) => {
-            console.warn("Could not cache live clinical notes:", error);
           });
 
           setQueue((current) =>
@@ -2997,7 +2928,6 @@ export default function TypistPage() {
               return {
                 ...queueItem,
                 status: item.status === "completed" ? "completed" : "started",
-                source_clinical_notes: sameDayClinicalNotes,
                 raw_json: {
                   ...(queueItem.raw_json || {}),
                   cached_clinical_notes: sameDayClinicalNotes,
@@ -3045,19 +2975,6 @@ export default function TypistPage() {
         setAutoGenerateStatus("error");
         return;
       }
-    } else {
-      void fetch("/api/report-writing/letter-queue", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          queueId: item.id,
-          status: item.status === "completed" ? "completed" : "started",
-        }),
-      }).catch((error) => {
-        console.warn("Could not mark queue item as started:", error);
-      });
     }
 
     const combinedClinicalNotes = [
@@ -3073,17 +2990,97 @@ export default function TypistPage() {
   }
 
   useEffect(() => {
-    /*
-      Disabled automatic image workspace creation.
+    if (!activeQueueItemId) return;
+    if (selectedDraft || imageDraftId || imageDraftCreating) return;
+    if (!patientFirstName.trim() || !patientLastName.trim()) return;
 
-      This used to create a temporary draft as soon as a queue item became ready.
-      It caused an extra background save/load cycle immediately after clicking a
-      patient, which made cached queue items still feel slightly laggy.
+    // Prevent creating the temporary image/draft workspace while live clinical
+    // notes or referral details are still loading. This is the race-condition fix.
+    if (autoGenerateStatus !== "ready" && autoGenerateStatus !== "error")
+      return;
+    if (referralAutoFillStatus === "loading") return;
+    if (clinicalNotes.includes("Loading same-day Praktika clinical notes"))
+      return;
 
-      Image workspaces are still created on demand by ensureImageDraftForCurrentWork()
-      when the user actually uploads/uses images.
-    */
-  }, []);
+    if (autoImageDraftQueueIdRef.current === activeQueueItemId) return;
+
+    autoImageDraftQueueIdRef.current = activeQueueItemId;
+    void ensureImageDraftForCurrentWork({ quiet: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeQueueItemId,
+    selectedDraft?.id,
+    imageDraftId,
+    imageDraftCreating,
+    patientFirstName,
+    patientLastName,
+    autoGenerateStatus,
+    referralAutoFillStatus,
+    clinicalNotes,
+  ]);
+
+  async function updateQueueStatus(queueId: string, status: string) {
+    await fetch("/api/report-writing/letter-queue", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        queueId,
+        status,
+      }),
+    });
+  }
+
+  async function markQueueItemStarted(item: QueueItem) {
+    await updateQueueStatus(item.id, "started");
+    await loadQueue(selectedProviderId);
+  }
+
+  async function deleteQueueItem(item: QueueItem) {
+    const displayName =
+      [item.patient_first_name, item.patient_last_name]
+        .filter(Boolean)
+        .join(" ") || "this queue item";
+
+    const confirmed = window.confirm(
+      `Delete ${displayName} from the typist queue? This will only remove the item from DocuDental. It will not delete anything from Praktika.`,
+    );
+
+    if (!confirmed) return;
+
+    setLoading(true);
+
+    try {
+      const response = await fetch("/api/report-writing/letter-queue", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          queueId: item.id,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success) {
+        alert(data.error || "Failed to delete queue item.");
+        return;
+      }
+
+      if (activeQueueItemId === item.id) {
+        clearForm();
+      }
+
+      await loadQueue(selectedProviderId, queueStatusTab);
+    } catch (error) {
+      console.error("Failed to delete queue item:", error);
+      alert("Failed to delete queue item.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function updatePraktikaLetterIconsForCurrentDraft() {
     if (!selectedDraft) return;
@@ -4276,88 +4273,116 @@ export default function TypistPage() {
               ) : null}
 
               {queue.map((item) => (
-                <button
+                <div
                   key={item.id}
-                  type="button"
-                  onClick={() => {
-                    if (item.status === "completed") return;
-
-                    void startLetterFromQueue(item);
-                  }}
                   className={[
                     "w-full rounded-xl border bg-white p-3 text-left",
-                    item.status === "completed"
-                      ? "cursor-default opacity-90"
-                      : "hover:bg-slate-50",
+                    item.status === "completed" ? "opacity-90" : "",
                     activeQueueItemId === item.id
                       ? "border-blue-600 ring-2 ring-blue-100"
                       : "border-slate-200",
                   ].join(" ")}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="font-semibold">
-                        {[item.patient_first_name, item.patient_last_name]
-                          .filter(Boolean)
-                          .join(" ") || "Unnamed patient"}
-                      </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (item.status === "completed") return;
 
-                      <div className="text-sm text-slate-500">
-                        DOB: {item.patient_dob || "Not available"}
-                      </div>
-
-                      <div className="text-xs text-slate-400">
-                        {item.appointment_time
-                          ? new Date(item.appointment_time).toLocaleString(
-                              "en-AU",
-                            )
-                          : "No appointment time"}
-                      </div>
-
-                      <div className="mt-1 text-xs text-slate-400">
-                        {item.queue_reason || "Typist Letter"}
-                      </div>
-
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
-                          Suggested:{" "}
-                          {getSuggestedReportTypeLabel(item, reportTypes)}
-                        </span>
-
-                        {getQueueBadges(item).map((badge) => (
-                          <span
-                            key={badge.label}
-                            className={[
-                              "rounded-full px-2 py-1 text-xs font-semibold",
-                              badge.className,
-                            ].join(" ")}
-                          >
-                            {badge.label}
-                          </span>
-                        ))}
-                      </div>
-
-                      {item.praktika_patient_id ? (
-                        <div className="mt-1 text-xs font-semibold text-indigo-600">
-                          Praktika patient linked: {item.praktika_patient_id}
+                      await startLetterFromQueue(item);
+                      await markQueueItemStarted(item);
+                    }}
+                    className={[
+                      "w-full text-left",
+                      item.status === "completed"
+                        ? "cursor-default"
+                        : "rounded-lg hover:bg-slate-50",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold">
+                          {[item.patient_first_name, item.patient_last_name]
+                            .filter(Boolean)
+                            .join(" ") || "Unnamed patient"}
                         </div>
-                      ) : null}
-                    </div>
 
-                    <div
-                      className={[
-                        "rounded-full px-2 py-1 text-xs font-semibold",
-                        item.status === "queued"
-                          ? "bg-blue-100 text-blue-700"
-                          : item.status === "started"
-                            ? "bg-amber-100 text-amber-700"
-                            : "bg-emerald-100 text-emerald-700",
-                      ].join(" ")}
-                    >
-                      {item.status === "completed" ? "sent" : item.status}
+                        <div className="text-sm text-slate-500">
+                          DOB: {item.patient_dob || "Not available"}
+                        </div>
+
+                        <div className="text-xs text-slate-400">
+                          {item.appointment_time
+                            ? new Date(item.appointment_time).toLocaleString(
+                                "en-AU",
+                              )
+                            : "No appointment time"}
+                        </div>
+
+                        <div className="mt-1 text-xs text-slate-400">
+                          {item.queue_reason || "Typist Letter"}
+                        </div>
+
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
+                            Suggested:{" "}
+                            {getSuggestedReportTypeLabel(item, reportTypes)}
+                          </span>
+
+                          {getQueueBadges(item).map((badge) => (
+                            <span
+                              key={badge.label}
+                              className={[
+                                "rounded-full px-2 py-1 text-xs font-semibold",
+                                badge.className,
+                              ].join(" ")}
+                            >
+                              {badge.label}
+                            </span>
+                          ))}
+                        </div>
+
+                        {item.praktika_patient_id ? (
+                          <div className="mt-1 text-xs font-semibold text-indigo-600">
+                            Praktika patient linked: {item.praktika_patient_id}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div
+                        className={[
+                          "rounded-full px-2 py-1 text-xs font-semibold",
+                          item.status === "queued"
+                            ? "bg-blue-100 text-blue-700"
+                            : item.status === "started"
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-emerald-100 text-emerald-700",
+                        ].join(" ")}
+                      >
+                        {item.status === "completed" ? "sent" : item.status}
+                      </div>
                     </div>
+                  </button>
+
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void deleteQueueItem(item);
+                      }}
+                      disabled={loading}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-red-500 transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label={`Delete ${
+                        [item.patient_first_name, item.patient_last_name]
+                          .filter(Boolean)
+                          .join(" ") || "queue item"
+                      }`}
+                      title="Delete queue item"
+                    >
+                      <TrashBinIcon />
+                    </button>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           ) : (

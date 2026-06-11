@@ -215,3 +215,91 @@ export async function POST(req: Request) {
     );
   }
 }
+
+export async function DELETE(req: Request) {
+  try {
+    const body = await req.json().catch(() => ({}));
+    const queueId = clean(body.queueId);
+
+    if (!queueId) {
+      return NextResponse.json(
+        { success: false, error: "Missing queueId." },
+        { status: 400 },
+      );
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from("report_letter_queue")
+      .select(
+        "id, provider_id, report_draft_id, patient_first_name, patient_last_name, appointment_id, status",
+      )
+      .eq("id", queueId)
+      .maybeSingle();
+
+    if (existingError) {
+      return NextResponse.json(
+        { success: false, error: existingError.message },
+        { status: 500 },
+      );
+    }
+
+    if (!existing) {
+      return NextResponse.json(
+        { success: false, error: "Queue item not found." },
+        { status: 404 },
+      );
+    }
+
+    const { error } = await supabase
+      .from("report_letter_queue")
+      .delete()
+      .eq("id", queueId);
+
+    if (error) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 500 },
+      );
+    }
+
+    try {
+      const actor = await getAuditActor();
+
+      await createReportAuditEvent({
+        reportDraftId: existing.report_draft_id || null,
+        providerId: existing.provider_id,
+        patientName: [existing.patient_first_name, existing.patient_last_name]
+          .filter(Boolean)
+          .join(" "),
+        action: "Deleted queue item",
+        details: {
+          queueId: existing.id,
+          appointmentId: existing.appointment_id || null,
+          previousStatus: existing.status || null,
+          actorInitials: actor.actorInitials,
+          actorFullName: actor.actorFullName,
+        },
+      });
+    } catch (auditError) {
+      console.warn("Queue delete audit event failed:", auditError);
+    }
+
+    return NextResponse.json({
+      success: true,
+      deletedQueueId: queueId,
+    });
+  } catch (error) {
+    console.error("Delete letter queue item failed:", error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to delete queue item.",
+      },
+      { status: 500 },
+    );
+  }
+}
