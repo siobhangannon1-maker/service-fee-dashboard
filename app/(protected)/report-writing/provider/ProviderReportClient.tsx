@@ -29,11 +29,14 @@ type Draft = {
   emailed_to_referrer_email?: string | null;
   praktika_patient_id?: string | null;
   typist_instructions?: string | null;
+  source_type?: LetterSourceType | string | null;
 };
 
 type ProviderReportClientProps = {
   providerId: string;
 };
+
+type LetterSourceType = "dictation" | "smart_dictation" | "clinical_notes";
 
 type PatientGender = "male" | "female" | "neutral";
 
@@ -284,6 +287,25 @@ function formatManualReferrerAddress(referrer: any) {
   return [practiceName, address].filter(Boolean).join("\n");
 }
 
+
+function inferDraftSourceType(draft: Draft | null): LetterSourceType {
+  const sourceType = String(draft?.source_type || "").trim();
+
+  if (
+    sourceType === "dictation" ||
+    sourceType === "smart_dictation" ||
+    sourceType === "clinical_notes"
+  ) {
+    return sourceType;
+  }
+
+  if (draft?.report_type === "dictated_letter") {
+    return "dictation";
+  }
+
+  return "clinical_notes";
+}
+
 async function readJsonSafely(response: Response) {
   const text = await response.text();
 
@@ -516,7 +538,7 @@ export default function ProviderReportClient({
 
   async function saveLetterAsDraft(options?: {
   text?: string;
-  sourceType?: "dictation" | "smart_dictation" | "clinical_notes";
+  sourceType?: LetterSourceType;
   showToast?: boolean;
 }) {
   const text = String(
@@ -591,10 +613,16 @@ export default function ProviderReportClient({
   }
 }
 
-  async function approveCurrentDraft() {
+  async function approveCurrentDraft(options?: {
+    sourceType?: LetterSourceType;
+  }) {
+    const sourceType =
+      options?.sourceType ||
+      (selectedDraft ? inferDraftSourceType(selectedDraft) : dictatedLetter.trim() ? "dictation" : "clinical_notes");
+
     const text = (
       selectedDraft
-        ? getReportText(selectedDraft)
+        ? dictatedLetter || generatedReport || getReportText(selectedDraft)
         : dictatedLetter || generatedReport
     ).trim();
 
@@ -657,14 +685,14 @@ export default function ProviderReportClient({
           patientDob,
           referrerName,
           referrerAddress,
-          reportType: dictatedLetter ? "dictated_letter" : reportType,
-          clinicalNotes: text,
+          reportType: sourceType === "dictation" ? "dictated_letter" : reportType,
+          clinicalNotes: sourceType === "clinical_notes" ? clinicalNotes : text,
           typistInstructions,
           generatedReport: text,
           editedText: text,
           originalAiText: originalGeneratedReport || text,
           finalApprovedText: text,
-          sourceType: dictatedLetter ? "dictation" : "clinical_notes",
+          sourceType,
           status: "approved",
           learnFromEdits: false,
           praktikaPatientId: null,
@@ -1396,13 +1424,30 @@ export default function ProviderReportClient({
                   minHeightClassName="min-h-96"
                 />
 
-                <button
-                  onClick={saveNotesDraft}
-                  disabled={loading}
-                  className="rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
-                >
-                  Save Smart Dictate Draft
-                </button>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    onClick={() =>
+                      saveLetterAsDraft({
+                        text: generatedReport,
+                        sourceType: "smart_dictation",
+                      })
+                    }
+                    disabled={loading}
+                    className="rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
+                  >
+                    Save Smart Dictate Draft
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      approveCurrentDraft({ sourceType: "smart_dictation" })
+                    }
+                    disabled={loading}
+                    className="rounded-xl bg-green-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
+                  >
+                    Approve Letter
+                  </button>
+                </div>
               </div>
             </div>
           ) : null}
@@ -1459,7 +1504,7 @@ export default function ProviderReportClient({
                 </button>
 
                 <button
-                  onClick={approveCurrentDraft}
+                  onClick={() => approveCurrentDraft({ sourceType: "dictation" })}
                   disabled={loading}
                   className="rounded-xl bg-green-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
                 >
@@ -1495,13 +1540,25 @@ export default function ProviderReportClient({
                 minHeightClassName="min-h-96"
               />
 
-              <button
-                onClick={saveNotesDraft}
-                disabled={loading}
-                className="rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
-              >
-                Save Draft
-              </button>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  onClick={saveNotesDraft}
+                  disabled={loading}
+                  className="rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Save Draft
+                </button>
+
+                <button
+                  onClick={() =>
+                    approveCurrentDraft({ sourceType: "clinical_notes" })
+                  }
+                  disabled={loading}
+                  className="rounded-xl bg-green-600 px-6 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Approve Letter
+                </button>
+              </div>
             </div>
           ) : null}
 
@@ -1615,7 +1672,7 @@ export default function ProviderReportClient({
                         onClick={() =>
                           saveLetterAsDraft({
                             text: dictatedLetter || generatedReport,
-                            sourceType: "dictation",
+                            sourceType: inferDraftSourceType(selectedDraft),
                           })
                         }
                         disabled={loading}
@@ -1625,7 +1682,7 @@ export default function ProviderReportClient({
                       </button>
 
                       <button
-                        onClick={approveCurrentDraft}
+                        onClick={() => approveCurrentDraft()}
                         disabled={loading}
                         className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                       >

@@ -932,6 +932,21 @@ export default function BillingClient() {
     ].filter((line) => Number(line.amount || 0) !== 0);
   }
 
+  function buildAfterpayMerchantFeeLabel(provider: Provider) {
+    return `Afterpay merchant fees paid by ${provider.name}`;
+  }
+
+  function formatAfterpayEntriesForOutput(
+    afterpayEntries: BillingDetailEntry[],
+    provider: Provider
+  ) {
+    return afterpayEntries.map((entry) => ({
+      ...entry,
+      patient_name: "",
+      notes: buildAfterpayMerchantFeeLabel(provider),
+    }));
+  }
+
   function getProviderCalculations(provider: Provider) {
     const manualInputs = manualBillingData[provider.id] || emptyManualInputs;
     const autoTotals = autoTotalsByProvider[provider.id] || {
@@ -1214,7 +1229,7 @@ export default function BillingClient() {
 
         ${sectionTable(
           "Afterpay merchant fee entries",
-          afterpayEntries,
+          formatAfterpayEntriesForOutput(afterpayEntries, provider),
           autoTotals.afterpayFees
         )}
 
@@ -1432,7 +1447,7 @@ export default function BillingClient() {
 
           implantEntries,
           hummEntries,
-          afterpayEntries,
+          afterpayEntries: formatAfterpayEntriesForOutput(afterpayEntries, provider),
           paidToFocusEntries,
           paidToThisProviderInErrorEntries,
           paidToAnotherProviderEntries,
@@ -1944,8 +1959,7 @@ try {
           addSubtotal(0);
         } else {
           afterpayEntries.forEach((e) => {
-            const label = `${e.patient_name || ""}${e.notes ? " " + e.notes : ""}`;
-            addLine(label.trim(), e.amount);
+            addLine(buildAfterpayMerchantFeeLabel(provider), e.amount);
             afterpayTotal += e.amount;
           });
           addSubtotal(afterpayTotal);
