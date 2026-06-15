@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { createClient } from '@supabase/supabase-js'
+import { spawn } from 'node:child_process'
 
 type WorkerType = 'praktika' | 'mediref'
 
@@ -19,6 +20,11 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 })
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const runningPraktikaSessions = new Set<string>()
+
+function nowIso() {
+  return new Date().toISOString()
+}
 
 function log(message: string) {
   console.log(`[${new Date().toISOString()}] [${workerId}] ${message}`)
@@ -32,8 +38,8 @@ async function upsertWorker(status: string) {
     name: workerType === 'praktika' ? 'Praktika Worker' : 'MediRef Worker',
     type: workerType,
     status,
-    last_heartbeat_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    last_heartbeat_at: nowIso(),
+    updated_at: nowIso(),
   })
 
   if (error) throw error
@@ -44,8 +50,8 @@ async function heartbeat(status = 'online') {
     .from('automation_workers')
     .update({
       status,
-      last_heartbeat_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      last_heartbeat_at: nowIso(),
+      updated_at: nowIso(),
     })
     .eq('id', workerId)
 
@@ -68,9 +74,9 @@ async function logError(message: string, stack?: string, metadata: Record<string
     .from('automation_workers')
     .update({
       status: 'error',
-      last_error_at: new Date().toISOString(),
+      last_error_at: nowIso(),
       last_error_message: message,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso(),
     })
     .eq('id', workerId)
 }
@@ -105,11 +111,11 @@ async function markCommand(id: string, status: string, result?: unknown, errorMe
     status,
     result: result ?? null,
     error_message: errorMessage ?? null,
-    updated_at: new Date().toISOString(),
+    updated_at: nowIso(),
   }
 
-  if (status === 'running') update.started_at = new Date().toISOString()
-  if (status === 'done' || status === 'failed') update.finished_at = new Date().toISOString()
+  if (status === 'running') update.started_at = nowIso()
+  if (status === 'done' || status === 'failed') update.finished_at = nowIso()
 
   const { error } = await supabase
     .from('automation_commands')
@@ -119,21 +125,207 @@ async function markCommand(id: string, status: string, result?: unknown, errorMe
   if (error) throw error
 }
 
-async function runPraktikaSyncOnce() {
-  log('Running Praktika sync placeholder')
+async function getRefreshRequestedPraktikaSessions() {
+  const { data, error } = await supabase
+    .from('praktika_sessions')
+    .select('id, scope, app_user_id, status, message, refresh_requested_at')
+    .eq('status', 'refresh_requested')
+    .not('refresh_requested_at', 'is', null)
+    .order('refresh_requested_at', { ascending: true })
 
-  await sleep(2000)
+  if (error) throw new Error(`Could not check Praktika refresh requests: ${error.message}`)
+
+  return data || []
+}
+
+async function getPendingPraktikaJobs() {
+  const { data, error } = await supabase
+    .from('praktika_helper_jobs')
+    .select('id, app_user_id, job_type, status, available_at, created_at')
+    .eq('status', 'pending')
+    .lte('available_at', nowIso())
+    .order('priority', { ascending: true })
+    .order('created_at', { ascending: true })
+    .limit(20)
+
+  if (error) throw new Error(`Could not check Praktika helper jobs: ${error.message}`)
+
+  return data || []
+}
+
+async function getUserSessionsForPraktikaJobs(appUserIds: string[]) {
+  if (appUserIds.length === 0) return []
+
+  const { data, error } = await supabase
+    .from('praktika_sessions')
+    .select('id, scope, app_user_id, status, message, refresh_requested_at')
+    .eq('scope', 'user')
+    .in('app_user_id', appUserIds)
+
+  if (error) throw new Error(`Could not load Praktika sessions for jobs: ${error.message}`)
+
+  return data || []
+}
+
+async function markPraktikaSessionRefreshing(sessionId: string, reason: string) {
+  const { error } = await supabase
+    .from('praktika_sessions')
+    .update({
+      status: 'refreshing',
+      message:
+        reason === 'pending_job'
+          ? 'Cloud Praktika helper is starting to process queued jobs.'
+          : 'Cloud Praktika helper is starting.',
+      updated_at: nowIso(),
+    })
+    .eq('id', sessionId)
+
+  if (error) throw new Error(`Could not mark Praktika session refreshing: ${error.message}`)
+}
+
+async function startPraktikaHelperForSession(session: any, reason: string) {
+  if (runningPraktikaSessions.has(session.id)) {
+    log(`Praktika helper already running for session ${session.id}. Reason: ${reason}`)
+    return
+  }
+
+  runningPraktikaSessions.add(session.id)
+
+  log(`Starting Praktika helper for ${session.scope} session ${session.id}. Reason: ${reason}`)
+
+  await markPraktikaSessionRefreshing(session.id, reason)
 
   await supabase
     .from('automation_workers')
     .update({
-      last_success_at: new Date().toISOString(),
-      last_error_message: null,
-      updated_at: new Date().toISOString(),
+      current_job_type: 'praktika_session_helper',
+      current_job_id: session.id,
+      updated_at: nowIso(),
     })
     .eq('id', workerId)
 
-  log('Praktika sync placeholder completed')
+  const child = spawn(
+    'npm',
+    ['run', 'refresh:praktika-session', '--', `--session-id=${session.id}`],
+    {
+      cwd: process.cwd(),
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+      env: {
+        ...process.env,
+        PLAYWRIGHT_STORAGE_DIR:
+          process.env.PLAYWRIGHT_STORAGE_DIR || '/var/data/playwright-storage',
+      },
+    },
+  )
+
+  child.on('exit', async (code) => {
+    runningPraktikaSessions.delete(session.id)
+
+    log(`Praktika helper for session ${session.id} exited with code ${code}`)
+
+    await supabase
+      .from('automation_workers')
+      .update({
+        current_job_type: null,
+        current_job_id: null,
+        updated_at: nowIso(),
+      })
+      .eq('id', workerId)
+
+    if (code !== 0) {
+      await supabase
+        .from('praktika_sessions')
+        .update({
+          status: 'error',
+          message: 'Cloud Praktika helper stopped unexpectedly. Reconnect before syncing again.',
+          updated_at: nowIso(),
+        })
+        .eq('id', session.id)
+
+      await logError(`Praktika helper for session ${session.id} exited with code ${code}`)
+    }
+  })
+
+  child.on('error', async (error) => {
+    runningPraktikaSessions.delete(session.id)
+
+    log(`Praktika helper for session ${session.id} failed to start: ${error.message}`)
+
+    await supabase
+      .from('automation_workers')
+      .update({
+        current_job_type: null,
+        current_job_id: null,
+        updated_at: nowIso(),
+      })
+      .eq('id', workerId)
+
+    await supabase
+      .from('praktika_sessions')
+      .update({
+        status: 'error',
+        message: `Cloud Praktika helper failed to start: ${error.message}`,
+        updated_at: nowIso(),
+      })
+      .eq('id', session.id)
+
+    await logError(`Praktika helper for session ${session.id} failed to start: ${error.message}`, error.stack)
+  })
+}
+
+async function runPraktikaSyncOnce() {
+  log('Checking Praktika refresh requests and pending helper jobs')
+
+  const refreshSessions = await getRefreshRequestedPraktikaSessions()
+
+  for (const session of refreshSessions) {
+    await startPraktikaHelperForSession(session, 'refresh_requested')
+  }
+
+  const jobs = await getPendingPraktikaJobs()
+
+  if (jobs.length === 0) {
+    log('No pending Praktika helper jobs found')
+    return
+  }
+
+  const appUserIds = Array.from(
+    new Set(
+      jobs
+        .map((job: any) => job.app_user_id)
+        .filter((value: string | null): value is string => Boolean(value)),
+    ),
+  )
+
+  if (appUserIds.length === 0) {
+    log('Pending Praktika helper jobs found, but none have app_user_id')
+    return
+  }
+
+  const sessions = await getUserSessionsForPraktikaJobs(appUserIds)
+
+  for (const appUserId of appUserIds) {
+    const session = sessions.find((item: any) => item.app_user_id === appUserId)
+
+    if (!session) {
+      log(`No Praktika user session exists for app user ${appUserId}`)
+      continue
+    }
+
+    await startPraktikaHelperForSession(session, 'pending_job')
+  }
+
+  await supabase
+    .from('automation_workers')
+    .update({
+      last_success_at: nowIso(),
+      last_error_message: null,
+      updated_at: nowIso(),
+    })
+    .eq('id', workerId)
+
+  log('Praktika sync check completed')
 }
 
 async function runMediRefSyncOnce() {
@@ -144,9 +336,9 @@ async function runMediRefSyncOnce() {
   await supabase
     .from('automation_workers')
     .update({
-      last_success_at: new Date().toISOString(),
+      last_success_at: nowIso(),
       last_error_message: null,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso(),
     })
     .eq('id', workerId)
 
@@ -165,7 +357,7 @@ async function processCommand(command: any) {
         .update({
           is_paused: true,
           status: 'paused',
-          updated_at: new Date().toISOString(),
+          updated_at: nowIso(),
         })
         .eq('id', workerId)
 
@@ -180,7 +372,7 @@ async function processCommand(command: any) {
         .update({
           is_paused: false,
           status: 'online',
-          updated_at: new Date().toISOString(),
+          updated_at: nowIso(),
         })
         .eq('id', workerId)
 
@@ -198,7 +390,7 @@ async function processCommand(command: any) {
     if (command.command === 'run_praktika_sync') {
       log('Manual Praktika sync requested')
       await runPraktikaSyncOnce()
-      await markCommand(command.id, 'done', { message: 'Praktika sync completed' })
+      await markCommand(command.id, 'done', { message: 'Praktika sync check completed' })
       return
     }
 
@@ -210,7 +402,28 @@ async function processCommand(command: any) {
     }
 
     if (command.command === 'force_login') {
-      log('Force login requested - placeholder only')
+      log('Force login requested')
+
+      if (workerType === 'praktika') {
+        const sessions = await getRefreshRequestedPraktikaSessions()
+
+        if (sessions.length === 0) {
+          await markCommand(command.id, 'done', {
+            message: 'No Praktika refresh_requested sessions found. Click reconnect/request refresh from the Praktika UI first.',
+          })
+          return
+        }
+
+        for (const session of sessions) {
+          await startPraktikaHelperForSession(session, 'refresh_requested')
+        }
+
+        await markCommand(command.id, 'done', {
+          message: `Started ${sessions.length} Praktika helper session(s).`,
+        })
+        return
+      }
+
       await markCommand(command.id, 'done', { message: 'Force login placeholder completed' })
       return
     }
