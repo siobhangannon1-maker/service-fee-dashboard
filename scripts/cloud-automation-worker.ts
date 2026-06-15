@@ -20,7 +20,13 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+function log(message: string) {
+  console.log(`[${new Date().toISOString()}] [${workerId}] ${message}`)
+}
+
 async function upsertWorker(status: string) {
+  log(`Upserting worker as ${status}`)
+
   const { error } = await supabase.from('automation_workers').upsert({
     id: workerId,
     name: workerType === 'praktika' ? 'Praktika Worker' : 'MediRef Worker',
@@ -43,10 +49,14 @@ async function heartbeat(status = 'online') {
     })
     .eq('id', workerId)
 
-  if (error) console.error('Heartbeat error:', error.message)
+  if (error) {
+    console.error(`[${workerId}] Heartbeat error:`, error.message)
+  }
 }
 
 async function logError(message: string, stack?: string, metadata: Record<string, unknown> = {}) {
+  console.error(`[${workerId}] ERROR: ${message}`)
+
   await supabase.from('automation_errors').insert({
     worker_id: workerId,
     message,
@@ -110,17 +120,7 @@ async function markCommand(id: string, status: string, result?: unknown, errorMe
 }
 
 async function runPraktikaSyncOnce() {
-  console.log('TODO: run Praktika sync once')
-
-  /*
-    Later, move your existing Praktika watcher logic here.
-
-    Example:
-
-    await processPraktikaHelperJobs({
-      storageStatePath: process.env.PLAYWRIGHT_STORAGE_DIR + '/praktika.json'
-    })
-  */
+  log('Running Praktika sync placeholder')
 
   await sleep(2000)
 
@@ -132,20 +132,12 @@ async function runPraktikaSyncOnce() {
       updated_at: new Date().toISOString(),
     })
     .eq('id', workerId)
+
+  log('Praktika sync placeholder completed')
 }
 
 async function runMediRefSyncOnce() {
-  console.log('TODO: run MediRef sync once')
-
-  /*
-    Later, move your existing MediRef watcher logic here.
-
-    Example:
-
-    await processMediRefHelperJobs({
-      storageStatePath: process.env.PLAYWRIGHT_STORAGE_DIR + '/mediref.json'
-    })
-  */
+  log('Running MediRef sync placeholder')
 
   await sleep(2000)
 
@@ -157,18 +149,27 @@ async function runMediRefSyncOnce() {
       updated_at: new Date().toISOString(),
     })
     .eq('id', workerId)
+
+  log('MediRef sync placeholder completed')
 }
 
 async function processCommand(command: any) {
+  log(`Processing command: ${command.command}`)
+
   await markCommand(command.id, 'running')
 
   try {
     if (command.command === 'pause_worker') {
       await supabase
         .from('automation_workers')
-        .update({ is_paused: true, status: 'paused', updated_at: new Date().toISOString() })
+        .update({
+          is_paused: true,
+          status: 'paused',
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', workerId)
 
+      log('Worker paused')
       await markCommand(command.id, 'done', { message: 'Worker paused' })
       return
     }
@@ -176,38 +177,47 @@ async function processCommand(command: any) {
     if (command.command === 'resume_worker') {
       await supabase
         .from('automation_workers')
-        .update({ is_paused: false, status: 'online', updated_at: new Date().toISOString() })
+        .update({
+          is_paused: false,
+          status: 'online',
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', workerId)
 
+      log('Worker resumed')
       await markCommand(command.id, 'done', { message: 'Worker resumed' })
       return
     }
 
     if (command.command === 'soft_restart') {
+      log('Soft restart requested')
       await markCommand(command.id, 'done', { message: 'Worker exiting for restart' })
-      console.log('Soft restart requested')
       process.exit(0)
     }
 
     if (command.command === 'run_praktika_sync') {
+      log('Manual Praktika sync requested')
       await runPraktikaSyncOnce()
       await markCommand(command.id, 'done', { message: 'Praktika sync completed' })
       return
     }
 
     if (command.command === 'run_mediref_sync') {
+      log('Manual MediRef sync requested')
       await runMediRefSyncOnce()
       await markCommand(command.id, 'done', { message: 'MediRef sync completed' })
       return
     }
 
     if (command.command === 'force_login') {
+      log('Force login requested - placeholder only')
       await markCommand(command.id, 'done', { message: 'Force login placeholder completed' })
       return
     }
 
     throw new Error(`Unknown command: ${command.command}`)
   } catch (error: any) {
+    log(`Command failed: ${command.command}`)
     await markCommand(command.id, 'failed', null, error.message)
     await logError(error.message, error.stack, { command })
   }
@@ -231,7 +241,9 @@ async function pollHelperJobs() {
 }
 
 async function main() {
-  console.log(`Starting ${workerId}`)
+  log(`Starting ${workerType} worker`)
+  log(`Poll interval: ${process.env.WORKER_POLL_INTERVAL_MS || 5000}ms`)
+  log(`Playwright storage dir: ${process.env.PLAYWRIGHT_STORAGE_DIR || 'not set'}`)
 
   await upsertWorker('online')
 

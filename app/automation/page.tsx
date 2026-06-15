@@ -21,28 +21,51 @@ type AutomationError = {
   created_at: string
 }
 
+type AutomationCommand = {
+  id: string
+  worker_id: string
+  command: string
+  status: string
+  error_message: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
 function formatDate(value: string | null) {
   if (!value) return 'Never'
   return new Date(value).toLocaleString()
 }
 
+function statusClass(status: string) {
+  if (status === 'online' || status === 'done') return 'bg-green-100 text-green-700 border-green-200'
+  if (status === 'paused' || status === 'pending') return 'bg-yellow-100 text-yellow-700 border-yellow-200'
+  if (status === 'error' || status === 'failed') return 'bg-red-100 text-red-700 border-red-200'
+  if (status === 'running') return 'bg-blue-100 text-blue-700 border-blue-200'
+  return 'bg-gray-100 text-gray-700 border-gray-200'
+}
+
 export default function AutomationPage() {
   const [workers, setWorkers] = useState<Worker[]>([])
   const [errors, setErrors] = useState<AutomationError[]>([])
+  const [commands, setCommands] = useState<AutomationCommand[]>([])
   const [loading, setLoading] = useState(true)
   const [busyCommand, setBusyCommand] = useState<string | null>(null)
 
   async function loadData() {
-    const [workersRes, errorsRes] = await Promise.all([
+    const [workersRes, errorsRes, commandsRes] = await Promise.all([
       fetch('/api/automation/workers'),
       fetch('/api/automation/errors'),
+      fetch('/api/automation/command-history'),
     ])
 
     const workersJson = await workersRes.json()
     const errorsJson = await errorsRes.json()
+    const commandsJson = await commandsRes.json()
 
     setWorkers(workersJson.workers || [])
     setErrors(errorsJson.errors || [])
+    setCommands(commandsJson.commands || [])
     setLoading(false)
   }
 
@@ -92,7 +115,7 @@ export default function AutomationPage() {
           <div key={worker.id} className="rounded-lg border bg-white p-4 shadow-sm space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">{worker.name}</h2>
-              <span className="rounded-full border px-3 py-1 text-sm">
+              <span className={`rounded-full border px-3 py-1 text-sm ${statusClass(worker.status)}`}>
                 {worker.status}
               </span>
             </div>
@@ -168,6 +191,43 @@ export default function AutomationPage() {
           </div>
         ))}
       </div>
+
+      <section className="rounded-lg border bg-white p-4 shadow-sm">
+        <h2 className="text-lg font-semibold mb-3">Recent Commands</h2>
+
+        {commands.length === 0 ? (
+          <p className="text-sm text-gray-500">No commands yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left">
+                  <th className="py-2 pr-3">Time</th>
+                  <th className="py-2 pr-3">Worker</th>
+                  <th className="py-2 pr-3">Command</th>
+                  <th className="py-2 pr-3">Status</th>
+                  <th className="py-2 pr-3">Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {commands.map((command) => (
+                  <tr key={command.id} className="border-b">
+                    <td className="py-2 pr-3 whitespace-nowrap">{formatDate(command.created_at)}</td>
+                    <td className="py-2 pr-3">{command.worker_id}</td>
+                    <td className="py-2 pr-3">{command.command}</td>
+                    <td className="py-2 pr-3">
+                      <span className={`rounded-full border px-2 py-1 text-xs ${statusClass(command.status)}`}>
+                        {command.status}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3 text-red-600">{command.error_message || ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <section className="rounded-lg border bg-white p-4 shadow-sm">
         <h2 className="text-lg font-semibold mb-3">Recent Errors</h2>
