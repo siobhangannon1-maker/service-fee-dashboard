@@ -100,13 +100,31 @@ export async function validatePraktikaSession(
   }
 
   if (session.status === "refreshing") {
+  if (session.cookie) {
+    await updatePraktikaSession(mode, {
+      status: "connected",
+      message:
+        session.message ||
+        "Praktika cloud helper is connected. Helper jobs can be attempted.",
+      last_used_at: new Date().toISOString(),
+    });
+
     return {
-      connected: false,
-      status: "refreshing",
-      reason: "refreshing",
-      message: session.message || "Praktika helper is reconnecting.",
+      connected: true,
+      status: "connected",
+      message:
+        session.message ||
+        "Praktika cloud helper is connected. Helper jobs can be attempted.",
     };
   }
+
+  return {
+    connected: false,
+    status: "refreshing",
+    reason: "refreshing",
+    message: session.message || "Praktika helper is reconnecting.",
+  };
+}
 
   if (session.status === "expired") {
     return {
