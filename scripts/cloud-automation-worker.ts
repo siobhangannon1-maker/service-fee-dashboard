@@ -129,8 +129,14 @@ async function getRefreshRequestedPraktikaSessions() {
   const { data, error } = await supabase
     .from('praktika_sessions')
     .select('id, scope, app_user_id, status, message, refresh_requested_at')
-    .eq('status', 'refresh_requested')
     .not('refresh_requested_at', 'is', null)
+    .in('status', [
+      'refresh_requested',
+      'refreshing',
+      'waiting_for_credentials',
+      'error',
+      'expired',
+    ])
     .order('refresh_requested_at', { ascending: true })
 
   if (error) throw new Error(`Could not check Praktika refresh requests: ${error.message}`)
