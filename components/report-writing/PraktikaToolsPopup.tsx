@@ -156,9 +156,6 @@ export default function PraktikaToolsPopup({
 
   const isConnected = currentConnectionState === "connected";
 
-  // Helper-job syncs use the live local helper browser.
-  // Do not require a saved copied cookie here; copied-cookie checks were causing
-  // false "reconnect required" states even when the helper browser was connected.
   const shouldShowReconnectWarning = needsReconnect && !isConnected;
 
   const shouldShowCredentialForm =
@@ -170,7 +167,6 @@ export default function PraktikaToolsPopup({
       currentStatus === "error" ||
       currentStatus === "not_started");
 
-  // Only show the MFA box when Praktika specifically asks for MFA.
   const shouldShowMfaBox = currentStatus === "waiting_for_mfa";
 
   const maxQueueToDate = useMemo(() => {
@@ -250,9 +246,6 @@ export default function PraktikaToolsPopup({
         setFailedStatusChecks((current) => {
           const next = current + 1;
 
-          // Keep the last good displayed status unless the status endpoint fails
-          // several times in a row. This prevents green/red flicker from brief
-          // helper/API polling hiccups.
           if (next >= 5) {
             setDisplayStatus("error");
           }
@@ -281,8 +274,6 @@ export default function PraktikaToolsPopup({
       setFailedStatusChecks((current) => {
         const next = current + 1;
 
-        // If the last displayed status was connected/connecting, do not show red
-        // until several consecutive checks agree it is actually disconnected.
         if (next >= 5) {
           setDisplayStatus(nextStatus);
         }
@@ -319,17 +310,20 @@ export default function PraktikaToolsPopup({
         },
         body: JSON.stringify({
           scope: "user",
+          force: true,
         }),
       });
 
       const data = await response.json().catch(() => ({}));
 
-      if (!response.ok || data.success === false) {
-        setLocalMessage(data.error || "Could not connect to Praktika.");
+      if (!response.ok || data.success === false || data.ok === false) {
+        setLocalMessage(
+          data.error || data.message || "Could not connect to Praktika.",
+        );
         return;
       }
 
-      setLocalMessage("Connect requested. Keep the local Praktika watcher open.");
+      setLocalMessage("Connect requested. The cloud Praktika helper will start shortly.");
       await loadStatus();
     } finally {
       setRefreshSubmitting(false);
@@ -361,8 +355,10 @@ export default function PraktikaToolsPopup({
 
       const data = await response.json().catch(() => ({}));
 
-      if (!response.ok || data.success === false) {
-        setLocalMessage(data.error || "Could not connect to Praktika.");
+      if (!response.ok || data.success === false || data.ok === false) {
+        setLocalMessage(
+          data.error || data.message || "Could not connect to Praktika.",
+        );
         return;
       }
 
@@ -373,21 +369,27 @@ export default function PraktikaToolsPopup({
         },
         body: JSON.stringify({
           scope: "user",
+          force: true,
         }),
       });
 
       const refreshData = await refreshResponse.json().catch(() => ({}));
 
-      if (!refreshResponse.ok || refreshData.success === false) {
+      if (
+        !refreshResponse.ok ||
+        refreshData.success === false ||
+        refreshData.ok === false
+      ) {
         setLocalMessage(
           refreshData.error ||
+            refreshData.message ||
             "Credentials were saved, but Praktika could not start connecting.",
         );
         return;
       }
 
       setPassword("");
-      setLocalMessage("Connecting to Praktika...");
+      setLocalMessage("Connecting to Praktika using the cloud helper...");
 
       await loadStatus();
     } finally {
@@ -421,8 +423,8 @@ export default function PraktikaToolsPopup({
 
       const data = await response.json().catch(() => ({}));
 
-      if (!response.ok || data.success === false) {
-        setLocalMessage(data.error || "Could not submit MFA code.");
+      if (!response.ok || data.success === false || data.ok === false) {
+        setLocalMessage(data.error || data.message || "Could not submit MFA code.");
         return;
       }
 
@@ -493,6 +495,11 @@ export default function PraktikaToolsPopup({
                 </span>
               </p>
 
+              {checking ? (
+                <p className="mt-2 text-xs text-slate-500">
+                  Checking Praktika connection...
+                </p>
+              ) : null}
 
               {currentConnectionState === "disconnected" ? (
                 <p className="mt-2 text-xs font-semibold text-red-700">
@@ -506,7 +513,11 @@ export default function PraktikaToolsPopup({
                 </p>
               ) : null}
 
-
+              {session?.message ? (
+                <p className="mt-2 text-xs text-slate-600">
+                  {session.message}
+                </p>
+              ) : null}
 
               {localMessage ? (
                 <p className="mt-2 text-xs font-semibold text-blue-700">

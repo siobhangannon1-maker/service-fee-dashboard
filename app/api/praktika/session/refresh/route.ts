@@ -15,6 +15,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const scope = body?.scope || "user";
+    const force = Boolean(body?.force);
 
     const mode =
       scope === "practice"
@@ -27,6 +28,7 @@ export async function POST(request: Request) {
       session.last_used_at || session.refreshed_at || session.updated_at;
 
     const recentlyConnected =
+      !force &&
       session.status === "connected" &&
       lastActivity &&
       Date.now() - new Date(lastActivity).getTime() <
@@ -35,21 +37,10 @@ export async function POST(request: Request) {
     if (recentlyConnected) {
       return NextResponse.json({
         ok: true,
+        success: true,
         alreadyConnected: true,
         scope: mode.scope,
         message: "Praktika is already connected. No refresh required.",
-      });
-    }
-
-    if (
-      session.status === "refreshing" ||
-      session.status === "refresh_requested"
-    ) {
-      return NextResponse.json({
-        ok: true,
-        alreadyRefreshing: true,
-        scope: mode.scope,
-        message: "Praktika reconnect is already in progress.",
       });
     }
 
@@ -57,14 +48,19 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: true,
+      success: true,
       scope: mode.scope,
+      forced: force,
+      previousStatus: session.status,
       message: "Your Praktika refresh was requested.",
     });
   } catch (error: any) {
     return NextResponse.json(
       {
         ok: false,
+        success: false,
         message: error?.message || "Could not request Praktika refresh.",
+        error: error?.message || "Could not request Praktika refresh.",
       },
       { status: 500 },
     );
