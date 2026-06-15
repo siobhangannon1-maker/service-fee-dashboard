@@ -609,7 +609,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
             refresh_requested_at: null,
           });
         }
-      } else {
+                  } else {
         if (pageIsLogoutUrl(page)) {
           await updateSession({
             status: "waiting_for_credentials",
@@ -628,11 +628,9 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           continue;
         }
 
-        await updateSession({
-          status: "refreshing",
-          message: "Praktika helper is checking whether the browser is still logged in.",
-          current_url: await safePageUrl(page),
-        });
+        console.log(
+          "Praktika helper could not confirm logged-in UI. Rechecking without changing session status.",
+        );
 
         await performRealBrowserActivity(page);
       }
