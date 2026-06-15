@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createPraktikaHelperJob, waitForPraktikaHelperJob } from "@/lib/praktika/helper-jobs";
+import {
+  createPraktikaHelperJob,
+  waitForPraktikaHelperJob,
+} from "@/lib/praktika/helper-jobs";
 import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 import {
   createReportAuditEvent,
@@ -46,7 +49,9 @@ function formatPraktikaDateTime(date = new Date()) {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 }
 
-function appUserIdFromMode(mode: Awaited<ReturnType<typeof getCurrentUserPraktikaSessionMode>>) {
+function appUserIdFromMode(
+  mode: Awaited<ReturnType<typeof getCurrentUserPraktikaSessionMode>>,
+) {
   return mode.scope === "user" ? mode.appUserId : null;
 }
 
@@ -76,8 +81,33 @@ async function ensureUploadBucketExists() {
   }
 }
 
+async function verifyStagedUploadExists(storagePath: string) {
+  const { data, error } = await supabase.storage
+    .from(HELPER_UPLOAD_BUCKET)
+    .download(storagePath);
+
+  if (error || !data) {
+    throw new Error(
+      `PDF was staged for Praktika, but Supabase Storage could not read it back: ${
+        error?.message || "No file returned."
+      }`,
+    );
+  }
+
+  const size = data.size;
+
+  if (!size || size < 1000) {
+    throw new Error(
+      `PDF was staged for Praktika, but the stored file looks empty or invalid. Size: ${size || 0} bytes.`,
+    );
+  }
+
+  return true;
+}
+
 export async function POST(req: Request) {
   let storagePath: string | null = null;
+  let helperJobId: string | null = null;
 
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
@@ -147,13 +177,21 @@ export async function POST(req: Request) {
     const pdfBlob = await pdfResponse.blob();
     const pdfBuffer = Buffer.from(await pdfBlob.arrayBuffer());
 
+    if (!pdfBuffer.length || pdfBuffer.length < 1000) {
+      throw new Error(
+        `Generated PDF looks empty or invalid. Size: ${pdfBuffer.length} bytes.`,
+      );
+    }
+
     const fileName = `${getFileDate()} ${getSafePatientName(
       draft.patient_name,
     )} Letter.pdf`;
 
     await ensureUploadBucketExists();
 
-    storagePath = `report-uploads/${mode.scope === "user" ? mode.appUserId : "practice"}/${draftId}/${Date.now()}-${fileName}`;
+    storagePath = `report-uploads/${
+      mode.scope === "user" ? mode.appUserId : "practice"
+    }/${draftId}/${Date.now()}-${fileName}`;
 
     const { error: uploadError } = await supabase.storage
       .from(HELPER_UPLOAD_BUCKET)
@@ -163,8 +201,12 @@ export async function POST(req: Request) {
       });
 
     if (uploadError) {
-      throw new Error(`Could not stage PDF for Praktika helper: ${uploadError.message}`);
+      throw new Error(
+        `Could not stage PDF for Praktika helper: ${uploadError.message}`,
+      );
     }
+
+    await verifyStagedUploadExists(storagePath);
 
     const helperJob = await createPraktikaHelperJob({
       appUserId: appUserIdFromMode(mode),
@@ -184,9 +226,7 @@ export async function POST(req: Request) {
             "patient_communication[file][name]": fileName,
             "patient_communication[file][notes]":
               notes ||
-              `Report sent via Mediref for ${
-                draft.patient_name || "patient"
-              }.`,
+              `Report sent via Mediref for ${draft.patient_name || "patient"}.`,
             "patient_communication[file][modifiedDate]": formatPraktikaDateTime(),
           },
           file: {
@@ -200,8 +240,10 @@ export async function POST(req: Request) {
       },
     });
 
+    helperJobId = helperJob.id;
+
     const completedJob = await waitForPraktikaHelperJob(helperJob.id, {
-      timeoutMs: 120_000,
+      timeoutMs: 180_000,
       intervalMs: 2_000,
     });
 
@@ -267,8 +309,11 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("Upload report to Praktika failed:", error);
 
-    if (storagePath) {
-      await supabase.storage.from(HELPER_UPLOAD_BUCKET).remove([storagePath]).catch(() => null);
+    if (storagePath && !helperJobId) {
+      await supabase.storage
+        .from(HELPER_UPLOAD_BUCKET)
+        .remove([storagePath])
+        .catch(() => null);
     }
 
     return NextResponse.json(

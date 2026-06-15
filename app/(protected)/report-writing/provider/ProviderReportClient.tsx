@@ -536,6 +536,89 @@ export default function ProviderReportClient({
     );
   }
 
+  function editApprovedLetter(draft: Draft | null) {
+    if (!draft) return;
+
+    loadDraftIntoEditor(draft);
+    setSelectedApprovedDraft(null);
+    setActiveTab("drafts");
+    setSidebarView("drafts");
+
+    setSavedMessage(
+      "Approved letter opened for editing. Make changes, then save or approve again.",
+    );
+  }
+
+  async function updateExistingDraftFromEditor(options?: {
+    status?: string;
+    showToast?: boolean;
+  }) {
+    if (!selectedDraft) return null;
+    if (!validatePatientName()) return null;
+
+    const text = String(dictatedLetter || generatedReport || "").trim();
+
+    if (!text) {
+      alert("There is no letter text to save.");
+      return null;
+    }
+
+    setLoading(true);
+    setSavedMessage("");
+
+    try {
+      const response = await fetch("/api/report-writing/update-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draftId: selectedDraft.id,
+          editedText: text,
+          status: options?.status || selectedDraft.status,
+          patientName,
+          patientDob,
+          referrerName,
+          referrerAddress,
+          reportType:
+            inferDraftSourceType(selectedDraft) === "dictation"
+              ? "dictated_letter"
+              : reportType,
+          clinicalNotes,
+          typistInstructions,
+          learnFromEdits: false,
+        }),
+      });
+
+      const data = await readJsonSafely(response);
+
+      if (!data.success) {
+        alert(data.error || "Failed to update letter.");
+        return null;
+      }
+
+      setSelectedDraft(data.draft);
+
+      const message =
+        options?.status === "approved"
+          ? "Letter saved and approved."
+          : "Letter changes saved.";
+
+      setSavedMessage(message);
+
+      if (options?.showToast !== false) {
+        showSavedConfirmation(
+          options?.status === "approved" ? "Letter approved" : "Letter saved",
+          message,
+        );
+      }
+
+      await loadDrafts();
+
+      return data;
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function saveLetterAsDraft(options?: {
   text?: string;
   sourceType?: LetterSourceType;
@@ -1669,24 +1752,23 @@ export default function ProviderReportClient({
 
                     <div className="flex flex-wrap gap-3 border-t pt-4">
                       <button
-                        onClick={() =>
-                          saveLetterAsDraft({
-                            text: dictatedLetter || generatedReport,
-                            sourceType: inferDraftSourceType(selectedDraft),
-                          })
-                        }
+                        onClick={() => updateExistingDraftFromEditor()}
                         disabled={loading}
                         className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                       >
-                        Save Draft
+                        {selectedDraft.status === "approved" ? "Save Changes" : "Save Draft"}
                       </button>
 
                       <button
-                        onClick={() => approveCurrentDraft()}
+                        onClick={() =>
+                          updateExistingDraftFromEditor({ status: "approved" })
+                        }
                         disabled={loading}
                         className="rounded-xl bg-green-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                       >
-                        Approve Letter
+                        {selectedDraft.status === "approved"
+                          ? "Save and Keep Approved"
+                          : "Approve Letter"}
                       </button>
 
                       <button
@@ -1694,7 +1776,7 @@ export default function ProviderReportClient({
                         disabled={loading}
                         className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                       >
-                        Delete Draft
+                        {selectedDraft.status === "approved" ? "Delete Letter" : "Delete Draft"}
                       </button>
                     </div>
                   </div>
@@ -2013,13 +2095,23 @@ export default function ProviderReportClient({
                       upload, and send secure email correspondence.
                     </div>
 
-                    <button
-                      onClick={() => deleteDraft(selectedApprovedDraft)}
-                      disabled={loading}
-                      className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                    >
-                      Delete Letter
-                    </button>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        onClick={() => editApprovedLetter(selectedApprovedDraft)}
+                        disabled={loading}
+                        className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                      >
+                        Edit Letter
+                      </button>
+
+                      <button
+                        onClick={() => deleteDraft(selectedApprovedDraft)}
+                        disabled={loading}
+                        className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                      >
+                        Delete Letter
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-sm text-slate-500">
