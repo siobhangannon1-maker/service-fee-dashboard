@@ -213,6 +213,11 @@ async function pageHasVisiblePasswordInput(page: Page) {
 }
 
 async function pageHasMfaInput(page: Page) {
+  // If a password field is visible, MediRef is on the password-login screen.
+  // That page also contains the text "login with an emailed code", so do not
+  // misclassify it as an MFA/code screen.
+  if (await pageHasVisiblePasswordInput(page)) return false;
+
   const selectors = [
     'input[inputmode="numeric"]',
     'input[name*="code" i]',
@@ -225,8 +230,14 @@ async function pageHasMfaInput(page: Page) {
   ];
 
   for (const selector of selectors) {
-    const count = await page.locator(selector).count().catch(() => 0);
-    if (count > 0) return true;
+    const locator = page.locator(selector);
+    const count = await locator.count().catch(() => 0);
+
+    for (let i = 0; i < count; i += 1) {
+      const field = locator.nth(i);
+      const visible = await field.isVisible().catch(() => false);
+      if (visible) return true;
+    }
   }
 
   const bodyText = await page.locator("body").innerText().catch(() => "");
@@ -234,6 +245,12 @@ async function pageHasMfaInput(page: Page) {
 
   return (
     lower.includes("verification code") ||
+    lower.includes("enter code") ||
+    lower.includes("email code") ||
+    lower.includes("emailed code") ||
+    lower.includes("code from email") ||
+    lower.includes("6 digit") ||
+    lower.includes("six digit") ||
     lower.includes("multi-factor") ||
     lower.includes("multifactor") ||
     lower.includes("authentication code") ||
@@ -360,17 +377,22 @@ async function clickFirstVisible(page: Page, selectors: string[]) {
 }
 
 async function getVisibleEmailField(page: Page) {
+  // Deliberately avoid a broad input[type="text"] fallback here.
+  // On the MediRef emailed-code screen, the code boxes can be plain text inputs;
+  // treating those as email fields causes the helper to repeatedly type the
+  // email address into the code screen and click Continue forever.
   const locator = page.locator(
     [
       'input[type="email"]',
       'input[name*="email" i]',
       'input[id*="email" i]',
       'input[placeholder*="email" i]',
+      'input[aria-label*="email" i]',
       'input[autocomplete="email"]',
       'input[name*="username" i]',
       'input[id*="username" i]',
       'input[placeholder*="username" i]',
-      'input[type="text"]',
+      'input[aria-label*="username" i]',
     ].join(", "),
   );
 
@@ -407,6 +429,34 @@ async function getVisiblePasswordField(page: Page) {
   return null;
 }
 
+async function clickUsePasswordOptionIfVisible(page: Page) {
+  const clicked = await clickFirstVisible(page, [
+    'button:has-text("Use password")',
+    'button:has-text("use password")',
+    'button:has-text("Enter password")',
+    'button:has-text("enter password")',
+    'button:has-text("Password")',
+    'a:has-text("Use password")',
+    'a:has-text("use password")',
+    'a:has-text("Enter password")',
+    'a:has-text("enter password")',
+    'a:has-text("Password")',
+    'button:has-text("Login with password")',
+    'button:has-text("login with password")',
+    'a:has-text("Login with password")',
+    'a:has-text("login with password")',
+    '[role="button"]:has-text("Use password")',
+    '[role="button"]:has-text("Enter password")',
+  ]);
+
+  if (clicked) {
+    console.log("Clicked MediRef Use/Enter password option.");
+    await page.waitForTimeout(2000);
+  }
+
+  return clicked;
+}
+
 async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
   const session = await getSession();
 
@@ -434,13 +484,24 @@ async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
     await updateSession({
       status: "waiting_for_credentials",
       message:
-        "Practice MediRef credentials are missing. Enter credentials in MediRef tools or configure MEDIREF_EMAIL and MEDIREF_PASSWORD on the Mac Mini.",
+        "Practice MediRef credentials are missing. Configure MEDIREF_EMAIL and MEDIREF_PASSWORD on Render, or enter credentials in MediRef tools.",
       current_url: await safePageUrl(page),
       refresh_requested_at: null,
     });
 
     return false;
   }
+
+  // If MediRef has chosen the emailed-code path, stop here and let the normal
+  // MFA handler either submit the stored code or set the session to waiting_for_mfa.
+  // Without this guard the broad login flow can keep clicking Continue forever.
+  if (await pageHasMfaInput(page)) {
+    return await submitMfaCodeIfAvailable(page);
+  }
+
+  // Some MediRef screens show an email-code option first. Prefer password login
+  // whenever the option is available before trying to fill any field.
+  await clickUsePasswordOptionIfVisible(page);
 
   const passwordFieldBeforeEmail = await getVisiblePasswordField(page);
 
@@ -450,22 +511,22 @@ async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
     await passwordFieldBeforeEmail.fill(password);
 
     await clickFirstVisible(page, [
-      'button[type="submit"]',
-      'input[type="submit"]',
+      'button:has-text("Sign in")',
       'button:has-text("Login")',
       'button:has-text("Log in")',
-      'button:has-text("Sign in")',
+      'button[type="submit"]',
+      'input[type="submit"]',
       'button:has-text("Continue")',
     ]);
 
     await updateSession({
       status: "refreshing",
       message:
-        "Practice MediRef password was submitted. Checking whether verification is required.",
+        "Practice MediRef password was submitted. Waiting for MediRef to finish signing in or request verification.",
       current_url: await safePageUrl(page),
     });
 
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(7000);
     return true;
   }
 
@@ -474,7 +535,7 @@ async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
   if (emailField) {
     const currentValue = await emailField.inputValue().catch(() => "");
 
-    if (!currentValue.trim()) {
+    if (currentValue.trim().toLowerCase() !== email.trim().toLowerCase()) {
       console.log("Entering MediRef practice email.");
       await emailField.fill(email);
       await page.waitForTimeout(800);
@@ -492,28 +553,18 @@ async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
     await updateSession({
       status: "refreshing",
       message:
-        "Practice MediRef email was submitted. Waiting for password option.",
+        "Practice MediRef email was submitted. Waiting for password or verification option.",
       current_url: await safePageUrl(page),
     });
 
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(3000);
   }
 
-  const clickedUsePassword = await clickFirstVisible(page, [
-    'button:has-text("Use password")',
-    'button:has-text("use password")',
-    'a:has-text("Use password")',
-    'a:has-text("use password")',
-    'button:has-text("Login with password")',
-    'button:has-text("login with password")',
-    'a:has-text("Login with password")',
-    'a:has-text("login with password")',
-  ]);
-
-  if (clickedUsePassword) {
-    console.log("Clicked MediRef Use password.");
-    await page.waitForTimeout(2000);
+  if (await pageHasMfaInput(page)) {
+    return await submitMfaCodeIfAvailable(page);
   }
+
+  await clickUsePasswordOptionIfVisible(page);
 
   const passwordField = await getVisiblePasswordField(page);
 
@@ -521,7 +572,7 @@ async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
     await updateSession({
       status: "refreshing",
       message:
-        "Practice MediRef email was entered. Waiting for the password field to appear.",
+        "Practice MediRef email was entered. Waiting for the password field or verification code screen to appear.",
       current_url: await safePageUrl(page),
     });
 
@@ -533,25 +584,24 @@ async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
   await passwordField.fill(password);
 
   await clickFirstVisible(page, [
-    'button[type="submit"]',
-    'input[type="submit"]',
+    'button:has-text("Sign in")',
     'button:has-text("Login")',
     'button:has-text("Log in")',
-    'button:has-text("Sign in")',
+    'button[type="submit"]',
+    'input[type="submit"]',
     'button:has-text("Continue")',
   ]);
 
   await updateSession({
     status: "refreshing",
     message:
-      "Practice MediRef password was submitted. Checking whether verification is required.",
+      "Practice MediRef password was submitted. Waiting for MediRef to finish signing in or request verification.",
     current_url: await safePageUrl(page),
   });
 
-  await page.waitForTimeout(4000);
+  await page.waitForTimeout(7000);
   return true;
 }
-
 async function submitMfaCodeIfAvailable(page: Page) {
   if (!(await pageHasMfaInput(page))) return false;
 
