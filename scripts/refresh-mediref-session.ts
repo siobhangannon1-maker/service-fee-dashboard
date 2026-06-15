@@ -430,28 +430,35 @@ async function getVisiblePasswordField(page: Page) {
 }
 
 async function clickUsePasswordOptionIfVisible(page: Page) {
+  // MediRef's second screen usually says:
+  // "Enter verification code or login with password".
+  // We deliberately click the password link before treating the page as an
+  // emailed-code/MFA screen, otherwise the helper can wait for a code instead
+  // of using the configured practice password.
   const clicked = await clickFirstVisible(page, [
-    'button:has-text("Use password")',
-    'button:has-text("use password")',
-    'button:has-text("Enter password")',
-    'button:has-text("enter password")',
-    'button:has-text("Password")',
-    'a:has-text("Use password")',
-    'a:has-text("use password")',
-    'a:has-text("Enter password")',
-    'a:has-text("enter password")',
-    'a:has-text("Password")',
-    'button:has-text("Login with password")',
-    'button:has-text("login with password")',
-    'a:has-text("Login with password")',
     'a:has-text("login with password")',
+    'button:has-text("login with password")',
+    '[role="button"]:has-text("login with password")',
+    'a:has-text("Login with password")',
+    'button:has-text("Login with password")',
+    '[role="button"]:has-text("Login with password")',
+    'a:has-text("Use password")',
+    'button:has-text("Use password")',
     '[role="button"]:has-text("Use password")',
+    'a:has-text("use password")',
+    'button:has-text("use password")',
+    '[role="button"]:has-text("use password")',
+    'a:has-text("Enter password")',
+    'button:has-text("Enter password")',
     '[role="button"]:has-text("Enter password")',
+    'a:has-text("enter password")',
+    'button:has-text("enter password")',
+    '[role="button"]:has-text("enter password")',
   ]);
 
   if (clicked) {
-    console.log("Clicked MediRef Use/Enter password option.");
-    await page.waitForTimeout(2000);
+    console.log("Clicked MediRef login-with-password option.");
+    await page.waitForTimeout(2500);
   }
 
   return clicked;
@@ -492,15 +499,9 @@ async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
     return false;
   }
 
-  // If MediRef has chosen the emailed-code path, stop here and let the normal
-  // MFA handler either submit the stored code or set the session to waiting_for_mfa.
-  // Without this guard the broad login flow can keep clicking Continue forever.
-  if (await pageHasMfaInput(page)) {
-    return await submitMfaCodeIfAvailable(page);
-  }
-
-  // Some MediRef screens show an email-code option first. Prefer password login
-  // whenever the option is available before trying to fill any field.
+  // Highest priority: if MediRef is showing the emailed-code screen with a
+  // "login with password" link, click that link first. Do NOT classify this as
+  // MFA until after we have tried the password-link path.
   await clickUsePasswordOptionIfVisible(page);
 
   const passwordFieldBeforeEmail = await getVisiblePasswordField(page);
@@ -553,53 +554,59 @@ async function fillPracticeLoginIfCredentialsAvailable(page: Page) {
     await updateSession({
       status: "refreshing",
       message:
-        "Practice MediRef email was submitted. Waiting for password or verification option.",
+        "Practice MediRef email was submitted. Waiting for password option, password field, or verification screen.",
       current_url: await safePageUrl(page),
     });
 
     await page.waitForTimeout(3000);
   }
 
+  // After submitting email, MediRef may show the code page. Prefer the password
+  // link once more before treating it as a true MFA/code requirement.
+  const clickedPasswordOption = await clickUsePasswordOptionIfVisible(page);
+
+  const passwordField = await getVisiblePasswordField(page);
+
+  if (passwordField) {
+    console.log("Entering MediRef practice password.");
+
+    await passwordField.fill(password);
+
+    await clickFirstVisible(page, [
+      'button:has-text("Sign in")',
+      'button:has-text("Login")',
+      'button:has-text("Log in")',
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'button:has-text("Continue")',
+    ]);
+
+    await updateSession({
+      status: "refreshing",
+      message:
+        "Practice MediRef password was submitted. Waiting for MediRef to finish signing in or request verification.",
+      current_url: await safePageUrl(page),
+    });
+
+    await page.waitForTimeout(7000);
+    return true;
+  }
+
+  // Only now treat the page as an emailed-code/MFA screen. This is intentionally
+  // after both password-link attempts, because MediRef's code screen contains
+  // text like "verification code" even when password login is available.
   if (await pageHasMfaInput(page)) {
     return await submitMfaCodeIfAvailable(page);
   }
 
-  await clickUsePasswordOptionIfVisible(page);
-
-  const passwordField = await getVisiblePasswordField(page);
-
-  if (!passwordField) {
-    await updateSession({
-      status: "refreshing",
-      message:
-        "Practice MediRef email was entered. Waiting for the password field or verification code screen to appear.",
-      current_url: await safePageUrl(page),
-    });
-
-    return true;
-  }
-
-  console.log("Entering MediRef practice password.");
-
-  await passwordField.fill(password);
-
-  await clickFirstVisible(page, [
-    'button:has-text("Sign in")',
-    'button:has-text("Login")',
-    'button:has-text("Log in")',
-    'button[type="submit"]',
-    'input[type="submit"]',
-    'button:has-text("Continue")',
-  ]);
-
   await updateSession({
     status: "refreshing",
-    message:
-      "Practice MediRef password was submitted. Waiting for MediRef to finish signing in or request verification.",
+    message: clickedPasswordOption
+      ? "MediRef password option was clicked. Waiting for the password field to appear."
+      : "Practice MediRef email was entered. Waiting for the password option, password field, or verification code screen to appear.",
     current_url: await safePageUrl(page),
   });
 
-  await page.waitForTimeout(7000);
   return true;
 }
 async function submitMfaCodeIfAvailable(page: Page) {
