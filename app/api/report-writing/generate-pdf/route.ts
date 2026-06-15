@@ -103,7 +103,7 @@ function cleanLetterText(text: string) {
     .replace(/^Signature:.*$/gim, "")
     .replace(/^Dr .*$/gim, "")
     .replace(/^Specialist .*$/gim, "")
-    .trim();
+    .trimEnd();
 }
 
 type TextRun = {
@@ -425,8 +425,44 @@ function getSafePatientName(patientName: string | null | undefined) {
     : "Patient";
 }
 
-function getFileDate() {
-  return new Date().toISOString().slice(0, 10);
+function formatPdfFileDate(value: string) {
+  const cleanValue = String(value || "").trim();
+
+  if (!cleanValue) {
+    const today = new Date();
+
+    return [
+      String(today.getDate()).padStart(2, "0"),
+      String(today.getMonth() + 1).padStart(2, "0"),
+      today.getFullYear(),
+    ].join(".");
+  }
+
+  const date = new Date(`${cleanValue}T00:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return cleanValue.replace(/\//g, ".");
+  }
+
+  return [
+    String(date.getDate()).padStart(2, "0"),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    date.getFullYear(),
+  ].join(".");
+}
+
+function getSafeFilePart(value: string | null | undefined, fallback: string) {
+  return String(value || fallback)
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function formatReportTypeForFileName(value: string | null | undefined) {
+  return String(value || "Report")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .trim();
 }
 
 async function downloadStorageFile(path: string) {
@@ -1083,7 +1119,33 @@ export async function POST(req: Request) {
 
     const paragraphs = letterText.split(/\n+/);
 
-    for (let paragraphIndex = 0; paragraphIndex < paragraphs.length; paragraphIndex++) {
+    const signatureBlockHeight = 130;
+
+    function estimateRichParagraphHeight(
+      text: string,
+      options?: { bold?: boolean },
+    ) {
+      const plainText = stripMarkdownMarkers(text);
+      const wrapped = wrapText(plainText, maxChars);
+
+      return Math.max(wrapped.length, 1) * lineHeight +
+        (options?.bold ? 4 : 8);
+    }
+
+    const lastTextParagraphIndex =
+      paragraphs
+        .map((paragraph, index) => ({
+          paragraph: paragraph.trim(),
+          index,
+        }))
+        .filter(({ paragraph }) => paragraph && !getInlineImageMarker(paragraph))
+        .at(-1)?.index ?? -1;
+
+    for (
+      let paragraphIndex = 0;
+      paragraphIndex < paragraphs.length;
+      paragraphIndex++
+    ) {
       const cleanParagraph = paragraphs[paragraphIndex].trim();
 
       if (!cleanParagraph) continue;
@@ -1118,12 +1180,20 @@ export async function POST(req: Request) {
       const isHeading =
         cleanParagraph.endsWith(":") && cleanParagraph.length < 60;
 
+      if (paragraphIndex === lastTextParagraphIndex) {
+        const finalParagraphHeight = estimateRichParagraphHeight(cleanParagraph, {
+          bold: isHeading,
+        });
+
+        if (y - finalParagraphHeight < bottomLimit + signatureBlockHeight) {
+          y = newPage();
+        }
+      }
+
       drawRichParagraph(cleanParagraph, { bold: isHeading });
 
       y -= isHeading ? 4 : 8;
     }
-
-    const signatureBlockHeight = 130;
 
     if (y < bottomLimit + signatureBlockHeight) {
       y = newPage();
@@ -1175,7 +1245,9 @@ export async function POST(req: Request) {
       y -= lineHeight;
     }
 
-    const unusedImages = images.filter((image) => !usedInlineImageIds.has(image.id));
+    const unusedImages = images.filter(
+      (image) => !usedInlineImageIds.has(image.id),
+    );
 
     if (unusedImages.length > 0) {
       y -= 12;
@@ -1191,9 +1263,13 @@ export async function POST(req: Request) {
 
     const pdfBytes = await pdfDoc.save();
 
-    const safePatientName = getSafePatientName(draft.patient_name);
-    const fileDate = getFileDate();
-    const fileName = `${fileDate} ${safePatientName} Letter.pdf`;
+    const fileDate = formatPdfFileDate(extractPdfDateText(rawLetterText));
+    const patientFileName = getSafeFilePart(draft.patient_name, "Patient");
+    const reportTypeFileName = getSafeFilePart(
+      formatReportTypeForFileName(draft.report_type),
+      "Report",
+    );
+    const fileName = `${fileDate} ${patientFileName} ${reportTypeFileName}.pdf`;
 
     return new NextResponse(Buffer.from(pdfBytes), {
       headers: {

@@ -2347,6 +2347,38 @@ export default function TypistPage() {
     }
   }
 
+  async function hydrateQueueInBackground(
+    providerId: string,
+    status: QueueStatusTab = queueStatusTab,
+  ) {
+    if (!providerId) return;
+
+    try {
+      const response = await fetch("/api/report-writing/hydrate-letter-queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerId,
+          status,
+          limit: 50,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success) {
+        console.warn("Queue background hydration failed:", data);
+        return;
+      }
+
+      if (data.enqueued > 0) {
+        console.log(`Queued ${data.enqueued} Praktika queue hydration job(s).`);
+      }
+    } catch (error) {
+      console.warn("Queue background hydration request failed:", error);
+    }
+  }
+
   async function loadProviders() {
     const response = await fetch("/api/report-writing/get-providers");
     const data = await response.json();
@@ -2434,6 +2466,7 @@ export default function TypistPage() {
 
     if (data.success) {
       setQueue(data.queue);
+      hydrateQueueInBackground(providerId, status);
     }
   }
 
@@ -2867,7 +2900,10 @@ export default function TypistPage() {
     setLetterText("");
     setGeneratedAiLetterText("");
     setPdfCcText("");
-    setPdfLetterDate(new Date().toISOString().slice(0, 10));
+    setPdfLetterDate(
+      item.appointment_time?.slice(0, 10) ||
+        new Date().toISOString().slice(0, 10),
+    );
     setPraktikaCandidates([]);
     setSelectedPraktikaPatientId(linkedPraktikaPatientId);
 
@@ -3356,7 +3392,7 @@ export default function TypistPage() {
 
       setPraktikaNeedsReconnect(false);
       setPraktikaPreSyncMessage(
-        `Queue synced. ${data.queued || 0} item(s) found. Open a queue item to load its latest Praktika referral and same-day clinical notes.`,
+        `Queue synced. ${data.queued || 0} item(s) found. Background hydration has been queued where needed, so referral details and same-day clinical notes can load before you click each item.`,
       );
 
       await loadQueue(selectedProviderId, queueStatusTab);
