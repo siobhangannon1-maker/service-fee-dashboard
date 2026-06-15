@@ -1,14 +1,14 @@
-FROM mcr.microsoft.com/playwright:v1.49.1-jammy
+FROM mcr.microsoft.com/playwright:v1.60.0-jammy
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+
+RUN npm install
 
 COPY . .
 
 ENV NODE_ENV=production
-ENV PLAYWRIGHT_STORAGE_DIR=/var/data/playwright-storage
 
 RUN mkdir -p /var/data/playwright-storage
 
