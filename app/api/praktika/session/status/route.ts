@@ -26,7 +26,10 @@ export async function GET(request: Request) {
     let status = session.status;
     let message = session.message;
 
-    if (status === "refreshing" && hasCookie) {
+    const currentUrl = session.current_url || "";
+const isLogoutUrl = currentUrl.toLowerCase().includes("/logout");
+
+if (status === "refreshing" && hasCookie && !isLogoutUrl) {
   status = "connected";
   message = "Praktika cloud helper is connected. Helper jobs can be attempted.";
 
