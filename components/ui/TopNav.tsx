@@ -306,6 +306,11 @@ const navGroups: NavGroup[] = [
         label: "Letter Universal Rules",
         description: "Create and edit universal rules for AI letter writing",
       },
+      {
+        href: "/automation",
+        label: "Praktika and Mediref cloud connection",
+        description: "Manage Praktika and Mediref cloud connection",
+      },
     ],
   },
   {

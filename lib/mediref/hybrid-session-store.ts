@@ -228,22 +228,12 @@ export async function saveMedirefCookie({
 export async function markMedirefRefreshRequested(
   mode: MedirefSessionMode = { scope: "practice" },
 ) {
-  const current = await getMedirefSession(mode);
-
-  if (
-    current.status === "refresh_requested" ||
-    current.status === "refreshing" ||
-    current.status === "waiting_for_mfa"
-  ) {
-    return;
-  }
-
   await updateMedirefSession(mode, {
     status: "refresh_requested",
     message:
       mode.scope === "practice"
-        ? "Practice MediRef refresh requested. Waiting for local helper machine."
-        : "Your MediRef refresh was requested. Waiting for local helper machine.",
+        ? "Practice MediRef refresh requested. Waiting for cloud helper."
+        : "Your MediRef refresh was requested. Waiting for cloud helper.",
     refresh_requested_at: new Date().toISOString(),
   });
 }
