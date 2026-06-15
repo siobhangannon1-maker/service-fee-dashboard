@@ -11,7 +11,9 @@
     "import:obsidian": "tsx scripts/import-obsidian.ts",
     "refresh:praktika-session": "tsx scripts/refresh-praktika-session.ts",
     "watch:mediref-refresh": "tsx scripts/watch-mediref-refresh.ts",
-    "refresh:mediref-session": "tsx scripts/refresh-mediref-session.ts"
+    "refresh:mediref-session": "tsx scripts/refresh-mediref-session.ts",
+    "cloud:praktika-worker": "WORKER_TYPE=praktika WORKER_ID=praktika-worker-1 tsx scripts/cloud-automation-worker.ts",
+    "cloud:mediref-worker": "WORKER_TYPE=mediref WORKER_ID=mediref-worker-1 tsx scripts/cloud-automation-worker.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.93.0",
@@ -47,7 +49,7 @@
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "^5.7.284",
-    "playwright": "^1.59.1",
+    "playwright": "^1.60.0",
     "qpdf": "^0.1.0-prealpha.1",
     "react": "19.0.0",
     "react-dom": "19.0.0",
@@ -72,7 +74,7 @@
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
     "tailwindcss": "^4.1.11",
-    "tsx": "^4.21.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.4.0"
   }
 }
