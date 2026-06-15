@@ -178,6 +178,7 @@ async function markPraktikaSessionRefreshing(sessionId: string, reason: string) 
     .from('praktika_sessions')
     .update({
       status: 'refreshing',
+      refresh_requested_at: null,
       message:
         reason === 'pending_job'
           ? 'Cloud Praktika helper is starting to process queued jobs.'
