@@ -203,10 +203,19 @@ async function safePageUrl(page: Page) {
   }
 }
 
+function pageIsLogoutUrl(page: Page) {
+  try {
+    return page.url().toLowerCase().includes("/logout");
+  } catch {
+    return false;
+  }
+}
+
 function looksLikeLoggedOutText(text: string) {
   const lower = text.toLowerCase();
 
   return (
+    lower.includes("logout") ||
     lower.includes("login failed") ||
     lower.includes("logged-out") ||
     lower.includes("logged out") ||
@@ -300,7 +309,11 @@ async function isBrowserUiLoggedIn(page: Page) {
 
   const url = page.url().toLowerCase();
 
-  if (url.includes("/login") || url.includes("/v2/login")) {
+  if (
+    url.includes("/login") ||
+    url.includes("/v2/login") ||
+    url.includes("/logout")
+  ) {
     return false;
   }
 
@@ -496,6 +509,7 @@ async function performRealBrowserActivity(page: Page) {
   if (
     currentUrl.includes("/login") ||
     currentUrl.includes("/v2/login") ||
+    currentUrl.includes("/logout") ||
     (await pageHasVisiblePasswordInput(page))
   ) {
     return;
@@ -596,6 +610,24 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           });
         }
       } else {
+        if (pageIsLogoutUrl(page)) {
+          await updateSession({
+            status: "waiting_for_credentials",
+            message:
+              "Praktika has logged out. Enter your Praktika username and password to reconnect.",
+            current_url: await safePageUrl(page),
+            refresh_requested_at: null,
+          });
+
+          await page.goto(`${PRAKTIKA_BASE_URL}/v2/login`, {
+            waitUntil: "domcontentloaded",
+            timeout: 90_000,
+          });
+
+          await page.waitForTimeout(2500);
+          continue;
+        }
+
         await updateSession({
           status: "refreshing",
           message: "Praktika helper is checking whether the browser is still logged in.",
