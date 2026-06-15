@@ -78,12 +78,14 @@ function normaliseDateForHtmlDateInput(value: unknown) {
 
   if (!clean) return "";
 
-  // Already YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
-    return clean;
+  // HTML <input type="date"> requires YYYY-MM-DD exactly.
+  // It will reject Australian display format such as DD/MM/YYYY.
+  const isoMatch = clean.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
   }
 
-  // DD/MM/YYYY or DD-MM-YYYY
+  // DD/MM/YYYY or DD-MM-YYYY.
   const auMatch = clean.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
 
   if (auMatch) {
@@ -101,6 +103,15 @@ function normaliseDateForHtmlDateInput(value: unknown) {
   }
 
   return clean;
+}
+
+function formatDateForHumanTextInput(value: unknown) {
+  const iso = normaliseDateForHtmlDateInput(value);
+  const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) return String(value || "").trim();
+
+  return `${match[3]}/${match[2]}/${match[1]}`;
 }
 
 function sleep(ms: number) {
@@ -919,6 +930,65 @@ async function debugRecipientResults(page: Page) {
   console.log("MediRef recipient/search page text:", results.slice(0, 4000));
 }
 
+async function fillPatientDobField(page: Page, rawDob: unknown) {
+  const htmlDateValue = normaliseDateForHtmlDateInput(rawDob);
+  const humanDateValue = formatDateForHumanTextInput(rawDob);
+
+  if (!htmlDateValue && !humanDateValue) return false;
+
+  const selectors = [
+    'input[data-testid="patient-dob-input"]',
+    'input[type="date"][name*="dob" i]',
+    'input[type="date"][id*="dob" i]',
+    'input[type="date"][aria-label*="dob" i]',
+    'input[type="date"][placeholder*="dob" i]',
+    'input[type="date"][name*="birth" i]',
+    'input[type="date"][id*="birth" i]',
+    'input[type="date"][aria-label*="birth" i]',
+    'input[type="date"][placeholder*="birth" i]',
+    'input[type="date"]',
+    'input[name*="dob" i]',
+    'input[id*="dob" i]',
+    'input[placeholder*="dob" i]',
+    'input[aria-label*="dob" i]',
+    'input[name*="birth" i]',
+    'input[id*="birth" i]',
+    'input[placeholder*="birth" i]',
+    'input[aria-label*="birth" i]',
+  ].join(", ");
+
+  const locator = page.locator(selectors);
+  const count = await locator.count().catch(() => 0);
+
+  for (let i = 0; i < count; i += 1) {
+    const field = locator.nth(i);
+    const visible = await field.isVisible().catch(() => false);
+    if (!visible) continue;
+
+    const type = String((await field.getAttribute("type").catch(() => "")) || "").toLowerCase();
+    const valueToFill = type === "date" ? htmlDateValue : humanDateValue || htmlDateValue;
+
+    if (!valueToFill) continue;
+
+    await field.fill(valueToFill);
+    return true;
+  }
+
+  const labelledDob = page.getByLabel(/date of birth|dob/i).first();
+
+  if ((await labelledDob.count().catch(() => 0)) > 0) {
+    const type = String((await labelledDob.getAttribute("type").catch(() => "")) || "").toLowerCase();
+    const valueToFill = type === "date" ? htmlDateValue : humanDateValue || htmlDateValue;
+
+    if (valueToFill) {
+      await labelledDob.fill(valueToFill);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function fillFirstVisibleTextFieldByHints(
   page: Page,
   hints: string[],
@@ -983,14 +1053,10 @@ async function fillComposePatientDetails(page: Page, request: any) {
   }
 
   if (dob) {
-    const dobFilled = await fillFirstVisibleTextFieldByHints(
-      page,
-      ["dob", "birth", "date"],
-      dob,
-    );
+    const dobFilled = await fillPatientDobField(page, patient.dob || patient.dateOfBirth);
 
     if (!dobFilled) {
-      await page.getByLabel(/date of birth|dob/i).fill(dob).catch(() => null);
+      console.warn("Could not find a visible MediRef patient DOB field.");
     }
   }
 
