@@ -1117,7 +1117,7 @@ export async function POST(req: Request) {
     const pdfCcLine = formatPdfCcLine(extractPdfCcText(rawLetterText));
     const letterText = cleanLetterText(rawLetterText);
 
-    const paragraphs = letterText.split(/\n+/);
+    const paragraphs = letterText.split(/\n/);
 
     const signatureBlockHeight = 130;
 
@@ -1146,9 +1146,18 @@ export async function POST(req: Request) {
       paragraphIndex < paragraphs.length;
       paragraphIndex++
     ) {
-      const cleanParagraph = paragraphs[paragraphIndex].trim();
+      const rawParagraph = paragraphs[paragraphIndex];
+      const cleanParagraph = rawParagraph.trim();
 
-      if (!cleanParagraph) continue;
+      if (!cleanParagraph) {
+        y -= lineHeight;
+
+        if (y < bottomLimit) {
+          y = newPage();
+        }
+
+        continue;
+      }
 
       const inlineImageNumber = getInlineImageMarker(cleanParagraph);
 

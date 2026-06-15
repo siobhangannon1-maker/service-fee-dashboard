@@ -1148,6 +1148,7 @@ export default function TypistPage() {
   const [imageDraftCreating, setImageDraftCreating] = useState(false);
   const [imageDraftError, setImageDraftError] = useState<string | null>(null);
   const autoImageDraftQueueIdRef = useRef<string | null>(null);
+  const queueSelectionTokenRef = useRef(0);
 
   const selectedProviderRequiresApproval =
     selectedProvider?.typist_letters_require_approval !== false;
@@ -2351,7 +2352,7 @@ export default function TypistPage() {
     providerId: string,
     status: QueueStatusTab = queueStatusTab,
   ) {
-    if (!providerId) return;
+    if (!providerId) return null;
 
     try {
       const response = await fetch("/api/report-writing/hydrate-letter-queue", {
@@ -2368,14 +2369,17 @@ export default function TypistPage() {
 
       if (!response.ok || !data.success) {
         console.warn("Queue background hydration failed:", data);
-        return;
+        return data;
       }
 
       if (data.enqueued > 0) {
         console.log(`Queued ${data.enqueued} Praktika queue hydration job(s).`);
       }
+
+      return data;
     } catch (error) {
       console.warn("Queue background hydration request failed:", error);
+      return null;
     }
   }
 
@@ -2466,7 +2470,14 @@ export default function TypistPage() {
 
     if (data.success) {
       setQueue(data.queue);
-      hydrateQueueInBackground(providerId, status);
+
+      const hydrationResult = await hydrateQueueInBackground(providerId, status);
+
+      if (hydrationResult?.enqueued > 0) {
+        window.setTimeout(() => {
+          loadQueue(providerId, status);
+        }, 15000);
+      }
     }
   }
 
@@ -2630,6 +2641,7 @@ export default function TypistPage() {
   }, [selectedDraft?.id, patientName, patientDob]);
 
   function clearForm() {
+    queueSelectionTokenRef.current += 1;
     setSelectedDraft(null);
     setActiveQueueItemId(null);
     setPatientFirstName("");
@@ -2669,6 +2681,7 @@ export default function TypistPage() {
   }
 
   function selectDraft(draft: Draft) {
+    queueSelectionTokenRef.current += 1;
     const splitName = splitPatientName(draft.patient_name);
 
     setSelectedDraft(draft);
@@ -2855,6 +2868,12 @@ export default function TypistPage() {
   }
 
   async function startLetterFromQueue(item: QueueItem) {
+    const selectionToken = queueSelectionTokenRef.current + 1;
+    queueSelectionTokenRef.current = selectionToken;
+
+    const isCurrentQueueSelection = () =>
+      queueSelectionTokenRef.current === selectionToken;
+
     setAutoGenerateStatus("loading_notes");
     setSaveStatus("idle");
     setLastSavedAt(null);
@@ -2882,19 +2901,30 @@ export default function TypistPage() {
 
     const inferredReportType = inferReportTypeFromQueueItem(item, reportTypes);
 
-    // Important: source_clinical_notes on older/lightweight queue rows is often
-    // just appointment notes. Do not treat it as true same-day clinical notes.
     const appointmentNotes = getQueueAppointmentNotes(item);
+    const cachedClinicalNotes = getQueueSyncedClinicalNotes(item);
+    const cachedReferrerName = getQueueReferrerName(item);
+    const cachedReferrerAddress = getQueueReferrerAddress(item);
+    const latestReferral = asPlainObject(raw.latest_referral || raw.latestReferral);
+    const latestReferralForState =
+      Object.keys(latestReferral).length > 0
+        ? (latestReferral as unknown as LatestPraktikaReferral)
+        : null;
 
-    // Do not trust stale referrer values written by earlier fallback experiments.
-    // Those values could be the treating provider / Focus Dental Specialists.
-    // Start blank and let the live Praktika latest-referral lookup fill this.
+    const hasCachedReferrer = Boolean(
+      cachedReferrerName.trim() && cachedReferrerAddress.trim(),
+    );
+    const hasCachedClinicalNotes = Boolean(cachedClinicalNotes.trim());
+
     setPatientFirstName(firstName);
     setPatientLastName(lastName);
     setPatientDob(dob);
     setPatientGender(item.patient_gender || "neutral");
-    setReferrerName("");
-    setReferrerAddress("");
+    setReferrerName(cachedReferrerName);
+    setReferrerAddress(cachedReferrerAddress);
+    setLatestPraktikaReferral(latestReferralForState);
+    setReferralAutoFillError("");
+    setReferralAutoFillStatus(hasCachedReferrer ? "found" : "idle");
     setReportType(inferredReportType);
     setPreferredExampleId("");
     setLetterText("");
@@ -2907,7 +2937,31 @@ export default function TypistPage() {
     setPraktikaCandidates([]);
     setSelectedPraktikaPatientId(linkedPraktikaPatientId);
 
-    if (linkedPraktikaPatientId) {
+    // Mark the row started without forcing a live referral/notes reload.
+    if (item.status !== "completed") {
+      void fetch("/api/report-writing/letter-queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          queueId: item.id,
+          status: "started",
+        }),
+      }).catch((error) => {
+        console.warn("Could not mark queue item as started:", error);
+      });
+
+      setQueue((current) =>
+        current.map((queueItem) =>
+          queueItem.id === item.id
+            ? { ...queueItem, status: "started" }
+            : queueItem,
+        ),
+      );
+    }
+
+    if (hasCachedReferrer) {
+      setReferralAutoFillStatus("found");
+    } else if (linkedPraktikaPatientId) {
       void autoFillReferrerFromLatestPraktikaReferral(
         linkedPraktikaPatientId,
         item.id,
@@ -2918,6 +2972,20 @@ export default function TypistPage() {
         "No Praktika patient ID is linked to this queue item.",
       );
       setReferralAutoFillStatus("not_found");
+    }
+
+    if (hasCachedClinicalNotes) {
+      const combinedCachedClinicalNotes = [
+        appointmentNotes,
+        appointmentNotes ? "Same-day Praktika clinical notes:" : "",
+        cachedClinicalNotes,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      setClinicalNotes(combinedCachedClinicalNotes || cachedClinicalNotes);
+      setAutoGenerateStatus("ready");
+      return;
     }
 
     const initialClinicalNotes = [
@@ -2941,6 +3009,8 @@ export default function TypistPage() {
           appointmentId,
         });
 
+        if (!isCurrentQueueSelection()) return;
+
         sameDayClinicalNotes = cleanClinicalNoteText(sameDayClinicalNotes);
 
         if (sameDayClinicalNotes.trim()) {
@@ -2957,6 +3027,8 @@ export default function TypistPage() {
             }),
           });
 
+          if (!isCurrentQueueSelection()) return;
+
           setQueue((current) =>
             current.map((queueItem) => {
               if (queueItem.id !== item.id) return queueItem;
@@ -2964,6 +3036,7 @@ export default function TypistPage() {
               return {
                 ...queueItem,
                 status: item.status === "completed" ? "completed" : "started",
+                source_clinical_notes: sameDayClinicalNotes,
                 raw_json: {
                   ...(queueItem.raw_json || {}),
                   cached_clinical_notes: sameDayClinicalNotes,
@@ -2975,6 +3048,8 @@ export default function TypistPage() {
           );
         }
       } catch (error) {
+        if (!isCurrentQueueSelection()) return;
+
         console.error("Failed to pull Praktika clinical notes:", error);
 
         const fallbackCachedNotes = cleanClinicalNoteText(
@@ -3012,6 +3087,8 @@ export default function TypistPage() {
         return;
       }
     }
+
+    if (!isCurrentQueueSelection()) return;
 
     const combinedClinicalNotes = [
       appointmentNotes,
