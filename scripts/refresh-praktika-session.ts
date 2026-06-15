@@ -6,16 +6,27 @@ import { createClient } from "@supabase/supabase-js";
 import { processOnePraktikaHelperJob } from "./praktika-helper-job-processor";
 
 dotenv.config({ path: ".env.local" });
+dotenv.config();
 
 const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
-const PROFILE_ROOT = path.join(process.cwd(), "praktika-browser-profiles");
+
+const PLAYWRIGHT_STORAGE_DIR =
+  process.env.PLAYWRIGHT_STORAGE_DIR ||
+  path.join(process.cwd(), "playwright-storage");
+
+const PROFILE_ROOT = path.join(
+  PLAYWRIGHT_STORAGE_DIR,
+  "praktika-browser-profiles",
+);
 
 const HEADLESS =
   String(process.env.PRAKTIKA_HELPER_HEADLESS ?? "false").toLowerCase() !==
   "false";
-  
-  console.log("PRAKTIKA_HELPER_HEADLESS =", process.env.PRAKTIKA_HELPER_HEADLESS);
+
+console.log("PRAKTIKA_HELPER_HEADLESS =", process.env.PRAKTIKA_HELPER_HEADLESS);
 console.log("HEADLESS =", HEADLESS);
+console.log("PLAYWRIGHT_STORAGE_DIR =", PLAYWRIGHT_STORAGE_DIR);
+console.log("PROFILE_ROOT =", PROFILE_ROOT);
 
 const KEEP_BROWSER_OPEN =
   String(process.env.PRAKTIKA_KEEP_BROWSER_OPEN ?? "true").toLowerCase() !==
@@ -33,9 +44,6 @@ const LOGIN_TIMEOUT_MS = Number(
   process.env.PRAKTIKA_LOGIN_TIMEOUT_MS || 10 * 60 * 1000,
 );
 
-// Process queued helper jobs in short bursts instead of one job every keep-alive cycle.
-// This prevents report-writing referral/clinical-note requests from sitting in the
-// helper queue long enough for the Next.js route to time out.
 const HELPER_JOB_DRAIN_LIMIT = Number(
   process.env.PRAKTIKA_HELPER_JOB_DRAIN_LIMIT || 20,
 );
@@ -557,10 +565,6 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           lastCookieRefreshAt = now;
         }
 
-        // Only process jobs after the browser appears logged in, and only for this session's user.
-        // IMPORTANT: drain all currently available jobs in a burst. The previous version processed
-        // exactly one job then slept for KEEP_ALIVE_INTERVAL_MS, which caused report-writing jobs
-        // to wait in the queue long enough for the API route to time out.
         const processedCount = await drainAvailableHelperJobs(
           context,
           session.app_user_id,
@@ -612,7 +616,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         await updateSession({
           status: "error",
           message:
-            "The local Praktika helper browser was closed. Start the helper again to reconnect.",
+            "The Praktika cloud helper browser was closed. Start the helper again to reconnect.",
           refresh_requested_at: null,
           last_used_at: nowIso(),
         });
@@ -624,7 +628,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
       await updateSession({
         status: "error",
         message:
-          error?.message || "Could not refresh cookies from open Praktika browser.",
+          error?.message || "Could not refresh cookies from Praktika cloud browser.",
         current_url: await safePageUrl(page),
       });
     }
@@ -645,8 +649,8 @@ async function refreshOnce() {
     status: "refreshing",
     message:
       session.scope === "practice"
-        ? "Local helper is checking the saved practice Praktika browser session."
-        : "Local helper is checking your saved Praktika browser session.",
+        ? "Cloud helper is checking the saved practice Praktika browser session."
+        : "Cloud helper is checking your saved Praktika browser session.",
   });
 
   const context = await chromium.launchPersistentContext(
@@ -681,8 +685,8 @@ async function refreshOnce() {
       status: "refreshing",
       message:
         session.scope === "practice"
-          ? "Saved browser session was not active. Local helper is signing into the practice Praktika account."
-          : "Saved browser session was not active. Local helper is signing into your Praktika account.",
+          ? "Saved browser session was not active. Cloud helper is signing into the practice Praktika account."
+          : "Saved browser session was not active. Cloud helper is signing into your Praktika account.",
       current_url: await safePageUrl(page),
     });
 
@@ -731,7 +735,7 @@ async function refreshOnce() {
 
       await updateSession({
         status: "refreshing",
-        message: "Local helper is waiting for Praktika login to complete.",
+        message: "Cloud helper is waiting for Praktika login to complete.",
         current_url: await safePageUrl(page),
       });
 
