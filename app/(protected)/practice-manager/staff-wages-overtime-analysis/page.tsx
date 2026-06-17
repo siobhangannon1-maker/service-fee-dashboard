@@ -460,6 +460,14 @@ function buildMonthlyRanges(start: string, end: string) {
   return ranges;
 }
 
+function normalizePraktikaProductionAmount(value: number | string | null) {
+  const raw = Number(value ?? 0);
+  if (!Number.isFinite(raw)) return 0;
+
+  // Praktika completed-procedure amounts are stored in cents in import_rows_normalized.
+  return raw / 100;
+}
+
 function sumProductionForRange(rows: ProductionRow[], start: string, end: string) {
   return rows
     .filter((row) => {
@@ -467,7 +475,8 @@ function sumProductionForRange(rows: ProductionRow[], start: string, end: string
       return row.service_date >= start && row.service_date <= end;
     })
     .reduce(
-      (total, row) => total + Number(row.gross_production ?? 0),
+      (total, row) =>
+        total + normalizePraktikaProductionAmount(row.gross_production),
       0
     );
 }
@@ -504,12 +513,36 @@ function buildProductionSummary(
   };
 }
 
+async function getActiveProductionImportIds(params: {
+  supabase: ReturnType<typeof getSupabase>;
+}) {
+  const { supabase } = params;
+
+  const { data, error } = await supabase
+    .from("billing_period_imports")
+    .select("import_id");
+
+  if (error) {
+    throw new Error(`Failed to load active production imports: ${error.message}`);
+  }
+
+  return Array.from(
+    new Set((data ?? []).map((row: any) => String(row.import_id)).filter(Boolean))
+  );
+}
+
 async function fetchAllProductionRows(params: {
   supabase: ReturnType<typeof getSupabase>;
   start: string;
   end: string;
 }): Promise<ProductionRow[]> {
   const { supabase, start, end } = params;
+  const importIds = await getActiveProductionImportIds({ supabase });
+
+  if (importIds.length === 0) {
+    return [];
+  }
+
   const pageSize = 1000;
   let from = 0;
   const allRows: ProductionRow[] = [];
@@ -520,6 +553,7 @@ async function fetchAllProductionRows(params: {
     const { data, error } = await supabase
       .from("import_rows_normalized")
       .select("service_date, gross_production")
+      .in("import_id", importIds)
       .gte("service_date", start)
       .lte("service_date", end)
       .eq("is_excluded", false)

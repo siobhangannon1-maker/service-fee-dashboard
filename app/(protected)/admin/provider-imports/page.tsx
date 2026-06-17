@@ -2,8 +2,6 @@ import PageLayout from "@/components/ui/PageLayout";
 import PageSection from "@/components/ui/PageSection";
 import CollapsibleSection from "@/components/ui/CollapsibleSection";
 
-import { ProviderImportForm } from "./provider-import-form";
-import { runProviderImports } from "./actions";
 import { getImportBatches } from "./get-import-batches";
 import { deleteImportBatch } from "./delete-import-batch";
 import { linkImportBatchMonth } from "./link-import-batch-month";
@@ -116,7 +114,7 @@ export default async function ProviderImportsPage() {
     <PageLayout
       eyebrow="Admin"
       title="Provider Imports"
-      description="Sync provider data from Praktika or upload CSV files for appointments, performance, cancellations, and new patients."
+      description="Sync provider data from Praktika for appointments, performance, cancellations, and new patients."
     >
       <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
         <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
@@ -131,17 +129,16 @@ export default async function ProviderImportsPage() {
               </h2>
 
               <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
-                Use Praktika sync for current data or CSV uploads when needed.
-                Recalculate months once appointments and performance data are
-                linked.
+                Use Praktika sync to pull current provider data. Recalculate
+                months once appointments and performance data are linked.
               </p>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <StatCard
-                label="Total uploads"
+                label="Total batches"
                 value={batches.length}
-                helper="CSV and synced import batches"
+                helper="Synced import batches"
               />
               <StatCard
                 label="Linked months"
@@ -171,13 +168,6 @@ export default async function ProviderImportsPage() {
           <PraktikaSessionPanel scope="user" title="My Praktika Session" />
           <PraktikaSyncPanel />
         </div>
-      </PageSection>
-
-      <PageSection
-        title="Upload CSV files"
-        description="Use CSV uploads when historical files or manual imports are needed."
-      >
-        <ProviderImportForm action={runProviderImports} />
       </PageSection>
 
       <PageSection
@@ -261,12 +251,12 @@ export default async function ProviderImportsPage() {
       </PageSection>
 
       <CollapsibleSection
-        title={`Previous uploads (${batches.length})`}
-        description="Historical upload records, linking tools, and delete actions."
+        title={`Previous batches (${batches.length})`}
+        description="Historical sync records, linking tools, and delete actions."
       >
         {batches.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
-            No uploads found yet.
+            No batches found yet.
           </div>
         ) : (
           <div className="space-y-4">

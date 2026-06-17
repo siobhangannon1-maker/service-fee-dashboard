@@ -61,7 +61,6 @@ const IMAGE_SIZE_PRESETS = [
 ]
 
 function getApproxWidthMm(percent: number) {
-  // The PDF route uses about 159.2 mm as the usable letter body width.
   return Math.round(159.2 * (percent / 100))
 }
 
@@ -77,31 +76,44 @@ function getPresetLabel(percent: number) {
 
 async function normaliseImageFile(file: File): Promise<File> {
   const bitmap = await createImageBitmap(file)
+
+  const maxDimension = 1800
+  const scale = Math.min(
+    1,
+    maxDimension / Math.max(bitmap.width, bitmap.height)
+  )
+
   const canvas = document.createElement("canvas")
-  canvas.width = bitmap.width
-  canvas.height = bitmap.height
+  canvas.width = Math.round(bitmap.width * scale)
+  canvas.height = Math.round(bitmap.height * scale)
 
   const ctx = canvas.getContext("2d")
   if (!ctx) return file
 
-  ctx.drawImage(bitmap, 0, 0)
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
 
   const blob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob(resolve, "image/png", 0.95)
+    canvas.toBlob(resolve, "image/jpeg", 0.82)
   })
 
   if (!blob) return file
 
   const safeName = file.name.replace(/\.[^/.]+$/, "")
 
-  return new File([blob], `${safeName}.png`, {
-    type: "image/png",
+  return new File([blob], `${safeName}.jpg`, {
+    type: "image/jpeg",
   })
+}
+
+function formatFileSize(bytes: number) {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 export default function DraftImagePanel({ reportDraftId }: Props) {
   const [images, setImages] = useState<DraftImage[]>([])
   const [uploading, setUploading] = useState(false)
+  const [uploadMessage, setUploadMessage] = useState("")
+  const [uploadError, setUploadError] = useState("")
   const [selectedImage, setSelectedImage] = useState<DraftImage | null>(null)
 
   const [captionText, setCaptionText] = useState("")
@@ -117,6 +129,8 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
   const [displayPageBreakBefore, setDisplayPageBreakBefore] = useState(false)
 
   async function loadImages() {
+    if (!reportDraftId) return
+
     const response = await fetch(
       `/api/report-writing/get-draft-images?reportDraftId=${reportDraftId}`
     )
@@ -241,9 +255,28 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
 
   async function uploadImage(file: File) {
     setUploading(true)
+    setUploadError("")
+    setUploadMessage(`Preparing ${file.name}...`)
 
     try {
       const normalisedFile = await normaliseImageFile(file)
+
+      const maxUploadSize = 4 * 1024 * 1024
+
+      if (normalisedFile.size > maxUploadSize) {
+        const message = `${file.name} is still too large after compression (${formatFileSize(
+          normalisedFile.size
+        )}). Please use a smaller image or screenshot.`
+        setUploadError(message)
+        alert(message)
+        return
+      }
+
+      setUploadMessage(
+        `Uploading ${normalisedFile.name} (${formatFileSize(
+          normalisedFile.size
+        )})...`
+      )
 
       const formData = new FormData()
       formData.append("file", normalisedFile)
@@ -254,14 +287,28 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
         body: formData,
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => ({}))
 
-      if (!data.success) {
-        alert(data.error || "Upload failed.")
+      if (!response.ok || !data.success) {
+        const message =
+          data.error ||
+          data.message ||
+          `Upload failed. Server returned ${response.status}.`
+
+        setUploadError(message)
+        alert(message)
         return
       }
 
+      setUploadMessage("Image uploaded successfully.")
       await loadImages()
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Image upload failed."
+
+      console.error("Image upload failed:", error)
+      setUploadError(message)
+      alert(message)
     } finally {
       setUploading(false)
     }
@@ -269,7 +316,7 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
 
   return (
     <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <div>
           <h3 className="text-lg font-semibold">Clinical Images / X-rays</h3>
           <p className="mt-1 text-xs text-slate-500">
@@ -277,7 +324,12 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
           </p>
         </div>
 
-        <label className="cursor-pointer rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">
+        <label
+          className={[
+            "cursor-pointer rounded-xl px-4 py-2 text-sm font-semibold text-white",
+            uploading ? "bg-slate-500" : "bg-slate-950",
+          ].join(" ")}
+        >
           {uploading ? "Uploading..." : "Upload Images"}
 
           <input
@@ -285,6 +337,7 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
             multiple
             accept="image/*"
             className="hidden"
+            disabled={uploading}
             onChange={async (e) => {
               const files = Array.from(e.target.files || [])
 
@@ -297,6 +350,18 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
           />
         </label>
       </div>
+
+      {uploadMessage ? (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+          {uploadMessage}
+        </div>
+      ) : null}
+
+      {uploadError ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {uploadError}
+        </div>
+      ) : null}
 
       {images.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-300 p-6 text-sm text-slate-500">

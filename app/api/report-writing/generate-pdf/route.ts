@@ -999,7 +999,7 @@ export async function POST(req: Request) {
 
       const wrappedLines = wrapRunsToWidth(parseMarkdownRuns(sideText), textWidth);
       const remainingLines: TextRun[][] = [];
-      let textY = startY - lineHeight;
+      let textY = startY;
 
       function drawRunLine(line: TextRun[], x: number, lineY: number) {
         let currentX = x;
@@ -1034,7 +1034,7 @@ export async function POST(req: Request) {
         textY -= lineHeight;
       }
 
-      y = frameY - 12;
+      y = frameY - 22;
 
       if (captionLines.length > 0) {
         for (const captionLine of captionLines) {
@@ -1165,7 +1165,16 @@ export async function POST(req: Request) {
         const image = images[inlineImageNumber - 1];
 
         if (image) {
-          const nextParagraph = paragraphs[paragraphIndex + 1]?.trim() || "";
+          let nextTextParagraphIndex = paragraphIndex + 1;
+
+          while (
+            nextTextParagraphIndex < paragraphs.length &&
+            !paragraphs[nextTextParagraphIndex]?.trim()
+          ) {
+            nextTextParagraphIndex += 1;
+          }
+
+          const nextParagraph = paragraphs[nextTextParagraphIndex]?.trim() || "";
           const nextParagraphImageNumber = getInlineImageMarker(nextParagraph);
 
           const canWrapNextParagraphBesideImage =
@@ -1175,7 +1184,7 @@ export async function POST(req: Request) {
 
           if (canWrapNextParagraphBesideImage) {
             await drawImageWithSideText(image, nextParagraph);
-            paragraphIndex += 1;
+            paragraphIndex = nextTextParagraphIndex;
           } else {
             await drawImageBlock(image);
           }

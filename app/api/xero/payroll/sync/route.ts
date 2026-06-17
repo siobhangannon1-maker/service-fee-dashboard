@@ -60,6 +60,47 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isNextRedirectError(error: unknown) {
+  const digest = String((error as { digest?: unknown })?.digest ?? "");
+  return digest.includes("NEXT_REDIRECT");
+}
+
+function hasValidCronSecret(request: Request) {
+  const configuredSecret = process.env.CRON_SECRET;
+  if (!configuredSecret) return false;
+
+  const authHeader = request.headers.get("authorization");
+  const bearerToken = authHeader?.replace(/^Bearer\s+/i, "").trim();
+
+  const headerSecret = request.headers.get("x-cron-secret")?.trim();
+
+  return bearerToken === configuredSecret || headerSecret === configuredSecret;
+}
+
+async function requirePayrollSyncAccess(request: Request) {
+  if (hasValidCronSecret(request)) {
+    return null;
+  }
+
+  try {
+    await requireRole(["admin", "practice_manager", "super_admin"]);
+    return null;
+  } catch (error) {
+    if (isNextRedirectError(error)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Unauthorized. Please log in as an admin, practice manager, or super admin, or call this route with a valid CRON_SECRET.",
+        },
+        { status: 401 }
+      );
+    }
+
+    throw error;
+  }
+}
+
 function parseXeroDate(value: string | null | undefined): string | null {
   if (!value) return null;
 
@@ -90,18 +131,8 @@ function getOvertimeMultiplier(earningsName: string): number | null {
   const name = earningsName.toLowerCase();
 
   if (!name.includes("overtime")) return null;
-
-  if (name.includes("2.0") || name.includes("x 2") || name.includes("x2")) {
-    return 2.0;
-  }
-
-  if (
-    name.includes("1.5") ||
-    name.includes("x 1.5") ||
-    name.includes("x1.5")
-  ) {
-    return 1.5;
-  }
+  if (name.includes("2.0") || name.includes("x 2") || name.includes("x2")) return 2.0;
+  if (name.includes("1.5") || name.includes("x 1.5") || name.includes("x1.5")) return 1.5;
 
   return 1.0;
 }
@@ -127,7 +158,6 @@ function dedupeEarningsLines(lines: XeroEarningsLine[]) {
 
   for (const line of lines) {
     const key = getEarningsLineKey(line);
-
     if (seen.has(key)) continue;
 
     seen.add(key);
@@ -143,14 +173,9 @@ async function fetchXero(
   delayMs: number,
   label = "Xero request"
 ) {
-  console.log(`[Xero payroll sync] Starting: ${label}`);
-  console.log(`[Xero payroll sync] URL: ${url}`);
-
   await sleep(delayMs);
 
   for (let attempt = 1; attempt <= 5; attempt++) {
-    console.log(`[Xero payroll sync] Attempt ${attempt}/5: ${label}`);
-
     const response = await fetch(url, {
       method: "GET",
       headers: {
@@ -162,9 +187,6 @@ async function fetchXero(
 
     const text = await response.text();
 
-    console.log(`[Xero payroll sync] Finished: ${label}`);
-    console.log(`[Xero payroll sync] Status: ${response.status}`);
-
     let json: any = null;
 
     try {
@@ -173,24 +195,13 @@ async function fetchXero(
       json = { raw: text };
     }
 
-    if (response.ok) {
-      console.log(`[Xero payroll sync] Success: ${label}`);
-      return json;
-    }
-
-    console.error(`[Xero payroll sync] Failed: ${label}`);
-    console.error(`[Xero payroll sync] Response: ${text}`);
+    if (response.ok) return json;
 
     if (response.status === 429 && attempt < 5) {
       const retryAfterHeader = response.headers.get("retry-after");
       const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : 0;
-
       const backoffMs =
         retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : attempt * 10000;
-
-      console.warn(
-        `[Xero payroll sync] Rate limit on ${label}. Waiting ${backoffMs}ms before retry.`
-      );
 
       await sleep(backoffMs);
       continue;
@@ -206,18 +217,17 @@ async function fetchXero(
 
 export async function POST(request: Request) {
   try {
-    await requireRole(["admin", "practice_manager"]);
+    const authErrorResponse = await requirePayrollSyncAccess(request);
+
+    if (authErrorResponse) {
+      return authErrorResponse;
+    }
 
     const url = new URL(request.url);
 
     const from = url.searchParams.get("from");
     const to = url.searchParams.get("to");
     const force = url.searchParams.get("force") === "1";
-
-    console.log("[Xero payroll sync] Request started");
-    console.log("[Xero payroll sync] From:", from);
-    console.log("[Xero payroll sync] To:", to);
-    console.log("[Xero payroll sync] Force:", force);
 
     const isBulkSync = Boolean(from && to);
 
@@ -227,17 +237,10 @@ export async function POST(request: Request) {
     );
 
     const offset = getPositiveIntegerParam(url.searchParams.get("offset"), 0);
-
     const delayMs = 1200;
-
-    console.log("[Xero payroll sync] Limit:", limit);
-    console.log("[Xero payroll sync] Offset:", offset);
-    console.log("[Xero payroll sync] Delay ms:", delayMs);
 
     const supabase = getServiceRoleSupabaseClient();
     const accessToken = await getXeroAccessToken();
-
-    console.log("[Xero payroll sync] Access token received");
 
     const payItemsJson = await fetchXero(
       accessToken,
@@ -248,11 +251,6 @@ export async function POST(request: Request) {
 
     const earningsRates: XeroEarningsRate[] =
       payItemsJson?.PayItems?.EarningsRates ?? [];
-
-    console.log(
-      "[Xero payroll sync] Earnings rates found:",
-      earningsRates.length
-    );
 
     const earningsRateById = new Map(
       earningsRates.map((rate) => [rate.EarningsRateID, rate])
@@ -298,17 +296,7 @@ export async function POST(request: Request) {
         return bPayment.localeCompare(aPayment);
       });
 
-    console.log(
-      "[Xero payroll sync] Matching pay runs:",
-      allMatchingPayRuns.length
-    );
-
     const payRunsToSync = allMatchingPayRuns.slice(offset, offset + limit);
-
-    console.log(
-      "[Xero payroll sync] Pay runs selected this request:",
-      payRunsToSync.length
-    );
 
     let syncedPayRuns = 0;
     let skippedPayRuns = 0;
@@ -318,21 +306,11 @@ export async function POST(request: Request) {
     let duplicateEarningsLinesSkipped = 0;
 
     for (const payRun of payRunsToSync) {
-      console.log("[Xero payroll sync] Processing pay run:", payRun.PayRunID);
-
       const periodStart = parseXeroDate(payRun.PayRunPeriodStartDate);
       const periodEnd = parseXeroDate(payRun.PayRunPeriodEndDate);
       const paymentDate = parseXeroDate(payRun.PaymentDate);
 
-      console.log("[Xero payroll sync] Period start:", periodStart);
-      console.log("[Xero payroll sync] Period end:", periodEnd);
-      console.log("[Xero payroll sync] Payment date:", paymentDate);
-
       if (!periodStart || !periodEnd) {
-        console.warn(
-          "[Xero payroll sync] Skipping pay run because period dates are missing:",
-          payRun.PayRunID
-        );
         skippedPayRuns += 1;
         continue;
       }
@@ -350,10 +328,6 @@ export async function POST(request: Request) {
       }
 
       if (existingPayPeriod && !force) {
-        console.log(
-          "[Xero payroll sync] Skipping existing pay run because force is false:",
-          payRun.PayRunID
-        );
         skippedPayRuns += 1;
         continue;
       }
@@ -369,12 +343,6 @@ export async function POST(request: Request) {
         detailedPayRunJson?.PayRuns?.[0] ?? null;
 
       const payslips = detailedPayRun?.Payslips ?? [];
-
-      console.log(
-        "[Xero payroll sync] Payslips found for pay run:",
-        payRun.PayRunID,
-        payslips.length
-      );
 
       if (payslips.length === 0) {
         skippedPayRuns += 1;
@@ -408,11 +376,6 @@ export async function POST(request: Request) {
       const rowsToInsert: any[] = [];
 
       for (const payslipSummary of payslips) {
-        console.log(
-          "[Xero payroll sync] Fetching payslip:",
-          payslipSummary.PayslipID
-        );
-
         const fullPayslipJson = await fetchXero(
           accessToken,
           `https://api.xero.com/payroll.xro/1.0/Payslip/${payslipSummary.PayslipID}`,
@@ -421,13 +384,7 @@ export async function POST(request: Request) {
         );
 
         const payslip = fullPayslipJson?.Payslip;
-        if (!payslip) {
-          console.warn(
-            "[Xero payroll sync] No payslip body returned:",
-            payslipSummary.PayslipID
-          );
-          continue;
-        }
+        if (!payslip) continue;
 
         const employeeName = getEmployeeName(payslipSummary);
 
@@ -439,22 +396,8 @@ export async function POST(request: Request) {
 
         const allEarningsLines = dedupeEarningsLines(rawEarningsLines);
 
-        const duplicatesSkipped =
+        duplicateEarningsLinesSkipped +=
           rawEarningsLines.length - allEarningsLines.length;
-
-        duplicateEarningsLinesSkipped += duplicatesSkipped;
-
-        console.log(
-          "[Xero payroll sync] Payslip line counts:",
-          JSON.stringify({
-            payslipId: payslipSummary.PayslipID,
-            employeeName,
-            rawEarningsLines: rawEarningsLines.length,
-            dedupedEarningsLines: allEarningsLines.length,
-            duplicatesSkipped,
-            superLines: payslip.SuperannuationLines?.length ?? 0,
-          })
-        );
 
         for (const line of allEarningsLines) {
           const earningsRateId = line.EarningsRateID;
@@ -522,12 +465,6 @@ export async function POST(request: Request) {
         }
       }
 
-      console.log(
-        "[Xero payroll sync] Rows prepared for pay run:",
-        payRun.PayRunID,
-        rowsToInsert.length
-      );
-
       if (rowsToInsert.length === 0) {
         skippedPayRuns += 1;
         continue;
@@ -552,28 +489,11 @@ export async function POST(request: Request) {
 
       insertedWageLines += rowsToInsert.length;
       syncedPayRuns += 1;
-
-      console.log("[Xero payroll sync] Finished pay run:", payRun.PayRunID);
     }
 
     const nextOffset = offset + limit;
     const checkedSoFar = Math.min(nextOffset, allMatchingPayRuns.length);
     const hasMore = nextOffset < allMatchingPayRuns.length;
-
-    console.log("[Xero payroll sync] Completed request");
-    console.log(
-      "[Xero payroll sync] Summary:",
-      JSON.stringify({
-        matchingPayRuns: allMatchingPayRuns.length,
-        payRunsCheckedThisRequest: payRunsToSync.length,
-        payRunsSynced: syncedPayRuns,
-        payRunsSkipped: skippedPayRuns,
-        wageLinesInserted: insertedWageLines,
-        duplicateEarningsLinesSkipped,
-        checkedSoFar,
-        hasMore,
-      })
-    );
 
     return NextResponse.json({
       success: true,
@@ -609,12 +529,16 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("[Xero payroll sync] Fatal error:", error);
 
+    const isRedirect = isNextRedirectError(error);
+
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || "Xero payroll sync failed",
+        error: isRedirect
+          ? "Unauthorized. Please log in as an admin, practice manager, or super admin before syncing payroll."
+          : error?.message || "Xero payroll sync failed",
       },
-      { status: 500 }
+      { status: isRedirect ? 401 : 500 }
     );
   }
 }

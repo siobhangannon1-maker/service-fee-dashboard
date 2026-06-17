@@ -47,6 +47,10 @@ function isValidIsoDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+function roundMoney(value: number) {
+  return Number(value.toFixed(2));
+}
+
 async function loadProviderLookup() {
   const supabase = getClient();
 
@@ -143,14 +147,193 @@ function sanitizeRawJson(row: any) {
 
   for (const [key, value] of Object.entries(row)) {
     const compactKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (blockedKeys.some((blocked) => compactKey.includes(blocked))) {
-      cleaned[key] = "[removed]";
-    } else {
-      cleaned[key] = value;
-    }
+    cleaned[key] = blockedKeys.some((blocked) => compactKey.includes(blocked))
+      ? "[removed]"
+      : value;
   }
 
   return cleaned;
+}
+
+type NormalizedProductionRow = {
+  import_id: string;
+  row_number: number;
+  service_date: string | null;
+  posted_date: string | null;
+  patient_name: null;
+  provider_raw: string | null;
+  provider_id: string | null;
+  item_number: string | null;
+  description: string | null;
+  gross_production: number;
+  collections: number;
+  merchant_fees: number;
+  lab_fees: number;
+  incorrect_provider_amount: number;
+  adjustments: number;
+  is_excluded: boolean;
+  exclusion_reason: string | null;
+  needs_review: boolean;
+  review_reason: string | null;
+  normalized_json: Record<string, unknown>;
+};
+
+type BillingPeriodStatusRow = {
+  id: string;
+  status: string | null;
+  label: string | null;
+};
+
+async function assertBillingPeriodIsOpen({
+  supabase,
+  billingPeriodId,
+}: {
+  supabase: any;
+  billingPeriodId: string;
+}) {
+  const { data, error } = await supabase
+    .from("billing_periods")
+    .select("id, status, label")
+    .eq("id", billingPeriodId)
+    .single();
+
+  if (error || !data) {
+    throw new Error("Billing period not found.");
+  }
+
+  const billingPeriod = data as {
+    id: string;
+    status: string | null;
+    label: string | null;
+  };
+
+  if (billingPeriod.status === "locked") {
+    throw new Error(
+      `This billing period is locked${
+        billingPeriod.label ? ` (${billingPeriod.label})` : ""
+      }. Unlock it before syncing production.`
+    );
+  }
+}
+
+async function syncProviderMonthlyRecordsFromImport({
+  supabase,
+  billingPeriodId,
+  normalizedRows,
+}: {
+  supabase: any;
+  billingPeriodId: string;
+  normalizedRows: NormalizedProductionRow[];
+}) {
+  const totalsByProvider = new Map<
+    string,
+    {
+      grossProductionRaw: number;
+      ivFacilityFeesRaw: number;
+    }
+  >();
+
+  for (const row of normalizedRows) {
+    if (!row.provider_id || row.is_excluded) continue;
+
+    const current = totalsByProvider.get(row.provider_id) ?? {
+      grossProductionRaw: 0,
+      ivFacilityFeesRaw: 0,
+    };
+
+    current.grossProductionRaw += Number(row.gross_production || 0);
+
+    if (String(row.item_number || "").trim() === "949") {
+      current.ivFacilityFeesRaw += Number(row.gross_production || 0);
+    }
+
+    totalsByProvider.set(row.provider_id, current);
+  }
+
+  const providerIds = Array.from(totalsByProvider.keys());
+
+  if (providerIds.length === 0) {
+    return {
+      providerRecordCount: 0,
+      providerRecordsUpdated: 0,
+      providerRecordsInserted: 0,
+      totalGrossProduction: 0,
+      totalIvFacilityFees: 0,
+    };
+  }
+
+  const { data: existingRecords, error: existingError } = await supabase
+    .from("provider_monthly_records")
+    .select("id, provider_id")
+    .eq("billing_period_id", billingPeriodId)
+    .in("provider_id", providerIds);
+
+  if (existingError) {
+    throw new Error(`Failed to load provider monthly records: ${existingError.message}`);
+  }
+
+  const existingByProvider = new Map<string, string>();
+
+  const existingProviderRecords = (existingRecords ?? []) as Array<{ id: string; provider_id: string }>;
+
+for (const record of existingProviderRecords) {
+    existingByProvider.set(String(record.provider_id), String(record.id));
+  }
+
+  let providerRecordsUpdated = 0;
+  let providerRecordsInserted = 0;
+  let totalGrossProduction = 0;
+  let totalIvFacilityFees = 0;
+
+  for (const [providerId, totals] of totalsByProvider.entries()) {
+    const grossProduction = roundMoney(totals.grossProductionRaw / 100);
+    const ivFacilityFees = roundMoney(totals.ivFacilityFeesRaw / 100);
+
+    totalGrossProduction += grossProduction;
+    totalIvFacilityFees += ivFacilityFees;
+
+    const existingId = existingByProvider.get(providerId);
+
+    if (existingId) {
+      const { error } = await supabase
+        .from("provider_monthly_records")
+        .update({
+          gross_production: grossProduction,
+          iv_facility_fees: ivFacilityFees,
+        })
+        .eq("id", existingId);
+
+      if (error) {
+        throw new Error(`Failed to update provider monthly record: ${error.message}`);
+      }
+
+      providerRecordsUpdated += 1;
+    } else {
+      const { error } = await supabase.from("provider_monthly_records").insert({
+        provider_id: providerId,
+        billing_period_id: billingPeriodId,
+        gross_production: grossProduction,
+        adjustments: 0,
+        incorrect_payments: 0,
+        iv_facility_fees: ivFacilityFees,
+        other_deductions: 0,
+      });
+
+      if (error) {
+        throw new Error(`Failed to insert provider monthly record: ${error.message}`);
+      }
+
+      providerRecordsInserted += 1;
+    }
+  }
+
+  return {
+    providerRecordCount: providerIds.length,
+    providerRecordsUpdated,
+    providerRecordsInserted,
+    totalGrossProduction: roundMoney(totalGrossProduction),
+    totalIvFacilityFees: roundMoney(totalIvFacilityFees),
+  };
 }
 
 export async function POST(request: Request) {
@@ -179,6 +362,11 @@ export async function POST(request: Request) {
 
     const supabase = getClient();
 
+    await assertBillingPeriodIsOpen({
+      supabase,
+      billingPeriodId,
+    });
+
     const params = new URLSearchParams();
     params.append("sReportName", "completedProcedures");
     params.append("iPracticeIds[]", practiceId);
@@ -191,15 +379,16 @@ export async function POST(request: Request) {
         fetchPraktikaJson(
           params,
           "https://praktika.praktika.net.au/v2/reports/completed-procedures",
-          mode,
+          mode
         ),
-      {
-        mode,
-      },
+      { mode }
     );
 
-    const providerLookup = await loadProviderLookup();
+    if (!Array.isArray(data)) {
+      throw new Error("Praktika production response was not an array.");
+    }
 
+    const providerLookup = await loadProviderLookup();
     const sourceFileName = `Praktika Production Sync ${fromDate} to ${toDate}`;
 
     const { data: importRow, error: importError } = await supabase
@@ -218,7 +407,7 @@ export async function POST(request: Request) {
       throw new Error(`Failed to create import: ${importError.message}`);
     }
 
-    const importId = importRow.id;
+    const importId = importRow.id as string;
 
     const rawRows = data.map((row: any, index: number) => ({
       import_id: importId,
@@ -231,7 +420,7 @@ export async function POST(request: Request) {
       if (error) throw new Error(`Failed to insert raw rows: ${error.message}`);
     }
 
-    const normalizedRows = data.map((row: any, index: number) => {
+    const normalizedRows: NormalizedProductionRow[] = data.map((row: any, index: number) => {
       const providerRaw = normalizeWhitespace(
         pickFirst(row, [
           "vchProvider",
@@ -240,7 +429,7 @@ export async function POST(request: Request) {
           "provider",
           "Provider",
           "Provider Name",
-        ]),
+        ])
       );
 
       const providerId =
@@ -261,7 +450,7 @@ export async function POST(request: Request) {
           "item_number",
           "Item",
           "Code",
-        ]),
+        ])
       );
 
       const description = toNullableText(
@@ -272,7 +461,7 @@ export async function POST(request: Request) {
           "vchProcedureDescription",
           "description",
           "Description",
-        ]),
+        ])
       );
 
       const productionAmount = toNumber(
@@ -289,7 +478,7 @@ export async function POST(request: Request) {
           "amount",
           "Amount",
           "Fee",
-        ]),
+        ])
       );
 
       return {
@@ -343,11 +532,18 @@ export async function POST(request: Request) {
       throw new Error(`Failed to link import to billing period: ${linkError.message}`);
     }
 
+    const providerRecordSummary = await syncProviderMonthlyRecordsFromImport({
+      supabase,
+      billingPeriodId,
+      normalizedRows,
+    });
+
     return NextResponse.json({
       ok: true,
       importId,
       rowCount: normalizedRows.length,
-      message: `Synced ${normalizedRows.length} production rows from Praktika.`,
+      providerRecords: providerRecordSummary,
+      message: `Synced ${normalizedRows.length} production rows from Praktika and updated ${providerRecordSummary.providerRecordCount} provider monthly records.`,
     });
   } catch (error: any) {
     console.error("Praktika production sync failed:", error);
@@ -357,7 +553,7 @@ export async function POST(request: Request) {
         ok: false,
         error: error?.message || "Praktika production sync failed.",
       },
-      { status: 500 },
+      { status: 500 }
     );
   }
 }

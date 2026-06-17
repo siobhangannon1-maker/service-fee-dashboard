@@ -338,6 +338,12 @@ const navGroups: NavGroup[] = [
         description:
           "Enter universal rules for safety and efficiency of clinical scribe note writing",
       },
+      {
+        href: "/benchmark/expense-reports",
+        label: "Financial Reports",
+        description:
+          "Benchmark analysis",
+      },
     ],
   },
 ];

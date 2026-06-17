@@ -15,7 +15,10 @@
     {
       "path": "/api/report-writing/retention-cleanup",
       "schedule": "0 17 * * *"
-    }
+    },
+    {
+  "path": "/api/xero/payroll/sync?force=1&limit=25&offset=0",
+  "schedule": "0 18 * * *"
+}
   ]
 }
-  

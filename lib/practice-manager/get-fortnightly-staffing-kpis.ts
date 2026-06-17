@@ -21,6 +21,11 @@ type WageLine = {
   amount: number;
 };
 
+type ProductionRow = {
+  service_date: string | null;
+  gross_production: number | string | null;
+};
+
 function getSupabase() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -39,6 +44,89 @@ function getSupabase() {
 function safeDivide(numerator: number, denominator: number): number | null {
   if (!denominator || denominator <= 0) return null;
   return numerator / denominator;
+}
+
+function normalizePraktikaProductionAmount(value: number | string | null) {
+  const raw = Number(value ?? 0);
+  if (!Number.isFinite(raw)) return 0;
+
+  // Praktika completed-procedure amounts are stored in cents in import_rows_normalized.
+  return raw / 100;
+}
+
+async function getActiveProductionImportIds(params: {
+  supabase: ReturnType<typeof getSupabase>;
+}) {
+  const { supabase } = params;
+
+  const { data, error } = await supabase
+    .from("billing_period_imports")
+    .select("import_id");
+
+  if (error) {
+    throw new Error(`Failed to load active production imports: ${error.message}`);
+  }
+
+  return Array.from(
+    new Set((data ?? []).map((row: any) => String(row.import_id)).filter(Boolean))
+  );
+}
+
+async function fetchAllProductionRows(params: {
+  supabase: ReturnType<typeof getSupabase>;
+  start: string;
+  end: string;
+}): Promise<ProductionRow[]> {
+  const { supabase, start, end } = params;
+  const importIds = await getActiveProductionImportIds({ supabase });
+
+  if (importIds.length === 0) {
+    return [];
+  }
+
+  const pageSize = 1000;
+  let from = 0;
+  const allRows: ProductionRow[] = [];
+
+  while (true) {
+    const to = from + pageSize - 1;
+
+    const { data, error } = await supabase
+      .from("import_rows_normalized")
+      .select("service_date, gross_production")
+      .in("import_id", importIds)
+      .gte("service_date", start)
+      .lte("service_date", end)
+      .eq("is_excluded", false)
+      .order("service_date", { ascending: true })
+      .range(from, to);
+
+    if (error) {
+      throw new Error(`Failed to load production rows: ${error.message}`);
+    }
+
+    const rows = (data ?? []) as ProductionRow[];
+    allRows.push(...rows);
+
+    if (rows.length < pageSize) break;
+
+    from += pageSize;
+  }
+
+  return allRows;
+}
+
+function sumProductionForRange(rows: ProductionRow[], start: string, end: string) {
+  return rows
+    .filter((row) => {
+      if (!row.service_date) return false;
+      return row.service_date >= start && row.service_date <= end;
+    })
+    .reduce(
+      (total, row) =>
+        total + normalizePraktikaProductionAmount(row.gross_production),
+      0
+    );
 }
 
 export async function getFortnightlyStaffingKpis(
@@ -75,6 +163,12 @@ export async function getFortnightlyStaffingKpis(
     throw new Error(`Failed to load staff wage lines: ${wageLinesError.message}`);
   }
 
+  const productionRows = await fetchAllProductionRows({
+    supabase,
+    start: overallStart,
+    end: overallEnd,
+  });
+
   const wageLines = (wageLinesData ?? []) as WageLine[];
   const results: FortnightlyStaffingKpi[] = [];
 
@@ -105,17 +199,6 @@ export async function getFortnightlyStaffingKpis(
       .filter((line) => line.line_type === "superannuation")
       .reduce((total, line) => total + Number(line.amount ?? 0), 0);
 
-    const { data: productionRows, error: productionError } = await supabase
-      .from("import_rows_normalized")
-      .select("gross_production")
-      .gte("service_date", payPeriod.period_start)
-      .lte("service_date", payPeriod.period_end)
-      .eq("is_excluded", false);
-
-    if (productionError) {
-      throw new Error(`Failed to load production rows: ${productionError.message}`);
-    }
-
     const { data: labourHireRows, error: labourHireError } = await supabase
       .from("xero_labour_hire")
       .select("amount")
@@ -126,9 +209,10 @@ export async function getFortnightlyStaffingKpis(
       throw new Error(`Failed to load labour hire rows: ${labourHireError.message}`);
     }
 
-    const grossProduction = (productionRows ?? []).reduce(
-      (total, row: any) => total + Number(row.gross_production ?? 0),
-      0
+    const grossProduction = sumProductionForRange(
+      productionRows,
+      payPeriod.period_start,
+      payPeriod.period_end
     );
 
     const labourHireAmount = (labourHireRows ?? []).reduce(
