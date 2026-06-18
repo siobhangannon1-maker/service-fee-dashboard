@@ -9,6 +9,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+
   if (!url || !key) throw new Error("Missing Supabase environment variables.")
   return createClient(url, key)
 }
@@ -17,16 +18,72 @@ function clean(value: unknown) {
   return String(value ?? "").trim()
 }
 
+function normalisePercent(value: unknown, fallback = 70) {
+  const numeric = Number(value)
+
+  if (!Number.isFinite(numeric)) return fallback
+
+  if (numeric > 0 && numeric <= 1) {
+    return Math.round(numeric * 100)
+  }
+
+  return Math.round(Math.max(1, Math.min(100, numeric)))
+}
+
+function normalizeKnowledgeType(value: unknown) {
+  const raw = clean(value).toLowerCase()
+
+  if (raw === "behaviour" || raw === "behavior" || raw === "writing_style") {
+    return "behaviour"
+  }
+
+  if (
+    raw === "preferred_phrase" ||
+    raw === "phrase" ||
+    raw === "preferred phrase"
+  ) {
+    return "preferred_phrase"
+  }
+
+  if (
+    raw === "template_block" ||
+    raw === "block" ||
+    raw === "template" ||
+    raw === "template block"
+  ) {
+    return "template_block"
+  }
+
+  if (raw === "manual_rule" || raw === "rule" || raw === "manual rule") {
+    return "manual_rule"
+  }
+
+  if (raw === "terminology") return "terminology"
+
+  return "other"
+}
+
 function safeJsonParse<T>(text: string, fallback: T): T {
   try {
-    const cleaned = text.trim().replace(/^```json/i, "").replace(/^```/i, "").replace(/```$/i, "").trim()
+    const cleaned = text
+      .trim()
+      .replace(/^```json/i, "")
+      .replace(/^```/i, "")
+      .replace(/```$/i, "")
+      .trim()
+
     return JSON.parse(cleaned) as T
   } catch {
     return fallback
   }
 }
 
-function makeKnowledgeKey(reportType: string, knowledgeType: string, category: string, text: string) {
+function makeKnowledgeKey(
+  reportType: string,
+  knowledgeType: string,
+  category: string,
+  text: string
+) {
   return `${reportType}_${knowledgeType}_${category}_${text}`
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
@@ -43,11 +100,12 @@ async function generateLetter(origin: string, payload: Record<string, unknown>) 
 
   const data = await response.json()
   if (!data.success) throw new Error(data.error || "Letter generation failed.")
+
   return clean(data.report)
 }
 
 type KnowledgeSuggestion = {
-  knowledge_type: "behaviour" | "preferred_phrase" | "template_block" | "manual_rule" | "other"
+  knowledge_type: string
   report_type: string
   category: string
   knowledge_text: string
@@ -64,10 +122,16 @@ type Analysis = {
   knowledge_items: KnowledgeSuggestion[]
 }
 
-async function getExistingKnowledgeText(supabase: ReturnType<typeof getSupabase>, providerId: string, reportType: string) {
+async function getExistingKnowledgeText(
+  supabase: ReturnType<typeof getSupabase>,
+  providerId: string,
+  reportType: string
+) {
   const { data } = await supabase
     .from("provider_knowledge")
-    .select("report_type, knowledge_type, category, knowledge_text, confidence, evidence_count")
+    .select(
+      "report_type, knowledge_type, category, knowledge_text, confidence, evidence_count"
+    )
     .eq("provider_id", providerId)
     .eq("status", "active")
     .in("report_type", [reportType, "all"])
@@ -77,17 +141,30 @@ async function getExistingKnowledgeText(supabase: ReturnType<typeof getSupabase>
   return (data || [])
     .map(
       (item: any, index: number) =>
-        `${index + 1}. [${item.knowledge_type} / ${item.report_type} / ${item.category} / confidence ${item.confidence} / seen ${item.evidence_count}] ${item.knowledge_text}`
+        `${index + 1}. [${item.knowledge_type} / ${item.report_type} / ${
+          item.category
+        } / confidence ${item.confidence} / seen ${
+          item.evidence_count
+        }] ${item.knowledge_text}`
     )
     .join("\n")
 }
 
 function formatKnowledgeForPrompt(items: KnowledgeSuggestion[]) {
-  const active = items.filter((item) => item.applies_to_future_letters && item.knowledge_text)
+  const active = items.filter(
+    (item) => item.applies_to_future_letters && item.knowledge_text
+  )
+
   if (active.length === 0) return ""
 
   return active
-    .map((item, index) => `${index + 1}. [${item.knowledge_type} / ${item.category}] ${item.knowledge_text}`)
+    .map((item, index) => {
+      const safeType = normalizeKnowledgeType(item.knowledge_type)
+
+      return `${index + 1}. [${safeType} / ${
+        item.category || "general"
+      }] ${item.knowledge_text}`
+    })
     .join("\n")
 }
 
@@ -123,10 +200,24 @@ Analyse this provider training case.
 
 Extract reusable provider knowledge from the difference between the generated letter and the ideal provider-approved letter.
 
-There are three main useful knowledge types:
-1. behaviour: a general reusable provider preference, e.g. mention unchanged medical history in SPT opening when documented.
-2. preferred_phrase: an exact or near-exact phrase the provider commonly uses, e.g. "I am happy to report that overall, her periodontal status is stable."
-3. template_block: a reusable paragraph or section structure, e.g. a preferred SPT closing paragraph.
+Allowed knowledge_type values:
+- behaviour
+- preferred_phrase
+- template_block
+- other
+
+Do not use any other knowledge_type values.
+
+Knowledge types:
+1. behaviour: a general reusable provider preference.
+2. preferred_phrase: an exact or near-exact phrase the provider commonly uses.
+3. template_block: a reusable paragraph or section structure.
+4. other: only use if none of the above fit.
+
+Confidence and match_score:
+- Use whole numbers from 1 to 100.
+- Do not return decimals such as 0.7 or 0.9.
+- Example: use 90, not 0.9.
 
 Only extract knowledge that should apply to future letters.
 Do not extract patient-specific clinical facts as provider knowledge.
@@ -136,18 +227,18 @@ If the ideal uses a distinctive sentence or paragraph, extract it as a preferred
 
 Return JSON only with this exact shape:
 {
-  "match_score": number,
+  "match_score": 85,
   "summary": "short summary",
   "generated_strengths": ["..."],
   "important_differences": ["..."],
   "knowledge_items": [
     {
-      "knowledge_type": "behaviour|preferred_phrase|template_block|other",
-      "report_type": "${input.reportType} or all",
-      "category": "opening|structure|content_inclusion|content_exclusion|wording|closing|referrer_communication|clinical_reasoning|formatting|treatment_summary",
+      "knowledge_type": "behaviour",
+      "report_type": "${input.reportType}",
+      "category": "opening",
       "knowledge_text": "reusable provider knowledge",
       "evidence_summary": "why this is supported by the ideal letter",
-      "confidence": number,
+      "confidence": 90,
       "applies_to_future_letters": true
     }
   ]
@@ -197,12 +288,20 @@ export async function POST(req: Request) {
 
     if (!providerId || !patientFirstName || !clinicalNotes || !idealLetter) {
       return NextResponse.json(
-        { success: false, error: "Provider, patient first name, clinical notes and ideal letter are required." },
+        {
+          success: false,
+          error:
+            "Provider, patient first name, clinical notes and ideal letter are required.",
+        },
         { status: 400 }
       )
     }
 
-    const existingKnowledgeText = await getExistingKnowledgeText(supabase, providerId, reportType)
+    const existingKnowledgeText = await getExistingKnowledgeText(
+      supabase,
+      providerId,
+      reportType
+    )
 
     const generatedLetter = await generateLetter(origin, {
       providerId,
@@ -232,12 +331,18 @@ export async function POST(req: Request) {
 
     for (const item of knowledgeItems) {
       const safeReportType = clean(item.report_type) || reportType
-      const knowledgeType = clean(item.knowledge_type) || "behaviour"
+      const knowledgeType = normalizeKnowledgeType(item.knowledge_type)
       const category = clean(item.category) || "general"
       const knowledgeText = clean(item.knowledge_text)
       const evidenceSummary = clean(item.evidence_summary)
-      const confidence = Math.max(1, Math.min(100, Number(item.confidence || 70)))
-      const knowledgeKey = makeKnowledgeKey(safeReportType, knowledgeType, category, knowledgeText)
+      const confidence = normalisePercent(item.confidence, 70)
+
+      const knowledgeKey = makeKnowledgeKey(
+        safeReportType,
+        knowledgeType,
+        category,
+        knowledgeText
+      )
 
       const existing = await supabase
         .from("provider_knowledge")
@@ -249,8 +354,13 @@ export async function POST(req: Request) {
         .maybeSingle()
 
       if (existing.data) {
-        const updatedConfidence = Math.min(100, Math.max(Number(existing.data.confidence || 50), confidence) + 1)
-        const updatedEvidenceCount = Number(existing.data.evidence_count || 1) + 1
+        const updatedConfidence = Math.min(
+          100,
+          Math.max(Number(existing.data.confidence || 50), confidence) + 1
+        )
+
+        const updatedEvidenceCount =
+          Number(existing.data.evidence_count || 1) + 1
 
         const { data, error } = await supabase
           .from("provider_knowledge")
@@ -292,6 +402,7 @@ export async function POST(req: Request) {
     }
 
     let regeneratedLetter = ""
+
     if (regeneratePreview && knowledgeItems.length > 0) {
       regeneratedLetter = await generateLetter(origin, {
         providerId,
@@ -305,16 +416,20 @@ export async function POST(req: Request) {
       })
     }
 
-    const { data: example } = await supabase
+    const { data: example, error: exampleError } = await supabase
       .from("provider_report_examples")
       .insert({
         provider_id: providerId,
         report_type: reportType,
-        title: `Ideal ${reportType} - ${new Date().toLocaleDateString("en-AU")}`,
+        title: `Ideal ${reportType} - ${new Date().toLocaleDateString(
+          "en-AU"
+        )}`,
         example_text: idealLetter,
       })
       .select()
       .maybeSingle()
+
+    if (exampleError) throw new Error(exampleError.message)
 
     const { data: trainingCase, error: trainingCaseError } = await supabase
       .from("provider_training_cases")
@@ -334,7 +449,7 @@ export async function POST(req: Request) {
         behaviours_learned: savedKnowledge,
         behaviours_reinforced: reinforcedKnowledge,
         v4_knowledge_items: knowledgeItems,
-        match_score: Number(analysis.match_score || 0),
+        match_score: normalisePercent(analysis.match_score, 0),
         status: "v4_knowledge_trained",
       })
       .select()
@@ -348,15 +463,25 @@ export async function POST(req: Request) {
       savedExample: example || null,
       generatedLetter,
       regeneratedLetter,
-      analysis,
+      analysis: {
+        ...analysis,
+        match_score: normalisePercent(analysis.match_score, 0),
+      },
       savedKnowledge,
       reinforcedKnowledge,
       knowledgeCount: knowledgeItems.length,
     })
   } catch (error) {
     console.error("Train provider knowledge V4 failed:", error)
+
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Provider knowledge training failed." },
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Provider knowledge training failed.",
+      },
       { status: 500 }
     )
   }

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import ProviderTrainingCasesPanel from "@/components/report-writing/ProviderTrainingCasesPanel"
+import ProviderKnowledgeTrainerPanel from "@/components/report-writing/ProviderKnowledgeTrainerPanel"
 
 const defaultCorrespondenceTypes = [
   { value: "consultation_report", label: "Consultation Report" },
@@ -17,30 +17,11 @@ const defaultCorrespondenceTypes = [
   { value: "gp_letter", label: "GP Letter" },
 ]
 
-type Rule = {
-  id: string
-  report_type: string
-  rule_text: string
-}
-
-type Example = {
-  id: string
-  report_type: string
-  title: string | null
-  example_text: string
-}
-
-type Terminology = {
-  id: string
-  spoken_or_written_text: string
-  preferred_text: string
-}
-
-type CorrespondenceType = {
-  id: string
-  type_key: string
-  label: string
-}
+type Rule = { id: string; report_type: string; rule_text: string }
+type Example = { id: string; report_type: string; title: string | null; example_text: string }
+type Terminology = { id: string; spoken_or_written_text: string; preferred_text: string }
+type CorrespondenceType = { id: string; type_key: string; label: string }
+type ReportType = { value: string; label: string }
 
 type LearnedEditExample = {
   id: string
@@ -50,6 +31,15 @@ type LearnedEditExample = {
   source: string | null
   created_at: string
   report_draft_id?: string | null
+}
+
+type ReportTypeSetting = {
+  id?: string
+  provider_id: string
+  report_type: string
+  label: string
+  is_enabled: boolean
+  display_order?: number | null
 }
 
 function deidentifyText(text: string) {
@@ -87,9 +77,8 @@ export default function ProviderTrainingClient() {
   const [examples, setExamples] = useState<Example[]>([])
   const [terminology, setTerminology] = useState<Terminology[]>([])
   const [customTypes, setCustomTypes] = useState<CorrespondenceType[]>([])
-  const [learnedEditExamples, setLearnedEditExamples] = useState<
-    LearnedEditExample[]
-  >([])
+  const [reportTypeSettings, setReportTypeSettings] = useState<ReportTypeSetting[]>([])
+  const [learnedEditExamples, setLearnedEditExamples] = useState<LearnedEditExample[]>([])
 
   const [reportType, setReportType] = useState("consultation_report")
   const [newTypeLabel, setNewTypeLabel] = useState("")
@@ -101,9 +90,9 @@ export default function ProviderTrainingClient() {
   const [preferredText, setPreferredText] = useState("")
 
   const [learningFilter, setLearningFilter] = useState("all")
-  const [expandedLearningId, setExpandedLearningId] = useState<string | null>(
-    null
-  )
+  const [expandedLearningId, setExpandedLearningId] = useState<string | null>(null)
+  const [showAdvancedManualTools, setShowAdvancedManualTools] = useState(false)
+  const [showReportTypeManager, setShowReportTypeManager] = useState(false)
 
   const [loading, setLoading] = useState(false)
 
@@ -111,23 +100,38 @@ export default function ProviderTrainingClient() {
     ? deidentifyText(exampleText)
     : "De-identified preview will appear here."
 
-  const filteredLearnedExamples = useMemo(() => {
-    if (learningFilter === "all") return learnedEditExamples
+  const allProviderReportTypes = useMemo(() => {
+    const providerCustomTypes = customTypes.map((type) => ({
+      value: type.type_key,
+      label: type.label,
+    }))
 
-    return learnedEditExamples.filter(
-      (example) => example.report_type === learningFilter
-    )
-  }, [learnedEditExamples, learningFilter])
+    const seen = new Set<string>()
+
+    return [...defaultCorrespondenceTypes, ...providerCustomTypes].filter((type) => {
+      if (seen.has(type.value)) return false
+      seen.add(type.value)
+      return true
+    })
+  }, [customTypes])
+
+  function getSetting(reportTypeValue: string) {
+    return reportTypeSettings.find((setting) => setting.report_type === reportTypeValue)
+  }
+
+  function isReportTypeEnabled(type: ReportType) {
+    const setting = getSetting(type.value)
+    return setting ? setting.is_enabled : true
+  }
 
   const availableReportTypes = useMemo(() => {
-    return [
-      ...defaultCorrespondenceTypes,
-      ...customTypes.map((type) => ({
-        value: type.type_key,
-        label: type.label,
-      })),
-    ]
-  }, [customTypes])
+    return allProviderReportTypes.filter((type) => isReportTypeEnabled(type))
+  }, [allProviderReportTypes, reportTypeSettings])
+
+  const filteredLearnedExamples = useMemo(() => {
+    if (learningFilter === "all") return learnedEditExamples
+    return learnedEditExamples.filter((example) => example.report_type === learningFilter)
+  }, [learnedEditExamples, learningFilter])
 
   async function loadCurrentProvider() {
     const response = await fetch("/api/report-writing/current-provider")
@@ -148,7 +152,6 @@ export default function ProviderTrainingClient() {
     const response = await fetch(
       `/api/report-writing/provider-training?providerId=${providerIdToLoad}`
     )
-
     const data = await response.json()
 
     if (data.success) {
@@ -161,6 +164,22 @@ export default function ProviderTrainingClient() {
     }
   }
 
+  async function loadReportTypeSettings(providerIdToLoad = providerId) {
+    if (!providerIdToLoad) return
+
+    const response = await fetch(
+      `/api/report-writing/provider-report-type-settings?providerId=${providerIdToLoad}`
+    )
+    const data = await response.json()
+
+    if (data.success) setReportTypeSettings(data.settings || [])
+  }
+
+  async function refreshTrainingData() {
+    await loadTraining(providerId)
+    await loadReportTypeSettings(providerId)
+  }
+
   useEffect(() => {
     loadCurrentProvider()
   }, [])
@@ -168,8 +187,17 @@ export default function ProviderTrainingClient() {
   useEffect(() => {
     if (providerId) {
       loadTraining(providerId)
+      loadReportTypeSettings(providerId)
     }
   }, [providerId])
+
+  useEffect(() => {
+    if (availableReportTypes.length === 0) return
+    const currentTypeStillEnabled = availableReportTypes.some((type) => type.value === reportType)
+    if (!currentTypeStillEnabled) {
+      setReportType(availableReportTypes[0].value)
+    }
+  }, [availableReportTypes, reportType])
 
   async function addCorrespondenceType() {
     if (!newTypeLabel.trim()) {
@@ -182,9 +210,7 @@ export default function ProviderTrainingClient() {
     try {
       const response = await fetch("/api/report-writing/provider-training", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           providerId,
           type: "correspondence_type",
@@ -200,7 +226,38 @@ export default function ProviderTrainingClient() {
       }
 
       setNewTypeLabel("")
-      await loadTraining()
+      await refreshTrainingData()
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function toggleReportType(type: ReportType, enabled: boolean) {
+    if (!providerId) return
+
+    setLoading(true)
+
+    try {
+      const response = await fetch("/api/report-writing/provider-report-type-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerId,
+          reportType: type.value,
+          label: type.label,
+          isEnabled: enabled,
+          displayOrder: allProviderReportTypes.findIndex((item) => item.value === type.value) + 1,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!data.success) {
+        alert(data.error || "Failed to update report type.")
+        return
+      }
+
+      await loadReportTypeSettings(providerId)
     } finally {
       setLoading(false)
     }
@@ -217,15 +274,8 @@ export default function ProviderTrainingClient() {
     try {
       const response = await fetch("/api/report-writing/provider-training", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          providerId,
-          type: "rule",
-          reportType,
-          ruleText,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerId, type: "rule", reportType, ruleText }),
       })
 
       const data = await response.json()
@@ -236,7 +286,7 @@ export default function ProviderTrainingClient() {
       }
 
       setRuleText("")
-      await loadTraining()
+      await refreshTrainingData()
     } finally {
       setLoading(false)
     }
@@ -253,9 +303,7 @@ export default function ProviderTrainingClient() {
     try {
       const response = await fetch("/api/report-writing/provider-training", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           providerId,
           type: "example",
@@ -274,7 +322,7 @@ export default function ProviderTrainingClient() {
 
       setExampleTitle("")
       setExampleText("")
-      await loadTraining()
+      await refreshTrainingData()
     } finally {
       setLoading(false)
     }
@@ -291,9 +339,7 @@ export default function ProviderTrainingClient() {
     try {
       const response = await fetch("/api/report-writing/provider-training", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           providerId,
           type: "terminology",
@@ -311,7 +357,7 @@ export default function ProviderTrainingClient() {
 
       setSpokenText("")
       setPreferredText("")
-      await loadTraining()
+      await refreshTrainingData()
     } finally {
       setLoading(false)
     }
@@ -322,19 +368,13 @@ export default function ProviderTrainingClient() {
     id: string
   ) {
     const confirmed = confirm("Delete this training item?")
-
     if (!confirmed) return
 
-    const response = await fetch(
-      "/api/report-writing/provider-training/delete",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ type, id }),
-      }
-    )
+    const response = await fetch("/api/report-writing/provider-training/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, id }),
+    })
 
     const data = await response.json()
 
@@ -343,21 +383,15 @@ export default function ProviderTrainingClient() {
       return
     }
 
-    await loadTraining()
+    await refreshTrainingData()
   }
 
   async function promoteLearningToRule(example: LearnedEditExample) {
-    const confirmed = confirm(
-      "Convert this learned edit into a permanent provider rule?"
-    )
-
+    const confirmed = confirm("Convert this learned edit into a permanent provider rule?")
     if (!confirmed) return
 
     const rule = [
-      `For ${getReportTypeLabel(
-        example.report_type,
-        customTypes
-      )}, follow this provider-approved wording pattern:`,
+      `For ${getReportTypeLabel(example.report_type, customTypes)}, follow this provider-approved wording pattern:`,
       "",
       "Avoid this AI wording:",
       truncateText(example.original_text, 900),
@@ -371,9 +405,7 @@ export default function ProviderTrainingClient() {
     try {
       const response = await fetch("/api/report-writing/provider-training", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           providerId,
           type: "rule",
@@ -390,7 +422,7 @@ export default function ProviderTrainingClient() {
       }
 
       alert("Learning example promoted to a permanent rule.")
-      await loadTraining()
+      await refreshTrainingData()
     } finally {
       setLoading(false)
     }
@@ -409,9 +441,7 @@ export default function ProviderTrainingClient() {
     return (
       <div className="p-8">
         <h1 className="text-2xl font-bold">Report Writing Training</h1>
-        <p className="mt-2 text-slate-600">
-          Loading provider training page...
-        </p>
+        <p className="mt-2 text-slate-600">Loading provider training page...</p>
       </div>
     )
   }
@@ -425,13 +455,6 @@ export default function ProviderTrainingClient() {
         </p>
       </div>
 
-      <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
-        These rules, examples, terminology preferences, and learned edits are
-        only used for this provider. Example correspondence should be
-        de-identified before saving. Learned edits are created automatically
-        when typists or providers approve edited AI letters.
-      </div>
-
       <section className="rounded-2xl border bg-white p-5">
         <h2 className="text-xl font-bold">Correspondence Type</h2>
 
@@ -439,7 +462,7 @@ export default function ProviderTrainingClient() {
           <select
             className="rounded-xl border p-3"
             value={reportType}
-            onChange={(e) => setReportType(e.target.value)}
+            onChange={(event) => setReportType(event.target.value)}
           >
             {availableReportTypes.map((type) => (
               <option key={type.value} value={type.value}>
@@ -448,132 +471,182 @@ export default function ProviderTrainingClient() {
             ))}
           </select>
 
-          <div className="flex gap-3">
-            <input
-              className="flex-1 rounded-xl border p-3"
-              placeholder="New type, e.g. TMJ Report"
-              value={newTypeLabel}
-              onChange={(e) => setNewTypeLabel(e.target.value)}
-            />
-
-            <button
-              onClick={addCorrespondenceType}
-              disabled={loading}
-              className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
-            >
-              Add Type
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowReportTypeManager((value) => !value)}
+            className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold"
+          >
+            {showReportTypeManager ? "Hide Report Types" : "Manage Report Types"}
+          </button>
         </div>
 
         <p className="mt-2 text-sm text-slate-500">
-          Current training category:{" "}
-          <span className="font-semibold">{reportType}</span>
+          Current training category: <span className="font-semibold">{reportType}</span>
         </p>
+
+        {showReportTypeManager ? (
+          <div className="mt-5 rounded-2xl border bg-slate-50 p-4">
+            <div>
+              <h3 className="font-bold">Manage report types</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Unticking a report type hides it for your provider profile only.
+                Existing examples, rules and knowledge are kept safely.
+              </p>
+            </div>
+
+            <div className="mt-4 grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+              {allProviderReportTypes.map((type) => (
+                <label
+                  key={type.value}
+                  className="flex items-center gap-3 rounded-xl border bg-white p-3 text-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={isReportTypeEnabled(type)}
+                    onChange={(event) => toggleReportType(type, event.target.checked)}
+                  />
+                  <span>
+                    <span className="font-semibold">{type.label}</span>
+                    <span className="ml-2 text-xs text-slate-400">{type.value}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            <div className="mt-5 rounded-xl border bg-white p-4">
+              <h4 className="font-semibold">Add a custom report type</h4>
+              <p className="mt-1 text-sm text-slate-500">
+                Custom report types are only visible for your provider profile.
+              </p>
+              <div className="mt-3 flex flex-col gap-3 md:flex-row">
+                <input
+                  className="flex-1 rounded-xl border p-3"
+                  placeholder="New type, e.g. TMJ Report"
+                  value={newTypeLabel}
+                  onChange={(event) => setNewTypeLabel(event.target.value)}
+                />
+                <button
+                  onClick={addCorrespondenceType}
+                  disabled={loading}
+                  className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Add Type
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <section className="space-y-4 rounded-2xl border bg-white p-5">
-          <h2 className="text-xl font-bold">Rules</h2>
+      <ProviderKnowledgeTrainerPanel
+        providerId={providerId}
+        reportType={reportType}
+        availableReportTypes={availableReportTypes}
+        onTrainingChanged={refreshTrainingData}
+      />
 
-          <textarea
-            className="h-40 w-full rounded-xl border p-3"
-            placeholder="Example: Always start consultation reports with: Thank you for referring [patient first name]."
-            value={ruleText}
-            onChange={(e) => setRuleText(e.target.value)}
-          />
-
-          <button
-            onClick={addRule}
-            disabled={loading}
-            className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
-          >
-            Add Rule
-          </button>
-        </section>
-
-        <section className="space-y-4 rounded-2xl border bg-white p-5">
-          <h2 className="text-xl font-bold">Example Correspondence</h2>
-
-          <input
-            className="w-full rounded-xl border p-3"
-            placeholder="Example title"
-            value={exampleTitle}
-            onChange={(e) => setExampleTitle(e.target.value)}
-          />
-
-          <label className="block cursor-pointer rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-600 hover:bg-slate-50">
-            Upload a plain text example letter
-            <input
-              type="file"
-              accept=".txt,text/plain"
-              className="hidden"
-              onChange={async (e) => {
-                const file = e.target.files?.[0]
-                if (file) {
-                  await handleTextFileUpload(file)
-                }
-              }}
-            />
-          </label>
-
-          <textarea
-            className="h-40 w-full rounded-xl border p-3"
-            placeholder="Or paste an example letter here..."
-            value={exampleText}
-            onChange={(e) => setExampleText(e.target.value)}
-          />
-
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-            This preview is what will be saved.
+      <section className="rounded-2xl border bg-slate-50 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold">Advanced Manual Training</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Manual rules, examples, terminology preferences and learned edits are
+              still used by generation.
+            </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setShowAdvancedManualTools((value) => !value)}
+            className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold"
+          >
+            {showAdvancedManualTools ? "Hide Manual Tools" : "Show Manual Tools"}
+          </button>
+        </div>
 
-          <div className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border bg-slate-50 p-3 text-xs text-slate-700">
-            {deidentifiedPreview}
+        {showAdvancedManualTools ? (
+          <div className="mt-5 space-y-6">
+            <div className="grid gap-6 lg:grid-cols-3">
+              <section className="space-y-4 rounded-2xl border bg-white p-5">
+                <h3 className="text-lg font-bold">Rules</h3>
+                <textarea
+                  className="h-40 w-full rounded-xl border p-3"
+                  placeholder="Example: Always start consultation reports with: Thank you for referring [patient first name]."
+                  value={ruleText}
+                  onChange={(event) => setRuleText(event.target.value)}
+                />
+                <button
+                  onClick={addRule}
+                  disabled={loading}
+                  className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Add Rule
+                </button>
+              </section>
+
+              <section className="space-y-4 rounded-2xl border bg-white p-5">
+                <h3 className="text-lg font-bold">Example Correspondence</h3>
+                <input
+                  className="w-full rounded-xl border p-3"
+                  placeholder="Example title"
+                  value={exampleTitle}
+                  onChange={(event) => setExampleTitle(event.target.value)}
+                />
+                <label className="block cursor-pointer rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-600 hover:bg-slate-50">
+                  Upload a plain text example letter
+                  <input
+                    type="file"
+                    accept=".txt,text/plain"
+                    className="hidden"
+                    onChange={async (event) => {
+                      const file = event.target.files?.[0]
+                      if (file) await handleTextFileUpload(file)
+                    }}
+                  />
+                </label>
+                <textarea
+                  className="h-40 w-full rounded-xl border p-3"
+                  placeholder="Or paste an example letter here..."
+                  value={exampleText}
+                  onChange={(event) => setExampleText(event.target.value)}
+                />
+                <div className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border bg-slate-50 p-3 text-xs text-slate-700">
+                  {deidentifiedPreview}
+                </div>
+                <button
+                  onClick={addExample}
+                  disabled={loading}
+                  className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Add Example
+                </button>
+              </section>
+
+              <section className="space-y-4 rounded-2xl border bg-white p-5">
+                <h3 className="text-lg font-bold">Terminology Preferences</h3>
+                <input
+                  className="w-full rounded-xl border p-3"
+                  placeholder="Spoken/written text, e.g. one six"
+                  value={spokenText}
+                  onChange={(event) => setSpokenText(event.target.value)}
+                />
+                <input
+                  className="w-full rounded-xl border p-3"
+                  placeholder="Preferred text, e.g. 16"
+                  value={preferredText}
+                  onChange={(event) => setPreferredText(event.target.value)}
+                />
+                <button
+                  onClick={addTerminology}
+                  disabled={loading}
+                  className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  Add Terminology
+                </button>
+              </section>
+            </div>
           </div>
-
-          <button
-            onClick={addExample}
-            disabled={loading}
-            className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
-          >
-            Add Example
-          </button>
-        </section>
-
-        <section className="space-y-4 rounded-2xl border bg-white p-5">
-          <h2 className="text-xl font-bold">Terminology Preferences</h2>
-
-          <input
-            className="w-full rounded-xl border p-3"
-            placeholder="Spoken/written text, e.g. one six"
-            value={spokenText}
-            onChange={(e) => setSpokenText(e.target.value)}
-          />
-
-          <input
-            className="w-full rounded-xl border p-3"
-            placeholder="Preferred text, e.g. 16"
-            value={preferredText}
-            onChange={(e) => setPreferredText(e.target.value)}
-          />
-
-          <button
-            onClick={addTerminology}
-            disabled={loading}
-            className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
-          >
-            Add Terminology
-          </button>
-        </section>
-      </div>
-
-      <ProviderTrainingCasesPanel
-  providerId={providerId}
-  reportType={reportType}
-  availableReportTypes={availableReportTypes}
-  onRulePromoted={loadTraining}
-/>
+        ) : null}
+      </section>
 
       <section className="rounded-2xl border bg-white p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -588,7 +661,7 @@ export default function ProviderTrainingClient() {
           <select
             className="rounded-xl border p-3 text-sm"
             value={learningFilter}
-            onChange={(e) => setLearningFilter(e.target.value)}
+            onChange={(event) => setLearningFilter(event.target.value)}
           >
             <option value="all">All report types</option>
             {availableReportTypes.map((type) => (
@@ -602,8 +675,8 @@ export default function ProviderTrainingClient() {
         <div className="mt-5 space-y-4">
           {filteredLearnedExamples.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-300 p-5 text-sm text-slate-500">
-              No learned edit examples yet. They will appear here after an
-              edited AI-generated letter is approved.
+              No learned edit examples yet. They will appear here after an edited
+              AI-generated letter is approved.
             </div>
           ) : null}
 
@@ -627,14 +700,11 @@ export default function ProviderTrainingClient() {
 
                   <div className="flex flex-wrap gap-2">
                     <button
-                      onClick={() =>
-                        setExpandedLearningId(expanded ? null : example.id)
-                      }
+                      onClick={() => setExpandedLearningId(expanded ? null : example.id)}
                       className="rounded-lg border px-3 py-2 text-xs font-semibold text-slate-700"
                     >
                       {expanded ? "Collapse" : "Review"}
                     </button>
-
                     <button
                       onClick={() => promoteLearningToRule(example)}
                       disabled={loading}
@@ -642,7 +712,6 @@ export default function ProviderTrainingClient() {
                     >
                       Promote to Rule
                     </button>
-
                     <button
                       onClick={() => deleteItem("edit_example", example.id)}
                       className="rounded-lg bg-red-600 px-3 py-2 text-xs font-semibold text-white"
@@ -662,7 +731,6 @@ export default function ProviderTrainingClient() {
                         {example.original_text}
                       </div>
                     </div>
-
                     <div>
                       <div className="mb-2 text-xs font-bold uppercase text-emerald-700">
                         Final approved version
@@ -675,18 +743,13 @@ export default function ProviderTrainingClient() {
                 ) : (
                   <div className="mt-3 grid gap-3 lg:grid-cols-2">
                     <div className="rounded-xl border bg-slate-50 p-3">
-                      <div className="text-xs font-semibold text-slate-500">
-                        Original AI
-                      </div>
+                      <div className="text-xs font-semibold text-slate-500">Original AI</div>
                       <div className="mt-1 whitespace-pre-wrap text-sm text-slate-700">
                         {truncateText(example.original_text, 260)}
                       </div>
                     </div>
-
                     <div className="rounded-xl border bg-slate-50 p-3">
-                      <div className="text-xs font-semibold text-slate-500">
-                        Final approved
-                      </div>
+                      <div className="text-xs font-semibold text-slate-500">Final approved</div>
                       <div className="mt-1 whitespace-pre-wrap text-sm text-slate-700">
                         {truncateText(example.final_text, 260)}
                       </div>
@@ -702,23 +765,18 @@ export default function ProviderTrainingClient() {
       <div className="grid gap-6 lg:grid-cols-3">
         <section className="rounded-2xl border bg-white p-5">
           <h2 className="text-xl font-bold">Saved Rules</h2>
-
           <div className="mt-4 space-y-3">
             {rules.length === 0 ? (
               <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">
                 No rules saved yet.
               </div>
             ) : null}
-
             {rules.map((rule) => (
               <div key={rule.id} className="rounded-xl border p-3">
                 <div className="text-xs font-semibold text-slate-500">
                   {getReportTypeLabel(rule.report_type, customTypes)}
                 </div>
-                <div className="mt-1 whitespace-pre-wrap text-sm">
-                  {rule.rule_text}
-                </div>
-
+                <div className="mt-1 whitespace-pre-wrap text-sm">{rule.rule_text}</div>
                 <button
                   onClick={() => deleteItem("rule", rule.id)}
                   className="mt-2 text-xs font-semibold text-red-600"
@@ -732,26 +790,21 @@ export default function ProviderTrainingClient() {
 
         <section className="rounded-2xl border bg-white p-5">
           <h2 className="text-xl font-bold">Saved Examples</h2>
-
           <div className="mt-4 space-y-3">
             {examples.length === 0 ? (
               <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">
                 No examples saved yet.
               </div>
             ) : null}
-
             {examples.map((example) => (
               <div key={example.id} className="rounded-xl border p-3">
                 <div className="text-xs font-semibold text-slate-500">
                   {getReportTypeLabel(example.report_type, customTypes)}
                 </div>
-                <div className="mt-1 font-semibold">
-                  {example.title || "Untitled"}
-                </div>
+                <div className="mt-1 font-semibold">{example.title || "Untitled"}</div>
                 <div className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap text-sm text-slate-600">
                   {example.example_text}
                 </div>
-
                 <button
                   onClick={() => deleteItem("example", example.id)}
                   className="mt-2 text-xs font-semibold text-red-600"
@@ -765,14 +818,12 @@ export default function ProviderTrainingClient() {
 
         <section className="rounded-2xl border bg-white p-5">
           <h2 className="text-xl font-bold">Saved Terminology</h2>
-
           <div className="mt-4 space-y-3">
             {terminology.length === 0 ? (
               <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">
                 No terminology saved yet.
               </div>
             ) : null}
-
             {terminology.map((item) => (
               <div key={item.id} className="rounded-xl border p-3 text-sm">
                 <div>
@@ -783,7 +834,6 @@ export default function ProviderTrainingClient() {
                   <span className="font-semibold">With: </span>
                   {item.preferred_text}
                 </div>
-
                 <button
                   onClick={() => deleteItem("terminology", item.id)}
                   className="mt-2 text-xs font-semibold text-red-600"
