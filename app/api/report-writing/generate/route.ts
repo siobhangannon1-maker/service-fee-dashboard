@@ -18,6 +18,7 @@ type TrainingData = {
   terminologyText: string
   examplesText: string
   editLearningText: string
+  providerKnowledgeText: string
   exampleDebug: Array<{
     id: string
     title: string | null
@@ -51,6 +52,120 @@ function cleanString(value: unknown) {
   return String(value ?? "").trim()
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function normaliseScore(value: unknown, fallback = 70) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+
+  // Some AI outputs use 0.9 instead of 90.
+  if (numeric > 0 && numeric <= 1) return Math.round(numeric * 100)
+
+  return Math.max(1, Math.min(100, Math.round(numeric)))
+}
+
+async function safeSelect<T>(query: PromiseLike<{ data: T | null; error: any }>) {
+  const result = await query
+
+  if (result.error) {
+    console.warn("Optional provider training query failed:", result.error.message)
+    return null
+  }
+
+  return result.data
+}
+
+async function getProviderKnowledgeText(providerId: string | null, reportType: string) {
+  if (!providerId) return "No provider behaviours, preferred phrases, or template blocks saved."
+
+  const data = await safeSelect<any[]>(
+    supabase
+      .from("provider_behaviours")
+      .select("*")
+      .eq("provider_id", providerId)
+      .eq("status", "active")
+      .in("report_type", [reportType, "all"])
+      .order("confidence", { ascending: false })
+      .order("support_count", { ascending: false })
+      .limit(120)
+  )
+
+  if (!data || data.length === 0) {
+    return "No provider behaviours, preferred phrases, or template blocks saved."
+  }
+
+  const behaviours = data.filter((item) => {
+    const type = cleanString(item.knowledge_type || "behaviour")
+    return type === "behaviour" || !type
+  })
+
+  const phrases = data.filter((item) => {
+    const type = cleanString(item.knowledge_type)
+    return type === "preferred_phrase"
+  })
+
+  const templateBlocks = data.filter((item) => {
+    const type = cleanString(item.knowledge_type)
+    return type === "template_block"
+  })
+
+  const formatItem = (item: any, index: number) => {
+    const confidence = normaliseScore(item.confidence, 70)
+    const supportCount = Number(item.support_count || 1)
+    const category = cleanString(item.category) || "general"
+    const text =
+      cleanString(item.behaviour_text) ||
+      cleanString(item.phrase_text) ||
+      cleanString(item.template_block_text)
+
+    const evidence = cleanString(item.evidence_summary)
+
+    return [
+      `${index + 1}. [${item.report_type || reportType} / ${category} / confidence ${confidence}% / seen ${supportCount}]`,
+      text,
+      evidence ? `Evidence: ${evidence}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n")
+  }
+
+  const sections: string[] = []
+
+  if (behaviours.length > 0) {
+    sections.push(
+      [
+        "LEARNED PROVIDER BEHAVIOURS",
+        "Use these as provider-specific style and content preferences.",
+        behaviours.map(formatItem).join("\n\n"),
+      ].join("\n")
+    )
+  }
+
+  if (phrases.length > 0) {
+    sections.push(
+      [
+        "PREFERRED PROVIDER PHRASES",
+        "When clinically appropriate, prefer these phrases or very close wording rather than generic wording.",
+        phrases.map(formatItem).join("\n\n"),
+      ].join("\n")
+    )
+  }
+
+  if (templateBlocks.length > 0) {
+    sections.push(
+      [
+        "PROVIDER TEMPLATE BLOCKS",
+        "Use these as reusable paragraph or section structures when the clinical scenario matches.",
+        templateBlocks.map(formatItem).join("\n\n"),
+      ].join("\n")
+    )
+  }
+
+  return sections.join("\n\n---\n\n")
+}
+
 async function getProviderTraining(
   providerId: string | null,
   reportType: string,
@@ -70,6 +185,8 @@ async function getProviderTraining(
       ? universalRulesResult.data.map((rule) => rule.rule_text)
       : []
 
+  const providerKnowledgeText = await getProviderKnowledgeText(providerId, reportType)
+
   if (!providerId) {
     return {
       rulesText:
@@ -79,6 +196,7 @@ async function getProviderTraining(
       terminologyText: "No provider-specific terminology rules saved.",
       examplesText: "No provider-specific examples saved.",
       editLearningText: "No provider-specific edit examples saved.",
+      providerKnowledgeText,
       exampleDebug: [],
     }
   }
@@ -104,7 +222,7 @@ async function getProviderTraining(
         .eq("provider_id", providerId)
         .eq("report_type", reportType)
         .order("created_at", { ascending: false })
-        .limit(30),
+        .limit(40),
 
       supabase
         .from("provider_report_edit_examples")
@@ -112,7 +230,7 @@ async function getProviderTraining(
         .eq("provider_id", providerId)
         .eq("report_type", reportType)
         .order("created_at", { ascending: false })
-        .limit(5),
+        .limit(8),
     ])
 
   const providerRules =
@@ -177,7 +295,7 @@ async function getProviderTraining(
       const bDate = b.created_at ? new Date(b.created_at).getTime() : 0
       return bDate - aDate
     })
-    .slice(0, safePreferredExampleId ? 6 : 5)
+    .slice(0, safePreferredExampleId ? 8 : 6)
 
   const examplesText =
     scoredExamples.length > 0
@@ -216,6 +334,7 @@ async function getProviderTraining(
     terminologyText,
     examplesText,
     editLearningText,
+    providerKnowledgeText,
     exampleDebug: scoredExamples.map((example) => ({
       id: example.id,
       title: example.title,
@@ -228,41 +347,36 @@ async function getProviderTraining(
   }
 }
 
+async function enforceExactPatientFirstName(
+  report: string,
+  patientFirstName: string,
+  patientFullName?: string
+) {
+  const firstName = cleanString(patientFirstName)
+  const fullName = cleanString(patientFullName)
 
-async function enforceExactPatientFirstName(report: string, patientFirstName: string) {
-  const exactName = cleanString(patientFirstName)
+  if (!firstName) return report
 
-  if (!exactName) return report
-  if (report.includes(exactName)) return report
+  let fixed = report
 
-  const repair = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
-    temperature: 0,
-    messages: [
-      {
-        role: "system",
-        content:
-          "You repair patient-name spelling only. Do not change clinical content, wording, punctuation, formatting, or structure except the patient first name.",
-      },
-      {
-        role: "user",
-        content: `
-The exact patient first name is:
-${exactName}
+  if (fullName && fullName !== firstName) {
+    fixed = fixed.replace(
+      new RegExp(`\\b${escapeRegExp(fullName)}\\b`, "g"),
+      firstName
+    )
 
-The report below may have changed or misspelled the patient's first name.
+    const nameParts = fullName.split(/\s+/).filter(Boolean)
+    const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : ""
 
-Replace any patient first-name variant with the exact name above.
-Return the full corrected report only.
+    if (lastName && lastName !== firstName) {
+      fixed = fixed.replace(
+        new RegExp(`\\b${escapeRegExp(lastName)}\\b`, "g"),
+        firstName
+      )
+    }
+  }
 
-Report:
-${report}
-`,
-      },
-    ],
-  })
-
-  return repair.choices[0]?.message?.content?.trim() || report
+  return fixed
 }
 
 function getReportTypeLabel(reportType: string) {
@@ -299,7 +413,6 @@ function safeJsonParse<T>(text: string, fallback: T): T {
   }
 }
 
-
 function normaliseStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return []
 
@@ -308,7 +421,10 @@ function normaliseStringArray(value: unknown): string[] {
     .filter(Boolean)
 }
 
-function normaliseClinicalScenario(value: Partial<ClinicalScenario> | null | undefined, reportType: string): ClinicalScenario {
+function normaliseClinicalScenario(
+  value: Partial<ClinicalScenario> | null | undefined,
+  reportType: string
+): ClinicalScenario {
   return {
     summary: cleanString(value?.summary) || "No structured scenario detected.",
     procedure_category: cleanString(value?.procedure_category) || reportType,
@@ -444,7 +560,6 @@ function formatClinicalScenario(scenario: ClinicalScenario) {
   ].join("\n")
 }
 
-
 function getScenarioTagsFromClinicalScenario(scenario: ClinicalScenario) {
   const tags: string[] = []
 
@@ -460,7 +575,6 @@ function getScenarioTagsFromClinicalScenario(scenario: ClinicalScenario) {
 
   return tags
 }
-
 
 function normalisePatientGender(value: unknown): PatientGender {
   if (value === "male" || value === "female" || value === "neutral") {
@@ -511,7 +625,7 @@ export async function POST(req: Request) {
 
     const providerId = cleanString(body.providerId)
     const patientName = cleanString(body.patientName)
-    const patientFirstName = cleanString(body.patientFirstName)
+    const patientFirstName = cleanString(body.patientFirstName) || patientName
     const patientDob = cleanString(body.patientDob)
     const patientGender = body.patientGender
     const referrerName = cleanString(body.referrerName)
@@ -519,8 +633,9 @@ export async function POST(req: Request) {
     const reportType = cleanString(body.reportType)
     const clinicalNotes = cleanString(body.clinicalNotes)
     const preferredExampleId = cleanString(body.preferredExampleId)
+    const temporaryRulesText = cleanString(body.temporaryRulesText)
 
-    if (!patientName) {
+    if (!patientName && !patientFirstName) {
       return NextResponse.json(
         {
           success: false,
@@ -543,6 +658,8 @@ export async function POST(req: Request) {
     const finalReportType = reportType || "consultation_report"
     const finalPatientGender = normalisePatientGender(patientGender)
     const genderInstruction = getGenderInstruction(finalPatientGender)
+
+    const exactFirstName = patientFirstName || patientName
 
     const clinicalScenario = await detectClinicalScenario(
       clinicalNotes,
@@ -567,7 +684,9 @@ You are an AI specialist dental report writing assistant.
 Write a polished specialist dental ${reportTypeLabel}.
 
 The report must:
-- CRITICAL: The exact patient first name is "${patientFirstName || patientName}". Use this spelling exactly every time.
+- CRITICAL: The exact patient first name is "${exactFirstName}". Use this spelling exactly every time.
+- Use the patient first name only in the body of the report unless the provider examples clearly use the full name.
+- Never use the patient surname in the body of the report unless the provider examples clearly require it.
 - Never autocorrect this name. For example, if the entered name is "Sarrah", never write "Sarah".
 - Always use the exact patient first name provided in the patientFirstName field.
 - Never change, infer, shorten, replace or hallucinate the patient name from clinical notes or dictation.
@@ -582,6 +701,7 @@ The report must:
 - Do not include "Warm regards" unless it is clearly part of the requested content.
 - Follow universal report rules.
 - Follow provider-specific report rules.
+- Follow learnt provider behaviours, preferred phrases and template blocks.
 - Use the terminology replacement rules exactly.
 - Use the detected clinical scenario to choose the closest matching provider example structure.
 - If the detected scenario says a detail is false, do not mention that detail as if it happened.
@@ -602,13 +722,21 @@ Provider example rules:
 - Avoid generic AI-style explanatory writing.
 - Avoid expanding sections unnecessarily.
 
+Provider knowledge rules:
+- Learned behaviours explain reusable provider preferences.
+- Preferred phrases are important. Use them when the clinical situation matches.
+- Template blocks are important. Use the same block structure when the clinical situation matches.
+- If a learned behaviour conflicts with a manual rule, follow the manual rule.
+- If a preferred phrase conflicts with the clinical notes, do not use it.
+- If a template block requires facts not in the clinical notes, adapt it without inventing facts.
+
 Provider-specific learning rules:
 - Learn from the provider-specific edit examples by imitating the final approved style.
 - Avoid patterns that were removed from the original AI versions.
 
 Patient details:
-Patient full name: ${patientName || ""}
-Patient first name: ${patientFirstName || patientName || ""}
+Patient full name: ${patientName || exactFirstName || ""}
+Patient first name: ${exactFirstName || ""}
 Patient DOB: ${patientDob || "Not provided"}
 Patient gender/pronoun setting: ${finalPatientGender}
 
@@ -632,6 +760,12 @@ ${scenarioTags.length > 0 ? scenarioTags.join(", ") : "No scenario tags detected
 Universal and provider-specific report rules:
 ${training.rulesText}
 
+Learned provider behaviours, preferred phrases and template blocks:
+${training.providerKnowledgeText}
+
+Temporary training-loop or preview rules:
+${temporaryRulesText || "No temporary training-loop rules."}
+
 Provider-specific terminology preferences:
 ${training.terminologyText}
 
@@ -649,12 +783,12 @@ Now write the final report body only.
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
-      temperature: 0.15,
+      temperature: 0.12,
       messages: [
         {
           role: "system",
           content:
-            "You write specialist dental reports. You must closely follow the provider's examples for structure, brevity, sequencing, paragraph style, and tone. You follow universal rules, provider-specific rules, terminology preferences, detected clinical scenario information, and provider-specific edit-learning examples carefully. You do not invent clinical facts. You follow the supplied patient gender/pronoun setting exactly and do not infer gender from names.",
+            "You write specialist dental reports. You closely follow provider examples, manual rules, learned behaviours, preferred phrases, template blocks, terminology preferences, detected clinical scenario information, and provider-specific edit-learning examples. You do not invent clinical facts. You use the supplied patient first name only unless examples clearly require the full name. You follow the supplied patient gender/pronoun setting exactly and do not infer gender from names.",
         },
         {
           role: "user",
@@ -665,7 +799,11 @@ Now write the final report body only.
 
     const rawReport = completion.choices[0]?.message?.content?.trim() || ""
     const report = rawReport
-      ? await enforceExactPatientFirstName(rawReport, patientFirstName || patientName)
+      ? await enforceExactPatientFirstName(
+          rawReport,
+          exactFirstName || patientName,
+          patientName
+        )
       : ""
 
     if (!report) {
@@ -689,9 +827,11 @@ Now write the final report body only.
         reportTypeLabel,
         patientGender: finalPatientGender,
         preferredExampleId: preferredExampleId || null,
+        temporaryRulesText,
         scenarioTags,
         selectedExamples: training.exampleDebug,
         rulesUsed: training.rulesText,
+        providerKnowledgeUsed: training.providerKnowledgeText,
         terminologyUsed: training.terminologyText,
         examplesUsed: training.examplesText,
         editLearningUsed: training.editLearningText,

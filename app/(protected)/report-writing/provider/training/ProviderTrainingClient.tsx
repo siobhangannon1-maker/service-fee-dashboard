@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import ProviderTrainingCasesPanel from "@/components/report-writing/ProviderTrainingCasesPanel"
 
 const defaultCorrespondenceTypes = [
   { value: "consultation_report", label: "Consultation Report" },
@@ -566,6 +567,13 @@ export default function ProviderTrainingClient() {
           </button>
         </section>
       </div>
+
+      <ProviderTrainingCasesPanel
+  providerId={providerId}
+  reportType={reportType}
+  availableReportTypes={availableReportTypes}
+  onRulePromoted={loadTraining}
+/>
 
       <section className="rounded-2xl border bg-white p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">

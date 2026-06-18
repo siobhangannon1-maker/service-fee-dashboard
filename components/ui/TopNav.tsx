@@ -298,7 +298,7 @@ const navGroups: NavGroup[] = [
       },
       {
         href: "/report-writing/admin/provider-examples",
-        label: "Provider Letter Examples",
+        label: "AI Training",
         description: "Upload examples of letters for AI training",
       },
       {
