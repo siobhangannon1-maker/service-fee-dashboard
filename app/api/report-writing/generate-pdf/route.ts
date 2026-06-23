@@ -303,11 +303,23 @@ async function resolveDraftReferrer(draft: any) {
   const fallbackName = existingName || queueName || possibleNames[0] || null;
   const fallbackAddress = existingAddress || queueAddress || null;
 
-  if (possibleNames.length === 0) {
+  // Important:
+  // If the typist page already saved a referrer address, trust that exact
+  // selected address. Do not re-match by dentist name and prepend another
+  // practice name, because one dentist may work at multiple practices.
+  if (fallbackAddress) {
     return {
       referrerName: fallbackName,
       referrerAddress: fallbackAddress,
-      source: fallbackName || fallbackAddress ? "draft_or_queue" : "empty",
+      source: "selected_draft_or_queue_address",
+    };
+  }
+
+  if (possibleNames.length === 0) {
+    return {
+      referrerName: fallbackName,
+      referrerAddress: null,
+      source: fallbackName ? "draft_or_queue_name_only" : "empty",
     };
   }
 
@@ -320,7 +332,7 @@ async function resolveDraftReferrer(draft: any) {
     console.warn("Could not look up report_referrers for PDF fallback:", error);
     return {
       referrerName: fallbackName,
-      referrerAddress: fallbackAddress,
+      referrerAddress: null,
       source: "lookup_error",
     };
   }
@@ -373,26 +385,20 @@ async function resolveDraftReferrer(draft: any) {
   if (!bestReferrer || bestScore < 40) {
     return {
       referrerName: fallbackName,
-      referrerAddress: fallbackAddress,
+      referrerAddress: null,
       source: "no_match",
     };
   }
 
   return {
     referrerName: fallbackName || bestReferrer.name || null,
-    referrerAddress: fallbackAddress
-      ? formatReferrerAddressWithPractice({
-          practiceName: bestReferrer.practice_name,
-          address: fallbackAddress,
-        })
-      : formatReferrerAddressWithPractice({
-          practiceName: bestReferrer.practice_name,
-          address: bestReferrer.address,
-        }),
+    referrerAddress: formatReferrerAddressWithPractice({
+      practiceName: bestReferrer.practice_name,
+      address: bestReferrer.address,
+    }),
     source: "report_referrers",
   };
 }
-
 
 function getImageAspect(aspect: string | null | undefined) {
   if (aspect === "square") return 1;
@@ -1119,7 +1125,7 @@ export async function POST(req: Request) {
 
     const paragraphs = letterText.split(/\n/);
 
-    const signatureBlockHeight = 165;
+    const signatureBlockHeight = 95;
 
     function estimateRichParagraphHeight(
       text: string,
@@ -1203,7 +1209,13 @@ export async function POST(req: Request) {
           bold: isHeading,
         });
 
-        if (y - finalParagraphHeight < bottomLimit + signatureBlockHeight) {
+        const remainingSpace = y - bottomLimit;
+        const neededSpace = finalParagraphHeight + signatureBlockHeight;
+
+        // Keep the final paragraph and signature together only when the page is
+        // genuinely close to full. This avoids half-empty pages while still
+        // preventing the signature block from sitting alone on a new page.
+        if (remainingSpace < neededSpace && remainingSpace < 90) {
           y = newPage();
         }
       }
