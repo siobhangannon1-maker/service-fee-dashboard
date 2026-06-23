@@ -2487,6 +2487,12 @@ export default function TypistPage() {
   }, []);
 
   useEffect(() => {
+  if (!selectedProviderId) return;
+
+  loadReportTypesForProvider(selectedProviderId);
+}, [selectedProviderId]);
+
+  useEffect(() => {
     return () => {
       if (pdfPreviewUrl) {
         window.URL.revokeObjectURL(pdfPreviewUrl);
@@ -2867,6 +2873,26 @@ export default function TypistPage() {
       setReferralAutoFillStatus("error");
     }
   }
+
+  async function loadReportTypesForProvider(providerId: string) {
+  if (!providerId) return;
+
+  const response = await fetch(
+    `/api/report-writing/correspondence-types?providerId=${providerId}`,
+  );
+
+  const data = await response.json();
+
+  if (data.success) {
+    const types = data.types || [];
+
+    setReportTypes(types);
+
+    if (types.length > 0) {
+      setReportType(types[0].value);
+    }
+  }
+}
 
   async function startLetterFromQueue(item: QueueItem) {
     const selectionToken = queueSelectionTokenRef.current + 1;
