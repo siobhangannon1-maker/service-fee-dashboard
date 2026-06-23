@@ -644,7 +644,7 @@ export async function POST(req: Request) {
     const marginRight = 72;
     const contentWidth = pageWidth - marginLeft - marginRight;
 
-    const topMarginFirstPage = 135;
+    const topMarginFirstPage = 107;
     const topMarginOtherPages = 120;
     const bottomLimit = 145;
 
@@ -1119,7 +1119,7 @@ export async function POST(req: Request) {
 
     const paragraphs = letterText.split(/\n/);
 
-    const signatureBlockHeight = 130;
+    const signatureBlockHeight = 165;
 
     function estimateRichParagraphHeight(
       text: string,
