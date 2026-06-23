@@ -4675,13 +4675,21 @@ export default function TypistPage() {
 
               <div className="space-y-2 md:col-span-2">
                 <ReferrerSearchBox
-                  onSelect={(referrer) => {
-                    setReferrerName(referrer.name);
-                    setReferrerAddress(formatManualReferrerAddress(referrer));
-                    setReferralAutoFillError("");
-                    setReferralAutoFillStatus("found");
-                  }}
-                />
+  selectedName={referrerName}
+  selectedAddress={referrerAddress}
+  onClear={() => {
+    setReferrerName("");
+    setReferrerAddress("");
+    setReferralAutoFillError("");
+    setReferralAutoFillStatus("idle");
+  }}
+  onSelect={(referrer) => {
+    setReferrerName(referrer.name);
+    setReferrerAddress(formatManualReferrerAddress(referrer));
+    setReferralAutoFillError("");
+    setReferralAutoFillStatus("found");
+  }}
+/>
 
                 {referralAutoFillStatus === "loading" ? (
                   <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">

@@ -152,24 +152,16 @@ function PatientAndReferrerFields({
       </select>
 
       <ReferrerSearchBox
+        selectedName={referrerName}
+        selectedAddress={referrerAddress}
+        onClear={() => {
+          setReferrerName("");
+          setReferrerAddress("");
+        }}
         onSelect={(referrer) => {
           setReferrerName(referrer.name);
           setReferrerAddress(formatManualReferrerAddress(referrer));
         }}
-      />
-
-      <input
-        className="rounded-xl border border-slate-300 p-3"
-        placeholder="Referrer Name"
-        value={referrerName}
-        onChange={(e) => setReferrerName(e.target.value)}
-      />
-
-      <textarea
-        className="rounded-xl border border-slate-300 p-3 md:col-span-2"
-        placeholder="Referrer address"
-        value={referrerAddress}
-        onChange={(e) => setReferrerAddress(e.target.value)}
       />
 
       <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 md:col-span-2">
