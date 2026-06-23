@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
 import DraftImagePanel from "@/components/report-writing/DraftImagePanel";
+import TypistProviderSmsBox from "@/components/report-writing/TypistProviderSmsBox";
 import PraktikaToolsPopup from "@/components/report-writing/PraktikaToolsPopup";
 import MedirefToolsPopup from "@/components/report-writing/MedirefToolsPopup";
 import RichTextLetterEditor, {
@@ -4265,6 +4266,14 @@ export default function TypistPage() {
                   : "Provider approval required before final upload/email."}
               </div>
             </div>
+
+            {selectedProviderId ? (
+  <div className="mt-4">
+    <TypistProviderSmsBox
+      selectedProviderId={selectedProviderId}
+    />
+  </div>
+) : null}
 
             <button
               type="button"

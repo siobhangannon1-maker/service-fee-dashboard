@@ -303,15 +303,18 @@ async function resolveDraftReferrer(draft: any) {
   const fallbackName = existingName || queueName || possibleNames[0] || null;
   const fallbackAddress = existingAddress || queueAddress || null;
 
-  // Important:
-  // If the typist page already saved a referrer address, trust that exact
-  // selected address. Do not re-match by dentist name and prepend another
-  // practice name, because one dentist may work at multiple practices.
+  /*
+    Important:
+    If a referrer address has already been saved on the draft or linked queue row,
+    trust that exact address. Do not re-match the dentist by name and prepend a
+    practice name from a different row. This prevents the duplicate-practice issue
+    when one dentist works at more than one practice.
+  */
   if (fallbackAddress) {
     return {
       referrerName: fallbackName,
       referrerAddress: fallbackAddress,
-      source: "selected_draft_or_queue_address",
+      source: existingAddress ? "selected_draft_address" : "selected_queue_address",
     };
   }
 
@@ -396,7 +399,7 @@ async function resolveDraftReferrer(draft: any) {
       practiceName: bestReferrer.practice_name,
       address: bestReferrer.address,
     }),
-    source: "report_referrers",
+    source: "report_referrers_fallback",
   };
 }
 
@@ -650,9 +653,9 @@ export async function POST(req: Request) {
     const marginRight = 72;
     const contentWidth = pageWidth - marginLeft - marginRight;
 
-    const topMarginFirstPage = 94;
+    const topMarginFirstPage = 93;
     const topMarginOtherPages = 120;
-    const bottomLimit = 145;
+    const bottomLimit = 105;
 
     const fontSize = 10;
     const lineHeight = 14;
@@ -1125,7 +1128,7 @@ export async function POST(req: Request) {
 
     const paragraphs = letterText.split(/\n/);
 
-    const signatureBlockHeight = 95;
+    const signatureBlockHeight = 125;
 
     function estimateRichParagraphHeight(
       text: string,
@@ -1212,9 +1215,12 @@ export async function POST(req: Request) {
         const remainingSpace = y - bottomLimit;
         const neededSpace = finalParagraphHeight + signatureBlockHeight;
 
-        // Keep the final paragraph and signature together only when the page is
-        // genuinely close to full. This avoids half-empty pages while still
-        // preventing the signature block from sitting alone on a new page.
+        /*
+          Keep the final sentence with the signature when the page is genuinely
+          nearly full, but do not create a half-empty page just to move a short
+          final paragraph. Lowering bottomLimit above also gives the letter more
+          usable vertical space while still staying clear of the footer.
+        */
         if (remainingSpace < neededSpace && remainingSpace < 90) {
           y = newPage();
         }

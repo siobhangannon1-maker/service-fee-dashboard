@@ -5,6 +5,8 @@ import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
 import OpenAIDictationBox from "@/components/report-writing/OpenAIDictationBox";
 import SmartDictateBox from "@/components/report-writing/SmartDictateBox";
 import RichTextLetterEditor from "@/components/report-writing/RichTextLetterEditor";
+import ProviderSimpleImageUpload from "@/components/report-writing/ProviderSimpleImageUpload";
+import ProviderTypistSmsBox from "@/components/report-writing/ProviderTypistSmsBox";
 
 type ReportTypeOption = {
   value: string;
@@ -618,6 +620,44 @@ export default function ProviderReportClient({
       setLoading(false);
     }
   }
+
+  async function createImageDraftForUpload() {
+  if (!patientFirstName.trim() || !patientLastName.trim()) {
+    alert("Please enter the patient first and last name before uploading images.");
+    return null;
+  }
+
+  const response = await fetch("/api/report-writing/save-draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      providerId,
+      patientName,
+      patientDob,
+      referrerName,
+      referrerAddress,
+      reportType,
+      clinicalNotes: "",
+      generatedReport: "",
+      editedText: "",
+      sourceType: "clinical_notes",
+      status: "draft",
+      typistInstructions,
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || !data.success) {
+    alert(data.error || "Could not create draft for image upload.");
+    return null;
+  }
+
+  setSelectedDraft(data.draft);
+  await loadDrafts();
+
+  return data.draft;
+}
 
   async function saveLetterAsDraft(options?: {
   text?: string;
@@ -1420,6 +1460,8 @@ export default function ProviderReportClient({
         </aside>
 
         <main className="space-y-6">
+          <ProviderTypistSmsBox providerId={providerId} />
+
           <section className="rounded-3xl border bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
@@ -1473,6 +1515,11 @@ export default function ProviderReportClient({
           {activeTab === "smart" ? (
             <div className="space-y-6">
               {sharedPatientFields}
+
+              <ProviderSimpleImageUpload
+  reportDraftId={selectedDraft?.id || null}
+  onCreateDraft={createImageDraftForUpload}
+/>
 
               <div className="space-y-6 rounded-2xl border bg-white p-5">
                 <SmartDictateBox
@@ -1539,6 +1586,11 @@ export default function ProviderReportClient({
             <div className="space-y-6 rounded-2xl border bg-white p-5">
               {sharedPatientFields}
 
+              <ProviderSimpleImageUpload
+  reportDraftId={selectedDraft?.id || null}
+  onCreateDraft={createImageDraftForUpload}
+/>
+
               <OpenAIDictationBox
                 providerId={providerId}
                 patientFirstName={patientFirstName}
@@ -1600,6 +1652,11 @@ export default function ProviderReportClient({
           {activeTab === "notes" ? (
             <div className="space-y-6 rounded-2xl border bg-white p-5">
               {sharedPatientFields}
+
+              <ProviderSimpleImageUpload
+  reportDraftId={selectedDraft?.id || null}
+  onCreateDraft={createImageDraftForUpload}
+/>
 
               <textarea
                 className="h-64 w-full rounded-xl border border-slate-300 p-4"
@@ -1739,6 +1796,11 @@ export default function ProviderReportClient({
                     </div>
 
                     {sharedPatientFields}
+
+                   <ProviderSimpleImageUpload
+  reportDraftId={selectedDraft?.id || null}
+  onCreateDraft={createImageDraftForUpload}
+/>
 
                     <RichTextLetterEditor
                       value={dictatedLetter || generatedReport}
@@ -1920,6 +1982,11 @@ export default function ProviderReportClient({
                       />
                     </div>
 
+                    <ProviderSimpleImageUpload
+  reportDraftId={selectedDraft?.id || null}
+  onCreateDraft={createImageDraftForUpload}
+/>
+
                     {selectedApprovalDraft.ai_generated_text ? (
                       <div className="flex justify-end">
                         <button
@@ -2077,6 +2144,11 @@ export default function ProviderReportClient({
                       minHeightClassName="min-h-[36rem]"
                       showToolbar={false}
                     />
+
+                    <ProviderSimpleImageUpload
+  reportDraftId={selectedDraft?.id || null}
+  onCreateDraft={createImageDraftForUpload}
+/>
 
                     {selectedApprovedDraft.typist_instructions?.trim() ? (
                       <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
