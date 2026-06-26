@@ -23,17 +23,119 @@ const PRAKTIKA_PRACTICE_ID = process.env.PRAKTIKA_PRACTICE_ID || "1181";
 const HELPER_UPLOAD_BUCKET =
   process.env.PRAKTIKA_HELPER_UPLOAD_BUCKET || "praktika-helper-files";
 
-function getSafePatientName(patientName: string | null | undefined) {
-  return patientName
-    ? String(patientName)
-        .trim()
-        .replace(/[^a-z0-9]+/gi, "_")
-        .replace(/^_+|_+$/g, "")
-    : "Patient";
+function extractPdfDateText(text: string) {
+  const match = String(text || "").match(/\[\[PDF_DATE:([\s\S]*?)\]\]/);
+  return match?.[1]?.trim() || "";
 }
 
-function getFileDate() {
-  return new Date().toISOString().slice(0, 10);
+function formatPdfFileDate(value: string | null | undefined) {
+  const cleanValue = String(value || "").trim();
+
+  if (!cleanValue) {
+    const today = new Date();
+
+    return [
+      String(today.getDate()).padStart(2, "0"),
+      String(today.getMonth() + 1).padStart(2, "0"),
+      today.getFullYear(),
+    ].join(".");
+  }
+
+  const date = new Date(`${cleanValue}T00:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return cleanValue.replace(/\//g, ".");
+  }
+
+  return [
+    String(date.getDate()).padStart(2, "0"),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    date.getFullYear(),
+  ].join(".");
+}
+
+function getSafeFilePart(value: string | null | undefined, fallback: string) {
+  return String(value || fallback)
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function formatReportTypeForFileName(value: string | null | undefined) {
+  return String(value || "Letter")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .trim();
+}
+
+function getDraftAppointmentDate(draft: any) {
+  const rawJson = draft?.raw_json || {};
+  const rawLetterText = draft?.edited_text || draft?.ai_generated_text || "";
+
+  return (
+    draft?.appointment_date ||
+    draft?.appointment_at ||
+    draft?.appointment_start ||
+    rawJson?.appointment_date ||
+    rawJson?.appointmentDate ||
+    rawJson?.appointment_at ||
+    rawJson?.appointmentStart ||
+    extractPdfDateText(rawLetterText)
+  );
+}
+
+function getReportPdfFileName(draft: any) {
+  const fileDate = formatPdfFileDate(getDraftAppointmentDate(draft));
+
+  const patientNameParts = String(draft?.patient_name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const patientFirstName = getSafeFilePart(patientNameParts[0], "Patient");
+  const patientLastName = getSafeFilePart(patientNameParts.slice(1).join(" "), "");
+
+  const patientFileName = [patientFirstName, patientLastName]
+    .filter(Boolean)
+    .join(" ");
+
+  const reportTypeFileName = getSafeFilePart(
+    formatReportTypeForFileName(draft?.report_type),
+    "Letter",
+  );
+
+  return `${fileDate} ${patientFileName} - ${reportTypeFileName}.pdf`;
+}
+
+function getPdfFileNameFromResponse(
+  response: Response,
+  fallbackFileName: string,
+) {
+  const contentDisposition = response.headers.get("content-disposition") || "";
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim());
+    } catch {
+      return utf8Match[1].trim();
+    }
+  }
+
+  const quotedMatch = contentDisposition.match(/filename="([^"]+)"/i);
+
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1].trim();
+  }
+
+  const plainMatch = contentDisposition.match(/filename=([^;]+)/i);
+
+  if (plainMatch?.[1]) {
+    return plainMatch[1].trim();
+  }
+
+  return fallbackFileName;
 }
 
 function formatPraktikaDateTime(date = new Date()) {
@@ -181,9 +283,10 @@ export async function POST(req: Request) {
       );
     }
 
-    const fileName = `${getFileDate()} ${getSafePatientName(
-      draft.patient_name,
-    )} Letter.pdf`;
+    const fileName = getPdfFileNameFromResponse(
+      pdfResponse,
+      getReportPdfFileName(draft),
+    );
 
     await ensureUploadBucketExists();
 

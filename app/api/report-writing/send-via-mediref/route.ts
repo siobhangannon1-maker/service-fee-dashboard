@@ -44,6 +44,121 @@ function splitPatientName(name: string | null | undefined) {
   };
 }
 
+function extractPdfDateText(text: string) {
+  const match = String(text || "").match(/\[\[PDF_DATE:([\s\S]*?)\]\]/);
+  return match?.[1]?.trim() || "";
+}
+
+function formatPdfFileDate(value: string | null | undefined) {
+  const cleanValue = String(value || "").trim();
+
+  if (!cleanValue) {
+    const today = new Date();
+
+    return [
+      String(today.getDate()).padStart(2, "0"),
+      String(today.getMonth() + 1).padStart(2, "0"),
+      today.getFullYear(),
+    ].join(".");
+  }
+
+  const date = new Date(`${cleanValue}T00:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return cleanValue.replace(/\//g, ".");
+  }
+
+  return [
+    String(date.getDate()).padStart(2, "0"),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    date.getFullYear(),
+  ].join(".");
+}
+
+function getSafeFilePart(value: string | null | undefined, fallback: string) {
+  return String(value || fallback)
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function formatReportTypeForFileName(value: string | null | undefined) {
+  return String(value || "Letter")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .trim();
+}
+
+function getDraftAppointmentDate(draft: any) {
+  const rawJson = draft?.raw_json || {};
+  const rawLetterText = draft?.edited_text || draft?.ai_generated_text || "";
+
+  return (
+    draft?.appointment_date ||
+    draft?.appointment_at ||
+    draft?.appointment_start ||
+    rawJson?.appointment_date ||
+    rawJson?.appointmentDate ||
+    rawJson?.appointment_at ||
+    rawJson?.appointmentStart ||
+    extractPdfDateText(rawLetterText)
+  );
+}
+
+function getReportPdfFileName(draft: any) {
+  const fileDate = formatPdfFileDate(getDraftAppointmentDate(draft));
+
+  const patientNameParts = String(draft?.patient_name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const patientFirstName = getSafeFilePart(patientNameParts[0], "Patient");
+  const patientLastName = getSafeFilePart(patientNameParts.slice(1).join(" "), "");
+
+  const patientFileName = [patientFirstName, patientLastName]
+    .filter(Boolean)
+    .join(" ");
+
+  const reportTypeFileName = getSafeFilePart(
+    formatReportTypeForFileName(draft?.report_type),
+    "Letter",
+  );
+
+  return `${fileDate} ${patientFileName} - ${reportTypeFileName}.pdf`;
+}
+
+function getPdfFileNameFromResponse(
+  response: Response,
+  fallbackFileName: string,
+) {
+  const contentDisposition = response.headers.get("content-disposition") || "";
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim());
+    } catch {
+      return utf8Match[1].trim();
+    }
+  }
+
+  const quotedMatch = contentDisposition.match(/filename="([^"]+)"/i);
+
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1].trim();
+  }
+
+  const plainMatch = contentDisposition.match(/filename=([^;]+)/i);
+
+  if (plainMatch?.[1]) {
+    return plainMatch[1].trim();
+  }
+
+  return fallbackFileName;
+}
+
 function normaliseAdditionalRecipients(value: unknown) {
   if (!Array.isArray(value)) return [];
 
@@ -132,7 +247,7 @@ async function stagePdf(params: {
 async function generateAndStageLetterPdf(params: {
   origin: string;
   draftId: string;
-  patientName: string;
+  draft: any;
 }) {
   const pdfResponse = await fetch(
     `${params.origin}/api/report-writing/generate-pdf`,
@@ -151,9 +266,11 @@ async function generateAndStageLetterPdf(params: {
     );
   }
 
-  const letterFileName = `${new Date().toISOString().slice(0, 10)} ${safeFileName(
-    params.patientName,
-  )} Letter.pdf`;
+  const fallbackFileName = getReportPdfFileName(params.draft);
+  const letterFileName = getPdfFileNameFromResponse(
+    pdfResponse,
+    fallbackFileName,
+  );
 
   return await stagePdf({
     buffer: Buffer.from(await pdfResponse.arrayBuffer()),
@@ -263,11 +380,16 @@ export async function POST(req: Request) {
 
     const letterStartedAt = nowMs();
 
-    if (stagedPdf?.bucket && stagedPdf?.storagePath && stagedPdf?.fileName) {
+    const expectedLetterFileName = getReportPdfFileName(draft);
+
+    if (stagedPdf?.bucket && stagedPdf?.storagePath) {
       letterAttachment = {
         bucket: String(stagedPdf.bucket),
         storagePath: String(stagedPdf.storagePath),
-        fileName: String(stagedPdf.fileName),
+        // Keep the displayed/uploaded MediRef attachment name consistent with the
+        // generate-pdf and Praktika filename, even if the staged storage path came
+        // from an older filename.
+        fileName: expectedLetterFileName,
         contentType: "application/pdf" as const,
       };
     } else {
@@ -276,7 +398,7 @@ export async function POST(req: Request) {
       letterAttachment = await generateAndStageLetterPdf({
         origin,
         draftId,
-        patientName,
+        draft,
       });
 
       stagedPaths.push(letterAttachment.storagePath);
