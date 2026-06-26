@@ -41,6 +41,29 @@ type DraftImage = {
   display_page_break_before: boolean | null;
 };
 
+const pdfAssetCache = new Map<string, Buffer>();
+
+async function downloadStorageFileCached(path: string) {
+  const cached = pdfAssetCache.get(path);
+
+  if (cached) {
+    return cached;
+  }
+
+  const { data, error } = await supabase.storage
+    .from("report-assets")
+    .download(path);
+
+  if (error || !data) {
+    throw new Error(error?.message || `Could not download ${path}`);
+  }
+
+  const buffer = Buffer.from(await data.arrayBuffer());
+  pdfAssetCache.set(path, buffer);
+
+  return buffer;
+}
+
 function extractPdfCcText(text: string) {
   const match = String(text || "").match(/\[\[PDF_CC:([\s\S]*?)\]\]/);
   return match?.[1]?.trim() || "";
@@ -598,13 +621,13 @@ export async function POST(req: Request) {
     const pdfReferrerName = resolvedReferrer.referrerName;
     const pdfReferrerAddress = resolvedReferrer.referrerAddress;
 
-    const letterheadBytes = await downloadStorageFile(
-      "letterhead/focus-letterhead.png",
-    );
+    const letterheadBytes = await downloadStorageFileCached(
+  "letterhead/focus-letterhead.png",
+);
 
     const signatureBytes = provider.report_signature_path
-      ? await downloadStorageFile(provider.report_signature_path)
-      : null;
+  ? await downloadStorageFileCached(provider.report_signature_path)
+  : null;
 
     const pdfDoc = await PDFDocument.create();
     pdfDoc.registerFontkit(fontkit);
@@ -614,12 +637,12 @@ export async function POST(req: Request) {
     let italicFont = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
 
     try {
-      const bwGradualRegularBytes = await downloadStorageFile(
-        "fonts/BWGradual-Regular.otf",
-      );
-      const bwGradualBoldBytes = await downloadStorageFile(
-        "fonts/BWGradual-Bold.otf",
-      );
+      const bwGradualRegularBytes = await downloadStorageFileCached(
+  "fonts/BWGradual-Regular.otf",
+);
+const bwGradualBoldBytes = await downloadStorageFileCached(
+  "fonts/BWGradual-Bold.otf",
+);
 
       font = await pdfDoc.embedFont(bwGradualRegularBytes);
       boldFont = await pdfDoc.embedFont(bwGradualBoldBytes);
@@ -1087,8 +1110,20 @@ export async function POST(req: Request) {
     drawLetterhead();
 
     const rawLetterText = draft.edited_text || draft.ai_generated_text || "";
-    const today = formatPdfLetterDate(extractPdfDateText(rawLetterText));
-    drawLine(today);
+
+    const appointmentDate =
+      draft.appointment_date ||
+      draft.appointment_at ||
+      draft.appointment_start ||
+      draft.raw_json?.appointment_date ||
+      draft.raw_json?.appointmentDate ||
+      draft.raw_json?.appointment_at ||
+      draft.raw_json?.appointmentStart ||
+      draft.raw_json?.appointment_start ||
+      extractPdfDateText(rawLetterText);
+
+    const letterDate = formatPdfLetterDate(appointmentDate);
+    drawLine(letterDate);
 
     y -= lineHeight;
 
@@ -1299,13 +1334,29 @@ export async function POST(req: Request) {
 
     const pdfBytes = await pdfDoc.save();
 
-    const fileDate = formatPdfFileDate(extractPdfDateText(rawLetterText));
-    const patientFileName = getSafeFilePart(draft.patient_name, "Patient");
+    const fileDate = formatPdfFileDate(appointmentDate);
+
+    const patientNameParts = String(draft.patient_name || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    const patientFirstName = getSafeFilePart(patientNameParts[0], "Patient");
+    const patientLastName = getSafeFilePart(
+      patientNameParts.slice(1).join(" "),
+      "",
+    );
+
+    const patientFileName = [patientFirstName, patientLastName]
+      .filter(Boolean)
+      .join(" ");
+
     const reportTypeFileName = getSafeFilePart(
       formatReportTypeForFileName(draft.report_type),
-      "Report",
+      "Letter",
     );
-    const fileName = `${fileDate} ${patientFileName} ${reportTypeFileName}.pdf`;
+
+    const fileName = `${fileDate} ${patientFileName} - ${reportTypeFileName}.pdf`;
 
     return new NextResponse(Buffer.from(pdfBytes), {
       headers: {

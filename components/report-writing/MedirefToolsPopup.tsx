@@ -226,7 +226,7 @@ export default function MedirefToolsPopup({
         return;
       }
 
-      setLocalMessage("Connect requested. Keep the Mac Mini MediRef watcher running.");
+      setLocalMessage("Connect requested. Keep the Cloud MediRef watcher running.");
       await loadStatus();
     } finally {
       setRefreshSubmitting(false);
@@ -269,7 +269,7 @@ export default function MedirefToolsPopup({
 
       setPassword("");
       setLocalMessage(
-        "Credentials submitted. The Mac Mini helper will continue the MediRef login.",
+        "Credentials submitted. The Cloud helper will continue the MediRef login.",
       );
 
       await loadStatus();
@@ -447,7 +447,7 @@ export default function MedirefToolsPopup({
             </h3>
 
             <p className="mt-1 text-xs text-orange-900">
-              Enter the code sent by MediRef. The helper on the Mac Mini will
+              Enter the code sent by MediRef. The helper on the Cloud will
               continue the login automatically.
             </p>
 

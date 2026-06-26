@@ -15,24 +15,44 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
+const PENDING_LETTER_ICON_ID = 7341;
+
 type PatientGender = "male" | "female" | "neutral";
 
 type PraktikaAppointmentRow = {
-  iPatientId?: string;
-  iAppointmentId?: string;
-  dtAppointment?: string;
-  vchProviderName?: string;
-  vchPatientFirstName?: string;
-  vchPatientLastName?: string;
-  dtDOB?: string;
-  vchIconLabel1?: string;
-  vchIconLabel2?: string;
-  vchIconLabel3?: string;
-  vchIconLabel4?: string;
-  vchPatientTitle?: string;
-  vchAppointmentNotes?: string;
-  vchTxType?: string;
-  vchTxLabel?: string;
+  iPatientId?: string | number | null;
+  iAppointmentId?: string | number | null;
+  iAppointmentID?: string | number | null;
+  appointment_id?: string | number | null;
+  appointmentId?: string | number | null;
+
+  dtAppointment?: string | null;
+  vchAppDate?: string | null;
+  vchAppTime?: string | null;
+  vchProviderName?: string | null;
+  vchPatientFirstName?: string | null;
+  vchPatientLastName?: string | null;
+  dtDOB?: string | null;
+  vchPatientTitle?: string | null;
+  vchAppointmentNotes?: string | null;
+  vchTxType?: string | null;
+  vchTxLabel?: string | null;
+
+  iIcon1Id?: string | number | null;
+  iIcon2Id?: string | number | null;
+  iIcon3Id?: string | number | null;
+  iIcon4Id?: string | number | null;
+
+  appointment_icon1id?: string | number | null;
+  appointment_icon2id?: string | number | null;
+  appointment_icon3id?: string | number | null;
+  appointment_icon4id?: string | number | null;
+
+  vchIconLabel1?: string | null;
+  vchIconLabel2?: string | null;
+  vchIconLabel3?: string | null;
+  vchIconLabel4?: string | null;
+
   [key: string]: unknown;
 };
 
@@ -49,6 +69,19 @@ type QueueUpsertRow = {
   appointment_id: string;
   appointment_time: string | null;
   queue_reason: string;
+  raw_json: Record<string, unknown>;
+  updated_at: string;
+};
+
+type IconIndexUpsertRow = {
+  appointment_id: string;
+  praktika_patient_id: string | null;
+  appointment_time: string | null;
+  patient_first_name: string | null;
+  patient_last_name: string | null;
+  patient_dob: string | null;
+  provider_name: string | null;
+  pending_icon_id: number;
   raw_json: Record<string, unknown>;
   updated_at: string;
 };
@@ -73,6 +106,11 @@ function clean(value: unknown) {
   return String(value ?? "").trim();
 }
 
+function numberValue(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -84,6 +122,41 @@ function normaliseProviderName(value: unknown) {
     .replace(/^dr\s+/i, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function getAppointmentId(row: PraktikaAppointmentRow) {
+  return (
+    clean(row.iAppointmentId) ||
+    clean(row.iAppointmentID) ||
+    clean(row.appointment_id) ||
+    clean(row.appointmentId)
+  );
+}
+
+function getAppointmentTime(row: PraktikaAppointmentRow) {
+  const direct = clean(row.dtAppointment);
+  if (direct) return direct;
+
+  const date = clean(row.vchAppDate);
+  const time = clean(row.vchAppTime);
+
+  if (date && time) return `${date} ${time}`;
+  if (date) return date;
+
+  return null;
+}
+
+function getIconIds(row: PraktikaAppointmentRow) {
+  return [
+    numberValue(row.iIcon1Id ?? row.appointment_icon1id),
+    numberValue(row.iIcon2Id ?? row.appointment_icon2id),
+    numberValue(row.iIcon3Id ?? row.appointment_icon3id),
+    numberValue(row.iIcon4Id ?? row.appointment_icon4id),
+  ];
+}
+
+function hasPendingLetterIcon(row: PraktikaAppointmentRow) {
+  return getIconIds(row).includes(PENDING_LETTER_ICON_ID);
 }
 
 function hasTypistLetterIcon(row: PraktikaAppointmentRow) {
@@ -119,6 +192,12 @@ function getAppointmentNotes(row: PraktikaAppointmentRow) {
 }
 
 function isQueueUpsertRow(row: QueueUpsertRow | null): row is QueueUpsertRow {
+  return row !== null;
+}
+
+function isIconIndexUpsertRow(
+  row: IconIndexUpsertRow | null,
+): row is IconIndexUpsertRow {
   return row !== null;
 }
 
@@ -243,9 +322,7 @@ async function enqueueHydrationJobs(queueRows: any[], practiceId: string) {
     };
   }
 
-  const { error } = await supabase
-    .from("praktika_helper_jobs")
-    .insert(jobsToInsert);
+  const { error } = await supabase.from("praktika_helper_jobs").insert(jobsToInsert);
 
   if (error) {
     console.warn("Could not enqueue queue hydration jobs:", error.message);
@@ -261,6 +338,63 @@ async function enqueueHydrationJobs(queueRows: any[], practiceId: string) {
     enqueued: jobsToInsert.length,
     skipped: queueRows.length - jobsToInsert.length,
     message: "Hydration jobs enqueued for the local Praktika helper.",
+  };
+}
+
+async function upsertPendingLetterIconIndex(parsedRows: PraktikaAppointmentRow[]) {
+  const now = new Date().toISOString();
+
+  const iconRows: IconIndexUpsertRow[] = parsedRows
+    .filter(hasPendingLetterIcon)
+    .map((row): IconIndexUpsertRow | null => {
+      const appointmentId = getAppointmentId(row);
+      if (!appointmentId) return null;
+
+      return {
+        appointment_id: appointmentId,
+        praktika_patient_id: clean(row.iPatientId) || null,
+        appointment_time: getAppointmentTime(row),
+        patient_first_name: clean(row.vchPatientFirstName) || null,
+        patient_last_name: clean(row.vchPatientLastName) || null,
+        patient_dob: clean(row.dtDOB) || null,
+        provider_name: clean(row.vchProviderName) || null,
+        pending_icon_id: PENDING_LETTER_ICON_ID,
+        raw_json: {
+          ...row,
+          pending_letter_icon_indexed_at: now,
+          pending_letter_icon_id: PENDING_LETTER_ICON_ID,
+        },
+        updated_at: now,
+      };
+    })
+    .filter(isIconIndexUpsertRow);
+
+  if (iconRows.length === 0) {
+    return {
+      indexed: 0,
+      message: `No appointments with pending letter icon ${PENDING_LETTER_ICON_ID} found.`,
+    };
+  }
+
+  const { error } = await supabase
+    .from("praktika_letter_icon_index")
+    .upsert(iconRows, {
+      onConflict: "appointment_id",
+      ignoreDuplicates: false,
+    });
+
+  if (error) {
+    console.warn("Could not upsert praktika_letter_icon_index:", error.message);
+
+    return {
+      indexed: 0,
+      message: error.message,
+    };
+  }
+
+  return {
+    indexed: iconRows.length,
+    message: `Indexed ${iconRows.length} appointment(s) with pending letter icon ${PENDING_LETTER_ICON_ID}.`,
   };
 }
 
@@ -287,6 +421,8 @@ export async function POST(req: Request) {
       practiceId,
       mode,
     });
+
+    const iconIndexResult = await upsertPendingLetterIconIndex(parsedRows);
 
     const { data: mappings, error: mappingError } = await supabase
       .from("provider_name_mappings")
@@ -329,7 +465,7 @@ export async function POST(req: Request) {
 
     const incomingQueueRows: QueueUpsertRow[] = typedAppointmentRows
       .map((row): QueueUpsertRow | null => {
-        const appointmentId = clean(row.iAppointmentId);
+        const appointmentId = getAppointmentId(row);
         if (!appointmentId) return null;
 
         const rawProviderName = clean(row.vchProviderName);
@@ -351,7 +487,7 @@ export async function POST(req: Request) {
           referrer_address: null,
           source_clinical_notes: appointmentNotes || null,
           appointment_id: appointmentId,
-          appointment_time: clean(row.dtAppointment) || null,
+          appointment_time: getAppointmentTime(row),
           queue_reason: "Typist Letter icon on Praktika appointment",
           raw_json: {
             ...row,
@@ -380,6 +516,8 @@ export async function POST(req: Request) {
         referrerAddressFilled: 0,
         clinicalNotesFilled: 0,
         hydrationJobsEnqueued: 0,
+        pendingLetterIconIndexed: iconIndexResult.indexed,
+        pendingLetterIconMessage: iconIndexResult.message,
         fromDate,
         toDate,
         message: "No appointments with Typist Letter icon found.",
@@ -495,6 +633,8 @@ export async function POST(req: Request) {
       hydrationJobsEnqueued: hydrationResult.enqueued,
       hydrationJobsSkipped: hydrationResult.skipped,
       hydrationMessage: hydrationResult.message,
+      pendingLetterIconIndexed: iconIndexResult.indexed,
+      pendingLetterIconMessage: iconIndexResult.message,
       fromDate,
       toDate,
       lightweight: true,

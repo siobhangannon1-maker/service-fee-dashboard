@@ -17,6 +17,14 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
+function nowMs() {
+  return Date.now();
+}
+
+function logStep(label: string, startedAt: number) {
+  console.log(`[send-via-mediref] ${label}: ${Date.now() - startedAt}ms`);
+}
+
 function safeFileName(name: string | null | undefined) {
   return String(name || "Patient")
     .trim()
@@ -45,17 +53,12 @@ function normaliseAdditionalRecipients(value: unknown) {
     .map((item) => ({
       name: String(item?.name || "").trim(),
       practiceName: String(
-        item?.practiceName ||
-          item?.practice_name ||
-          item?.practice ||
-          "",
+        item?.practiceName || item?.practice_name || item?.practice || "",
       ).trim(),
       address: String(item?.address || "").trim(),
       email: String(item?.email || "").trim(),
       providerNumber: String(
-        item?.providerNumber ||
-          item?.provider_number ||
-          "",
+        item?.providerNumber || item?.provider_number || "",
       ).trim(),
     }))
     .filter(
@@ -75,24 +78,9 @@ function normaliseAdditionalRecipients(value: unknown) {
       ].join("|");
 
       if (seen.has(key)) return false;
-
       seen.add(key);
       return true;
     });
-}
-
-async function getAppointmentDateForDraft(draftId: string) {
-  const { data } = await supabase
-    .from("report_letter_queue")
-    .select("appointment_time")
-    .eq("report_draft_id", draftId)
-    .order("appointment_time", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  return data?.appointment_time
-    ? String(data.appointment_time).slice(0, 10)
-    : null;
 }
 
 async function updatePerioStatus(params: {
@@ -141,7 +129,42 @@ async function stagePdf(params: {
   };
 }
 
+async function generateAndStageLetterPdf(params: {
+  origin: string;
+  draftId: string;
+  patientName: string;
+}) {
+  const pdfResponse = await fetch(
+    `${params.origin}/api/report-writing/generate-pdf`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draftId: params.draftId }),
+    },
+  );
+
+  if (!pdfResponse.ok) {
+    const errorText = await pdfResponse.text();
+
+    throw new Error(
+      `Failed to generate PDF before MediRef send: ${errorText.slice(0, 1000)}`,
+    );
+  }
+
+  const letterFileName = `${new Date().toISOString().slice(0, 10)} ${safeFileName(
+    params.patientName,
+  )} Letter.pdf`;
+
+  return await stagePdf({
+    buffer: Buffer.from(await pdfResponse.arrayBuffer()),
+    draftId: params.draftId,
+    fileName: letterFileName,
+    folder: "mediref-uploads",
+  });
+}
+
 export async function POST(req: Request) {
+  const totalStartedAt = nowMs();
   const stagedPaths: string[] = [];
 
   try {
@@ -149,6 +172,8 @@ export async function POST(req: Request) {
     const actor = await getAuditActor();
 
     const draftId = String(body.draftId || "").trim();
+    const stagedPdf = body.stagedPdf || null;
+
     const referrerName = String(body.referrerName || "").trim();
     const referrerPracticeName = String(
       body.referrerPracticeName ||
@@ -156,8 +181,8 @@ export async function POST(req: Request) {
         body.practiceName ||
         "",
     ).trim();
-    const medirefAutoMatchRecipient =
-      body.medirefAutoMatchRecipient !== false;
+
+    const medirefAutoMatchRecipient = body.medirefAutoMatchRecipient !== false;
     const referrerEmail = String(body.referrerEmail || "").trim();
     const referrerProviderNumber = String(
       body.referrerProviderNumber || "",
@@ -165,14 +190,17 @@ export async function POST(req: Request) {
     const patientEmail = String(
       body.patientEmail || body.patient_email || "",
     ).trim();
+
     const additionalRecipients = normaliseAdditionalRecipients(
       body.additionalRecipients,
     );
     const additionalRecipientsText = String(
       body.additionalRecipientsText || "",
     ).trim();
+
     const message = String(body.message || "").trim();
     const attachPeriodontalChart = Boolean(body.attachPeriodontalChart);
+
     const requestedPraktikaPatientId = String(
       body.praktikaPatientId ||
         body.praktika_patient_id ||
@@ -187,11 +215,15 @@ export async function POST(req: Request) {
       );
     }
 
+    const draftLoadStartedAt = nowMs();
+
     const { data: draft, error: draftError } = await supabase
       .from("report_drafts")
       .select("*")
       .eq("id", draftId)
       .single();
+
+    logStep("Loaded draft", draftLoadStartedAt);
 
     if (draftError || !draft) {
       return NextResponse.json(
@@ -224,42 +256,33 @@ export async function POST(req: Request) {
       );
     }
 
-    const origin = new URL(req.url).origin;
-
-    const pdfResponse = await fetch(`${origin}/api/report-writing/generate-pdf`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ draftId }),
-    });
-
-    if (!pdfResponse.ok) {
-      const errorText = await pdfResponse.text();
-
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Failed to generate PDF before MediRef send.",
-          details: errorText.slice(0, 1000),
-        },
-        { status: 500 },
-      );
-    }
-
     const patientName = String(draft.patient_name || "Patient").trim();
     const splitName = splitPatientName(patientName);
 
-    const letterFileName = `${new Date().toISOString().slice(0, 10)} ${safeFileName(
-      patientName,
-    )} Letter.pdf`;
+    let letterAttachment;
 
-    const letterAttachment = await stagePdf({
-      buffer: Buffer.from(await pdfResponse.arrayBuffer()),
-      draftId,
-      fileName: letterFileName,
-      folder: "mediref-uploads",
-    });
+    const letterStartedAt = nowMs();
 
-    stagedPaths.push(letterAttachment.storagePath);
+    if (stagedPdf?.bucket && stagedPdf?.storagePath && stagedPdf?.fileName) {
+      letterAttachment = {
+        bucket: String(stagedPdf.bucket),
+        storagePath: String(stagedPdf.storagePath),
+        fileName: String(stagedPdf.fileName),
+        contentType: "application/pdf" as const,
+      };
+    } else {
+      const origin = new URL(req.url).origin;
+
+      letterAttachment = await generateAndStageLetterPdf({
+        origin,
+        draftId,
+        patientName,
+      });
+
+      stagedPaths.push(letterAttachment.storagePath);
+    }
+
+    logStep("Prepared letter attachment", letterStartedAt);
 
     const attachments = [letterAttachment];
 
@@ -268,6 +291,8 @@ export async function POST(req: Request) {
     let periodontalChartError: string | null = null;
 
     if (attachPeriodontalChart) {
+      const perioStartedAt = nowMs();
+
       const finalPraktikaPatientId =
         requestedPraktikaPatientId ||
         String(draft.praktika_patient_id || "").trim();
@@ -284,23 +309,24 @@ export async function POST(req: Request) {
         });
       } else {
         try {
-          const appointmentDate = await getAppointmentDateForDraft(draftId);
+          /*
+            Speed optimisation:
+            Generate the latest periodontal chart once only.
 
-          let perioChart = await generatePeriodontalChartPdf({
+            Previous code tried exact appointment date first, then generated again
+            without appointmentDate if no exact match was found. That can double
+            the Praktika helper calls.
+
+            This keeps Praktika and MediRef separate:
+            - this route prepares the attachment
+            - MediRef worker only sends PDFs
+          */
+          const perioChart = await generatePeriodontalChartPdf({
             patientId: finalPraktikaPatientId,
-            appointmentDate,
+            appointmentDate: null,
             patientName,
             providerName: actor.actorFullName || null,
           });
-
-          if (!perioChart && appointmentDate) {
-            perioChart = await generatePeriodontalChartPdf({
-              patientId: finalPraktikaPatientId,
-              appointmentDate: null,
-              patientName,
-              providerName: actor.actorFullName || null,
-            });
-          }
 
           if (perioChart) {
             const perioAttachment = await stagePdf({
@@ -347,6 +373,8 @@ export async function POST(req: Request) {
           });
         }
       }
+
+      logStep("Prepared periodontal chart attachment", perioStartedAt);
     } else {
       await updatePerioStatus({
         draftId,
@@ -355,6 +383,8 @@ export async function POST(req: Request) {
         error: null,
       });
     }
+
+    const jobStartedAt = nowMs();
 
     const job = await createSendMedirefLetterJob({
       request: {
@@ -374,18 +404,20 @@ export async function POST(req: Request) {
         medirefAutoMatchRecipient,
         attachments,
         message:
-          message ||
-          `Specialist correspondence for ${patientName || "patient"}.`,
+          message || `Specialist correspondence for ${patientName || "patient"}.`,
       },
       priority: 20,
     });
+
+    logStep("Created MediRef helper job", jobStartedAt);
+
+    const updateStartedAt = nowMs();
 
     await supabase
       .from("report_drafts")
       .update({
         emailed_to_referrer_at: new Date().toISOString(),
-        emailed_to_referrer_email:
-          referrerEmail || finalReferrerName || null,
+        emailed_to_referrer_email: referrerEmail || finalReferrerName || null,
         emailed_to_referrer_resend_id: `mediref:${job.id}`,
         emailed_by_initials: actor.actorInitials,
         emailed_by_name: actor.actorFullName,
@@ -400,6 +432,9 @@ export async function POST(req: Request) {
       action: "Queued MediRef send",
       details: {
         jobId: job.id,
+        usedExistingStagedPdf: Boolean(
+          stagedPdf?.bucket && stagedPdf?.storagePath,
+        ),
         recipient: {
           name: finalReferrerName,
           practiceName: referrerPracticeName || null,
@@ -421,6 +456,9 @@ export async function POST(req: Request) {
       },
     });
 
+    logStep("Updated draft and audit", updateStartedAt);
+    logStep("TOTAL", totalStartedAt);
+
     return NextResponse.json({
       success: true,
       jobId: job.id,
@@ -428,11 +466,14 @@ export async function POST(req: Request) {
       periodontalChartAttached,
       periodontalChartAttachmentName,
       periodontalChartError,
-      message:
-        "MediRef send has been queued. The Mac Mini helper will process it.",
+      usedExistingStagedPdf: Boolean(
+        stagedPdf?.bucket && stagedPdf?.storagePath,
+      ),
+      message: "MediRef send has been queued. The Cloud helper will process it.",
     });
   } catch (error) {
     console.error("Failed to queue MediRef send:", error);
+    logStep("FAILED TOTAL", totalStartedAt);
 
     if (stagedPaths.length > 0) {
       await supabase.storage
@@ -445,9 +486,7 @@ export async function POST(req: Request) {
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to queue MediRef send.",
+          error instanceof Error ? error.message : "Failed to queue MediRef send.",
       },
       { status: 500 },
     );

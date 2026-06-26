@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Worker = {
   id: string;
@@ -78,6 +78,37 @@ function shortId(id: string) {
   return id.slice(0, 8);
 }
 
+async function fetchWithTimeout(url: string, timeoutMs = 8000) {
+  const controller = new AbortController();
+
+  const timeout = window.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, {
+      signal: controller.signal,
+      cache: "no-store",
+    });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function readJsonOrFallback<T>(
+  result: PromiseSettledResult<Response>,
+  fallback: T,
+) {
+  if (result.status !== "fulfilled") return fallback;
+  if (!result.value.ok) return fallback;
+
+  try {
+    return await result.value.json();
+  } catch {
+    return fallback;
+  }
+}
+
 export default function AutomationPage() {
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [errors, setErrors] = useState<AutomationError[]>([]);
@@ -85,25 +116,71 @@ export default function AutomationPage() {
   const [helperJobs, setHelperJobs] = useState<HelperJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyCommand, setBusyCommand] = useState<string | null>(null);
+  const [loadMessage, setLoadMessage] = useState<string | null>(null);
+
+  const loadingRef = useRef(false);
 
   async function loadData() {
-    const [workersRes, errorsRes, commandsRes, jobsRes] = await Promise.all([
-      fetch("/api/automation/workers"),
-      fetch("/api/automation/errors"),
-      fetch("/api/automation/command-history"),
-      fetch("/api/automation/helper-jobs"),
-    ]);
+    if (loadingRef.current) return;
 
-    const workersJson = await workersRes.json();
-    const errorsJson = await errorsRes.json();
-    const commandsJson = await commandsRes.json();
-    const jobsJson = await jobsRes.json();
+    loadingRef.current = true;
+    setLoadMessage(null);
 
-    setWorkers(workersJson.workers || []);
-    setErrors(errorsJson.errors || []);
-    setCommands(commandsJson.commands || []);
-    setHelperJobs(jobsJson.jobs || []);
-    setLoading(false);
+    try {
+      const [workersRes, errorsRes, commandsRes, jobsRes] =
+        await Promise.allSettled([
+          fetchWithTimeout("/api/automation/workers"),
+          fetchWithTimeout("/api/automation/errors"),
+          fetchWithTimeout("/api/automation/command-history"),
+          fetchWithTimeout("/api/automation/helper-jobs"),
+        ]);
+
+      const workersJson = await readJsonOrFallback(workersRes, {
+        workers,
+      });
+
+      const errorsJson = await readJsonOrFallback(errorsRes, {
+        errors,
+      });
+
+      const commandsJson = await readJsonOrFallback(commandsRes, {
+        commands,
+      });
+
+      const jobsJson = await readJsonOrFallback(jobsRes, {
+        jobs: helperJobs,
+      });
+
+      setWorkers(Array.isArray(workersJson.workers) ? workersJson.workers : []);
+      setErrors(Array.isArray(errorsJson.errors) ? errorsJson.errors : []);
+      setCommands(
+        Array.isArray(commandsJson.commands) ? commandsJson.commands : [],
+      );
+      setHelperJobs(Array.isArray(jobsJson.jobs) ? jobsJson.jobs : []);
+
+      const timedOutCount = [
+        workersRes,
+        errorsRes,
+        commandsRes,
+        jobsRes,
+      ].filter((result) => result.status === "rejected").length;
+
+      if (timedOutCount > 0) {
+        setLoadMessage(
+          `${timedOutCount} automation status request${
+            timedOutCount === 1 ? "" : "s"
+          } timed out. Showing the last available data.`,
+        );
+      }
+    } catch (error) {
+      console.warn("Automation status load failed:", error);
+      setLoadMessage(
+        "Automation status could not be refreshed. Showing the last available data.",
+      );
+    } finally {
+      setLoading(false);
+      loadingRef.current = false;
+    }
   }
 
   async function sendCommand(workerId: string, command: string) {
@@ -116,7 +193,7 @@ export default function AutomationPage() {
         body: JSON.stringify({ workerId, command }),
       });
 
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
 
       if (!res.ok) {
         alert(json.error || "Command failed");
@@ -131,8 +208,12 @@ export default function AutomationPage() {
   useEffect(() => {
     loadData();
 
-    const interval = setInterval(loadData, 5000);
-    return () => clearInterval(interval);
+    const interval = window.setInterval(loadData, 15000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (loading) {
@@ -146,6 +227,12 @@ export default function AutomationPage() {
         <p className="text-sm text-gray-500">
           Monitor and control Praktika and MediRef cloud workers.
         </p>
+
+        {loadMessage ? (
+          <p className="mt-2 rounded border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+            {loadMessage}
+          </p>
+        ) : null}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">

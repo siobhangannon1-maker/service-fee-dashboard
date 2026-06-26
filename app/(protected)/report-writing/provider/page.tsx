@@ -34,7 +34,7 @@ export default async function ProviderReportPage() {
     <PageLayout
       eyebrow="AI Reports"
       title="AI Report Writing"
-      description="Generate specialist dental reports from clinical notes."
+      description="Transcribe a report or generate from clinical notes."
     >
       <ProviderReportClient providerId={dashboard.provider.id} />
     </PageLayout>

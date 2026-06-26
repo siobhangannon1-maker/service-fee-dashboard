@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import {
-  createPraktikaHelperJob,
-  waitForPraktikaHelperJob,
-} from "@/lib/praktika/helper-jobs";
+import { createPraktikaHelperJob } from "@/lib/praktika/helper-jobs";
 import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 import {
   createReportAuditEvent,
@@ -98,7 +95,9 @@ async function verifyStagedUploadExists(storagePath: string) {
 
   if (!size || size < 1000) {
     throw new Error(
-      `PDF was staged for Praktika, but the stored file looks empty or invalid. Size: ${size || 0} bytes.`,
+      `PDF was staged for Praktika, but the stored file looks empty or invalid. Size: ${
+        size || 0
+      } bytes.`,
     );
   }
 
@@ -174,8 +173,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const pdfBlob = await pdfResponse.blob();
-    const pdfBuffer = Buffer.from(await pdfBlob.arrayBuffer());
+    const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
 
     if (!pdfBuffer.length || pdfBuffer.length < 1000) {
       throw new Error(
@@ -227,7 +225,8 @@ export async function POST(req: Request) {
             "patient_communication[file][notes]":
               notes ||
               `Report sent via Mediref for ${draft.patient_name || "patient"}.`,
-            "patient_communication[file][modifiedDate]": formatPraktikaDateTime(),
+            "patient_communication[file][modifiedDate]":
+              formatPraktikaDateTime(),
           },
           file: {
             bucket: HELPER_UPLOAD_BUCKET,
@@ -241,11 +240,6 @@ export async function POST(req: Request) {
     });
 
     helperJobId = helperJob.id;
-
-    const completedJob = await waitForPraktikaHelperJob(helperJob.id, {
-      timeoutMs: 180_000,
-      intervalMs: 2_000,
-    });
 
     const now = new Date().toISOString();
 
@@ -266,7 +260,7 @@ export async function POST(req: Request) {
 
     if (updateError) {
       console.error(
-        "PDF uploaded to Praktika, but failed to update report status:",
+        "Praktika upload was queued, but failed to update report status:",
         updateError,
       );
 
@@ -274,7 +268,7 @@ export async function POST(req: Request) {
         {
           success: false,
           error:
-            "PDF uploaded to Praktika, but failed to update report status.",
+            "Praktika upload was queued, but failed to update report status.",
           details: updateError.message,
           helperJobId: helperJob.id,
         },
@@ -286,7 +280,7 @@ export async function POST(req: Request) {
       reportDraftId: draft.id,
       providerId: draft.provider_id,
       patientName: draft.patient_name,
-      action: "Uploaded report to Praktika",
+      action: "Queued report upload to Praktika",
       details: {
         praktikaPatientId,
         fileName,
@@ -294,17 +288,29 @@ export async function POST(req: Request) {
         uploadedByInitials: actor.actorInitials,
         uploadedByName: actor.actorFullName,
         helperJobId: helperJob.id,
-        helperResponse: completedJob.response,
+        stagedPdf: {
+          bucket: HELPER_UPLOAD_BUCKET,
+          storagePath,
+          fileName,
+          contentType: "application/pdf",
+        },
       },
     });
 
     return NextResponse.json({
       success: true,
-      message: "Report uploaded to Praktika communications.",
+      queued: true,
+      message: "Report upload to Praktika has been queued.",
       fileName,
       uploadedByInitials: actor.actorInitials,
       uploadedByName: actor.actorFullName,
       helperJobId: helperJob.id,
+      stagedPdf: {
+        bucket: HELPER_UPLOAD_BUCKET,
+        storagePath,
+        fileName,
+        contentType: "application/pdf",
+      },
     });
   } catch (error) {
     console.error("Upload report to Praktika failed:", error);
