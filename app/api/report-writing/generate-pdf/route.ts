@@ -204,30 +204,93 @@ function wrapText(text: string, maxChars: number) {
   return lines;
 }
 
-function getDearLine(referrerName: string | null | undefined) {
-  const cleanName = String(referrerName || "").trim();
+function cleanReferrerTitle(value: unknown) {
+  const cleanValue = String(value || "")
+    .trim()
+    .replace(/\.+$/g, "");
 
-  if (!cleanName) return "Dear Doctor,";
+  if (!cleanValue) return "";
 
-  const withoutTitle = cleanName
-    .replace(/^Dr\s+/i, "")
-    .replace(/^Doctor\s+/i, "")
-    .replace(/^Prof\s+/i, "")
-    .replace(/^Professor\s+/i, "")
+  const normalised = cleanValue.toLowerCase();
+
+  const titleMap: Record<string, string> = {
+    dr: "Dr",
+    doctor: "Dr",
+    prof: "Prof",
+    professor: "Prof",
+    mr: "Mr",
+    mister: "Mr",
+    ms: "Ms",
+    miss: "Miss",
+    mrs: "Mrs",
+    mx: "Mx",
+    assocprof: "Assoc Prof",
+    "assoc prof": "Assoc Prof",
+    associateprofessor: "Assoc Prof",
+    "associate professor": "Assoc Prof",
+  };
+
+  return titleMap[normalised] || cleanValue;
+}
+
+function getReferrerTitleFromRecord(referrer: any) {
+  const raw = referrer?.raw_json || {};
+
+  return cleanReferrerTitle(
+    referrer?.title ||
+      referrer?.provider_title ||
+      referrer?.referrer_title ||
+      raw?.title ||
+      raw?.provider_title ||
+      raw?.providerTitle ||
+      raw?.referrer_title ||
+      raw?.referrerTitle ||
+      raw?.vchTitle ||
+      raw?.vchProviderTitle,
+  );
+}
+
+function stripKnownTitleFromName(value: string) {
+  return String(value || "")
+    .trim()
+    .replace(
+      /^(assoc\.?\s*prof\.?|associate\s+professor|professor|prof\.?|doctor|dr\.?|mister|mr\.?|miss|ms\.?|mrs\.?|mx\.?)\s+/i,
+      "",
+    )
     .trim();
+}
 
+function getTitleFromName(value: string) {
+  const match = String(value || "")
+    .trim()
+    .match(/^(assoc\.?\s*prof\.?|associate\s+professor|professor|prof\.?|doctor|dr\.?|mister|mr\.?|miss|ms\.?|mrs\.?|mx\.?)\s+/i);
+
+  return cleanReferrerTitle(match?.[1] || "");
+}
+
+function getDearLine(
+  referrerName: string | null | undefined,
+  referrerTitle?: string | null,
+) {
+  const cleanName = String(referrerName || "").trim();
+  const title =
+    cleanReferrerTitle(referrerTitle) || getTitleFromName(cleanName) || "Dr";
+
+  if (!cleanName) return title ? `Dear ${title},` : "Dear Doctor,";
+
+  const withoutTitle = stripKnownTitleFromName(cleanName);
   const parts = withoutTitle.split(/\s+/).filter(Boolean);
   const lastName = parts[parts.length - 1] || withoutTitle;
 
-  return `Dear Dr ${lastName},`;
+  if (!lastName) return title ? `Dear ${title},` : "Dear Doctor,";
+
+  return `Dear ${title} ${lastName},`;
 }
 
-
 function normaliseForMatch(value: unknown) {
-  return String(value ?? "")
+  return stripKnownTitleFromName(String(value ?? ""))
     .trim()
     .toLowerCase()
-    .replace(/^dr\s+/i, "")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -329,22 +392,15 @@ async function resolveDraftReferrer(draft: any) {
   /*
     Important:
     If a referrer address has already been saved on the draft or linked queue row,
-    trust that exact address. Do not re-match the dentist by name and prepend a
-    practice name from a different row. This prevents the duplicate-practice issue
-    when one dentist works at more than one practice.
+    still look up the referrer title, but keep that exact saved address. This
+    prevents the duplicate-practice issue when one referrer works at more than
+    one practice.
   */
-  if (fallbackAddress) {
-    return {
-      referrerName: fallbackName,
-      referrerAddress: fallbackAddress,
-      source: existingAddress ? "selected_draft_address" : "selected_queue_address",
-    };
-  }
-
   if (possibleNames.length === 0) {
     return {
       referrerName: fallbackName,
-      referrerAddress: null,
+      referrerTitle: getTitleFromName(fallbackName || ""),
+      referrerAddress: fallbackAddress,
       source: fallbackName ? "draft_or_queue_name_only" : "empty",
     };
   }
@@ -358,7 +414,8 @@ async function resolveDraftReferrer(draft: any) {
     console.warn("Could not look up report_referrers for PDF fallback:", error);
     return {
       referrerName: fallbackName,
-      referrerAddress: null,
+      referrerTitle: getTitleFromName(fallbackName || ""),
+      referrerAddress: fallbackAddress,
       source: "lookup_error",
     };
   }
@@ -411,18 +468,28 @@ async function resolveDraftReferrer(draft: any) {
   if (!bestReferrer || bestScore < 40) {
     return {
       referrerName: fallbackName,
-      referrerAddress: null,
+      referrerTitle: getTitleFromName(fallbackName || ""),
+      referrerAddress: fallbackAddress,
       source: "no_match",
     };
   }
 
   return {
     referrerName: fallbackName || bestReferrer.name || null,
-    referrerAddress: formatReferrerAddressWithPractice({
-      practiceName: bestReferrer.practice_name,
-      address: bestReferrer.address,
-    }),
-    source: "report_referrers_fallback",
+    referrerTitle:
+      getReferrerTitleFromRecord(bestReferrer) ||
+      getTitleFromName(fallbackName || bestReferrer.name || ""),
+    referrerAddress:
+      fallbackAddress ||
+      formatReferrerAddressWithPractice({
+        practiceName: bestReferrer.practice_name,
+        address: bestReferrer.address,
+      }),
+    source: fallbackAddress
+      ? existingAddress
+        ? "selected_draft_address_with_referrer_title"
+        : "selected_queue_address_with_referrer_title"
+      : "report_referrers_fallback",
   };
 }
 
@@ -619,6 +686,7 @@ export async function POST(req: Request) {
 
     const resolvedReferrer = await resolveDraftReferrer(draft);
     const pdfReferrerName = resolvedReferrer.referrerName;
+    const pdfReferrerTitle = resolvedReferrer.referrerTitle;
     const pdfReferrerAddress = resolvedReferrer.referrerAddress;
 
     const letterheadBytes = await downloadStorageFileCached(
@@ -1143,7 +1211,7 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
 
     y -= lineHeight * 3;
 
-    drawLine(getDearLine(pdfReferrerName));
+    drawLine(getDearLine(pdfReferrerName, pdfReferrerTitle));
 
     y -= lineHeight;
 
