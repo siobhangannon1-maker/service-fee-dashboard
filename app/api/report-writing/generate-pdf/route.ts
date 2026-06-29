@@ -186,6 +186,22 @@ function stripMarkdownMarkers(text: string) {
     .replace(/_/g, "");
 }
 
+
+function preparePdfText(value: string) {
+  /*
+    pdf-lib + some custom OpenType fonts can render common ligatures
+    such as ff/fi/fl with incorrect spacing or text extraction.
+
+    Adding a zero-width non-joiner after the first "f" prevents the font
+    from substituting the ligature glyph, while keeping the visible text
+    as normal "ff", "fi", or "fl".
+  */
+  return String(value || "")
+    .normalize("NFC")
+    .replace(/f(?=f|i|l)/g, "f\u200C")
+    .replace(/F(?=F|I|L)/g, "F\u200C");
+}
+
 function wrapText(text: string, maxChars: number) {
   const words = text.split(/\s+/);
   const lines: string[] = [];
@@ -781,7 +797,7 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         y = newPage();
       }
 
-      page.drawText(text, {
+      page.drawText(preparePdfText(text), {
         x: marginLeft,
         y,
         size: options?.size || fontSize,
@@ -840,7 +856,10 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
       let lineWidth = 0;
 
       function measure(run: TextRun) {
-        return getRunFont(run).widthOfTextAtSize(run.text, fontSize);
+        return getRunFont(run).widthOfTextAtSize(
+          preparePdfText(run.text),
+          fontSize,
+        );
       }
 
       function flushLine() {
@@ -854,9 +873,10 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
 
         for (const run of line) {
           const runFont = getRunFont(run);
-          const runWidth = runFont.widthOfTextAtSize(run.text, fontSize);
+          const pdfText = preparePdfText(run.text);
+          const runWidth = runFont.widthOfTextAtSize(pdfText, fontSize);
 
-          page.drawText(run.text, {
+          page.drawText(pdfText, {
             x,
             y,
             size: fontSize,
@@ -969,10 +989,10 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
             y = newPage();
           }
 
-          const captionWidth = boldFont.widthOfTextAtSize(captionLine, 9);
+          const captionWidth = boldFont.widthOfTextAtSize(preparePdfText(captionLine), 9);
           const captionX = x + frameWidth / 2 - captionWidth / 2;
 
-          page.drawText(captionLine, {
+          page.drawText(preparePdfText(captionLine), {
             x: captionX,
             y,
             size: 9,
@@ -1072,7 +1092,10 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         let lineWidth = 0;
 
         function measure(run: TextRun) {
-          return getRunFont(run).widthOfTextAtSize(run.text, fontSize);
+          return getRunFont(run).widthOfTextAtSize(
+            preparePdfText(run.text),
+            fontSize,
+          );
         }
 
         for (const piece of pieces) {
@@ -1106,9 +1129,10 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
 
         for (const run of line) {
           const runFont = getRunFont(run);
-          const runWidth = runFont.widthOfTextAtSize(run.text, fontSize);
+          const pdfText = preparePdfText(run.text);
+          const runWidth = runFont.widthOfTextAtSize(pdfText, fontSize);
 
-          page.drawText(run.text, {
+          page.drawText(pdfText, {
             x: currentX,
             y: lineY,
             size: fontSize,
@@ -1142,10 +1166,10 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
             y = newPage();
           }
 
-          const captionWidth = boldFont.widthOfTextAtSize(captionLine, 9);
+          const captionWidth = boldFont.widthOfTextAtSize(preparePdfText(captionLine), 9);
           const captionX = imageX + frameWidth / 2 - captionWidth / 2;
 
-          page.drawText(captionLine, {
+          page.drawText(preparePdfText(captionLine), {
             x: captionX,
             y,
             size: 9,
@@ -1373,7 +1397,7 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         y = newPage();
       }
 
-      page.drawText(pdfCcLine, {
+      page.drawText(preparePdfText(pdfCcLine), {
         x: marginLeft,
         y,
         size: fontSize,

@@ -1302,6 +1302,43 @@ export default function TypistPage() {
     }
   }
 
+  async function previewHtmlPdf() {
+  if (!selectedDraft) {
+    alert("Please select a draft first.");
+    return;
+  }
+
+  setLoading(true);
+
+  try {
+    const response = await fetch("/api/report-writing/generate-pdf-html", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draftId: selectedDraft.id }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || "Failed to generate HTML PDF.");
+    }
+
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+
+    setPdfPreviewUrl(url);
+    setPdfPreviewTitle(`HTML PDF Test - ${selectedDraft.patient_name || "Patient"}.pdf`);
+    setPdfPreviewModalOpen(true);
+  } catch (error) {
+    alert(
+      error instanceof Error
+        ? error.message
+        : "Failed to generate HTML PDF.",
+    );
+  } finally {
+    setLoading(false);
+  }
+}
+
   async function persistCurrentReferrerDetails(options?: { quiet?: boolean }) {
     if (!selectedDraft) return true;
 
@@ -5454,6 +5491,15 @@ async function runMedirefWorkflowInBackground(params: {
                     >
                       Preview PDF
                     </button>
+
+                    <button
+  type="button"
+  onClick={previewHtmlPdf}
+  disabled={loading || !selectedDraft}
+  className="rounded-xl border border-purple-300 bg-purple-50 px-4 py-2 text-sm font-semibold text-purple-800 hover:bg-purple-100 disabled:opacity-50"
+>
+  Test HTML PDF
+</button>
 
                     <button
                       onClick={() => generatePdf(selectedDraft)}

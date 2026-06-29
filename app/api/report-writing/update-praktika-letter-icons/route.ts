@@ -14,8 +14,14 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
-const PENDING_LETTER_ICON_ID = 7341;
+const TYPIST_LETTER_ICON_ID = 7360;
+const CLINICIAN_LETTER_ICON_ID = 7341;
 const LETTER_SENT_ICON_ID = 6597;
+
+const PENDING_LETTER_ICON_IDS = [
+  TYPIST_LETTER_ICON_ID,
+  CLINICIAN_LETTER_ICON_ID,
+];
 
 function clean(value: unknown) {
   return String(value ?? "").trim();
@@ -61,26 +67,30 @@ function getIconIdsFromRaw(raw: Record<string, unknown> | null | undefined) {
   ];
 }
 
-function replacePendingLetterIcon(iconIds: number[]) {
-  const padded = [...iconIds];
+function replaceLetterWorkflowIcons(iconIds: number[]) {
+  const updated = [...iconIds];
 
-  while (padded.length < 4) padded.push(0);
+  while (updated.length < 4) updated.push(0);
 
-  const updated = padded.slice(0, 4);
-  const pendingIndex = updated.findIndex((id) => id === PENDING_LETTER_ICON_ID);
+  const oldIconIds = updated.slice(0, 4);
+  const updatedIconIds = updated.slice(0, 4);
 
-  if (pendingIndex === -1) {
-    return {
-      changed: false,
-      updatedIconIds: updated,
-    };
+  const replacedIconIds: number[] = [];
+
+  for (let index = 0; index < updatedIconIds.length; index += 1) {
+    const iconId = updatedIconIds[index];
+
+    if (PENDING_LETTER_ICON_IDS.includes(iconId)) {
+      updatedIconIds[index] = LETTER_SENT_ICON_ID;
+      replacedIconIds.push(iconId);
+    }
   }
 
-  updated[pendingIndex] = LETTER_SENT_ICON_ID;
-
   return {
-    changed: true,
-    updatedIconIds: updated,
+    changed: replacedIconIds.length > 0,
+    oldIconIds,
+    updatedIconIds,
+    replacedIconIds,
   };
 }
 
@@ -135,7 +145,7 @@ async function findIndexedPendingIconAppointment(params: {
     .from("praktika_letter_icon_index")
     .select("*")
     .eq("praktika_patient_id", params.praktikaPatientId)
-    .eq("pending_icon_id", PENDING_LETTER_ICON_ID)
+    .in("pending_icon_id", PENDING_LETTER_ICON_IDS)
     .order("appointment_time", { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle();
@@ -185,6 +195,9 @@ async function markDraftIconUpdated(params: {
   appointmentId: string;
   responsePreview: string;
   mode: string;
+  oldIconIds: number[];
+  newIconIds: number[];
+  replacedIconIds: number[];
 }) {
   if (!params.draftId) return;
 
@@ -223,6 +236,45 @@ async function deleteIndexedAppointment(appointmentId: string) {
   }
 }
 
+async function logIconAttempt(params: {
+  draftId?: string;
+  queueId?: string;
+  appointmentId?: string;
+  praktikaPatientId?: string;
+  mode: string;
+  success: boolean;
+  skipped?: boolean;
+  reason?: string;
+  oldIconIds?: number[];
+  newIconIds?: number[];
+  replacedIconIds?: number[];
+  responsePreview?: string;
+  error?: string;
+}) {
+  await supabase.from("audit_log").insert({
+    action: "praktika_letter_icon_update_attempt",
+    entityType: "report_draft",
+    entityId: params.draftId || null,
+    metadata: {
+      queueId: params.queueId || null,
+      appointmentId: params.appointmentId || null,
+      praktikaPatientId: params.praktikaPatientId || null,
+      mode: params.mode,
+      success: params.success,
+      skipped: Boolean(params.skipped),
+      reason: params.reason || null,
+      oldIconIds: params.oldIconIds || null,
+      newIconIds: params.newIconIds || null,
+      replacedIconIds: params.replacedIconIds || null,
+      typistLetterIconId: TYPIST_LETTER_ICON_ID,
+      clinicianLetterIconId: CLINICIAN_LETTER_ICON_ID,
+      letterSentIconId: LETTER_SENT_ICON_ID,
+      responsePreview: params.responsePreview || null,
+      error: params.error || null,
+    },
+  });
+}
+
 export async function POST(req: Request) {
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
@@ -255,19 +307,35 @@ export async function POST(req: Request) {
 
       if (appointmentId) {
         const currentIconIds = getIconIdsFromRaw(raw);
-        const { changed, updatedIconIds } =
-          replacePendingLetterIcon(currentIconIds);
+        const { changed, oldIconIds, updatedIconIds, replacedIconIds } =
+          replaceLetterWorkflowIcons(currentIconIds);
 
         if (!changed) {
+          await logIconAttempt({
+            draftId,
+            queueId: clean(queueItem.id),
+            appointmentId,
+            mode: "linked_queue_appointment",
+            success: false,
+            skipped: true,
+            reason: `Linked queue appointment did not contain icon ${PENDING_LETTER_ICON_IDS.join(
+              " or ",
+            )}.`,
+            oldIconIds,
+            newIconIds: oldIconIds,
+          });
+
           return NextResponse.json({
             success: true,
             iconUpdated: false,
             skipped: true,
             mode: "linked_queue_appointment",
             appointmentId,
-            reason: `Linked queue appointment did not contain icon ${PENDING_LETTER_ICON_ID}.`,
-            oldIconIds: currentIconIds,
-            newIconIds: currentIconIds,
+            reason: `Linked queue appointment did not contain icon ${PENDING_LETTER_ICON_IDS.join(
+              " or ",
+            )}.`,
+            oldIconIds,
+            newIconIds: oldIconIds,
           });
         }
 
@@ -298,7 +366,8 @@ export async function POST(req: Request) {
               iIcon4Id: String(updatedIconIds[3]),
               letterIconUpdatedAt: now,
               letterIconUpdateMode: "linked_queue_appointment",
-              letterIconPendingIconId: PENDING_LETTER_ICON_ID,
+              letterIconReplacedIconIds: replacedIconIds,
+              letterIconPendingIconIds: PENDING_LETTER_ICON_IDS,
               letterIconSentIconId: LETTER_SENT_ICON_ID,
               letterIconUpdateResponsePreview: responsePreview,
             },
@@ -312,6 +381,21 @@ export async function POST(req: Request) {
           appointmentId,
           responsePreview,
           mode: "linked_queue_appointment",
+          oldIconIds,
+          newIconIds: updatedIconIds,
+          replacedIconIds,
+        });
+
+        await logIconAttempt({
+          draftId,
+          queueId: clean(queueItem.id),
+          appointmentId,
+          mode: "linked_queue_appointment",
+          success: true,
+          oldIconIds,
+          newIconIds: updatedIconIds,
+          replacedIconIds,
+          responsePreview,
         });
 
         return NextResponse.json({
@@ -319,7 +403,8 @@ export async function POST(req: Request) {
           iconUpdated: true,
           mode: "linked_queue_appointment",
           appointmentId,
-          oldIconIds: currentIconIds,
+          replacedIconIds,
+          oldIconIds,
           newIconIds: updatedIconIds,
         });
       }
@@ -333,6 +418,15 @@ export async function POST(req: Request) {
       clean(draft?.praktika_patient_id);
 
     if (!praktikaPatientId) {
+      await logIconAttempt({
+        draftId,
+        queueId,
+        mode: "no_patient_id",
+        success: false,
+        skipped: true,
+        reason: "No Praktika patient ID available for local icon index lookup.",
+      });
+
       return NextResponse.json({
         success: true,
         iconUpdated: false,
@@ -346,22 +440,50 @@ export async function POST(req: Request) {
     });
 
     if (!indexedAppointment) {
+      await logIconAttempt({
+        draftId,
+        queueId,
+        praktikaPatientId,
+        mode: "local_icon_index",
+        success: false,
+        skipped: true,
+        reason:
+          "No typist or clinician letter icon found for this patient. Nothing needed to be updated.",
+      });
+
       return NextResponse.json({
         success: true,
         iconUpdated: false,
         skipped: true,
         mode: "local_icon_index",
         praktikaPatientId,
-        reason: "No pending letter icon found for this patient. Nothing needed to be updated.",
+        reason:
+          "No typist or clinician letter icon found for this patient. Nothing needed to be updated.",
       });
     }
 
     const appointmentId = clean(indexedAppointment.appointment_id);
     const raw = asObject(indexedAppointment.raw_json);
     const currentIconIds = getIconIdsFromRaw(raw);
-    const { changed, updatedIconIds } = replacePendingLetterIcon(currentIconIds);
+    const { changed, oldIconIds, updatedIconIds, replacedIconIds } =
+      replaceLetterWorkflowIcons(currentIconIds);
 
     if (!appointmentId || !changed) {
+      await logIconAttempt({
+        draftId,
+        queueId,
+        appointmentId,
+        praktikaPatientId,
+        mode: "local_icon_index",
+        success: false,
+        skipped: true,
+        reason: `Indexed appointment did not contain icon ${PENDING_LETTER_ICON_IDS.join(
+          " or ",
+        )} in raw_json.`,
+        oldIconIds,
+        newIconIds: oldIconIds,
+      });
+
       return NextResponse.json({
         success: true,
         iconUpdated: false,
@@ -369,9 +491,11 @@ export async function POST(req: Request) {
         mode: "local_icon_index",
         appointmentId,
         praktikaPatientId,
-        reason: `Indexed appointment did not contain icon ${PENDING_LETTER_ICON_ID} in raw_json.`,
-        oldIconIds: currentIconIds,
-        newIconIds: currentIconIds,
+        reason: `Indexed appointment did not contain icon ${PENDING_LETTER_ICON_IDS.join(
+          " or ",
+        )} in raw_json.`,
+        oldIconIds,
+        newIconIds: oldIconIds,
       });
     }
 
@@ -394,6 +518,22 @@ export async function POST(req: Request) {
       appointmentId,
       responsePreview,
       mode: "local_icon_index",
+      oldIconIds,
+      newIconIds: updatedIconIds,
+      replacedIconIds,
+    });
+
+    await logIconAttempt({
+      draftId,
+      queueId,
+      appointmentId,
+      praktikaPatientId,
+      mode: "local_icon_index",
+      success: true,
+      oldIconIds,
+      newIconIds: updatedIconIds,
+      replacedIconIds,
+      responsePreview,
     });
 
     return NextResponse.json({
@@ -402,7 +542,8 @@ export async function POST(req: Request) {
       mode: "local_icon_index",
       appointmentId,
       praktikaPatientId,
-      oldIconIds: currentIconIds,
+      replacedIconIds,
+      oldIconIds,
       newIconIds: updatedIconIds,
     });
   } catch (error) {
