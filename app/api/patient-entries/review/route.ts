@@ -35,6 +35,14 @@ type PatientFinancialEntry = {
   is_review_locked?: boolean;
 };
 
+function normaliseRole(role: string | null | undefined) {
+  return String(role || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/-/g, "_");
+}
+
 function getInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
 
@@ -103,15 +111,19 @@ export async function POST(request: Request) {
       .single();
 
     if (profileError || !profile) {
-      return NextResponse.json({ error: "Profile not found." }, { status: 403 });
+      return NextResponse.json(
+        { error: "Profile not found." },
+        { status: 403 },
+      );
     }
 
     const typedProfile = profile as ProfileRow;
+    const profileRole = normaliseRole(typedProfile.role);
 
-    if (!typedProfile.role || !ALLOWED_ROLES.includes(typedProfile.role)) {
+    if (!profileRole || !ALLOWED_ROLES.includes(profileRole)) {
       return NextResponse.json(
         { error: "You do not have permission to review entries." },
-        { status: 403 }
+        { status: 403 },
       );
     }
 
@@ -126,17 +138,17 @@ export async function POST(request: Request) {
       body.action === "unlock"
         ? "unlock"
         : body.action === "update"
-        ? "update"
-        : "review";
+          ? "update"
+          : "review";
 
     if (!entryId) {
       return NextResponse.json({ error: "Missing entry ID." }, { status: 400 });
     }
 
-    if (action === "unlock" && !CAN_UNLOCK_ROLES.includes(typedProfile.role)) {
+    if (action === "unlock" && !CAN_UNLOCK_ROLES.includes(profileRole)) {
       return NextResponse.json(
         { error: "Only managers and admins can unlock reviewed entries." },
-        { status: 403 }
+        { status: 403 },
       );
     }
 
@@ -157,39 +169,55 @@ export async function POST(request: Request) {
       if (entry.is_review_locked) {
         return NextResponse.json(
           { error: "This entry is reviewed and locked, so it cannot be edited." },
-          { status: 400 }
+          { status: 400 },
         );
       }
 
       const amount = Number(body.amount);
 
       if (!body.provider_id || typeof body.provider_id !== "string") {
-        return NextResponse.json({ error: "Provider is required." }, { status: 400 });
+        return NextResponse.json(
+          { error: "Provider is required." },
+          { status: 400 },
+        );
       }
 
       if (!body.patient_name || typeof body.patient_name !== "string") {
-        return NextResponse.json({ error: "Patient name is required." }, { status: 400 });
+        return NextResponse.json(
+          { error: "Patient name is required." },
+          { status: 400 },
+        );
       }
 
       if (!body.entry_date || typeof body.entry_date !== "string") {
-        return NextResponse.json({ error: "Date is required." }, { status: 400 });
+        return NextResponse.json(
+          { error: "Date is required." },
+          { status: 400 },
+        );
       }
 
       if (!body.category || typeof body.category !== "string") {
-        return NextResponse.json({ error: "Category is required." }, { status: 400 });
+        return NextResponse.json(
+          { error: "Category is required." },
+          { status: 400 },
+        );
       }
 
       if (Number.isNaN(amount)) {
-        return NextResponse.json({ error: "Amount must be valid." }, { status: 400 });
+        return NextResponse.json(
+          { error: "Amount must be valid." },
+          { status: 400 },
+        );
       }
 
       if (
         body.category === "paid_to_wrong_provider" &&
-        (!body.related_provider_id || typeof body.related_provider_id !== "string")
+        (!body.related_provider_id ||
+          typeof body.related_provider_id !== "string")
       ) {
         return NextResponse.json(
           { error: "Please select the provider actually owed." },
-          { status: 400 }
+          { status: 400 },
         );
       }
 
@@ -219,7 +247,7 @@ export async function POST(request: Request) {
       if (updateError || !updatedEntry) {
         return NextResponse.json(
           { error: updateError?.message || "Failed to update entry." },
-          { status: 500 }
+          { status: 500 },
         );
       }
 
@@ -241,7 +269,7 @@ export async function POST(request: Request) {
       if (entry.is_review_locked) {
         return NextResponse.json(
           { error: "This entry is already reviewed and locked." },
-          { status: 400 }
+          { status: 400 },
         );
       }
 
@@ -263,8 +291,11 @@ export async function POST(request: Request) {
 
       if (updateError || !updatedEntry) {
         return NextResponse.json(
-          { error: updateError?.message || "Failed to review and lock this entry." },
-          { status: 500 }
+          {
+            error:
+              updateError?.message || "Failed to review and lock this entry.",
+          },
+          { status: 500 },
         );
       }
 
@@ -295,7 +326,7 @@ export async function POST(request: Request) {
     if (updateError || !updatedEntry) {
       return NextResponse.json(
         { error: updateError?.message || "Failed to unlock this entry." },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
@@ -311,10 +342,9 @@ export async function POST(request: Request) {
   } catch (error) {
     return NextResponse.json(
       {
-        error:
-          error instanceof Error ? error.message : "Review action failed.",
+        error: error instanceof Error ? error.message : "Review action failed.",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
