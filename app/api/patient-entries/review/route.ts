@@ -17,6 +17,10 @@ type ProfileRow = {
   role: string | null;
 };
 
+type UserRoleRow = {
+  role: string | null;
+};
+
 type PatientFinancialEntry = {
   id: string;
   provider_id: string;
@@ -41,6 +45,10 @@ function normaliseRole(role: string | null | undefined) {
     .toLowerCase()
     .replace(/\s+/g, "_")
     .replace(/-/g, "_");
+}
+
+function hasRole(userRoles: string[], allowedRoles: string[]) {
+  return userRoles.some((role) => allowedRoles.includes(normaliseRole(role)));
 }
 
 function getInitials(name: string) {
@@ -118,9 +126,31 @@ export async function POST(request: Request) {
     }
 
     const typedProfile = profile as ProfileRow;
-    const profileRole = normaliseRole(typedProfile.role);
 
-    if (!profileRole || !ALLOWED_ROLES.includes(profileRole)) {
+    const { data: roleRows, error: roleRowsError } = await supabaseAdmin
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", user.id);
+
+    if (roleRowsError) {
+      return NextResponse.json(
+        { error: roleRowsError.message },
+        { status: 500 },
+      );
+    }
+
+    const allUserRoles = Array.from(
+      new Set(
+        [
+          typedProfile.role,
+          ...((roleRows || []) as UserRoleRow[]).map((row) => row.role),
+        ]
+          .map(normaliseRole)
+          .filter(Boolean),
+      ),
+    );
+
+    if (!hasRole(allUserRoles, ALLOWED_ROLES)) {
       return NextResponse.json(
         { error: "You do not have permission to review entries." },
         { status: 403 },
@@ -145,7 +175,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing entry ID." }, { status: 400 });
     }
 
-    if (action === "unlock" && !CAN_UNLOCK_ROLES.includes(profileRole)) {
+    if (action === "unlock" && !hasRole(allUserRoles, CAN_UNLOCK_ROLES)) {
       return NextResponse.json(
         { error: "Only managers and admins can unlock reviewed entries." },
         { status: 403 },
@@ -168,7 +198,10 @@ export async function POST(request: Request) {
     if (action === "update") {
       if (entry.is_review_locked) {
         return NextResponse.json(
-          { error: "This entry is reviewed and locked, so it cannot be edited." },
+          {
+            error:
+              "This entry is reviewed and locked, so it cannot be edited.",
+          },
           { status: 400 },
         );
       }
