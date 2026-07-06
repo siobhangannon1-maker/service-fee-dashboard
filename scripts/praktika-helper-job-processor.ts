@@ -443,6 +443,48 @@ function getReferralSortDate(referral: PraktikaReferral) {
   ).getTime();
 }
 
+function chooseBestReferralForAppointment(
+  referrals: PraktikaReferral[],
+  appointmentDate: string,
+) {
+  const targetDate = isoDateOnly(appointmentDate);
+  const targetTime = targetDate
+    ? new Date(`${targetDate}T23:59:59+10:00`).getTime()
+    : 0;
+
+  const scored = referrals
+    .filter((referral) => formatProviderName(referral))
+    .map((referral) => {
+      const referralTime = getReferralSortDate(referral);
+      const referralDate = isoDateOnly(referral.createdDate || referral.date);
+
+      let score = 0;
+
+      // Prefer referrals that existed on or before the appointment date.
+      // This avoids a newer referral for the same provider at a different practice
+      // being used for an older appointment.
+      if (targetTime && referralTime && referralTime <= targetTime) score += 300;
+      if (targetTime && referralTime && referralTime > targetTime) score -= 250;
+
+      if (targetDate && referralDate === targetDate) score += 150;
+
+      // Prefer referrals with strong Praktika identifiers.
+      if (clean(referral.party?.id)) score += 120;
+      if (clean(referral.party?.clinicId)) score += 120;
+      if (clean(referral.party?.provider?.providerNumber)) score += 100;
+      if (clean(referral.party?.provider?.id)) score += 80;
+      if (clean(referral.providerId)) score += 60;
+
+      // Recent valid referrals still matter, but should not override the above.
+      if (referralTime > 0) score += Math.min(referralTime / 100_000_000_000, 20);
+
+      return { referral, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0]?.referral || null;
+}
+
 function formatProviderName(referral: PraktikaReferral) {
   const provider = referral.party?.provider;
 
@@ -587,7 +629,7 @@ async function findReportReferrerForReferral(referral: PraktikaReferral) {
         .select(REFERRER_SELECT)
         .eq("is_active", true)
         .in("praktika_referrer_id", possibleExactIds)
-        .limit(50),
+        .limit(80),
     );
 
     await safeLookup(
@@ -596,7 +638,7 @@ async function findReportReferrerForReferral(referral: PraktikaReferral) {
         .select(REFERRER_SELECT)
         .eq("is_active", true)
         .in("praktika_referrer_key", possibleExactIds)
-        .limit(50),
+        .limit(80),
     );
   }
 
@@ -607,10 +649,79 @@ async function findReportReferrerForReferral(referral: PraktikaReferral) {
         .select(REFERRER_SELECT)
         .eq("is_active", true)
         .ilike("praktika_referrer_key", `%${providerNumber}%`)
-        .limit(50),
+        .limit(80),
     );
   }
 
+  function referrerHasExactId(referrer: ReportReferrer, value: string) {
+    if (!value) return false;
+
+    return (
+      clean(referrer.praktika_referrer_id) === value ||
+      clean(referrer.praktika_referrer_key) === value ||
+      clean(referrer.praktika_referrer_key).split(/[^0-9a-zA-Z]+/).includes(value) ||
+      rawJsonContainsExactValue(referrer.raw_json || {}, value)
+    );
+  }
+
+  function bestUsableReferrer(referrers: ReportReferrer[]) {
+    return referrers
+      .filter((referrer) => !isOwnPracticeReferrer(referrer))
+      .map((referrer) => {
+        let score = 0;
+        if (clean(referrer.practice_name)) score += 30;
+        if (clean(referrer.address)) score += 50;
+        if (providerNumber && referrerHasExactId(referrer, providerNumber)) score += 40;
+        if (clinicId && referrerHasExactId(referrer, clinicId)) score += 30;
+        return { referrer, score };
+      })
+      .sort((a, b) => b.score - a.score)[0]?.referrer || null;
+  }
+
+  const currentCandidates = () => Array.from(candidateMap.values());
+
+  // Strongest rule: if Praktika gives a party ID, use that exact party row.
+  // This prevents "Dr Jane Smith at Practice B" being replaced by another
+  // "Dr Jane Smith" row from Practice A/C.
+  if (partyId) {
+    const exactPartyMatch = bestUsableReferrer(
+      currentCandidates().filter((referrer) => referrerHasExactId(referrer, partyId)),
+    );
+
+    if (exactPartyMatch) return exactPartyMatch;
+  }
+
+  // Next strongest: same clinic plus same provider/provider number.
+  if (clinicId && (providerNumber || providerId || referralProviderId)) {
+    const exactClinicProviderMatch = bestUsableReferrer(
+      currentCandidates().filter((referrer) => {
+        const clinicMatches = referrerHasExactId(referrer, clinicId);
+        const providerMatches = [providerNumber, providerId, referralProviderId]
+          .filter(Boolean)
+          .some((value) => referrerHasExactId(referrer, value));
+
+        return clinicMatches && providerMatches;
+      }),
+    );
+
+    if (exactClinicProviderMatch) return exactClinicProviderMatch;
+  }
+
+  // Provider number is usually safer than name, but it may still appear across
+  // multiple practice rows. Only return early if it gives a clear usable match.
+  if (providerNumber) {
+    const providerNumberMatches = currentCandidates().filter((referrer) =>
+      referrerHasExactId(referrer, providerNumber),
+    );
+
+    if (providerNumberMatches.length === 1) {
+      const onlyMatch = bestUsableReferrer(providerNumberMatches);
+      if (onlyMatch) return onlyMatch;
+    }
+  }
+
+  // Name searches are deliberately performed only after exact ID attempts.
+  // They are useful as fallback, but should not override party/clinic identity.
   if (providerNameNoTitle) {
     await safeLookup(
       supabase
@@ -618,7 +729,7 @@ async function findReportReferrerForReferral(referral: PraktikaReferral) {
         .select(REFERRER_SELECT)
         .eq("is_active", true)
         .ilike("name", `%${providerNameNoTitle}%`)
-        .limit(50),
+        .limit(80),
     );
   }
 
@@ -629,7 +740,7 @@ async function findReportReferrerForReferral(referral: PraktikaReferral) {
         .select(REFERRER_SELECT)
         .eq("is_active", true)
         .ilike("name", `%${lastName}%`)
-        .limit(80),
+        .limit(100),
     );
   }
 
@@ -640,7 +751,7 @@ async function findReportReferrerForReferral(referral: PraktikaReferral) {
         .select(REFERRER_SELECT)
         .eq("is_active", true)
         .ilike("name", `%${firstName}%`)
-        .limit(80),
+        .limit(100),
     );
   }
 
@@ -656,20 +767,32 @@ async function findReportReferrerForReferral(referral: PraktikaReferral) {
 
       let score = 0;
 
+      const hasExplicitDifferentPraktikaId =
+        Boolean(praktikaReferrerId) &&
+        ![partyId, providerId, referralProviderId, clinicId, providerNumber]
+          .filter(Boolean)
+          .includes(praktikaReferrerId);
+
+      if (partyId && referrerHasExactId(referrer, partyId)) score += 1000;
+      if (clinicId && referrerHasExactId(referrer, clinicId)) score += 500;
+      if (providerNumber && referrerHasExactId(referrer, providerNumber)) score += 420;
+      if (providerId && referrerHasExactId(referrer, providerId)) score += 320;
+      if (referralProviderId && referrerHasExactId(referrer, referralProviderId)) score += 300;
+
       if (partyId && praktikaReferrerId === partyId) score += 300;
-      if (providerId && praktikaReferrerId === providerId) score += 260;
-      if (referralProviderId && praktikaReferrerId === referralProviderId) score += 230;
-      if (clinicId && praktikaReferrerId === clinicId) score += 180;
-      if (providerNumber && praktikaReferrerId === providerNumber) score += 300;
+      if (providerId && praktikaReferrerId === providerId) score += 180;
+      if (referralProviderId && praktikaReferrerId === referralProviderId) score += 160;
+      if (clinicId && praktikaReferrerId === clinicId) score += 140;
+      if (providerNumber && praktikaReferrerId === providerNumber) score += 250;
 
       for (const value of [partyId, providerId, referralProviderId, clinicId, providerNumber]) {
         if (!value) continue;
-        if (praktikaReferrerKey && praktikaReferrerKey.includes(value)) score += 160;
+        if (praktikaReferrerKey && praktikaReferrerKey.includes(value)) score += 120;
       }
 
       if (providerNumber && rawJsonContainsExactValue(rawJson, providerNumber)) score += 220;
-      if (clinicId && rawJsonContainsExactValue(rawJson, clinicId)) score += 160;
-      if (partyId && rawJsonContainsExactValue(rawJson, partyId)) score += 160;
+      if (clinicId && rawJsonContainsExactValue(rawJson, clinicId)) score += 180;
+      if (partyId && rawJsonContainsExactValue(rawJson, partyId)) score += 240;
       if (providerId && rawJsonContainsExactValue(rawJson, providerId)) score += 140;
 
       if (targetName && (referrerName === targetName || referrerName === targetNameNoTitle)) {
@@ -690,6 +813,12 @@ async function findReportReferrerForReferral(referral: PraktikaReferral) {
 
       if (isOwnPracticeReferrer(referrer)) score -= 1000;
       if (!clean(referrer.practice_name) && !clean(referrer.address)) score -= 40;
+
+      // If the row has a known Praktika ID that is different from the referral's
+      // identifiers, do not let name matching alone win easily.
+      if (hasExplicitDifferentPraktikaId && targetName && referrerName === targetNameNoTitle) {
+        score -= 260;
+      }
 
       return { referrer, score };
     })
@@ -887,9 +1016,10 @@ async function hydrateReportLetterQueueItem(context: BrowserContext, job: any) {
     });
 
     const referrals = extractPatientReferrals(referralParsed);
-    const latestReferral = referrals
-      .filter((referral) => formatProviderName(referral))
-      .sort((a, b) => getReferralSortDate(b) - getReferralSortDate(a))[0];
+    const latestReferral = chooseBestReferralForAppointment(
+      referrals,
+      appointmentDate,
+    );
 
     if (latestReferral) {
       const provider = latestReferral.party?.provider;

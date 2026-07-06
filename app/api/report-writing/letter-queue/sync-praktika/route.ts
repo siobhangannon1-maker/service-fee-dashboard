@@ -133,14 +133,43 @@ function getAppointmentId(row: PraktikaAppointmentRow) {
   );
 }
 
+function praktikaBrisbaneLocalToUtcIso(value: string | null) {
+  const text = clean(value);
+  if (!text) return null;
+
+  const match = text.match(
+    /^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/,
+  );
+
+  if (!match) return text;
+
+  const [, datePart, hourText, minuteText, secondText] = match;
+
+  const utcDate = new Date(
+    Date.UTC(
+      Number(datePart.slice(0, 4)),
+      Number(datePart.slice(5, 7)) - 1,
+      Number(datePart.slice(8, 10)),
+      Number(hourText) - 10,
+      Number(minuteText),
+      Number(secondText || 0),
+    ),
+  );
+
+  return utcDate.toISOString();
+}
+
 function getAppointmentTime(row: PraktikaAppointmentRow) {
   const direct = clean(row.dtAppointment);
-  if (direct) return direct;
+  if (direct) return praktikaBrisbaneLocalToUtcIso(direct);
 
   const date = clean(row.vchAppDate);
   const time = clean(row.vchAppTime);
 
-  if (date && time) return `${date} ${time}`;
+  if (date && time) {
+    return praktikaBrisbaneLocalToUtcIso(`${date} ${time}`);
+  }
+
   if (date) return date;
 
   return null;

@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Financial Dashboard",
-  description: "Focus Dental Specialists Financial Dashboard",
+  title: "Focus App",
+  description: "Focus Dental Specialists App",
   icons: {
     icon: "/favicon-v3.ico",
     shortcut: "/favicon-v3.ico",

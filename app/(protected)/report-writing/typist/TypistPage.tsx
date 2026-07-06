@@ -436,6 +436,51 @@ function getSuggestedReportTypeLabel(
   );
 }
 
+async function classifyReportTypeWithAi(params: {
+  providerId: string
+  clinicalNotes: string
+  appointmentNotes: string
+  reportTypes: ReportTypeOption[]
+  fallbackReportType: string
+}) {
+  try {
+    const response = await fetch("/api/report-writing/classify-report-type", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        providerId: params.providerId,
+        clinicalNotes: params.clinicalNotes,
+        appointmentNotes: params.appointmentNotes,
+        availableReportTypes: params.reportTypes,
+        fallbackReportType: params.fallbackReportType,
+      }),
+    })
+
+    const data = await response.json().catch(() => ({}))
+
+    if (!response.ok || !data.success) {
+      console.warn("AI report type classification failed:", data)
+      return params.fallbackReportType
+    }
+
+    const aiReportType = String(data.reportType || "").trim()
+
+    if (
+      aiReportType &&
+      params.reportTypes.some((type) => type.value === aiReportType)
+    ) {
+      return aiReportType
+    }
+
+    return params.fallbackReportType
+  } catch (error) {
+    console.warn("AI report type classification request failed:", error)
+    return params.fallbackReportType
+  }
+}
+
 function asPlainObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -743,6 +788,29 @@ function getQueueReferrerName(item: QueueItem) {
   );
 }
 
+function formatAppointmentDateTime(value: string | null | undefined) {
+  const text = String(value || "").trim();
+
+  if (!text) return "No appointment time";
+
+  const date = new Date(text);
+
+  if (Number.isNaN(date.getTime())) {
+    return text;
+  }
+
+  return date.toLocaleString("en-AU", {
+    timeZone: "Australia/Brisbane",
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
 function getQueueReferrerAddress(item: QueueItem) {
   const raw = getQueueRawObject(item);
   const { referral, latestReferral, referrer } = getQueueReferralObject(item);
@@ -921,6 +989,7 @@ function getQueueAppointmentNotes(item: QueueItem) {
 
   return lines.join("\n");
 }
+
 
 function getQueueSyncedClinicalNotes(item: QueueItem) {
   const raw = getQueueRawObject(item);
@@ -1291,7 +1360,7 @@ export default function TypistPage() {
     }
 
     if (autoGenerateStatus === "selecting_report_type") {
-      return "Selecting the best report type from the appointment notes...";
+      return "AI is choosing the best report type from the clinical notes...";
     }
 
     if (autoGenerateStatus === "generating") {
@@ -3334,6 +3403,18 @@ async function runMedirefWorkflowInBackground(params: {
         .join("\n\n");
 
       setClinicalNotes(combinedCachedClinicalNotes || cachedClinicalNotes);
+
+      const aiReportType = await classifyReportTypeWithAi({
+        providerId: selectedProviderId,
+        clinicalNotes: combinedCachedClinicalNotes || cachedClinicalNotes,
+        appointmentNotes,
+        reportTypes,
+        fallbackReportType: inferredReportType,
+      });
+
+      if (!isCurrentQueueSelection()) return;
+
+      setReportType(aiReportType);
       setAutoGenerateStatus("ready");
       return;
     }
@@ -3449,6 +3530,18 @@ async function runMedirefWorkflowInBackground(params: {
       .join("\n\n");
 
     setClinicalNotes(combinedClinicalNotes || appointmentNotes);
+
+    const aiReportType = await classifyReportTypeWithAi({
+      providerId: selectedProviderId,
+      clinicalNotes: combinedClinicalNotes || appointmentNotes,
+      appointmentNotes,
+      reportTypes,
+      fallbackReportType: inferredReportType,
+    });
+
+    if (!isCurrentQueueSelection()) return;
+
+    setReportType(aiReportType);
     setAutoGenerateStatus("ready");
   }
 
@@ -4786,12 +4879,8 @@ async function runMedirefWorkflowInBackground(params: {
                         </div>
 
                         <div className="text-xs text-slate-400">
-                          {item.appointment_time
-                            ? new Date(item.appointment_time).toLocaleString(
-                                "en-AU",
-                              )
-                            : "No appointment time"}
-                        </div>
+  {formatAppointmentDateTime(item.appointment_time)}
+</div>
 
                         <div className="mt-1 text-xs text-slate-400">
                           {item.queue_reason || "Typist Letter"}
