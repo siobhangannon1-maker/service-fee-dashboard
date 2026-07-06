@@ -50,7 +50,6 @@ async function updateLinkedQueueItem(params: {
   praktikaPatientId: string | null
 }) {
   const queueId = clean(params.queueId)
-
   if (!queueId) return
 
   const queueUpdate: Record<string, unknown> = {
@@ -78,6 +77,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json()
     const actor = await getAuditActor()
+    const now = new Date().toISOString()
 
     const {
       providerId,
@@ -101,6 +101,10 @@ export async function POST(req: Request) {
 
     const typistInstructions = cleanOrNull(
       body.typistInstructions ?? body.typist_instructions
+    )
+
+    const typistQueries = cleanOrNull(
+      body.typistQueries ?? body.typist_queries
     )
 
     if (!providerId) {
@@ -136,10 +140,12 @@ export async function POST(req: Request) {
       status: finalStatus,
       praktika_patient_id: finalPraktikaPatientId,
       typist_instructions: typistInstructions,
+      typist_queries: typistQueries,
       drafted_by_initials: actor.actorInitials,
       drafted_by_name: actor.actorFullName,
-      provider_approved_at:
-        finalStatus === "approved" ? new Date().toISOString() : null,
+      provider_approved_at: finalStatus === "approved" ? now : null,
+      sent_for_provider_review_at:
+        finalStatus === "awaiting_provider_approval" ? now : null,
     }
 
     if (finalStatus === "approved") {
@@ -188,14 +194,19 @@ export async function POST(req: Request) {
       action:
         finalStatus === "approved"
           ? "Created and approved report"
-          : "Created draft report",
+          : finalStatus === "awaiting_provider_approval"
+            ? "Created and sent report for provider review"
+            : "Created draft report",
       details: {
         reportType: finalReportType,
         sourceType: sourceType || "clinical_notes",
         status: finalStatus,
+        sentForProviderReviewAt:
+          finalStatus === "awaiting_provider_approval" ? now : null,
         referrerNameSaved: Boolean(finalReferrerName),
         referrerAddressSaved: Boolean(finalReferrerAddress),
         typistInstructionsSaved: Boolean(typistInstructions),
+        typistQueriesSaved: Boolean(typistQueries),
         linkedQueueId: clean(queueId) || null,
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
@@ -216,8 +227,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to save draft",
+        error: error instanceof Error ? error.message : "Failed to save draft",
       },
       { status: 500 }
     )

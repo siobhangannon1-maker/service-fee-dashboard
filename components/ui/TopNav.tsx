@@ -199,6 +199,11 @@ const navGroups: NavGroup[] = [
         label: "Tasks",
         description: "Review automatically generated tasks",
       },
+      {
+        href: "/report-writing/productivity",
+        label: "Typist Productivity",
+        description: "Review typist productivity",
+      },
     ],
   },
   {

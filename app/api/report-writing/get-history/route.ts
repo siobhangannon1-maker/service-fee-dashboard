@@ -50,7 +50,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ success: true, drafts })
   } catch (error) {
-    console.error("Get report drafts failed:", error)
+    console.error("Get report history failed:", error)
 
     return NextResponse.json(
       {
@@ -58,7 +58,7 @@ export async function GET(req: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Failed to load report drafts.",
+            : "Failed to load report history.",
       },
       { status: 500 }
     )

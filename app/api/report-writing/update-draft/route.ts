@@ -74,6 +74,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json()
     const actor = await getAuditActor()
+    const now = new Date().toISOString()
 
     const {
       draftId,
@@ -113,7 +114,7 @@ export async function POST(req: Request) {
     }
 
     const updatePayload: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
+      updated_at: now,
     }
 
     if (typeof editedText === "string") updatePayload.edited_text = editedText
@@ -140,7 +141,9 @@ export async function POST(req: Request) {
 
     if (Object.prototype.hasOwnProperty.call(body, "reportType")) {
       updatePayload.report_type =
-        cleanOrNull(reportType) || existingDraft.report_type || "consultation_report"
+        cleanOrNull(reportType) ||
+        existingDraft.report_type ||
+        "consultation_report"
     }
 
     if (Object.prototype.hasOwnProperty.call(body, "praktikaPatientId")) {
@@ -156,12 +159,26 @@ export async function POST(req: Request) {
       )
     }
 
+    if (
+      Object.prototype.hasOwnProperty.call(body, "typistQueries") ||
+      Object.prototype.hasOwnProperty.call(body, "typist_queries")
+    ) {
+      updatePayload.typist_queries = cleanOrNull(
+        body.typistQueries ?? body.typist_queries
+      )
+    }
+
     if (typeof status === "string" && status.trim()) {
       updatePayload.status = status
 
+      if (status === "awaiting_provider_approval") {
+        updatePayload.sent_for_provider_review_at =
+          existingDraft.sent_for_provider_review_at || now
+      }
+
       if (status === "approved") {
         updatePayload.provider_approved_at =
-          existingDraft.provider_approved_at || new Date().toISOString()
+          existingDraft.provider_approved_at || now
         updatePayload.approved_by_initials = actor.actorInitials
         updatePayload.approved_by_name = actor.actorFullName
       }
@@ -232,13 +249,20 @@ export async function POST(req: Request) {
           ? "Updated Praktika patient match"
           : status === "approved"
             ? "Approved report"
-            : "Updated report",
+            : status === "awaiting_provider_approval"
+              ? "Sent report to provider for approval"
+              : "Updated report",
       details: {
         status: data.status,
+        sentForProviderReviewAt:
+          status === "awaiting_provider_approval"
+            ? data.sent_for_provider_review_at
+            : null,
         praktikaPatientId: data.praktika_patient_id || null,
         referrerNameSaved: Boolean(data.referrer_name),
         referrerAddressSaved: Boolean(data.referrer_address),
         typistInstructionsSaved: Boolean(data.typist_instructions),
+        typistQueriesSaved: Boolean(data.typist_queries),
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
         learningSaved:

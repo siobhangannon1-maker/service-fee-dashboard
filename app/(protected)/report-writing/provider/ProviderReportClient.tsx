@@ -31,6 +31,7 @@ type Draft = {
   emailed_to_referrer_email?: string | null;
   praktika_patient_id?: string | null;
   typist_instructions?: string | null;
+  typist_queries?: string | null;
   source_type?: LetterSourceType | string | null;
 };
 
@@ -60,6 +61,7 @@ type PatientAndReferrerFieldsProps = {
   setReferrerAddress: (value: string) => void;
   typistInstructions: string;
   setTypistInstructions: (value: string) => void;
+  typistQueriesForProvider?: string | null;
 };
 
 type ActiveTab =
@@ -90,6 +92,7 @@ function PatientAndReferrerFields({
   setReferrerAddress,
   typistInstructions,
   setTypistInstructions,
+  typistQueriesForProvider,
 }: PatientAndReferrerFieldsProps) {
   const [dobFocused, setDobFocused] = useState(false);
 
@@ -179,6 +182,21 @@ function PatientAndReferrerFields({
           onChange={(e) => setTypistInstructions(e.target.value)}
         />
       </div>
+
+      {typistQueriesForProvider?.trim() ? (
+        <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 md:col-span-2">
+          <div className="text-xs font-bold uppercase tracking-wide text-sky-900">
+            Queries from typist
+          </div>
+          <p className="mt-1 text-xs text-sky-700">
+            Internal notes from the typist for provider review. These are not
+            included in the final letter.
+          </p>
+          <div className="mt-3 whitespace-pre-line rounded-xl border border-sky-200 bg-white p-3 text-sm leading-6 text-sky-950">
+            {typistQueriesForProvider}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -205,16 +223,43 @@ function formatDateTime(value: string | null | undefined) {
   }
 }
 
+const REPORT_TYPE_LABEL_OVERRIDES: Record<string, string> = {
+  SPT_report: "SPT Report",
+  spt_report: "SPT Report",
+  consultation_report: "Consultation Report",
+  Consultation_report: "Consultation Report",
+};
+
 function formatReportType(value: string | null | undefined) {
   const text = String(value || "").trim();
 
   if (!text) return "Letter";
 
+  if (REPORT_TYPE_LABEL_OVERRIDES[text]) {
+    return REPORT_TYPE_LABEL_OVERRIDES[text];
+  }
+
+  const acronymWords = new Set(["SPT", "CBCT", "OPG", "PA", "TMJ", "IV", "LA"]);
+
   return text
     .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+    .split(" ")
+    .map((word) => {
+      const upperWord = word.toUpperCase();
+      if (acronymWords.has(upperWord)) return upperWord;
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
+function formatReportTypeOptions(types: ReportTypeOption[]) {
+  return types.map((type) => ({
+    ...type,
+    label: formatReportType(type.label || type.value),
+  }));
 }
 
 function formatDuration(totalSeconds: number) {
@@ -410,7 +455,7 @@ export default function ProviderReportClient({
     const data = await readJsonSafely(response);
 
     if (data.success) {
-      setReportTypes(data.types || []);
+      setReportTypes(formatReportTypeOptions(data.types || []));
 
       if (
         data.types?.length > 0 &&
@@ -442,7 +487,11 @@ export default function ProviderReportClient({
       );
 
       setApprovedDrafts(
-        drafts.filter((draft: Draft) => draft.status === "approved"),
+        drafts.filter(
+          (draft: Draft) =>
+            draft.status === "approved" &&
+            !Boolean(draft.emailed_to_referrer_at),
+        ),
       );
     }
   }
@@ -578,6 +627,7 @@ export default function ProviderReportClient({
               : reportType,
           clinicalNotes,
           typistInstructions,
+          typistQueries: selectedDraft.typist_queries || "",
           learnFromEdits: false,
         }),
       });
@@ -1037,6 +1087,7 @@ export default function ProviderReportClient({
           learnFromEdits: hasEditedAiText,
           learningSource: "provider_approval_edit",
           typistInstructions: selectedApprovalDraft.typist_instructions || "",
+          typistQueries: selectedApprovalDraft.typist_queries || "",
         }),
       });
 
@@ -1081,6 +1132,7 @@ export default function ProviderReportClient({
           status: "edited_by_typist",
           learnFromEdits: false,
           typistInstructions: selectedApprovalDraft.typist_instructions || "",
+          typistQueries: selectedApprovalDraft.typist_queries || "",
         }),
       });
 
@@ -1223,6 +1275,13 @@ export default function ProviderReportClient({
       setReferrerAddress={setReferrerAddress}
       typistInstructions={typistInstructions}
       setTypistInstructions={setTypistInstructions}
+      typistQueriesForProvider={
+        activeTab === "approval"
+          ? selectedApprovalDraft?.typist_queries || null
+          : activeTab === "approved"
+            ? selectedApprovedDraft?.typist_queries || null
+            : selectedDraft?.typist_queries || null
+      }
     />
   );
 
@@ -1974,6 +2033,21 @@ export default function ProviderReportClient({
                       />
                     </div>
 
+                    {selectedApprovalDraft.typist_queries?.trim() ? (
+                      <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                        <div className="text-sm font-bold text-sky-900">
+                          Queries from typist
+                        </div>
+                        <p className="mt-1 text-xs text-sky-700">
+                          Internal notes from the typist for provider review.
+                          These are not included in the final letter.
+                        </p>
+                        <div className="mt-3 whitespace-pre-line rounded-xl border border-sky-200 bg-white p-3 text-sm leading-6 text-sky-950">
+                          {selectedApprovalDraft.typist_queries}
+                        </div>
+                      </div>
+                    ) : null}
+
                     <ProviderSimpleImageUpload
   reportDraftId={selectedDraft?.id || null}
   onCreateDraft={createImageDraftForUpload}
@@ -2149,6 +2223,21 @@ export default function ProviderReportClient({
                         </div>
                         <div className="mt-2 whitespace-pre-line text-sm leading-6 text-amber-950">
                           {selectedApprovedDraft.typist_instructions}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {selectedApprovedDraft.typist_queries?.trim() ? (
+                      <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                        <div className="text-sm font-bold text-sky-900">
+                          Queries from typist
+                        </div>
+                        <p className="mt-1 text-xs text-sky-700">
+                          Internal notes from the typist for provider review.
+                          These are not included in the final letter.
+                        </p>
+                        <div className="mt-3 whitespace-pre-line rounded-xl border border-sky-200 bg-white p-3 text-sm leading-6 text-sky-950">
+                          {selectedApprovedDraft.typist_queries}
                         </div>
                       </div>
                     ) : null}

@@ -51,6 +51,7 @@ type Draft = {
   emailed_to_referrer_email?: string | null;
   emailed_to_referrer_resend_id?: string | null;
   typist_instructions?: string | null;
+  typist_queries?: string | null;
   workflow_status?: string | null;
   workflow_started_at?: string | null;
   workflow_completed_at?: string | null;
@@ -156,6 +157,46 @@ function getFilenameFromResponse(response: Response, fallback: string) {
 function cleanString(value: unknown) {
   return String(value ?? "").trim();
 }
+
+const REPORT_TYPE_LABEL_OVERRIDES: Record<string, string> = {
+  SPT_report: "SPT Report",
+  spt_report: "SPT Report",
+  consultation_report: "Consultation Report",
+  Consultation_report: "Consultation Report",
+};
+
+function formatReportType(value: string | null | undefined) {
+  const text = String(value || "").trim();
+
+  if (!text) return "Letter";
+
+  if (REPORT_TYPE_LABEL_OVERRIDES[text]) {
+    return REPORT_TYPE_LABEL_OVERRIDES[text];
+  }
+
+  const acronymWords = new Set(["SPT", "CBCT", "OPG", "PA", "TMJ", "IV", "LA"]);
+
+  return text
+    .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .map((word) => {
+      const upperWord = word.toUpperCase();
+      if (acronymWords.has(upperWord)) return upperWord;
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
+function formatReportTypeOptions(types: ReportTypeOption[]) {
+  return types.map((type) => ({
+    ...type,
+    label: formatReportType(type.label || type.value),
+  }));
+}
+
 
 function formatManualReferrerAddress(referrer: any) {
   const practiceName = String(
@@ -391,7 +432,7 @@ function getSuggestedReportTypeLabel(
 
   return (
     reportTypes.find((type) => type.value === inferredType)?.label ||
-    inferredType.replace(/_/g, " ")
+    formatReportType(inferredType)
   );
 }
 
@@ -1077,6 +1118,7 @@ export default function TypistPage() {
   const [referralAutoFillError, setReferralAutoFillError] = useState("");
   const [reportType, setReportType] = useState("consultation_report");
   const [clinicalNotes, setClinicalNotes] = useState("");
+  const [typistQueries, setTypistQueries] = useState("");
   const [letterText, setLetterText] = useState("");
   const [generatedAiLetterText, setGeneratedAiLetterText] = useState("");
   const [pdfCcText, setPdfCcText] = useState("");
@@ -1173,9 +1215,8 @@ export default function TypistPage() {
     if (listTab === "completed") {
       return drafts.filter(
         (draft) =>
-          draft.status === "approved" ||
-          Boolean(draft.emailed_to_referrer_at) ||
-          Boolean(draft.uploaded_to_praktika_at),
+          draft.status === "approved" &&
+          !Boolean(draft.emailed_to_referrer_at),
       );
     }
 
@@ -1198,9 +1239,8 @@ export default function TypistPage() {
 
   const countCompleted = drafts.filter(
     (draft) =>
-      draft.status === "approved" ||
-      Boolean(draft.emailed_to_referrer_at) ||
-      Boolean(draft.uploaded_to_praktika_at),
+      draft.status === "approved" &&
+      !Boolean(draft.emailed_to_referrer_at),
   ).length;
 
   const selectedDraftHasPraktikaPatient = Boolean(
@@ -1299,6 +1339,14 @@ export default function TypistPage() {
       if (value !== existingText) {
         setSaveStatus("unsaved");
       }
+    }
+  }
+
+  function handleTypistQueriesChange(value: string) {
+    setTypistQueries(value);
+
+    if (selectedDraft && value !== (selectedDraft.typist_queries || "")) {
+      setSaveStatus("unsaved");
     }
   }
 
@@ -1585,6 +1633,7 @@ export default function TypistPage() {
           referrerAddress,
           reportType,
           clinicalNotes,
+          typistQueries,
           generatedReport: generatedAiLetterText || placeholderText,
           editedText: placeholderText,
           finalApprovedText: placeholderText,
@@ -2676,10 +2725,10 @@ async function runMedirefWorkflowInBackground(params: {
     const data = await response.json();
 
     if (data.success) {
-      setReportTypes(data.types);
+      setReportTypes(formatReportTypeOptions(data.types || []));
 
       if (
-        data.types.length > 0 &&
+        data.types?.length > 0 &&
         !data.types.some((type: ReportTypeOption) => type.value === reportType)
       ) {
         setReportType(data.types[0].value);
@@ -2818,6 +2867,7 @@ async function runMedirefWorkflowInBackground(params: {
             draftId: selectedDraft.id,
             editedText: finalLetterTextForSave,
             status: selectedDraft.status,
+            typistQueries,
             learnFromEdits: false,
             learningSource: "typist_autosave",
           }),
@@ -2837,7 +2887,7 @@ async function runMedirefWorkflowInBackground(params: {
 
         setSelectedDraft((current) =>
           current && current.id === selectedDraft.id
-            ? { ...current, edited_text: finalLetterTextForSave }
+            ? { ...current, edited_text: finalLetterTextForSave, typist_queries: typistQueries || null }
             : current,
         );
       } catch (error) {
@@ -2851,7 +2901,7 @@ async function runMedirefWorkflowInBackground(params: {
         clearTimeout(autosaveTimerRef.current);
       }
     };
-  }, [letterText, pdfCcText, pdfLetterDate, selectedDraft]);
+  }, [letterText, pdfCcText, pdfLetterDate, typistQueries, selectedDraft]);
 
   useEffect(() => {
     if (!selectedDraft) return;
@@ -2934,6 +2984,7 @@ async function runMedirefWorkflowInBackground(params: {
     setReportType("consultation_report");
     setPreferredExampleId("");
     setClinicalNotes("");
+    setTypistQueries("");
     setLetterText("");
     setGeneratedAiLetterText("");
     setPdfCcText("");
@@ -2977,6 +3028,7 @@ async function runMedirefWorkflowInBackground(params: {
     // Do not clear the notes panel when opening an existing draft.
     // If the get-drafts API returns saved source notes, show them here.
     setClinicalNotes(getDraftClinicalNotes(draft));
+    setTypistQueries(draft.typist_queries || "");
 
     const savedLetterText = draft.edited_text || draft.ai_generated_text || "";
     setPdfCcText(extractPdfCcText(savedLetterText));
@@ -3931,6 +3983,7 @@ async function runMedirefWorkflowInBackground(params: {
             patientDob,
             reportType,
             clinicalNotes,
+            typistQueries,
             originalAiText,
             finalApprovedText,
             praktikaPatientId: selectedPraktikaPatientId || null,
@@ -3993,6 +4046,7 @@ async function runMedirefWorkflowInBackground(params: {
           referrerAddress,
           reportType,
           clinicalNotes,
+          typistQueries,
           generatedReport: originalAiText,
           editedText: finalApprovedText,
           finalApprovedText,
@@ -4070,6 +4124,7 @@ async function runMedirefWorkflowInBackground(params: {
           patientDob,
           reportType,
           clinicalNotes,
+          typistQueries,
           originalAiText:
             selectedDraft.ai_generated_text || generatedAiLetterText,
           finalApprovedText: finalLetterTextForSave,
@@ -4115,6 +4170,7 @@ async function runMedirefWorkflowInBackground(params: {
         ai_generated_text:
           selectedDraft.ai_generated_text || generatedAiLetterText,
         status,
+        typist_queries: typistQueries || null,
       });
     } finally {
       setLoading(false);
@@ -4840,7 +4896,7 @@ async function runMedirefWorkflowInBackground(params: {
                       </div>
 
                       <div className="text-sm text-slate-500">
-                        {draft.report_type}
+                        {formatReportType(draft.report_type)}
                       </div>
 
                       <div className="mt-1 text-xs text-slate-400">
@@ -4935,6 +4991,22 @@ async function runMedirefWorkflowInBackground(params: {
           </div>
 
           <div className="flex-1 space-y-4 overflow-y-auto p-4">
+            <div className="rounded-2xl border border-sky-300 bg-sky-50 p-4 text-sm shadow-sm">
+              <label className="block text-sm font-bold text-sky-950">
+                Queries for provider
+              </label>
+              <p className="mt-1 text-xs text-sky-700">
+                Internal notes from the typist for the provider. These will not
+                be included in the letter. This can be written before the letter
+                is saved or approved.
+              </p>
+              <textarea
+                className="mt-3 h-28 w-full rounded-xl border border-sky-300 bg-white p-3 text-sm text-slate-900 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                placeholder="Examples: please confirm tooth number, check whether PA X-ray should be attached, confirm wording..."
+                value={typistQueries}
+                onChange={(e) => handleTypistQueriesChange(e.target.value)}
+              />
+            </div>
             <div className="grid gap-3 md:grid-cols-2">
               <input
                 className="rounded-xl border p-3"
@@ -5090,6 +5162,7 @@ async function runMedirefWorkflowInBackground(params: {
                     </div>
                   </div>
                 ) : null}
+
               </div>
             </div>
 
@@ -5502,14 +5575,6 @@ async function runMedirefWorkflowInBackground(params: {
 </button>
 
                     <button
-                      onClick={() => generatePdf(selectedDraft)}
-                      disabled={loading}
-                      className="rounded-xl bg-purple-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                    >
-                      {loading ? "Generating PDF..." : "Download PDF"}
-                    </button>
-
-                    <button
                       onClick={uploadToPraktika}
                       disabled={loading || !selectedPraktikaPatientId}
                       className="rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
@@ -5520,16 +5585,6 @@ async function runMedirefWorkflowInBackground(params: {
                     </button>
                   </>
                 ) : null}
-
-                <button
-                  onClick={() => openMedirefModal()}
-                  disabled={loading || !selectedDraftCanComplete}
-                  className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                >
-                  {selectedDraft.emailed_to_referrer_at
-                    ? "Send Again Via MediRef"
-                    : "Send Via MediRef"}
-                </button>
 
                 <button
                   onClick={() => openMedirefModal({ completeWorkflow: true })}
