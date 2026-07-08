@@ -159,13 +159,14 @@ export default function PraktikaToolsPopup({
   const shouldShowReconnectWarning = needsReconnect && !isConnected;
 
   const shouldShowCredentialForm =
-    currentStatus !== "connected" &&
-    (currentConnectionState === "disconnected" ||
-      needsReconnect ||
-      currentStatus === "waiting_for_credentials" ||
-      currentStatus === "expired" ||
-      currentStatus === "error" ||
-      currentStatus === "not_started");
+  currentStatus !== "connected" &&
+  currentStatus !== "waiting_for_mfa" &&
+  (currentConnectionState === "disconnected" ||
+    needsReconnect ||
+    currentStatus === "waiting_for_credentials" ||
+    currentStatus === "expired" ||
+    currentStatus === "error" ||
+    currentStatus === "not_started");
 
   const shouldShowMfaBox = currentStatus === "waiting_for_mfa";
 
