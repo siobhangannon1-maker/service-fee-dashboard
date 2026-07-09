@@ -1268,10 +1268,22 @@ export default function TypistPage() {
   const [imageDraftError, setImageDraftError] = useState<string | null>(null);
   const autoImageDraftQueueIdRef = useRef<string | null>(null);
   const queueSelectionTokenRef = useRef(0);
-  // Guards provider-specific async loads so an older provider request cannot
-  // overwrite the currently selected provider's queue/draft counts.
-  const providerLoadTokenRef = useRef(0);
+
+  // Keeps provider-specific async reloads from overwriting the currently
+  // selected provider. This fixes queue/draft counters flashing to another
+  // provider when an older request returns late.
+  const providerDataRequestRef = useRef(0);
   const selectedProviderIdRef = useRef("");
+
+  function isCurrentProviderDataRequest(
+    providerId: string,
+    requestToken: number,
+  ) {
+    return (
+      providerId === selectedProviderIdRef.current &&
+      requestToken === providerDataRequestRef.current
+    );
+  }
 
   const selectedProviderRequiresApproval =
     selectedProvider?.typist_letters_require_approval !== false;
@@ -2804,15 +2816,12 @@ export default function TypistPage() {
     }
   }
 
-  async function loadReportTypes(providerIdToLoad: string, token?: number) {
+  async function loadReportTypes(providerIdToLoad: string) {
     const response = await fetch(
       `/api/report-writing/correspondence-types?providerId=${providerIdToLoad}`,
     );
 
     const data = await response.json();
-
-    if (token !== undefined && token !== providerLoadTokenRef.current) return;
-    if (providerIdToLoad !== selectedProviderIdRef.current) return;
 
     if (data.success) {
       setReportTypes(formatReportTypeOptions(data.types || []));
@@ -2845,8 +2854,6 @@ export default function TypistPage() {
 
     const data = await response.json();
 
-    if (providerIdToLoad !== selectedProviderIdRef.current) return;
-
     if (data.success) {
       setPreferredExamples(data.examples || []);
     } else {
@@ -2855,26 +2862,31 @@ export default function TypistPage() {
     }
   }
 
-  async function loadDrafts(providerId: string, token?: number) {
+  async function loadDrafts(providerId: string, requestToken?: number) {
+    const activeRequestToken = requestToken ?? providerDataRequestRef.current;
+
     const response = await fetch(
       `/api/report-writing/get-drafts?providerId=${providerId}`,
     );
 
     const data = await response.json();
 
-    if (token !== undefined && token !== providerLoadTokenRef.current) return;
-    if (providerId !== selectedProviderIdRef.current) return;
+    if (!isCurrentProviderDataRequest(providerId, activeRequestToken)) {
+      return;
+    }
 
     if (data.success) {
-      setDrafts(data.drafts || []);
+      setDrafts(data.drafts);
     }
   }
 
   async function loadQueue(
     providerId: string,
     status: QueueStatusTab = queueStatusTab,
-    token?: number,
+    requestToken?: number,
   ) {
+    const activeRequestToken = requestToken ?? providerDataRequestRef.current;
+
     const params = new URLSearchParams();
     params.set("providerId", providerId);
     params.set("status", status);
@@ -2885,24 +2897,26 @@ export default function TypistPage() {
 
     const data = await response.json();
 
-    if (token !== undefined && token !== providerLoadTokenRef.current) return;
-    if (providerId !== selectedProviderIdRef.current) return;
+    if (!isCurrentProviderDataRequest(providerId, activeRequestToken)) {
+      return;
+    }
 
     if (data.success) {
-      setQueue(data.queue || []);
+      setQueue(data.queue);
 
       const hydrationResult = await hydrateQueueInBackground(
         providerId,
         status,
       );
 
-      if (token !== undefined && token !== providerLoadTokenRef.current) return;
-      if (providerId !== selectedProviderIdRef.current) return;
+      if (!isCurrentProviderDataRequest(providerId, activeRequestToken)) {
+        return;
+      }
 
       if (hydrationResult?.enqueued > 0) {
         window.setTimeout(() => {
-          if (token === undefined || token === providerLoadTokenRef.current) {
-            void loadQueue(providerId, status, token);
+          if (isCurrentProviderDataRequest(providerId, activeRequestToken)) {
+            loadQueue(providerId, status, activeRequestToken);
           }
         }, 15000);
       }
@@ -2914,7 +2928,9 @@ export default function TypistPage() {
   }, []);
 
   useEffect(() => {
-    selectedProviderIdRef.current = selectedProviderId;
+    if (!selectedProviderId) return;
+
+    loadReportTypesForProvider(selectedProviderId);
   }, [selectedProviderId]);
 
   useEffect(() => {
@@ -2930,22 +2946,18 @@ export default function TypistPage() {
   }, []);
 
   useEffect(() => {
-    if (!selectedProviderId) return;
-
-    const token = providerLoadTokenRef.current + 1;
-    providerLoadTokenRef.current = token;
     selectedProviderIdRef.current = selectedProviderId;
 
-    // Clear provider-specific UI immediately so the previous provider's counts
-    // cannot remain visible while the new provider is loading.
-    setDrafts([]);
-    setQueue([]);
-    clearForm();
-    setSelectedDraftIds([]);
+    if (selectedProviderId) {
+      const requestToken = providerDataRequestRef.current + 1;
+      providerDataRequestRef.current = requestToken;
 
-    void loadDrafts(selectedProviderId, token);
-    void loadReportTypes(selectedProviderId, token);
-    void loadQueue(selectedProviderId, queueStatusTab, token);
+      loadDrafts(selectedProviderId, requestToken);
+      loadReportTypes(selectedProviderId);
+      loadQueue(selectedProviderId, queueStatusTab, requestToken);
+      clearForm();
+      setSelectedDraftIds([]);
+    }
   }, [selectedProviderId, queueStatusTab]);
 
   useEffect(() => {
@@ -3316,10 +3328,23 @@ export default function TypistPage() {
   }
 
   async function loadReportTypesForProvider(providerId: string) {
-    // Kept for compatibility if anything still calls it. The main provider
-    // effect now uses loadReportTypes(providerId, token) so stale responses are
-    // ignored.
-    await loadReportTypes(providerId);
+    if (!providerId) return;
+
+    const response = await fetch(
+      `/api/report-writing/correspondence-types?providerId=${providerId}`,
+    );
+
+    const data = await response.json();
+
+    if (data.success) {
+      const types = data.types || [];
+
+      setReportTypes(types);
+
+      if (types.length > 0) {
+        setReportType(types[0].value);
+      }
+    }
   }
 
   async function startLetterFromQueue(item: QueueItem) {
