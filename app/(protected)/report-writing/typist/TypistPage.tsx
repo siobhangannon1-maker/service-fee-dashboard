@@ -197,7 +197,6 @@ function formatReportTypeOptions(types: ReportTypeOption[]) {
   }));
 }
 
-
 function formatManualReferrerAddress(referrer: any) {
   const practiceName = String(
     referrer?.practice_name ||
@@ -437,11 +436,11 @@ function getSuggestedReportTypeLabel(
 }
 
 async function classifyReportTypeWithAi(params: {
-  providerId: string
-  clinicalNotes: string
-  appointmentNotes: string
-  reportTypes: ReportTypeOption[]
-  fallbackReportType: string
+  providerId: string;
+  clinicalNotes: string;
+  appointmentNotes: string;
+  reportTypes: ReportTypeOption[];
+  fallbackReportType: string;
 }) {
   try {
     const response = await fetch("/api/report-writing/classify-report-type", {
@@ -456,28 +455,28 @@ async function classifyReportTypeWithAi(params: {
         availableReportTypes: params.reportTypes,
         fallbackReportType: params.fallbackReportType,
       }),
-    })
+    });
 
-    const data = await response.json().catch(() => ({}))
+    const data = await response.json().catch(() => ({}));
 
     if (!response.ok || !data.success) {
-      console.warn("AI report type classification failed:", data)
-      return params.fallbackReportType
+      console.warn("AI report type classification failed:", data);
+      return params.fallbackReportType;
     }
 
-    const aiReportType = String(data.reportType || "").trim()
+    const aiReportType = String(data.reportType || "").trim();
 
     if (
       aiReportType &&
       params.reportTypes.some((type) => type.value === aiReportType)
     ) {
-      return aiReportType
+      return aiReportType;
     }
 
-    return params.fallbackReportType
+    return params.fallbackReportType;
   } catch (error) {
-    console.warn("AI report type classification request failed:", error)
-    return params.fallbackReportType
+    console.warn("AI report type classification request failed:", error);
+    return params.fallbackReportType;
   }
 }
 
@@ -990,7 +989,6 @@ function getQueueAppointmentNotes(item: QueueItem) {
   return lines.join("\n");
 }
 
-
 function getQueueSyncedClinicalNotes(item: QueueItem) {
   const raw = getQueueRawObject(item);
 
@@ -1270,6 +1268,10 @@ export default function TypistPage() {
   const [imageDraftError, setImageDraftError] = useState<string | null>(null);
   const autoImageDraftQueueIdRef = useRef<string | null>(null);
   const queueSelectionTokenRef = useRef(0);
+  // Guards provider-specific async loads so an older provider request cannot
+  // overwrite the currently selected provider's queue/draft counts.
+  const providerLoadTokenRef = useRef(0);
+  const selectedProviderIdRef = useRef("");
 
   const selectedProviderRequiresApproval =
     selectedProvider?.typist_letters_require_approval !== false;
@@ -1284,8 +1286,7 @@ export default function TypistPage() {
     if (listTab === "completed") {
       return drafts.filter(
         (draft) =>
-          draft.status === "approved" &&
-          !Boolean(draft.emailed_to_referrer_at),
+          draft.status === "approved" && !Boolean(draft.emailed_to_referrer_at),
       );
     }
 
@@ -1308,8 +1309,7 @@ export default function TypistPage() {
 
   const countCompleted = drafts.filter(
     (draft) =>
-      draft.status === "approved" &&
-      !Boolean(draft.emailed_to_referrer_at),
+      draft.status === "approved" && !Boolean(draft.emailed_to_referrer_at),
   ).length;
 
   const selectedDraftHasPraktikaPatient = Boolean(
@@ -1420,41 +1420,41 @@ export default function TypistPage() {
   }
 
   async function previewHtmlPdf() {
-  if (!selectedDraft) {
-    alert("Please select a draft first.");
-    return;
-  }
-
-  setLoading(true);
-
-  try {
-    const response = await fetch("/api/report-writing/generate-pdf-html", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ draftId: selectedDraft.id }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText || "Failed to generate HTML PDF.");
+    if (!selectedDraft) {
+      alert("Please select a draft first.");
+      return;
     }
 
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
+    setLoading(true);
 
-    setPdfPreviewUrl(url);
-    setPdfPreviewTitle(`HTML PDF Test - ${selectedDraft.patient_name || "Patient"}.pdf`);
-    setPdfPreviewModalOpen(true);
-  } catch (error) {
-    alert(
-      error instanceof Error
-        ? error.message
-        : "Failed to generate HTML PDF.",
-    );
-  } finally {
-    setLoading(false);
+    try {
+      const response = await fetch("/api/report-writing/generate-pdf-html", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draftId: selectedDraft.id }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Failed to generate HTML PDF.");
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+
+      setPdfPreviewUrl(url);
+      setPdfPreviewTitle(
+        `HTML PDF Test - ${selectedDraft.patient_name || "Patient"}.pdf`,
+      );
+      setPdfPreviewModalOpen(true);
+    } catch (error) {
+      alert(
+        error instanceof Error ? error.message : "Failed to generate HTML PDF.",
+      );
+    } finally {
+      setLoading(false);
+    }
   }
-}
 
   async function persistCurrentReferrerDetails(options?: { quiet?: boolean }) {
     if (!selectedDraft) return true;
@@ -2309,65 +2309,66 @@ export default function TypistPage() {
     setMedirefModalOpen(true);
   }
 
-  
   async function uploadToPraktikaAndUpdateIconForMediref() {
-  if (!selectedDraft) return null;
+    if (!selectedDraft) return null;
 
-  const finalPraktikaPatientId =
-    selectedPraktikaPatientId || selectedDraft.praktika_patient_id || "";
+    const finalPraktikaPatientId =
+      selectedPraktikaPatientId || selectedDraft.praktika_patient_id || "";
 
-  if (!finalPraktikaPatientId) {
-    alert("Please select the correct Praktika patient first.");
-    return null;
-  }
+    if (!finalPraktikaPatientId) {
+      alert("Please select the correct Praktika patient first.");
+      return null;
+    }
 
-  setCompleteStep("Uploading approved PDF to Praktika...");
+    setCompleteStep("Uploading approved PDF to Praktika...");
 
-  const uploadResponse = await fetch("/api/report-writing/upload-to-praktika", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      draftId: selectedDraft.id,
-      praktikaPatientId: finalPraktikaPatientId,
-    }),
-  });
+    const uploadResponse = await fetch(
+      "/api/report-writing/upload-to-praktika",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          draftId: selectedDraft.id,
+          praktikaPatientId: finalPraktikaPatientId,
+        }),
+      },
+    );
 
-  const uploadData = await uploadResponse.json().catch(() => ({}));
+    const uploadData = await uploadResponse.json().catch(() => ({}));
 
-  if (!uploadResponse.ok || !uploadData.success) {
-    alert(uploadData.error || "Failed to upload to Praktika.");
-    console.error("Praktika upload error:", uploadData);
-    return null;
-  }
+    if (!uploadResponse.ok || !uploadData.success) {
+      alert(uploadData.error || "Failed to upload to Praktika.");
+      console.error("Praktika upload error:", uploadData);
+      return null;
+    }
 
-  setCompleteStep("Updating Praktika letter icon...");
+    setCompleteStep("Updating Praktika letter icon...");
 
-  fetch("/api/report-writing/update-praktika-letter-icons", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      queueId: activeQueueItemId,
-      draftId: selectedDraft.id,
-      praktikaPatientId: finalPraktikaPatientId,
-    }),
-  })
-    .then((response) => response.json())
-    .then((iconData) => {
-      if (!iconData.success || iconData.iconUpdated === false) {
-        console.warn("Praktika icon update skipped or failed:", iconData);
-      }
+    fetch("/api/report-writing/update-praktika-letter-icons", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        queueId: activeQueueItemId,
+        draftId: selectedDraft.id,
+        praktikaPatientId: finalPraktikaPatientId,
+      }),
     })
-    .catch((error) => {
-      console.warn("Praktika icon update request failed:", error);
-    });
+      .then((response) => response.json())
+      .then((iconData) => {
+        if (!iconData.success || iconData.iconUpdated === false) {
+          console.warn("Praktika icon update skipped or failed:", iconData);
+        }
+      })
+      .catch((error) => {
+        console.warn("Praktika icon update request failed:", error);
+      });
 
-  return uploadData.stagedPdf || null;
-}
-
+    return uploadData.stagedPdf || null;
+  }
 
   async function updateWorkflowStatus(
     draftId: string,
@@ -2426,317 +2427,334 @@ export default function TypistPage() {
     return data.draft || null;
   }
 
-async function sendViaMedirefFromModal() {
-  if (!selectedDraft) return;
+  async function sendViaMedirefFromModal() {
+    if (!selectedDraft) return;
 
-  if (
-    !medirefRecipientName.trim() &&
-    !medirefRecipientPracticeName.trim() &&
-    !medirefRecipientEmail.trim() &&
-    !medirefRecipientProviderNumber.trim()
-  ) {
-    alert("Enter a referrer name, practice name, email, or provider number.");
-    return;
-  }
-
-  if (medirefRecipientEmail.trim() && hasInvalidEmail(medirefRecipientEmail)) {
-    alert("Please check the recipient email address.");
-    return;
-  }
-
-  if (medirefPatientEmail.trim() && hasInvalidEmail(medirefPatientEmail)) {
-    alert("Please check the patient email address.");
-    return;
-  }
-
-  if (!medirefConfirmed) {
-    alert("Please tick the confirmation checkbox.");
-    return;
-  }
-
-  const draftSnapshot = selectedDraft;
-  const providerIdSnapshot = selectedProviderId;
-  const queueStatusSnapshot = queueStatusTab;
-  const activeQueueItemIdSnapshot = activeQueueItemId;
-  const completeWorkflow = medirefCompleteWorkflow;
-  const attachPeriodontalChartSnapshot = attachPeriodontalChart;
-
-  const workflowPayload = {
-    draftId: draftSnapshot.id,
-    referrerName: medirefRecipientName.trim(),
-    referrerPracticeName: medirefRecipientPracticeName.trim(),
-    medirefAutoMatchRecipient,
-    referrerEmail: medirefRecipientEmail.trim(),
-    referrerProviderNumber: medirefRecipientProviderNumber.trim(),
-    patientEmail: medirefPatientEmail.trim(),
-    additionalRecipients: medirefAdditionalRecipients.map((recipient) => ({
-      name: recipient.name,
-      practiceName: recipient.practiceName,
-      address: recipient.address,
-    })),
-    additionalRecipientsText: pdfCcText,
-    message: medirefMessage,
-    attachPeriodontalChart: attachPeriodontalChartSnapshot,
-    praktikaPatientId:
-      selectedPraktikaPatientId || draftSnapshot.praktika_patient_id || null,
-  };
-
-  if (completeWorkflow) {
-    const alreadyDoneParts = [
-      selectedDraftUploadedToPraktika ? "already uploaded to Praktika" : "",
-      selectedDraftEmailed ? "already queued/sent through MediRef" : "",
-    ].filter(Boolean);
-
-    if (alreadyDoneParts.length > 0) {
-      const continueAnyway = confirm(
-        `This letter has ${alreadyDoneParts.join(" and ")}. Continue anyway?`,
-      );
-
-      if (!continueAnyway) return;
+    if (
+      !medirefRecipientName.trim() &&
+      !medirefRecipientPracticeName.trim() &&
+      !medirefRecipientEmail.trim() &&
+      !medirefRecipientProviderNumber.trim()
+    ) {
+      alert("Enter a referrer name, practice name, email, or provider number.");
+      return;
     }
+
+    if (
+      medirefRecipientEmail.trim() &&
+      hasInvalidEmail(medirefRecipientEmail)
+    ) {
+      alert("Please check the recipient email address.");
+      return;
+    }
+
+    if (medirefPatientEmail.trim() && hasInvalidEmail(medirefPatientEmail)) {
+      alert("Please check the patient email address.");
+      return;
+    }
+
+    if (!medirefConfirmed) {
+      alert("Please tick the confirmation checkbox.");
+      return;
+    }
+
+    const draftSnapshot = selectedDraft;
+    const providerIdSnapshot = selectedProviderId;
+    const queueStatusSnapshot = queueStatusTab;
+    const activeQueueItemIdSnapshot = activeQueueItemId;
+    const completeWorkflow = medirefCompleteWorkflow;
+    const attachPeriodontalChartSnapshot = attachPeriodontalChart;
+
+    const workflowPayload = {
+      draftId: draftSnapshot.id,
+      referrerName: medirefRecipientName.trim(),
+      referrerPracticeName: medirefRecipientPracticeName.trim(),
+      medirefAutoMatchRecipient,
+      referrerEmail: medirefRecipientEmail.trim(),
+      referrerProviderNumber: medirefRecipientProviderNumber.trim(),
+      patientEmail: medirefPatientEmail.trim(),
+      additionalRecipients: medirefAdditionalRecipients.map((recipient) => ({
+        name: recipient.name,
+        practiceName: recipient.practiceName,
+        address: recipient.address,
+      })),
+      additionalRecipientsText: pdfCcText,
+      message: medirefMessage,
+      attachPeriodontalChart: attachPeriodontalChartSnapshot,
+      praktikaPatientId:
+        selectedPraktikaPatientId || draftSnapshot.praktika_patient_id || null,
+    };
+
+    if (completeWorkflow) {
+      const alreadyDoneParts = [
+        selectedDraftUploadedToPraktika ? "already uploaded to Praktika" : "",
+        selectedDraftEmailed ? "already queued/sent through MediRef" : "",
+      ].filter(Boolean);
+
+      if (alreadyDoneParts.length > 0) {
+        const continueAnyway = confirm(
+          `This letter has ${alreadyDoneParts.join(" and ")}. Continue anyway?`,
+        );
+
+        if (!continueAnyway) return;
+      }
+    }
+
+    const runningDraft = await updateWorkflowStatus(draftSnapshot.id, {
+      workflowStatus: "running",
+      praktikaUploadStatus: completeWorkflow ? "pending" : "not_requested",
+      iconUpdateStatus: completeWorkflow ? "pending" : "not_requested",
+      medirefStatus: "pending",
+      periodontalChartStatus: attachPeriodontalChartSnapshot
+        ? "pending"
+        : "not_requested",
+      message: completeWorkflow
+        ? "Workflow queued. Completing Praktika upload, icon update, and MediRef send."
+        : "MediRef send queued.",
+    });
+
+    const nextDraft: Draft = runningDraft || {
+      ...draftSnapshot,
+      workflow_status: "running",
+      workflow_praktika_upload_status: completeWorkflow
+        ? "pending"
+        : "not_requested",
+      workflow_icon_update_status: completeWorkflow
+        ? "pending"
+        : "not_requested",
+      workflow_mediref_status: "pending",
+      workflow_periodontal_chart_status: attachPeriodontalChartSnapshot
+        ? "pending"
+        : "not_requested",
+      workflow_last_message: completeWorkflow
+        ? "Workflow queued. Completing in background."
+        : "MediRef send queued.",
+    };
+
+    setSelectedDraft(nextDraft);
+    setDrafts((current) =>
+      current.map((draft) =>
+        draft.id === draftSnapshot.id ? nextDraft : draft,
+      ),
+    );
+
+    setMedirefModalOpen(false);
+    setMedirefConfirmed(false);
+    setAttachPeriodontalChart(false);
+    setMedirefCompleteWorkflow(false);
+    setCompleteStep("");
+
+    alert(
+      completeWorkflow
+        ? "Workflow queued. The letter will stay visible as Completing until all steps finish."
+        : "MediRef send queued.",
+    );
+
+    runMedirefWorkflowInBackground({
+      draft: draftSnapshot,
+      payload: workflowPayload,
+      completeWorkflow,
+      activeQueueItemId: activeQueueItemIdSnapshot,
+      providerId: providerIdSnapshot,
+      queueStatus: queueStatusSnapshot,
+    });
   }
 
-  const runningDraft = await updateWorkflowStatus(draftSnapshot.id, {
-    workflowStatus: "running",
-    praktikaUploadStatus: completeWorkflow ? "pending" : "not_requested",
-    iconUpdateStatus: completeWorkflow ? "pending" : "not_requested",
-    medirefStatus: "pending",
-    periodontalChartStatus: attachPeriodontalChartSnapshot
-      ? "pending"
-      : "not_requested",
-    message: completeWorkflow
-      ? "Workflow queued. Completing Praktika upload, icon update, and MediRef send."
-      : "MediRef send queued.",
-  });
+  async function runMedirefWorkflowInBackground(params: {
+    draft: Draft;
+    payload: any;
+    completeWorkflow: boolean;
+    activeQueueItemId: string | null;
+    providerId: string;
+    queueStatus: QueueStatusTab;
+  }) {
+    try {
+      let stagedPdfForMediref = null;
 
-  const nextDraft: Draft = runningDraft || {
-    ...draftSnapshot,
-    workflow_status: "running",
-    workflow_praktika_upload_status: completeWorkflow
-      ? "pending"
-      : "not_requested",
-    workflow_icon_update_status: completeWorkflow ? "pending" : "not_requested",
-    workflow_mediref_status: "pending",
-    workflow_periodontal_chart_status: attachPeriodontalChartSnapshot
-      ? "pending"
-      : "not_requested",
-    workflow_last_message: completeWorkflow
-      ? "Workflow queued. Completing in background."
-      : "MediRef send queued.",
-  };
+      if (params.completeWorkflow) {
+        const finalPraktikaPatientId =
+          params.payload.praktikaPatientId ||
+          params.draft.praktika_patient_id ||
+          "";
 
-  setSelectedDraft(nextDraft);
-  setDrafts((current) =>
-    current.map((draft) => (draft.id === draftSnapshot.id ? nextDraft : draft)),
-  );
+        if (!finalPraktikaPatientId) {
+          await updateWorkflowStatus(params.draft.id, {
+            workflowStatus: "failed",
+            praktikaUploadStatus: "failed",
+            message: "Missing Praktika patient ID.",
+            workflowError: "Missing Praktika patient ID.",
+          });
 
-  setMedirefModalOpen(false);
-  setMedirefConfirmed(false);
-  setAttachPeriodontalChart(false);
-  setMedirefCompleteWorkflow(false);
-  setCompleteStep("");
+          throw new Error("Missing Praktika patient ID.");
+        }
 
-  alert(
-    completeWorkflow
-      ? "Workflow queued. The letter will stay visible as Completing until all steps finish."
-      : "MediRef send queued.",
-  );
-
-  runMedirefWorkflowInBackground({
-    draft: draftSnapshot,
-    payload: workflowPayload,
-    completeWorkflow,
-    activeQueueItemId: activeQueueItemIdSnapshot,
-    providerId: providerIdSnapshot,
-    queueStatus: queueStatusSnapshot,
-  });
-}
-
-async function runMedirefWorkflowInBackground(params: {
-  draft: Draft;
-  payload: any;
-  completeWorkflow: boolean;
-  activeQueueItemId: string | null;
-  providerId: string;
-  queueStatus: QueueStatusTab;
-}) {
-  try {
-    let stagedPdfForMediref = null;
-
-    if (params.completeWorkflow) {
-      const finalPraktikaPatientId =
-        params.payload.praktikaPatientId || params.draft.praktika_patient_id || "";
-
-      if (!finalPraktikaPatientId) {
         await updateWorkflowStatus(params.draft.id, {
-          workflowStatus: "failed",
-          praktikaUploadStatus: "failed",
-          message: "Missing Praktika patient ID.",
-          workflowError: "Missing Praktika patient ID.",
+          praktikaUploadStatus: "running",
+          message: "Uploading PDF to Praktika.",
         });
 
-        throw new Error("Missing Praktika patient ID.");
-      }
-
-      await updateWorkflowStatus(params.draft.id, {
-        praktikaUploadStatus: "running",
-        message: "Uploading PDF to Praktika.",
-      });
-
-      const uploadResponse = await fetch("/api/report-writing/upload-to-praktika", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          draftId: params.draft.id,
-          praktikaPatientId: finalPraktikaPatientId,
-        }),
-      });
-
-      const uploadData = await uploadResponse.json().catch(() => ({}));
-
-      if (!uploadResponse.ok || !uploadData.success) {
-        await updateWorkflowStatus(params.draft.id, {
-          workflowStatus: "failed",
-          praktikaUploadStatus: "failed",
-          message: "Praktika upload failed.",
-          workflowError: uploadData.error || "Failed to upload PDF to Praktika.",
-        });
-
-        throw new Error(uploadData.error || "Failed to upload PDF to Praktika.");
-      }
-
-      stagedPdfForMediref = uploadData.stagedPdf || null;
-
-      await updateWorkflowStatus(params.draft.id, {
-        praktikaUploadStatus: "completed",
-        iconUpdateStatus: "running",
-        message: "PDF uploaded to Praktika. Updating appointment icon.",
-      });
-
-      try {
-        const iconResponse = await fetch(
-          "/api/report-writing/update-praktika-letter-icons",
+        const uploadResponse = await fetch(
+          "/api/report-writing/upload-to-praktika",
           {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              queueId: params.activeQueueItemId,
               draftId: params.draft.id,
               praktikaPatientId: finalPraktikaPatientId,
             }),
           },
         );
 
-        const iconData = await iconResponse.json().catch(() => ({}));
+        const uploadData = await uploadResponse.json().catch(() => ({}));
 
-        if (!iconResponse.ok || !iconData.success) {
+        if (!uploadResponse.ok || !uploadData.success) {
+          await updateWorkflowStatus(params.draft.id, {
+            workflowStatus: "failed",
+            praktikaUploadStatus: "failed",
+            message: "Praktika upload failed.",
+            workflowError:
+              uploadData.error || "Failed to upload PDF to Praktika.",
+          });
+
+          throw new Error(
+            uploadData.error || "Failed to upload PDF to Praktika.",
+          );
+        }
+
+        stagedPdfForMediref = uploadData.stagedPdf || null;
+
+        await updateWorkflowStatus(params.draft.id, {
+          praktikaUploadStatus: "completed",
+          iconUpdateStatus: "running",
+          message: "PDF uploaded to Praktika. Updating appointment icon.",
+        });
+
+        try {
+          const iconResponse = await fetch(
+            "/api/report-writing/update-praktika-letter-icons",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                queueId: params.activeQueueItemId,
+                draftId: params.draft.id,
+                praktikaPatientId: finalPraktikaPatientId,
+              }),
+            },
+          );
+
+          const iconData = await iconResponse.json().catch(() => ({}));
+
+          if (!iconResponse.ok || !iconData.success) {
+            await updateWorkflowStatus(params.draft.id, {
+              iconUpdateStatus: "failed",
+              message:
+                "PDF uploaded to Praktika, but appointment icon update failed.",
+              workflowError:
+                iconData.error ||
+                "PDF uploaded to Praktika, but appointment icon update failed.",
+            });
+          } else if (iconData.iconUpdated === false || iconData.skipped) {
+            await updateWorkflowStatus(params.draft.id, {
+              iconUpdateStatus: "skipped",
+              message:
+                iconData.reason ||
+                "PDF uploaded to Praktika. No pending appointment icon needed updating.",
+            });
+          } else {
+            await updateWorkflowStatus(params.draft.id, {
+              iconUpdateStatus: "completed",
+              message: "Praktika icon updated. Queuing MediRef send.",
+            });
+          }
+        } catch (iconError) {
+          console.warn("Praktika icon update request failed:", iconError);
+
           await updateWorkflowStatus(params.draft.id, {
             iconUpdateStatus: "failed",
             message:
-              "PDF uploaded to Praktika, but appointment icon update failed.",
+              "PDF uploaded to Praktika, but appointment icon update request failed.",
             workflowError:
-              iconData.error ||
-              "PDF uploaded to Praktika, but appointment icon update failed.",
-          });
-        } else if (iconData.iconUpdated === false || iconData.skipped) {
-          await updateWorkflowStatus(params.draft.id, {
-            iconUpdateStatus: "skipped",
-            message:
-              iconData.reason ||
-              "PDF uploaded to Praktika. No pending appointment icon needed updating.",
-          });
-        } else {
-          await updateWorkflowStatus(params.draft.id, {
-            iconUpdateStatus: "completed",
-            message: "Praktika icon updated. Queuing MediRef send.",
+              iconError instanceof Error
+                ? iconError.message
+                : "Appointment icon update request failed.",
           });
         }
-      } catch (iconError) {
-        console.warn("Praktika icon update request failed:", iconError);
-
-        await updateWorkflowStatus(params.draft.id, {
-          iconUpdateStatus: "failed",
-          message:
-            "PDF uploaded to Praktika, but appointment icon update request failed.",
-          workflowError:
-            iconError instanceof Error
-              ? iconError.message
-              : "Appointment icon update request failed.",
-        });
       }
-    }
 
-    await updateWorkflowStatus(params.draft.id, {
-      medirefStatus: "running",
-      periodontalChartStatus: params.payload.attachPeriodontalChart
-        ? "running"
-        : "not_requested",
-      message: params.payload.attachPeriodontalChart
-        ? "Preparing periodontal chart and queuing MediRef send."
-        : "Queuing MediRef send.",
-    });
-
-    const response = await fetch("/api/report-writing/send-via-mediref", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ...params.payload,
-        stagedPdf: stagedPdfForMediref,
-      }),
-    });
-
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok || !data.success) {
       await updateWorkflowStatus(params.draft.id, {
-        workflowStatus: "failed",
-        medirefStatus: "failed",
+        medirefStatus: "running",
+        periodontalChartStatus: params.payload.attachPeriodontalChart
+          ? "running"
+          : "not_requested",
+        message: params.payload.attachPeriodontalChart
+          ? "Preparing periodontal chart and queuing MediRef send."
+          : "Queuing MediRef send.",
+      });
+
+      const response = await fetch("/api/report-writing/send-via-mediref", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...params.payload,
+          stagedPdf: stagedPdfForMediref,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success) {
+        await updateWorkflowStatus(params.draft.id, {
+          workflowStatus: "failed",
+          medirefStatus: "failed",
+          periodontalChartStatus: params.payload.attachPeriodontalChart
+            ? data.periodontalChartAttached
+              ? "completed"
+              : "failed"
+            : "not_requested",
+          message: "MediRef queue failed.",
+          workflowError: data.error || "Failed to queue MediRef send.",
+        });
+
+        throw new Error(data.error || "Failed to queue MediRef send.");
+      }
+
+      await updateWorkflowStatus(params.draft.id, {
+        workflowStatus: "completed",
+        medirefStatus: "completed",
         periodontalChartStatus: params.payload.attachPeriodontalChart
           ? data.periodontalChartAttached
             ? "completed"
-            : "failed"
+            : "skipped"
           : "not_requested",
-        message: "MediRef queue failed.",
-        workflowError: data.error || "Failed to queue MediRef send.",
+        message: "Workflow completed.",
       });
 
-      throw new Error(data.error || "Failed to queue MediRef send.");
+      console.log("Background workflow completed:", data);
+
+      await loadDrafts(params.providerId);
+      await loadQueue(params.providerId, params.queueStatus);
+    } catch (error) {
+      console.error("Background workflow failed:", error);
+
+      alert(
+        error instanceof Error
+          ? `Background workflow failed: ${error.message}`
+          : "Background workflow failed.",
+      );
+
+      await loadDrafts(params.providerId).catch(console.warn);
+      await loadQueue(params.providerId, params.queueStatus).catch(
+        console.warn,
+      );
     }
-
-    await updateWorkflowStatus(params.draft.id, {
-      workflowStatus: "completed",
-      medirefStatus: "completed",
-      periodontalChartStatus: params.payload.attachPeriodontalChart
-        ? data.periodontalChartAttached
-          ? "completed"
-          : "skipped"
-        : "not_requested",
-      message: "Workflow completed.",
-    });
-
-    console.log("Background workflow completed:", data);
-
-    await loadDrafts(params.providerId);
-    await loadQueue(params.providerId, params.queueStatus);
-  } catch (error) {
-    console.error("Background workflow failed:", error);
-
-    alert(
-      error instanceof Error
-        ? `Background workflow failed: ${error.message}`
-        : "Background workflow failed.",
-    );
-
-    await loadDrafts(params.providerId).catch(console.warn);
-    await loadQueue(params.providerId, params.queueStatus).catch(console.warn);
   }
-}
 
   async function hydrateQueueInBackground(
     providerId: string,
@@ -2786,12 +2804,15 @@ async function runMedirefWorkflowInBackground(params: {
     }
   }
 
-  async function loadReportTypes(providerIdToLoad: string) {
+  async function loadReportTypes(providerIdToLoad: string, token?: number) {
     const response = await fetch(
       `/api/report-writing/correspondence-types?providerId=${providerIdToLoad}`,
     );
 
     const data = await response.json();
+
+    if (token !== undefined && token !== providerLoadTokenRef.current) return;
+    if (providerIdToLoad !== selectedProviderIdRef.current) return;
 
     if (data.success) {
       setReportTypes(formatReportTypeOptions(data.types || []));
@@ -2824,6 +2845,8 @@ async function runMedirefWorkflowInBackground(params: {
 
     const data = await response.json();
 
+    if (providerIdToLoad !== selectedProviderIdRef.current) return;
+
     if (data.success) {
       setPreferredExamples(data.examples || []);
     } else {
@@ -2832,21 +2855,25 @@ async function runMedirefWorkflowInBackground(params: {
     }
   }
 
-  async function loadDrafts(providerId: string) {
+  async function loadDrafts(providerId: string, token?: number) {
     const response = await fetch(
       `/api/report-writing/get-drafts?providerId=${providerId}`,
     );
 
     const data = await response.json();
 
+    if (token !== undefined && token !== providerLoadTokenRef.current) return;
+    if (providerId !== selectedProviderIdRef.current) return;
+
     if (data.success) {
-      setDrafts(data.drafts);
+      setDrafts(data.drafts || []);
     }
   }
 
   async function loadQueue(
     providerId: string,
     status: QueueStatusTab = queueStatusTab,
+    token?: number,
   ) {
     const params = new URLSearchParams();
     params.set("providerId", providerId);
@@ -2858,14 +2885,25 @@ async function runMedirefWorkflowInBackground(params: {
 
     const data = await response.json();
 
-    if (data.success) {
-      setQueue(data.queue);
+    if (token !== undefined && token !== providerLoadTokenRef.current) return;
+    if (providerId !== selectedProviderIdRef.current) return;
 
-      const hydrationResult = await hydrateQueueInBackground(providerId, status);
+    if (data.success) {
+      setQueue(data.queue || []);
+
+      const hydrationResult = await hydrateQueueInBackground(
+        providerId,
+        status,
+      );
+
+      if (token !== undefined && token !== providerLoadTokenRef.current) return;
+      if (providerId !== selectedProviderIdRef.current) return;
 
       if (hydrationResult?.enqueued > 0) {
         window.setTimeout(() => {
-          loadQueue(providerId, status);
+          if (token === undefined || token === providerLoadTokenRef.current) {
+            void loadQueue(providerId, status, token);
+          }
         }, 15000);
       }
     }
@@ -2876,10 +2914,8 @@ async function runMedirefWorkflowInBackground(params: {
   }, []);
 
   useEffect(() => {
-  if (!selectedProviderId) return;
-
-  loadReportTypesForProvider(selectedProviderId);
-}, [selectedProviderId]);
+    selectedProviderIdRef.current = selectedProviderId;
+  }, [selectedProviderId]);
 
   useEffect(() => {
     return () => {
@@ -2894,13 +2930,22 @@ async function runMedirefWorkflowInBackground(params: {
   }, []);
 
   useEffect(() => {
-    if (selectedProviderId) {
-      loadDrafts(selectedProviderId);
-      loadReportTypes(selectedProviderId);
-      loadQueue(selectedProviderId, queueStatusTab);
-      clearForm();
-      setSelectedDraftIds([]);
-    }
+    if (!selectedProviderId) return;
+
+    const token = providerLoadTokenRef.current + 1;
+    providerLoadTokenRef.current = token;
+    selectedProviderIdRef.current = selectedProviderId;
+
+    // Clear provider-specific UI immediately so the previous provider's counts
+    // cannot remain visible while the new provider is loading.
+    setDrafts([]);
+    setQueue([]);
+    clearForm();
+    setSelectedDraftIds([]);
+
+    void loadDrafts(selectedProviderId, token);
+    void loadReportTypes(selectedProviderId, token);
+    void loadQueue(selectedProviderId, queueStatusTab, token);
   }, [selectedProviderId, queueStatusTab]);
 
   useEffect(() => {
@@ -2956,7 +3001,11 @@ async function runMedirefWorkflowInBackground(params: {
 
         setSelectedDraft((current) =>
           current && current.id === selectedDraft.id
-            ? { ...current, edited_text: finalLetterTextForSave, typist_queries: typistQueries || null }
+            ? {
+                ...current,
+                edited_text: finalLetterTextForSave,
+                typist_queries: typistQueries || null,
+              }
             : current,
         );
       } catch (error) {
@@ -3267,24 +3316,11 @@ async function runMedirefWorkflowInBackground(params: {
   }
 
   async function loadReportTypesForProvider(providerId: string) {
-  if (!providerId) return;
-
-  const response = await fetch(
-    `/api/report-writing/correspondence-types?providerId=${providerId}`,
-  );
-
-  const data = await response.json();
-
-  if (data.success) {
-    const types = data.types || [];
-
-    setReportTypes(types);
-
-    if (types.length > 0) {
-      setReportType(types[0].value);
-    }
+    // Kept for compatibility if anything still calls it. The main provider
+    // effect now uses loadReportTypes(providerId, token) so stale responses are
+    // ignored.
+    await loadReportTypes(providerId);
   }
-}
 
   async function startLetterFromQueue(item: QueueItem) {
     const selectionToken = queueSelectionTokenRef.current + 1;
@@ -3324,7 +3360,9 @@ async function runMedirefWorkflowInBackground(params: {
     const cachedClinicalNotes = getQueueSyncedClinicalNotes(item);
     const cachedReferrerName = getQueueReferrerName(item);
     const cachedReferrerAddress = getQueueReferrerAddress(item);
-    const latestReferral = asPlainObject(raw.latest_referral || raw.latestReferral);
+    const latestReferral = asPlainObject(
+      raw.latest_referral || raw.latestReferral,
+    );
     const latestReferralForState =
       Object.keys(latestReferral).length > 0
         ? (latestReferral as unknown as LatestPraktikaReferral)
@@ -4714,12 +4752,10 @@ async function runMedirefWorkflowInBackground(params: {
             </div>
 
             {selectedProviderId ? (
-  <div className="mt-4">
-    <TypistProviderSmsBox
-      selectedProviderId={selectedProviderId}
-    />
-  </div>
-) : null}
+              <div className="mt-4">
+                <TypistProviderSmsBox selectedProviderId={selectedProviderId} />
+              </div>
+            ) : null}
 
             <button
               type="button"
@@ -4879,8 +4915,8 @@ async function runMedirefWorkflowInBackground(params: {
                         </div>
 
                         <div className="text-xs text-slate-400">
-  {formatAppointmentDateTime(item.appointment_time)}
-</div>
+                          {formatAppointmentDateTime(item.appointment_time)}
+                        </div>
 
                         <div className="mt-1 text-xs text-slate-400">
                           {item.queue_reason || "Typist Letter"}
@@ -5159,21 +5195,21 @@ async function runMedirefWorkflowInBackground(params: {
 
               <div className="space-y-2 md:col-span-2">
                 <ReferrerSearchBox
-  selectedName={referrerName}
-  selectedAddress={referrerAddress}
-  onClear={() => {
-    setReferrerName("");
-    setReferrerAddress("");
-    setReferralAutoFillError("");
-    setReferralAutoFillStatus("idle");
-  }}
-  onSelect={(referrer) => {
-    setReferrerName(referrer.name);
-    setReferrerAddress(formatManualReferrerAddress(referrer));
-    setReferralAutoFillError("");
-    setReferralAutoFillStatus("found");
-  }}
-/>
+                  selectedName={referrerName}
+                  selectedAddress={referrerAddress}
+                  onClear={() => {
+                    setReferrerName("");
+                    setReferrerAddress("");
+                    setReferralAutoFillError("");
+                    setReferralAutoFillStatus("idle");
+                  }}
+                  onSelect={(referrer) => {
+                    setReferrerName(referrer.name);
+                    setReferrerAddress(formatManualReferrerAddress(referrer));
+                    setReferralAutoFillError("");
+                    setReferralAutoFillStatus("found");
+                  }}
+                />
 
                 {referralAutoFillStatus === "loading" ? (
                   <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
@@ -5251,7 +5287,6 @@ async function runMedirefWorkflowInBackground(params: {
                     </div>
                   </div>
                 ) : null}
-
               </div>
             </div>
 
@@ -5655,13 +5690,13 @@ async function runMedirefWorkflowInBackground(params: {
                     </button>
 
                     <button
-  type="button"
-  onClick={previewHtmlPdf}
-  disabled={loading || !selectedDraft}
-  className="rounded-xl border border-purple-300 bg-purple-50 px-4 py-2 text-sm font-semibold text-purple-800 hover:bg-purple-100 disabled:opacity-50"
->
-  Test HTML PDF
-</button>
+                      type="button"
+                      onClick={previewHtmlPdf}
+                      disabled={loading || !selectedDraft}
+                      className="rounded-xl border border-purple-300 bg-purple-50 px-4 py-2 text-sm font-semibold text-purple-800 hover:bg-purple-100 disabled:opacity-50"
+                    >
+                      Test HTML PDF
+                    </button>
 
                     <button
                       onClick={uploadToPraktika}
@@ -6038,9 +6073,9 @@ async function runMedirefWorkflowInBackground(params: {
                   Automatic MediRef recipient matching
                 </div>
                 <p className="mt-1 text-sm">
-                  The Cloud helper will search the MediRef directory using
-                  the referrer name and practice name below, then select the
-                  best matching directory result before attaching the PDF.
+                  The Cloud helper will search the MediRef directory using the
+                  referrer name and practice name below, then select the best
+                  matching directory result before attaching the PDF.
                 </p>
               </div>
 
