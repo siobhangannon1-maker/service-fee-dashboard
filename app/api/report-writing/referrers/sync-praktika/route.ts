@@ -102,6 +102,21 @@ function buildPraktikaKey(row: PraktikaReferralRow): string {
     .join("|");
 }
 
+function isHuyTranRow(row: PraktikaReferralRow): boolean {
+  const providerName = cleanText(row.vchProvider).toLowerCase();
+
+  return providerName.includes("huy tran");
+}
+
+function summariseRowKeys(row: PraktikaReferralRow) {
+  return {
+    provider: cleanText(row.vchProvider),
+    clinic: cleanText(row.vchClinic),
+    availableKeys: Object.keys(row).sort(),
+    fullRow: row,
+  };
+}
+
 async function importRows(rows: PraktikaReferralRow[]) {
   const referrerMap = new Map<
     string,
@@ -117,6 +132,8 @@ async function importRows(rows: PraktikaReferralRow[]) {
       updated_at: string;
     }
   >();
+
+  const now = new Date().toISOString();
 
   for (const row of rows) {
     const name = cleanText(row.vchProvider);
@@ -135,8 +152,8 @@ async function importRows(rows: PraktikaReferralRow[]) {
       email,
       is_active: true,
       raw_json: row,
-      synced_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      synced_at: now,
+      updated_at: now,
     });
   }
 
@@ -170,6 +187,14 @@ export async function POST() {
     const today = new Date().toISOString().slice(0, 10);
     const practiceId = process.env.PRAKTIKA_PRACTICE_ID || "1181";
 
+    console.log("PRAKTIKA REFERRER DEBUG: starting sync", {
+      appUserId,
+      practiceId,
+      fromDate: "2000-01-01",
+      toDate: today,
+      mode: "PROVIDER_IN",
+    });
+
     const job = await createPraktikaHelperJob({
       appUserId,
       jobType: "sync_referrers",
@@ -189,25 +214,88 @@ export async function POST() {
       },
     });
 
+    console.log("PRAKTIKA REFERRER DEBUG: helper job created", {
+      jobId: job.id,
+    });
+
     const completedJob = await waitForPraktikaHelperJob(job.id, {
       timeoutMs: 90_000,
       intervalMs: 2_000,
     });
 
+    console.log("PRAKTIKA REFERRER DEBUG: helper job completed", {
+      jobId: job.id,
+      status: completedJob.status,
+      hasResponse: completedJob.response !== null,
+      responseType: Array.isArray(completedJob.response)
+        ? "array"
+        : typeof completedJob.response,
+    });
+
     const parsedRows = completedJob.response;
 
     if (!Array.isArray(parsedRows)) {
+      console.error(
+        "PRAKTIKA REFERRER DEBUG: invalid helper response",
+        JSON.stringify(parsedRows, null, 2),
+      );
+
       throw new Error("Praktika helper did not return a valid referrers array.");
     }
 
-    const result = await importRows(parsedRows as PraktikaReferralRow[]);
+    const typedRows = parsedRows as PraktikaReferralRow[];
+
+    console.log("PRAKTIKA REFERRER DEBUG: response summary", {
+      totalRows: typedRows.length,
+      firstRowKeys:
+        typedRows.length > 0 ? Object.keys(typedRows[0]).sort() : [],
+    });
+
+    const huyTranRows = typedRows.filter(isHuyTranRow);
+
+    console.log(
+      "PRAKTIKA REFERRER DEBUG - DR HUY TRAN:",
+      JSON.stringify(huyTranRows.map(summariseRowKeys), null, 2),
+    );
+
+    const possibleIdentifierKeys = Array.from(
+      new Set(
+        typedRows.flatMap((row) =>
+          Object.keys(row).filter((key) => {
+            const normalisedKey = key.toLowerCase();
+
+            return (
+              normalisedKey.includes("clinic") ||
+              normalisedKey.includes("provider") ||
+              normalisedKey.includes("party") ||
+              normalisedKey.includes("referrer") ||
+              normalisedKey.includes("number") ||
+              normalisedKey.includes("id")
+            );
+          }),
+        ),
+      ),
+    ).sort();
+
+    console.log(
+      "PRAKTIKA REFERRER DEBUG: possible identifier fields",
+      possibleIdentifierKeys,
+    );
+
+    const result = await importRows(typedRows);
 
     return NextResponse.json({
       success: true,
       imported: result.imported,
       skipped: result.skipped,
-      totalRows: parsedRows.length,
+      totalRows: typedRows.length,
       jobId: job.id,
+      debug: {
+        huyTranRows: huyTranRows.map(summariseRowKeys),
+        possibleIdentifierKeys,
+        firstRowKeys:
+          typedRows.length > 0 ? Object.keys(typedRows[0]).sort() : [],
+      },
     });
   } catch (error) {
     console.error("Failed to sync Praktika referrers:", error);
