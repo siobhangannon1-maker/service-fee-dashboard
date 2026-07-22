@@ -1147,29 +1147,189 @@ async function fillComposePatientDetails(page: Page, request: any) {
 }
 
 async function getRecipientSearchInput(page: Page) {
-  const candidates = page.locator(
-    [
-      'input[placeholder*="Search directory" i]',
-      'input[placeholder*="directory" i]',
-      'input[placeholder*="recipient" i]',
-      'input[name*="recipient" i]',
-      'input[id*="recipient" i]',
-      'input[aria-label*="recipient" i]',
-      'input[aria-label*="directory" i]',
-      'input[type="search"]',
-      'input[type="text"]',
-    ].join(", "),
-  );
+  /*
+   * MediRef has a wide navbar input with:
+   *   data-testid="navbar-correspondence-search"
+   *   placeholder="Search correspondences"
+   *
+   * That field is not the Compose recipient directory. This function first
+   * opens the Recipients control and then scores visible fields by proximity
+   * to the Recipients label while explicitly rejecting the navbar search.
+   */
 
-  const count = await candidates.count().catch(() => 0);
+  const recipientsLabel = page.getByText(/^Recipients$/i).first();
 
-  for (let i = 0; i < count; i += 1) {
-    const candidate = candidates.nth(i);
-    const visible = await candidate.isVisible().catch(() => false);
-    if (!visible) continue;
+  if ((await recipientsLabel.count().catch(() => 0)) > 0) {
+    await recipientsLabel.scrollIntoViewIfNeeded().catch(() => undefined);
+    await recipientsLabel.click({ force: true }).catch(() => undefined);
+    await page.waitForTimeout(500);
+  }
 
-    const box = await candidate.boundingBox().catch(() => null);
-    if (box && box.width > 250) return candidate;
+  const candidateSelector = [
+    'input[placeholder*="Search directory" i]',
+    'input[placeholder*="directory" i]',
+    'input[placeholder*="recipient" i]',
+    'input[name*="recipient" i]',
+    'input[id*="recipient" i]',
+    'input[aria-label*="recipient" i]',
+    'input[aria-label*="directory" i]',
+    '[role="combobox"]',
+    'input[type="search"]',
+    'input[type="text"]',
+    '[contenteditable="true"]',
+  ].join(", ");
+
+  async function collectCandidates() {
+    const candidates = page.locator(candidateSelector);
+    const count = Math.min(await candidates.count().catch(() => 0), 100);
+    const labelBox = await recipientsLabel.boundingBox().catch(() => null);
+
+    const ranked: Array<{
+      locator: Locator;
+      score: number;
+      details: Record<string, unknown>;
+    }> = [];
+
+    for (let i = 0; i < count; i += 1) {
+      const candidate = candidates.nth(i);
+      if (!(await candidate.isVisible().catch(() => false))) continue;
+
+      const details = await candidate
+        .evaluate((element) => {
+          const html = element as HTMLElement;
+          const rect = html.getBoundingClientRect();
+
+          return {
+            tag: element.tagName,
+            type: element.getAttribute("type"),
+            name: element.getAttribute("name"),
+            id: element.getAttribute("id"),
+            role: element.getAttribute("role"),
+            placeholder: element.getAttribute("placeholder"),
+            ariaLabel: element.getAttribute("aria-label"),
+            ariaControls: element.getAttribute("aria-controls"),
+            dataTestId: element.getAttribute("data-testid"),
+            contentEditable: element.getAttribute("contenteditable"),
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+          };
+        })
+        .catch(() => null);
+
+      if (!details) continue;
+
+      const identifyingText = [
+        details.dataTestId,
+        details.placeholder,
+        details.ariaLabel,
+        details.ariaControls,
+        details.name,
+        details.id,
+      ]
+        .map((value) => String(value || "").toLowerCase())
+        .join(" ");
+
+      const y = Number(details.y || 0);
+      const width = Number(details.width || 0);
+
+      // Explicitly reject MediRef's navbar correspondence search.
+      if (
+        identifyingText.includes("navbar-correspondence-search") ||
+        identifyingText.includes("search correspondences") ||
+        identifyingText.includes("navbar-correspondence-search-results")
+      ) {
+        continue;
+      }
+
+      // Reject obvious patient fields and anything in the top navigation bar.
+      if (
+        identifyingText.includes("patient") ||
+        identifyingText.includes("date of birth") ||
+        identifyingText.includes("dob") ||
+        identifyingText.includes("email") ||
+        y < 70
+      ) {
+        continue;
+      }
+
+      let score = 0;
+
+      if (identifyingText.includes("recipient")) score += 500;
+      if (identifyingText.includes("directory")) score += 450;
+      if (String(details.role || "").toLowerCase() === "combobox") score += 150;
+      if (width >= 180) score += 30;
+
+      if (labelBox) {
+        const verticalDistance = Math.abs(y - labelBox.y);
+        const horizontalDistance = Math.abs(Number(details.x || 0) - labelBox.x);
+
+        score += Math.max(0, 300 - verticalDistance);
+        score += Math.max(0, 100 - horizontalDistance / 4);
+
+        // The real recipient field should be close to or below the label.
+        if (y >= labelBox.y - 20 && y <= labelBox.y + 220) score += 250;
+      }
+
+      ranked.push({ locator: candidate, score, details });
+    }
+
+    ranked.sort((a, b) => b.score - a.score);
+
+    console.log(
+      "MediRef recipient field candidates:",
+      ranked.slice(0, 10).map((item, index) => ({
+        rank: index + 1,
+        score: Math.round(item.score),
+        ...item.details,
+      })),
+    );
+
+    return ranked;
+  }
+
+  let ranked = await collectCandidates();
+
+  if (ranked.length > 0) {
+    return ranked[0].locator;
+  }
+
+  /*
+   * Some versions of the Compose form expose Recipients as a button first.
+   * Click the closest interactive control beneath the label, then look again
+   * for the search input created by the popover.
+   */
+  if ((await recipientsLabel.count().catch(() => 0)) > 0) {
+    const nearbyContainer = recipientsLabel.locator(
+      'xpath=ancestor::*[self::div or self::section or self::fieldset][1]',
+    );
+
+    const triggers = nearbyContainer.locator(
+      'button, [role="button"], [role="combobox"], [aria-haspopup]',
+    );
+
+    const triggerCount = Math.min(await triggers.count().catch(() => 0), 20);
+
+    for (let i = 0; i < triggerCount; i += 1) {
+      const trigger = triggers.nth(i);
+      if (!(await trigger.isVisible().catch(() => false))) continue;
+
+      const text = String(await trigger.innerText().catch(() => "")).trim();
+      const ariaLabel = String(
+        (await trigger.getAttribute("aria-label").catch(() => "")) || "",
+      ).trim();
+
+      if (/send|clear|patient|file|theme|setting/i.test(`${text} ${ariaLabel}`)) {
+        continue;
+      }
+
+      await trigger.click({ force: true }).catch(() => undefined);
+      await page.waitForTimeout(700);
+
+      ranked = await collectCandidates();
+      if (ranked.length > 0) return ranked[0].locator;
+    }
   }
 
   return null;
@@ -1822,6 +1982,32 @@ async function sendMedirefLetterWithBrowser(
 
   await fillComposePatientDetails(page, request);
 
+  /*
+   * Attach the PDFs before recipient matching. This makes the attachment step
+   * independent of directory matching and leaves the prepared draft visibly
+   * attached even when MediRef changes its recipient-search UI.
+   */
+  console.log("Starting MediRef PDF attachment.", {
+    count: localPdfPaths.length,
+    files: localPdfPaths.map((filePath) => path.basename(filePath)),
+  });
+
+  const uploaded = await uploadPdfsToFileInput(page, localPdfPaths);
+
+  if (!uploaded) {
+    await debugVisibleInputs(page);
+
+    throw new Error(
+      "Could not find a MediRef PDF upload field. Recipient matching was not attempted.",
+    );
+  }
+
+  await page.waitForTimeout(2500);
+
+  console.log("MediRef PDF attachment input completed.", {
+    count: localPdfPaths.length,
+  });
+
   await searchAndSelectMedirefRecipient(page, request);
 
   const additionalRecipients = parseAdditionalRecipientsFromRequest(request);
@@ -1851,17 +2037,6 @@ async function sendMedirefLetterWithBrowser(
     ["message", "note", "body", "details"],
     String(request.message || ""),
   );
-
-  const uploaded = await uploadPdfsToFileInput(page, localPdfPaths);
-
-  await page.waitForTimeout(2500);
-  await debugVisibleInputs(page);
-
-  if (!uploaded) {
-    throw new Error(
-      "Could not find a MediRef PDF upload field. The helper opened MediRef and filled what it could; inspect the element debug output to add the exact selector.",
-    );
-  }
 
   if (!AUTO_SEND) {
     console.log(

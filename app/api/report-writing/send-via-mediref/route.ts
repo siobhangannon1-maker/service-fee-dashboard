@@ -357,60 +357,6 @@ async function stagePdf(params: {
   };
 }
 
-/**
- * Copies a PDF that was originally staged for Praktika into the
- * dedicated MediRef staging folder.
- *
- * The important change is that the returned attachment points to
- * report-assets/mediref-uploads rather than praktika-helper-files.
- */
-async function copyExistingStagedPdfForMediref(params: {
-  sourceBucket: string;
-  sourceStoragePath: string;
-  draftId: string;
-  fileName: string;
-}): Promise<StagedPdfAttachment> {
-  console.log(
-    "[send-via-mediref] Copying existing staged PDF for MediRef",
-    {
-      sourceBucket: params.sourceBucket,
-      sourceStoragePath: params.sourceStoragePath,
-      destinationBucket: HELPER_UPLOAD_BUCKET,
-      draftId: params.draftId,
-    },
-  );
-
-  const { data: sourcePdf, error: downloadError } =
-    await supabase.storage
-      .from(params.sourceBucket)
-      .download(params.sourceStoragePath);
-
-  if (downloadError || !sourcePdf) {
-    throw new Error(
-      `Could not read the existing staged PDF before copying it for MediRef. ` +
-        `Source: ${params.sourceBucket}/${params.sourceStoragePath}. ` +
-        `Error: ${downloadError?.message || "No file returned."}`,
-    );
-  }
-
-  const sourceBuffer = Buffer.from(
-    await sourcePdf.arrayBuffer(),
-  );
-
-  if (!sourceBuffer.length || sourceBuffer.length < 1000) {
-    throw new Error(
-      `Existing staged PDF looks empty or invalid. Size: ${sourceBuffer.length} bytes.`,
-    );
-  }
-
-  return await stagePdf({
-    buffer: sourceBuffer,
-    draftId: params.draftId,
-    fileName: params.fileName,
-    folder: "mediref-uploads",
-  });
-}
-
 async function generateAndStageLetterPdf(params: {
   origin: string;
   draftId: string;
@@ -484,14 +430,6 @@ export async function POST(req: Request) {
     const actor = await getAuditActor();
 
     const draftId = String(body.draftId || "").trim();
-
-    /*
-     * This may refer to a temporary Praktika file.
-     *
-     * We no longer pass this temporary path directly to MediRef.
-     * Instead, we copy it into report-assets/mediref-uploads.
-     */
-    const stagedPdf = body.stagedPdf || null;
 
     const referrerName = String(
       body.referrerName || "",
@@ -621,43 +559,25 @@ export async function POST(req: Request) {
 
     const letterStartedAt = nowMs();
 
-    const expectedLetterFileName =
-      getReportPdfFileName(draft);
+    /*
+     * MediRef always generates and stages its own PDF in report-assets.
+     *
+     * Do not reuse Praktika's temporary staged file. The Praktika helper may
+     * remove that object as soon as its upload finishes, which can leave the
+     * MediRef workflow pointing to a path that no longer exists.
+     */
+    const origin = new URL(req.url).origin;
 
-    let letterAttachment: StagedPdfAttachment;
-    let usedExistingStagedPdf = false;
+    const letterAttachment =
+      await generateAndStageLetterPdf({
+        origin,
+        draftId,
+        draft,
+      });
 
-    if (stagedPdf?.bucket && stagedPdf?.storagePath) {
-      /*
-       * The supplied file normally came from the Praktika workflow.
-       *
-       * Copy it immediately into report-assets/mediref-uploads.
-       * MediRef will use the copy, not the Praktika temporary file.
-       */
-      letterAttachment =
-        await copyExistingStagedPdfForMediref({
-          sourceBucket: String(stagedPdf.bucket),
-          sourceStoragePath: String(
-            stagedPdf.storagePath,
-          ),
-          draftId,
-          fileName: expectedLetterFileName,
-        });
+    stagedPaths.push(letterAttachment.storagePath);
 
-      stagedPaths.push(letterAttachment.storagePath);
-      usedExistingStagedPdf = true;
-    } else {
-      const origin = new URL(req.url).origin;
-
-      letterAttachment =
-        await generateAndStageLetterPdf({
-          origin,
-          draftId,
-          draft,
-        });
-
-      stagedPaths.push(letterAttachment.storagePath);
-    }
+    const usedExistingStagedPdf = false;
 
     logStep(
       "Prepared letter attachment",
@@ -856,18 +776,7 @@ export async function POST(req: Request) {
       details: {
         jobId: job.id,
         usedExistingStagedPdf,
-        originalStagedPdf:
-          stagedPdf?.bucket &&
-          stagedPdf?.storagePath
-            ? {
-                bucket: String(
-                  stagedPdf.bucket,
-                ),
-                storagePath: String(
-                  stagedPdf.storagePath,
-                ),
-              }
-            : null,
+        originalStagedPdf: null,
         recipient: {
           name: finalReferrerName,
           practiceName:

@@ -2581,7 +2581,6 @@ export default function TypistPage() {
     queueStatus: QueueStatusTab;
   }) {
     try {
-      let stagedPdfForMediref = null;
 
       if (params.completeWorkflow) {
         const finalPraktikaPatientId =
@@ -2635,7 +2634,6 @@ export default function TypistPage() {
           );
         }
 
-        stagedPdfForMediref = uploadData.stagedPdf || null;
 
         await updateWorkflowStatus(params.draft.id, {
           praktikaUploadStatus: "completed",
@@ -2715,7 +2713,6 @@ export default function TypistPage() {
         },
         body: JSON.stringify({
           ...params.payload,
-          stagedPdf: stagedPdfForMediref,
         }),
       });
 
