@@ -1164,6 +1164,7 @@ export default function TypistPage() {
   );
 
   const [selectedDraft, setSelectedDraft] = useState<Draft | null>(null);
+  const selectedDraftIdRef = useRef<string | null>(null);
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [listTab, setListTab] = useState<ListTab>("queue");
   const [queueStatusTab, setQueueStatusTab] =
@@ -1274,6 +1275,10 @@ export default function TypistPage() {
   // provider when an older request returns late.
   const providerDataRequestRef = useRef(0);
   const selectedProviderIdRef = useRef("");
+
+  useEffect(() => {
+    selectedDraftIdRef.current = selectedDraft?.id || null;
+  }, [selectedDraft?.id]);
 
   function isCurrentProviderDataRequest(
     providerId: string,
@@ -2753,6 +2758,8 @@ export default function TypistPage() {
        * Completing and changes to Completed or Failed only after the helper
        * updates report_drafts.
        */
+      let finalWorkflowStatus: string | null = null;
+
       for (let attempt = 0; attempt < 120; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
 
@@ -2782,6 +2789,7 @@ export default function TypistPage() {
             refreshedDraft.workflow_status === "completed" ||
             refreshedDraft.workflow_status === "failed"
           ) {
+            finalWorkflowStatus = refreshedDraft.workflow_status;
             break;
           }
         }
@@ -2789,6 +2797,13 @@ export default function TypistPage() {
 
       await loadDrafts(params.providerId);
       await loadQueue(params.providerId, params.queueStatus);
+
+      if (
+        finalWorkflowStatus === "completed" &&
+        selectedDraftIdRef.current === params.draft.id
+      ) {
+        clearForm();
+      }
     } catch (error) {
       console.error("Background workflow failed:", error);
 
