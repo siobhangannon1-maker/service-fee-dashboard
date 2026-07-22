@@ -1544,6 +1544,78 @@ async function chooseBestRecipientResult(params: {
   return verified;
 }
 
+async function describeRecipientSearchInput(searchInput: Locator) {
+  const details = await searchInput
+    .evaluate((element) => {
+      const htmlElement = element as HTMLElement;
+      const inputElement = element as HTMLInputElement;
+      const rect = htmlElement.getBoundingClientRect();
+
+      return {
+        tag: element.tagName,
+        type: element.getAttribute("type"),
+        name: element.getAttribute("name"),
+        id: element.getAttribute("id"),
+        role: element.getAttribute("role"),
+        placeholder: element.getAttribute("placeholder"),
+        ariaLabel: element.getAttribute("aria-label"),
+        ariaControls: element.getAttribute("aria-controls"),
+        ariaExpanded: element.getAttribute("aria-expanded"),
+        autocomplete: element.getAttribute("autocomplete"),
+        contentEditable: element.getAttribute("contenteditable"),
+        value:
+          "value" in inputElement ? String(inputElement.value || "") : null,
+        textContent: String(element.textContent || "").slice(0, 300),
+        outerHtml: String(element.outerHTML || "").slice(0, 2000),
+        box: {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+      };
+    })
+    .catch((error) => ({ error: String(error) }));
+
+  console.log(
+    "Selected MediRef recipient search element:",
+    JSON.stringify(details, null, 2),
+  );
+}
+
+async function enterRecipientSearchQuery(
+  page: Page,
+  searchInput: Locator,
+  query: string,
+) {
+  await searchInput.scrollIntoViewIfNeeded().catch(() => undefined);
+  await searchInput.click({ force: true });
+  await page.waitForTimeout(200);
+
+  await searchInput.press("ControlOrMeta+A").catch(() => undefined);
+  await searchInput.press("Backspace").catch(() => undefined);
+  await page.waitForTimeout(300);
+
+  // Use real key events rather than fill(). Some Svelte autocomplete controls
+  // only start their remote search after keyboard input events.
+  await searchInput.type(query, { delay: 90 });
+  await page.waitForTimeout(300);
+
+  const value = await searchInput.inputValue().catch(() => "<not-an-input>");
+  const ariaExpanded = await searchInput
+    .getAttribute("aria-expanded")
+    .catch(() => null);
+
+  console.log("MediRef recipient field after typing:", {
+    query,
+    value,
+    ariaExpanded,
+    activeElementMatches: await searchInput
+      .evaluate((element) => document.activeElement === element)
+      .catch(() => false),
+  });
+}
+
 async function searchAndSelectMedirefRecipient(page: Page, request: any) {
   const recipient = request.recipient || {};
   const recipientName = String(recipient.name || "").trim();
@@ -1557,6 +1629,8 @@ async function searchAndSelectMedirefRecipient(page: Page, request: any) {
     await debugVisibleInputs(page);
     throw new Error("Could not find MediRef recipient directory search field.");
   }
+
+  await describeRecipientSearchInput(searchInput);
 
   const queries = Array.from(
     new Set(
@@ -1585,43 +1659,123 @@ async function searchAndSelectMedirefRecipient(page: Page, request: any) {
     queries,
   });
 
-  for (const query of queries) {
-    console.log("Searching MediRef directory:", query);
+  let directoryRequestCount = 0;
+  let directoryResponseCount = 0;
 
-    await searchInput.fill("");
-    await page.waitForTimeout(350);
-    await searchInput.fill(query);
-    await page.waitForTimeout(3000);
+  const requestListener = (networkRequest: any) => {
+    if (!networkRequest.url().includes("directorySearchQueryFn")) return;
 
-    // Print the visible page text for every attempted query while debugging.
-    // This can be removed later once matching is stable.
-    await debugRecipientResults(page);
+    directoryRequestCount += 1;
+    const postData = networkRequest.postData() || "";
 
-    const selected = await chooseBestRecipientResult({
-      page,
-      searchInput,
-      recipientName,
-      practiceName,
-      recipientEmail,
-      providerNumber,
+    console.log("MediRef directory request detected:", {
+      sequence: directoryRequestCount,
+      method: networkRequest.method(),
+      url: networkRequest.url(),
+      resourceType: networkRequest.resourceType(),
+      postDataLength: postData.length,
+      postData: postData.slice(0, 6000),
+    });
+  };
+
+  const responseListener = async (networkResponse: any) => {
+    if (!networkResponse.url().includes("directorySearchQueryFn")) return;
+
+    directoryResponseCount += 1;
+
+    const headers = await networkResponse.allHeaders().catch(() => ({}));
+    const body = await networkResponse.text().catch((error: unknown) =>
+      `<could not read response body: ${String(error)}>`,
+    );
+
+    console.log("MediRef directory response detected:", {
+      sequence: directoryResponseCount,
+      status: networkResponse.status(),
+      ok: networkResponse.ok(),
+      url: networkResponse.url(),
+      contentType: headers["content-type"] || null,
+      bodyLength: body.length,
     });
 
-    if (selected) {
-      console.log("MediRef recipient selection verified for query:", query);
-      return true;
+    console.log(
+      "MediRef directory response body (first 12000 characters):",
+      body.slice(0, 12_000),
+    );
+  };
+
+  const requestFailedListener = (networkRequest: any) => {
+    if (!networkRequest.url().includes("directorySearchQueryFn")) return;
+
+    console.warn("MediRef directory request failed:", {
+      method: networkRequest.method(),
+      url: networkRequest.url(),
+      failure: networkRequest.failure(),
+      postData: String(networkRequest.postData() || "").slice(0, 3000),
+    });
+  };
+
+  page.on("request", requestListener);
+  page.on("response", responseListener);
+  page.on("requestfailed", requestFailedListener);
+
+  try {
+    for (const query of queries) {
+      console.log("Searching MediRef directory:", query);
+
+      const requestsBeforeQuery = directoryRequestCount;
+      const responsesBeforeQuery = directoryResponseCount;
+
+      await enterRecipientSearchQuery(page, searchInput, query);
+
+      // Give the remote search/debounce enough time to run.
+      await page.waitForTimeout(4000);
+
+      console.log("MediRef directory network activity for query:", {
+        query,
+        requestsTriggered: directoryRequestCount - requestsBeforeQuery,
+        responsesReceived: directoryResponseCount - responsesBeforeQuery,
+      });
+
+      if (directoryRequestCount === requestsBeforeQuery) {
+        console.warn(
+          "No directorySearchQueryFn request was triggered by this automated query. The helper may be targeting the wrong field or the field may require a different interaction.",
+          { query },
+        );
+      }
+
+      // Print the visible page text for every attempted query while debugging.
+      await debugRecipientResults(page);
+
+      const selected = await chooseBestRecipientResult({
+        page,
+        searchInput,
+        recipientName,
+        practiceName,
+        recipientEmail,
+        providerNumber,
+      });
+
+      if (selected) {
+        console.log("MediRef recipient selection verified for query:", query);
+        return true;
+      }
+
+      console.warn(
+        "No verified MediRef recipient selection for query. Trying the next query:",
+        query,
+      );
     }
 
-    console.warn(
-      "No verified MediRef recipient selection for query. Trying the next query:",
-      query,
+    await debugRecipientResults(page);
+
+    throw new Error(
+      `Could not automatically match and verify MediRef recipient. Tried referrer "${recipientName}" and practice "${practiceName}". Directory requests observed: ${directoryRequestCount}; responses observed: ${directoryResponseCount}.`,
     );
+  } finally {
+    page.off("request", requestListener);
+    page.off("response", responseListener);
+    page.off("requestfailed", requestFailedListener);
   }
-
-  await debugRecipientResults(page);
-
-  throw new Error(
-    `Could not automatically match and verify MediRef recipient. Tried referrer "${recipientName}" and practice "${practiceName}".`,
-  );
 }
 
 async function uploadPdfsToFileInput(page: Page, localPaths: string[]) {
