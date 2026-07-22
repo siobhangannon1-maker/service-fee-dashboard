@@ -20,6 +20,10 @@ type PraktikaReferral = {
   date?: string;
   createdDate?: string;
   reason?: string;
+  isCompleted?: boolean;
+  isSuccessful?: boolean;
+  statusId?: string | number;
+  statusHistory?: unknown[];
   party?: {
     id?: string | number;
     clinicId?: string | number;
@@ -40,6 +44,7 @@ type ReportReferrer = {
   name?: string | null;
   address?: string | null;
   praktika_referrer_id?: string | null;
+  praktika_clinic_id?: string | null;
   practice_name?: string | null;
   phone?: string | null;
   email?: string | null;
@@ -48,58 +53,81 @@ type ReportReferrer = {
   praktika_referrer_key?: string | null;
 };
 
-function clean(value: unknown) {
+function clean(value: unknown): string {
   return String(value ?? "").trim();
 }
 
-function normaliseName(value: unknown) {
+function normaliseName(value: unknown): string {
   return clean(value)
     .toLowerCase()
     .replace(/^dr\.?\s+/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function normaliseKey(value: unknown) {
+function normaliseText(value: unknown): string {
   return clean(value)
     .toLowerCase()
-    .replace(/[^a-z0-9]+/gi, "");
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function getReferralSortDate(referral: PraktikaReferral) {
-  return new Date(
-    clean(referral.createdDate) || clean(referral.date) || "1900-01-01",
-  ).getTime();
+function getReferralSortDate(referral: PraktikaReferral): number {
+  const dateValue =
+    clean(referral.createdDate) ||
+    clean(referral.date) ||
+    "1900-01-01";
+
+  const timestamp = new Date(dateValue).getTime();
+
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-function formatProviderName(referral: PraktikaReferral) {
+function formatProviderName(referral: PraktikaReferral): string {
   const provider = referral.party?.provider;
 
-  return [provider?.title, provider?.firstName, provider?.lastName]
+  return [
+    provider?.title,
+    provider?.firstName,
+    provider?.lastName,
+  ]
     .map(clean)
     .filter(Boolean)
     .join(" ");
 }
 
-function formatReferrerAddress(referrer: ReportReferrer | null) {
-  if (!referrer) return "";
+function formatReferrerAddress(
+  referrer: ReportReferrer | null,
+): string {
+  if (!referrer) {
+    return "";
+  }
 
   const practiceName = clean(referrer.practice_name);
   const address = clean(referrer.address);
 
-  if (!practiceName) return address;
-  if (!address) return practiceName;
+  if (!practiceName) {
+    return address;
+  }
 
-  const firstLine = address.split(/\n+/)[0]?.trim().toLowerCase();
+  if (!address) {
+    return practiceName;
+  }
 
-  if (firstLine === practiceName.toLowerCase()) {
+  const firstAddressLine =
+    address.split(/\n+/)[0]?.trim().toLowerCase() || "";
+
+  if (firstAddressLine === practiceName.toLowerCase()) {
     return address;
   }
 
   return [practiceName, address].filter(Boolean).join("\n");
 }
 
-function isOwnPracticeText(value: unknown) {
+function isOwnPracticeText(value: unknown): boolean {
   const text = clean(value).toLowerCase();
 
   return (
@@ -108,7 +136,9 @@ function isOwnPracticeText(value: unknown) {
   );
 }
 
-function isOwnPracticeReferrer(referrer: ReportReferrer) {
+function isOwnPracticeReferrer(
+  referrer: ReportReferrer,
+): boolean {
   return isOwnPracticeText(
     [
       referrer.name,
@@ -121,73 +151,40 @@ function isOwnPracticeReferrer(referrer: ReportReferrer) {
   );
 }
 
-function rawJsonContainsExactValue(value: unknown, target: string): boolean {
-  const cleanTarget = clean(target);
-  if (!cleanTarget) return false;
-
-  if (value === null || typeof value === "undefined") return false;
-
-  if (typeof value === "string" || typeof value === "number") {
-    return clean(value) === cleanTarget;
-  }
-
-  if (Array.isArray(value)) {
-    return value.some((item) => rawJsonContainsExactValue(item, cleanTarget));
-  }
-
-  if (typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).some((nested) =>
-      rawJsonContainsExactValue(nested, cleanTarget),
-    );
-  }
-
-  return false;
-}
-
-function rawJsonContainsNormalisedValue(value: unknown, target: string): boolean {
-  const cleanTarget = normaliseKey(target);
-  if (!cleanTarget) return false;
-
-  if (value === null || typeof value === "undefined") return false;
-
-  if (typeof value === "string" || typeof value === "number") {
-    return normaliseKey(value) === cleanTarget;
-  }
-
-  if (Array.isArray(value)) {
-    return value.some((item) =>
-      rawJsonContainsNormalisedValue(item, cleanTarget),
-    );
-  }
-
-  if (typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).some((nested) =>
-      rawJsonContainsNormalisedValue(nested, cleanTarget),
-    );
-  }
-
-  return false;
-}
-
-function extractPatientReferrals(parsed: any): PraktikaReferral[] {
+function extractPatientReferrals(
+  parsed: unknown,
+): PraktikaReferral[] {
   const found: PraktikaReferral[] = [];
 
-  function walk(value: any) {
-    if (!value) return;
-
-    if (Array.isArray(value)) {
-      for (const item of value) walk(item);
+  function walk(value: unknown) {
+    if (!value) {
       return;
     }
 
-    if (typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        walk(item);
+      }
 
-    if (Array.isArray(value.patient_referrals)) {
-      found.push(...value.patient_referrals);
+      return;
     }
 
-    for (const nested of Object.values(value)) {
-      if (nested && typeof nested === "object") walk(nested);
+    if (typeof value !== "object") {
+      return;
+    }
+
+    const object = value as Record<string, unknown>;
+
+    if (Array.isArray(object.patient_referrals)) {
+      found.push(
+        ...(object.patient_referrals as PraktikaReferral[]),
+      );
+    }
+
+    for (const nested of Object.values(object)) {
+      if (nested && typeof nested === "object") {
+        walk(nested);
+      }
     }
   }
 
@@ -196,7 +193,9 @@ function extractPatientReferrals(parsed: any): PraktikaReferral[] {
   const unique = new Map<string, PraktikaReferral>();
 
   for (const referral of found) {
-    const key = clean(referral.id) || JSON.stringify(referral).slice(0, 300);
+    const key =
+      clean(referral.id) ||
+      JSON.stringify(referral).slice(0, 300);
 
     if (!unique.has(key)) {
       unique.set(key, referral);
@@ -215,7 +214,7 @@ async function fetchReferralsFromPraktika({
   practiceId: string;
   mode: PraktikaSessionMode;
 }) {
-  return await praktikaHelperPost<any>({
+  return await praktikaHelperPost<unknown>({
     mode,
     jobType: "report_writing_latest_referral",
     path: "/php/forms/db_getFormData.php",
@@ -232,8 +231,6 @@ async function fetchReferralsFromPraktika({
             patient_id: Number(patientId),
           },
         ],
-        // Praktika can return [] if only patient_referrals is requested.
-        // This broader patient payload reliably includes referrals.
         fields: [
           "patient_id",
           "patient_title",
@@ -253,142 +250,157 @@ async function fetchReferralsFromPraktika({
   });
 }
 
-const REFERRER_SELECT =
-  "id, name, address, praktika_referrer_id, practice_name, phone, email, is_active, raw_json, praktika_referrer_key";
+const REFERRER_SELECT = [
+  "id",
+  "name",
+  "address",
+  "praktika_referrer_id",
+  "praktika_clinic_id",
+  "practice_name",
+  "phone",
+  "email",
+  "is_active",
+  "raw_json",
+  "praktika_referrer_key",
+].join(", ");
 
-async function addReferrerCandidates(
-  map: Map<string, ReportReferrer>,
-  data: ReportReferrer[] | null,
+async function findReportReferrerForReferral(
+  referral: PraktikaReferral,
 ) {
-  for (const referrer of data || []) {
-    if (!referrer.id) continue;
-    map.set(referrer.id, referrer);
-  }
-}
-
-async function findReportReferrerForReferral(referral: PraktikaReferral) {
   const provider = referral.party?.provider;
-  const providerName = formatProviderName(referral);
-  const providerNameNoTitle = providerName.replace(/^Dr\.?\s+/i, "").trim();
 
-  const providerNumber = clean(provider?.providerNumber);
+  const providerName = formatProviderName(referral);
+  const providerNameNormalised = normaliseName(providerName);
+
   const providerId = clean(provider?.id);
+  const providerNumber = clean(provider?.providerNumber);
   const referralProviderId = clean(referral.providerId);
   const partyId = clean(referral.party?.id);
   const clinicId = clean(referral.party?.clinicId);
 
-  const firstName = clean(provider?.firstName);
-  const lastName = clean(provider?.lastName);
-
-  const candidateMap = new Map<string, ReportReferrer>();
   const lookupErrors: string[] = [];
 
-  async function safeLookup(label: string, queryBuilder: any) {
-    const { data, error } = await queryBuilder;
+  /*
+    Primary lookup:
+    The referral's clinic ID now matches report_referrers.praktika_clinic_id.
+
+    We still query by provider name as well so another provider at the same
+    clinic cannot be selected.
+  */
+  if (clinicId && providerNameNormalised) {
+    const providerNameWithoutTitle = providerName.replace(
+      /^Dr\.?\s+/i,
+      "",
+    );
+
+    const { data, error } = await supabase
+      .from("report_referrers")
+      .select(REFERRER_SELECT)
+      .eq("is_active", true)
+      .eq("praktika_clinic_id", clinicId)
+      .ilike("name", `%${providerNameWithoutTitle}%`)
+      .limit(20);
 
     if (error) {
-      lookupErrors.push(`${label}: ${error.message}`);
-      return;
-    }
+      lookupErrors.push(
+        `clinic id and provider lookup: ${error.message}`,
+      );
+    } else {
+      const exactProviderMatches = (
+        (data || []) as ReportReferrer[]
+      )
+        .filter(
+          (row) =>
+            !isOwnPracticeReferrer(row) &&
+            normaliseName(row.name) === providerNameNormalised,
+        )
+        .sort((a, b) => {
+          const aCompleteness =
+            Number(Boolean(clean(a.practice_name))) +
+            Number(Boolean(clean(a.address)));
 
-    await addReferrerCandidates(candidateMap, data as ReportReferrer[] | null);
+          const bCompleteness =
+            Number(Boolean(clean(b.practice_name))) +
+            Number(Boolean(clean(b.address)));
+
+          return bCompleteness - aCompleteness;
+        });
+
+      if (exactProviderMatches.length > 0) {
+        return {
+          matchedReferrer: exactProviderMatches[0],
+          debug: {
+            strategy: "exact_provider_and_praktika_clinic_id",
+            clinicId,
+            providerName,
+            lookupErrors,
+            candidateCount: exactProviderMatches.length,
+            topCandidates: exactProviderMatches.map((row) => ({
+              id: row.id,
+              name: row.name,
+              practice_name: row.practice_name,
+              praktika_clinic_id: row.praktika_clinic_id,
+              hasAddress: Boolean(clean(row.address)),
+            })),
+          },
+        };
+      }
+
+      const clinicCandidates = (
+        (data || []) as ReportReferrer[]
+      ).filter((row) => !isOwnPracticeReferrer(row));
+
+      if (clinicCandidates.length === 1) {
+        return {
+          matchedReferrer: clinicCandidates[0],
+          debug: {
+            strategy: "single_praktika_clinic_id_candidate",
+            clinicId,
+            providerName,
+            lookupErrors,
+            candidateCount: 1,
+            topCandidates: clinicCandidates.map((row) => ({
+              id: row.id,
+              name: row.name,
+              practice_name: row.practice_name,
+              praktika_clinic_id: row.praktika_clinic_id,
+              hasAddress: Boolean(clean(row.address)),
+            })),
+          },
+        };
+      }
+    }
   }
 
   /*
-    IMPORTANT:
-    Do NOT query provider_number as a column. Your report_referrers schema does
-    not have a provider_number column. Provider number matching must happen via
-    raw_json or praktika_referrer_key.
+    Secondary lookup:
+    Retrieve name candidates and score them. Clinic ID receives the strongest
+    score, so once the referrer sync has populated the new field, the correct
+    clinic wins decisively.
   */
+  const providerNameWithoutTitle = providerName.replace(
+    /^Dr\.?\s+/i,
+    "",
+  );
 
-  const possibleExactIds = [
-    partyId,
-    providerId,
-    referralProviderId,
-    clinicId,
-    providerNumber,
-  ].filter(Boolean);
+  const { data: candidates, error: candidateError } =
+    await supabase
+      .from("report_referrers")
+      .select(REFERRER_SELECT)
+      .eq("is_active", true)
+      .ilike("name", `%${providerNameWithoutTitle}%`)
+      .limit(100);
 
-  if (possibleExactIds.length > 0) {
-    await safeLookup(
-      "praktika_referrer_id in possible ids",
-      supabase
-        .from("report_referrers")
-        .select(REFERRER_SELECT)
-        .eq("is_active", true)
-        .in("praktika_referrer_id", possibleExactIds)
-        .limit(50),
-    );
-
-    await safeLookup(
-      "praktika_referrer_key in possible ids",
-      supabase
-        .from("report_referrers")
-        .select(REFERRER_SELECT)
-        .eq("is_active", true)
-        .in("praktika_referrer_key", possibleExactIds)
-        .limit(50),
+  if (candidateError) {
+    lookupErrors.push(
+      `provider name candidate lookup: ${candidateError.message}`,
     );
   }
 
-  if (providerNumber) {
-    await safeLookup(
-      "praktika_referrer_key ilike provider number",
-      supabase
-        .from("report_referrers")
-        .select(REFERRER_SELECT)
-        .eq("is_active", true)
-        .ilike("praktika_referrer_key", `%${providerNumber}%`)
-        .limit(50),
-    );
-  }
-
-  if (providerNameNoTitle) {
-    await safeLookup(
-      "name ilike full provider name",
-      supabase
-        .from("report_referrers")
-        .select(REFERRER_SELECT)
-        .eq("is_active", true)
-        .ilike("name", `%${providerNameNoTitle}%`)
-        .limit(50),
-    );
-  }
-
-  if (lastName) {
-    await safeLookup(
-      "name ilike last name",
-      supabase
-        .from("report_referrers")
-        .select(REFERRER_SELECT)
-        .eq("is_active", true)
-        .ilike("name", `%${lastName}%`)
-        .limit(80),
-    );
-  }
-
-  if (firstName && lastName) {
-    await safeLookup(
-      "name ilike first name",
-      supabase
-        .from("report_referrers")
-        .select(REFERRER_SELECT)
-        .eq("is_active", true)
-        .ilike("name", `%${firstName}%`)
-        .limit(80),
-    );
-  }
-
-  const targetName = normaliseName(providerName);
-  const targetNameNoTitle = normaliseName(providerNameNoTitle);
-
-  const scored = Array.from(candidateMap.values())
+  const scored = (
+    (candidates || []) as ReportReferrer[]
+  )
     .map((referrer) => {
-      const referrerName = normaliseName(referrer.name);
-      const rawJson = referrer.raw_json || {};
-      const praktikaReferrerId = clean(referrer.praktika_referrer_id);
-      const praktikaReferrerKey = clean(referrer.praktika_referrer_key);
-
       let score = 0;
       const reasons: string[] = [];
 
@@ -397,112 +409,130 @@ async function findReportReferrerForReferral(referral: PraktikaReferral) {
         reasons.push(reason);
       }
 
-      if (partyId && praktikaReferrerId === partyId) {
-        add(300, "praktika_referrer_id matches referral party id");
+      const rowProviderName = normaliseName(referrer.name);
+      const rowClinicId = clean(
+        referrer.praktika_clinic_id,
+      );
+
+      if (
+        clinicId &&
+        rowClinicId &&
+        clinicId === rowClinicId
+      ) {
+        add(1000, "exact Praktika clinic ID");
       }
 
-      if (providerId && praktikaReferrerId === providerId) {
-        add(260, "praktika_referrer_id matches provider id");
+      if (
+        providerNameNormalised &&
+        rowProviderName === providerNameNormalised
+      ) {
+        add(300, "exact provider name");
       }
 
-      if (referralProviderId && praktikaReferrerId === referralProviderId) {
-        add(230, "praktika_referrer_id matches referral providerId");
+      if (
+        providerNameNormalised &&
+        rowProviderName.includes(providerNameNormalised)
+      ) {
+        add(100, "provider name contains referral name");
       }
 
-      if (clinicId && praktikaReferrerId === clinicId) {
-        add(180, "praktika_referrer_id matches clinic id");
+      if (
+        providerId &&
+        clean(referrer.praktika_referrer_id) === providerId
+      ) {
+        add(250, "praktika_referrer_id matches provider ID");
       }
 
-      if (providerNumber && praktikaReferrerId === providerNumber) {
-        add(300, "praktika_referrer_id matches provider number");
+      if (
+        partyId &&
+        clean(referrer.praktika_referrer_id) === partyId
+      ) {
+        add(250, "praktika_referrer_id matches party ID");
       }
 
-      for (const value of [partyId, providerId, referralProviderId, clinicId, providerNumber]) {
-        if (!value) continue;
-        if (praktikaReferrerKey && praktikaReferrerKey.includes(value)) {
-          add(160, `praktika_referrer_key contains ${value}`);
+      if (
+        referralProviderId &&
+        clean(referrer.praktika_referrer_id) ===
+          referralProviderId
+      ) {
+        add(
+          220,
+          "praktika_referrer_id matches referral provider ID",
+        );
+      }
+
+      const key = clean(referrer.praktika_referrer_key);
+
+      for (const value of [
+        providerNumber,
+        providerId,
+        referralProviderId,
+        partyId,
+      ]) {
+        if (value && key.includes(value)) {
+          add(
+            120,
+            `praktika_referrer_key contains ${value}`,
+          );
         }
       }
 
-      if (providerNumber && rawJsonContainsExactValue(rawJson, providerNumber)) {
-        add(220, "raw_json contains exact provider number");
+      if (clean(referrer.practice_name)) {
+        add(20, "has practice name");
       }
 
-      if (clinicId && rawJsonContainsExactValue(rawJson, clinicId)) {
-        add(160, "raw_json contains exact clinic id");
+      if (clean(referrer.address)) {
+        add(30, "has address");
       }
-
-      if (partyId && rawJsonContainsExactValue(rawJson, partyId)) {
-        add(160, "raw_json contains exact party id");
-      }
-
-      if (providerId && rawJsonContainsExactValue(rawJson, providerId)) {
-        add(140, "raw_json contains exact provider id");
-      }
-
-      if (
-        targetName &&
-        (referrerName === targetName || referrerName === targetNameNoTitle)
-      ) {
-        add(120, "name exact match");
-      }
-
-      if (targetNameNoTitle && referrerName.includes(targetNameNoTitle)) {
-        add(80, "name contains provider name");
-      }
-
-      if (targetNameNoTitle && targetNameNoTitle.includes(referrerName)) {
-        add(50, "provider name contains row name");
-      }
-
-      if (firstName && referrerName.includes(firstName.toLowerCase())) {
-        add(20, "first name match");
-      }
-
-      if (lastName && referrerName.includes(lastName.toLowerCase())) {
-        add(35, "last name match");
-      }
-
-      if (
-        providerNameNoTitle &&
-        rawJsonContainsNormalisedValue(rawJson, providerNameNoTitle)
-      ) {
-        add(70, "raw_json contains provider name");
-      }
-
-      if (clean(referrer.practice_name)) add(25, "has practice name");
-      if (clean(referrer.address)) add(35, "has address");
 
       if (isOwnPracticeReferrer(referrer)) {
-        add(-1000, "excluded own practice");
+        add(-2000, "excluded own practice");
       }
 
-      if (!clean(referrer.practice_name) && !clean(referrer.address)) {
-        add(-40, "no practice/address");
-      }
-
-      return { referrer, score, reasons };
+      return {
+        referrer,
+        score,
+        reasons,
+      };
     })
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score);
 
-  const matched = scored[0] || null;
+  const top = scored[0] || null;
+  const second = scored[1] || null;
+
+  /*
+    Do not silently select a provider-name tie.
+
+    Before this update, Hawthorne and TC Dental both received the same score
+    and the first database row was returned. Now a tied name-only result is
+    treated as ambiguous.
+  */
+  const ambiguous =
+    Boolean(top && second) && top!.score === second!.score;
 
   return {
-    matchedReferrer: matched?.referrer || null,
+    matchedReferrer: ambiguous
+      ? null
+      : top?.referrer || null,
     debug: {
+      strategy: ambiguous
+        ? "ambiguous_name_only_match"
+        : "scored_fallback",
+      clinicId,
+      providerName,
       lookupErrors,
-      candidateCount: candidateMap.size,
-      topCandidates: scored.slice(0, 5).map((item) => ({
+      candidateCount: scored.length,
+      ambiguous,
+      topCandidates: scored.slice(0, 10).map((item) => ({
         id: item.referrer.id,
         name: item.referrer.name,
         practice_name: item.referrer.practice_name,
+        praktika_clinic_id:
+          item.referrer.praktika_clinic_id,
         hasAddress: Boolean(clean(item.referrer.address)),
-        praktika_referrer_id: item.referrer.praktika_referrer_id,
-        praktika_referrer_key: item.referrer.praktika_referrer_key,
         score: item.score,
         reasons: item.reasons,
-        isOwnPractice: isOwnPracticeReferrer(item.referrer),
       })),
     },
   };
@@ -524,8 +554,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const mode = await getCurrentUserPraktikaSessionMode();
-    const practiceId = clean(process.env.PRAKTIKA_PRACTICE_ID) || "1181";
+    const mode =
+      await getCurrentUserPraktikaSessionMode();
+
+    const practiceId =
+      clean(process.env.PRAKTIKA_PRACTICE_ID) || "1181";
 
     const parsed = await fetchReferralsFromPraktika({
       patientId,
@@ -537,7 +570,11 @@ export async function POST(req: Request) {
 
     const latestReferral = referrals
       .filter((referral) => formatProviderName(referral))
-      .sort((a, b) => getReferralSortDate(b) - getReferralSortDate(a))[0];
+      .sort(
+        (a, b) =>
+          getReferralSortDate(b) -
+          getReferralSortDate(a),
+      )[0];
 
     if (!latestReferral) {
       return NextResponse.json({
@@ -547,7 +584,6 @@ export async function POST(req: Request) {
           patientId,
           practiceId,
           referralCount: referrals.length,
-          parsedPreview: JSON.stringify(parsed).slice(0, 1500),
           message:
             referrals.length > 0
               ? "Referral records were found, but none had a provider name at party.provider."
@@ -557,8 +593,13 @@ export async function POST(req: Request) {
     }
 
     const provider = latestReferral.party?.provider;
-    const { matchedReferrer, debug: matchDebug } =
-      await findReportReferrerForReferral(latestReferral);
+
+    const {
+      matchedReferrer,
+      debug: matchDebug,
+    } = await findReportReferrerForReferral(
+      latestReferral,
+    );
 
     const referrerAddress = matchedReferrer
       ? formatReferrerAddress(matchedReferrer)
@@ -570,47 +611,77 @@ export async function POST(req: Request) {
         referralId: latestReferral.id || "",
         referralDate: latestReferral.date || "",
         createdDate: latestReferral.createdDate || "",
-        referrerName: formatProviderName(latestReferral),
+        referrerName:
+          formatProviderName(latestReferral),
+        referrerPracticeName:
+          matchedReferrer?.practice_name || "",
         referrerAddress,
         providerId: provider?.id || null,
-        providerNumber: provider?.providerNumber || "",
-        clinicId: latestReferral.party?.clinicId || null,
-        partyId: latestReferral.party?.id || null,
-        referralProviderId: latestReferral.providerId || null,
+        providerNumber:
+          provider?.providerNumber || "",
+        clinicId:
+          latestReferral.party?.clinicId || null,
+        partyId:
+          latestReferral.party?.id || null,
+        referralProviderId:
+          latestReferral.providerId || null,
         reason: latestReferral.reason || "",
+        isCompleted:
+          latestReferral.isCompleted ?? null,
+        isSuccessful:
+          latestReferral.isSuccessful ?? null,
       },
       debug: {
         patientId,
         practiceId,
         referralCount: referrals.length,
-        selectedReferralId: latestReferral.id || null,
+        selectedReferralRaw: latestReferral,
+        selectedReferralId:
+          latestReferral.id || null,
         selectedReferralDate:
-          latestReferral.createdDate || latestReferral.date || null,
-        selectedReferralClinicId: latestReferral.party?.clinicId || null,
-        selectedReferralPartyId: latestReferral.party?.id || null,
-        selectedReferralProviderId: latestReferral.providerId || null,
-        selectedProviderId: provider?.id || null,
-        selectedProviderNumber: provider?.providerNumber || null,
+          latestReferral.createdDate ||
+          latestReferral.date ||
+          null,
+        selectedReferralClinicId:
+          latestReferral.party?.clinicId || null,
+        selectedReferralPartyId:
+          latestReferral.party?.id || null,
+        selectedReferralProviderId:
+          latestReferral.providerId || null,
+        selectedProviderId:
+          provider?.id || null,
+        selectedProviderNumber:
+          provider?.providerNumber || null,
         reportReferrerMatched: matchedReferrer
           ? {
               id: matchedReferrer.id,
               name: matchedReferrer.name,
-              practice_name: matchedReferrer.practice_name,
-              hasAddress: Boolean(clean(matchedReferrer.address)),
-              praktika_referrer_id: matchedReferrer.praktika_referrer_id,
-              praktika_referrer_key: matchedReferrer.praktika_referrer_key,
+              practice_name:
+                matchedReferrer.practice_name,
+              address: matchedReferrer.address,
+              praktika_clinic_id:
+                matchedReferrer.praktika_clinic_id,
+              praktika_referrer_id:
+                matchedReferrer.praktika_referrer_id,
+              praktika_referrer_key:
+                matchedReferrer.praktika_referrer_key,
             }
           : null,
         matchDebug,
         message: matchedReferrer
           ? referrerAddress
-            ? "Matched referral provider to report_referrers and found practice/address."
-            : "Matched referral provider to report_referrers, but the matched row has no practice/address."
-          : "No matching active report_referrers row was found for the referral provider using your current schema.",
+            ? "Matched the referral provider and Praktika clinic ID to report_referrers."
+            : "Matched the referral provider and clinic, but the report_referrers row has no address."
+          : matchDebug.ambiguous
+            ? "Multiple report_referrers rows matched the provider, but none had the referral clinic ID. Run the referrer sync again."
+            : "No matching active report_referrers row was found.",
       },
     });
   } catch (error) {
-    console.error("Latest Praktika referral lookup failed:", error);
+    console.error(
+      "Latest Praktika referral lookup failed:",
+      error,
+    );
 
     return NextResponse.json(
       {

@@ -2,7 +2,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import dotenv from "dotenv";
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, type BrowserContext, type Locator, type Page } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 
 dotenv.config({ path: ".env.local" });
@@ -1175,7 +1175,111 @@ async function getRecipientSearchInput(page: Page) {
   return null;
 }
 
-async function chooseBestRecipientResult(params: {
+type RecipientCandidate = {
+  locator: Locator;
+  selector: string;
+  index: number;
+  text: string;
+  normalisedText: string;
+  score: number;
+  reasons: string[];
+  exactName: boolean;
+  exactPractice: boolean;
+};
+
+function scoreRecipientCandidate(params: {
+  text: string;
+  recipientName: string;
+  practiceName: string;
+  recipientEmail: string;
+  providerNumber: string;
+}) {
+  const {
+    text,
+    recipientName,
+    practiceName,
+    recipientEmail,
+    providerNumber,
+  } = params;
+
+  const normalisedText = normaliseForMatching(text);
+  const nameKey = normaliseForMatching(recipientName);
+  const practiceKey = normaliseForMatching(practiceName);
+  const emailKey = String(recipientEmail || "").trim().toLowerCase();
+  const providerNumberKey = normaliseForMatching(providerNumber);
+
+  const reasons: string[] = [];
+  let score = 0;
+
+  const exactName = Boolean(nameKey && normalisedText.includes(nameKey));
+  const exactPractice = Boolean(
+    practiceKey && normalisedText.includes(practiceKey),
+  );
+
+  if (exactPractice) {
+    score += 250;
+    reasons.push("exact practice match +250");
+  }
+
+  if (exactName) {
+    score += 220;
+    reasons.push("exact provider match +220");
+  }
+
+  if (emailKey && text.toLowerCase().includes(emailKey)) {
+    score += 350;
+    reasons.push("exact email match +350");
+  }
+
+  if (providerNumberKey && normalisedText.includes(providerNumberKey)) {
+    score += 350;
+    reasons.push("exact provider number match +350");
+  }
+
+  const nameWords = nameKey
+    .split(" ")
+    .filter((word) => word.length > 2);
+  const practiceWords = practiceKey
+    .split(" ")
+    .filter((word) => word.length > 2);
+
+  for (const word of nameWords) {
+    if (normalisedText.includes(word)) {
+      score += 20;
+      reasons.push(`provider word "${word}" +20`);
+    }
+  }
+
+  for (const word of practiceWords) {
+    if (normalisedText.includes(word)) {
+      score += 15;
+      reasons.push(`practice word "${word}" +15`);
+    }
+  }
+
+  if (text.includes("@")) {
+    score += 5;
+    reasons.push("contains email-like text +5");
+  }
+
+  // When both provider and practice were supplied, strongly penalise a row
+  // that contains only one of them. This protects providers who work at more
+  // than one clinic.
+  if (nameKey && practiceKey && !(exactName && exactPractice)) {
+    score -= 200;
+    reasons.push("missing exact provider/practice pair -200");
+  }
+
+  return {
+    score,
+    reasons,
+    normalisedText,
+    exactName,
+    exactPractice,
+  };
+}
+
+async function visibleMatchingRecipientOptions(params: {
   page: Page;
   recipientName: string;
   practiceName: string;
@@ -1184,69 +1288,260 @@ async function chooseBestRecipientResult(params: {
   const nameKey = normaliseForMatching(recipientName);
   const practiceKey = normaliseForMatching(practiceName);
 
+  const optionLocator = page.locator(
+    [
+      '[role="option"]',
+      '[cmdk-item]',
+      '[data-radix-collection-item]',
+      '[role="listbox"] li',
+      '[role="menu"] li',
+    ].join(", "),
+  );
+
+  const count = Math.min(await optionLocator.count().catch(() => 0), 100);
+  let matches = 0;
+
+  for (let i = 0; i < count; i += 1) {
+    const item = optionLocator.nth(i);
+    if (!(await item.isVisible().catch(() => false))) continue;
+
+    const text = normaliseForMatching(await item.innerText().catch(() => ""));
+    if (!text) continue;
+
+    const nameMatches = !nameKey || text.includes(nameKey);
+    const practiceMatches = !practiceKey || text.includes(practiceKey);
+
+    if (nameMatches && practiceMatches) matches += 1;
+  }
+
+  return matches;
+}
+
+async function verifyRecipientSelection(params: {
+  page: Page;
+  searchInput: Locator;
+  recipientName: string;
+  practiceName: string;
+  beforeInputValue: string;
+}) {
+  const {
+    page,
+    searchInput,
+    recipientName,
+    practiceName,
+    beforeInputValue,
+  } = params;
+
+  await page.waitForTimeout(1200);
+
+  const nameKey = normaliseForMatching(recipientName);
+  const practiceKey = normaliseForMatching(practiceName);
+
+  const selectedIndicators = page.locator(
+    [
+      '[aria-selected="true"]',
+      '[data-selected="true"]',
+      '[data-state="checked"]',
+      '[data-state="selected"]',
+      '[class*="selected" i]',
+      '[class*="recipient" i] [class*="chip" i]',
+      '[class*="recipient" i] [class*="tag" i]',
+    ].join(", "),
+  );
+
+  const selectedCount = Math.min(
+    await selectedIndicators.count().catch(() => 0),
+    100,
+  );
+
+  for (let i = 0; i < selectedCount; i += 1) {
+    const item = selectedIndicators.nth(i);
+    if (!(await item.isVisible().catch(() => false))) continue;
+
+    const text = normaliseForMatching(await item.innerText().catch(() => ""));
+    if (!text) continue;
+
+    const nameMatches = !nameKey || text.includes(nameKey);
+    const practiceMatches = !practiceKey || text.includes(practiceKey);
+
+    if (nameMatches && practiceMatches) {
+      console.log("Verified MediRef recipient using selected UI element:", {
+        text: text.slice(0, 500),
+      });
+      return true;
+    }
+  }
+
+  const remainingMatchingOptions = await visibleMatchingRecipientOptions({
+    page,
+    recipientName,
+    practiceName,
+  });
+
+  const afterInputValue = await searchInput.inputValue().catch(() => "");
+  const inputChanged = afterInputValue.trim() !== beforeInputValue.trim();
+  const inputCleared = afterInputValue.trim() === "";
+  const dropdownClosed = remainingMatchingOptions === 0;
+
+  console.log("MediRef recipient click verification:", {
+    beforeInputValue,
+    afterInputValue,
+    inputChanged,
+    inputCleared,
+    dropdownClosed,
+    remainingMatchingOptions,
+  });
+
+  // Many autocomplete widgets clear or replace the search text and close the
+  // result list after a successful selection. Require both signals so a mere
+  // click is never treated as success.
+  return dropdownClosed && (inputChanged || inputCleared);
+}
+
+async function chooseBestRecipientResult(params: {
+  page: Page;
+  searchInput: Locator;
+  recipientName: string;
+  practiceName: string;
+  recipientEmail: string;
+  providerNumber: string;
+}) {
+  const {
+    page,
+    searchInput,
+    recipientName,
+    practiceName,
+    recipientEmail,
+    providerNumber,
+  } = params;
+
+  // Prefer true option/list-item elements. The final two fallbacks support
+  // custom MediRef markup, but they are deliberately evaluated after the
+  // semantic selectors.
   const candidateSelectors = [
     '[role="option"]',
     '[cmdk-item]',
     '[data-radix-collection-item]',
+    '[role="listbox"] li',
+    '[role="menu"] li',
     'li',
     'button',
-    'div:has-text("@")',
   ];
 
-  let best: { index: number; score: number; selector: string; text: string } | null = null;
+  const candidates: RecipientCandidate[] = [];
+  const seenTexts = new Set<string>();
 
   for (const selector of candidateSelectors) {
     const locator = page.locator(selector);
-    const count = Math.min(await locator.count().catch(() => 0), 50);
+    const count = Math.min(await locator.count().catch(() => 0), 75);
 
     for (let i = 0; i < count; i += 1) {
       const item = locator.nth(i);
-      const visible = await item.isVisible().catch(() => false);
-      if (!visible) continue;
+      if (!(await item.isVisible().catch(() => false))) continue;
 
-      const text = await item.innerText().catch(() => "");
+      const text = (await item.innerText().catch(() => "")).trim();
       const normalisedText = normaliseForMatching(text);
 
       if (!normalisedText || normalisedText.length < 4) continue;
 
-      let score = 0;
+      // Avoid scoring the same nested result several times under different
+      // selectors. Keep the first occurrence, which comes from the most
+      // semantic selector.
+      if (seenTexts.has(normalisedText)) continue;
+      seenTexts.add(normalisedText);
 
-      if (practiceKey && normalisedText.includes(practiceKey)) score += 100;
-      if (nameKey && normalisedText.includes(nameKey)) score += 80;
+      const scored = scoreRecipientCandidate({
+        text,
+        recipientName,
+        practiceName,
+        recipientEmail,
+        providerNumber,
+      });
 
-      const nameWords = nameKey.split(" ").filter((word) => word.length > 2);
-      const practiceWords = practiceKey.split(" ").filter((word) => word.length > 2);
+      if (scored.score <= 0) continue;
 
-      for (const word of nameWords) {
-        if (normalisedText.includes(word)) score += 15;
-      }
-
-      for (const word of practiceWords) {
-        if (normalisedText.includes(word)) score += 12;
-      }
-
-      if (text.includes("@")) score += 10;
-
-      if (score > 0 && (!best || score > best.score)) {
-        best = { index: i, score, selector, text };
-      }
+      candidates.push({
+        locator: item,
+        selector,
+        index: i,
+        text,
+        normalisedText: scored.normalisedText,
+        score: scored.score,
+        reasons: scored.reasons,
+        exactName: scored.exactName,
+        exactPractice: scored.exactPractice,
+      });
     }
-
-    if (best && best.score >= 100) break;
   }
 
+  candidates.sort((a, b) => b.score - a.score);
+
+  console.log(
+    "MediRef recipient candidates:",
+    candidates.slice(0, 20).map((candidate, index) => ({
+      rank: index + 1,
+      score: candidate.score,
+      selector: candidate.selector,
+      exactName: candidate.exactName,
+      exactPractice: candidate.exactPractice,
+      text: candidate.text.slice(0, 500),
+      reasons: candidate.reasons,
+    })),
+  );
+
+  const best = candidates[0];
   if (!best) return false;
 
-  console.log("Best MediRef recipient match:", {
+  const bothIdentityFieldsProvided = Boolean(
+    normaliseForMatching(recipientName) && normaliseForMatching(practiceName),
+  );
+
+  // When provider and practice are both available, require the chosen result
+  // to contain both. This is the key safety rule for multi-clinic providers.
+  if (
+    bothIdentityFieldsProvided &&
+    !(best.exactName && best.exactPractice)
+  ) {
+    console.warn(
+      "Rejected best MediRef candidate because it did not contain both the exact provider and exact practice.",
+      {
+        score: best.score,
+        text: best.text.slice(0, 500),
+      },
+    );
+    return false;
+  }
+
+  const beforeInputValue = await searchInput.inputValue().catch(() => "");
+
+  console.log("Clicking best MediRef recipient match:", {
     score: best.score,
     selector: best.selector,
     text: best.text.slice(0, 500),
+    reasons: best.reasons,
   });
 
-  await page.locator(best.selector).nth(best.index).click({ force: true });
-  await page.waitForTimeout(1500);
+  await best.locator.scrollIntoViewIfNeeded().catch(() => undefined);
+  await best.locator.click({ force: true });
 
-  return true;
+  const verified = await verifyRecipientSelection({
+    page,
+    searchInput,
+    recipientName,
+    practiceName,
+    beforeInputValue,
+  });
+
+  if (!verified) {
+    console.warn(
+      "MediRef recipient candidate was clicked, but the UI did not confirm selection.",
+      {
+        text: best.text.slice(0, 500),
+      },
+    );
+  }
+
+  return verified;
 }
 
 async function searchAndSelectMedirefRecipient(page: Page, request: any) {
@@ -1263,35 +1558,69 @@ async function searchAndSelectMedirefRecipient(page: Page, request: any) {
     throw new Error("Could not find MediRef recipient directory search field.");
   }
 
-  const queries = [
-    practiceName && recipientName ? `${practiceName} ${recipientName}` : "",
-    practiceName,
+  const queries = Array.from(
+    new Set(
+      [
+        practiceName && recipientName
+          ? `${practiceName} ${recipientName}`
+          : "",
+        recipientName && practiceName
+          ? `${recipientName} ${practiceName}`
+          : "",
+        practiceName,
+        recipientName,
+        providerNumber,
+        recipientEmail,
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  console.log("MediRef recipient auto-match request:", {
     recipientName,
-    providerNumber,
-    recipientEmail,
-  ].filter(Boolean);
+    practiceName,
+    providerNumber: providerNumber || null,
+    recipientEmail: recipientEmail || null,
+    queries,
+  });
 
   for (const query of queries) {
     console.log("Searching MediRef directory:", query);
 
     await searchInput.fill("");
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(350);
     await searchInput.fill(query);
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(3000);
+
+    // Print the visible page text for every attempted query while debugging.
+    // This can be removed later once matching is stable.
+    await debugRecipientResults(page);
 
     const selected = await chooseBestRecipientResult({
       page,
+      searchInput,
       recipientName,
       practiceName,
+      recipientEmail,
+      providerNumber,
     });
 
-    if (selected) return true;
+    if (selected) {
+      console.log("MediRef recipient selection verified for query:", query);
+      return true;
+    }
+
+    console.warn(
+      "No verified MediRef recipient selection for query. Trying the next query:",
+      query,
+    );
   }
 
   await debugRecipientResults(page);
 
   throw new Error(
-    `Could not automatically match MediRef recipient. Tried referrer "${recipientName}" and practice "${practiceName}".`,
+    `Could not automatically match and verify MediRef recipient. Tried referrer "${recipientName}" and practice "${practiceName}".`,
   );
 }
 
