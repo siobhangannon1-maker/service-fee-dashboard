@@ -808,6 +808,92 @@ async function failMedirefJob(jobId: string, message: string) {
   }
 }
 
+async function updateDraftAfterMedirefSuccess(
+  job: MedirefHelperJob,
+  result: Record<string, unknown>,
+) {
+  const draftId = String(job.payload?.draftId || "").trim();
+
+  if (!draftId) {
+    console.warn(
+      `MediRef job ${job.id} completed, but its payload did not contain a draftId.`,
+    );
+    return;
+  }
+
+  const completedAt = nowIso();
+  const wasSent = result.sent === true;
+  const recipient = job.payload?.recipient || {};
+  const recipientLabel = String(
+    recipient.email || recipient.name || "",
+  ).trim();
+
+  const values: Record<string, unknown> = {
+    workflow_status: "completed",
+    workflow_mediref_status: "completed",
+    workflow_completed_at: completedAt,
+    workflow_error: null,
+    workflow_last_message: wasSent
+      ? "Workflow completed."
+      : "MediRef draft prepared. Final send was not clicked.",
+    emailed_to_referrer_email: recipientLabel || null,
+    emailed_to_referrer_resend_id: `mediref:${job.id}`,
+    updated_at: completedAt,
+  };
+
+  if (wasSent) {
+    values.emailed_to_referrer_at = completedAt;
+  } else {
+    values.emailed_to_referrer_at = null;
+  }
+
+  const { error } = await supabase
+    .from("report_drafts")
+    .update(values)
+    .eq("id", draftId);
+
+  if (error) {
+    throw new Error(
+      `MediRef job completed, but report_drafts could not be updated: ${error.message}`,
+    );
+  }
+}
+
+async function updateDraftAfterMedirefFailure(
+  job: MedirefHelperJob,
+  message: string,
+) {
+  const draftId = String(job.payload?.draftId || "").trim();
+
+  if (!draftId) {
+    console.warn(
+      `MediRef job ${job.id} failed, but its payload did not contain a draftId.`,
+    );
+    return;
+  }
+
+  const failedAt = nowIso();
+
+  const { error } = await supabase
+    .from("report_drafts")
+    .update({
+      workflow_status: "failed",
+      workflow_mediref_status: "failed",
+      workflow_completed_at: null,
+      workflow_error: message,
+      workflow_last_message: "MediRef helper failed.",
+      emailed_to_referrer_at: null,
+      updated_at: failedAt,
+    })
+    .eq("id", draftId);
+
+  if (error) {
+    throw new Error(
+      `MediRef job failed, but report_drafts could not be updated: ${error.message}`,
+    );
+  }
+}
+
 async function downloadStagedAttachments(job: MedirefHelperJob) {
   const rawAttachments =
     Array.isArray(job.payload?.attachments) && job.payload.attachments.length > 0
@@ -2122,6 +2208,8 @@ async function processOnePendingMedirefJob(page: Page, context: BrowserContext) 
       completedAt: nowIso(),
     });
 
+    await updateDraftAfterMedirefSuccess(job, result);
+
     console.log(`Completed MediRef job ${job.id}.`);
     return true;
   } catch (error) {
@@ -2131,6 +2219,14 @@ async function processOnePendingMedirefJob(page: Page, context: BrowserContext) 
     console.error(`MediRef job ${job.id} failed:`, error);
 
     await failMedirefJob(job.id, message);
+
+    await updateDraftAfterMedirefFailure(job, message).catch((draftError) => {
+      console.error(
+        `Could not update report draft after MediRef job ${job.id} failed:`,
+        draftError,
+      );
+    });
+
     return true;
   } finally {
     if (tempDir) {

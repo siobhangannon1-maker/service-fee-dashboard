@@ -2735,17 +2735,57 @@ export default function TypistPage() {
       }
 
       await updateWorkflowStatus(params.draft.id, {
-        workflowStatus: "completed",
-        medirefStatus: "completed",
+        workflowStatus: "running",
+        medirefStatus: "pending",
         periodontalChartStatus: params.payload.attachPeriodontalChart
           ? data.periodontalChartAttached
             ? "completed"
             : "skipped"
           : "not_requested",
-        message: "Workflow completed.",
+        message: "MediRef send queued. Waiting for the helper.",
       });
 
-      console.log("Background workflow completed:", data);
+      console.log("Background workflow queued:", data);
+
+      /*
+       * The API response only confirms that the MediRef helper job was queued.
+       * Poll the existing drafts endpoint so this letter stays visible as
+       * Completing and changes to Completed or Failed only after the helper
+       * updates report_drafts.
+       */
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+
+        const draftsResponse = await fetch(
+          `/api/report-writing/get-drafts?providerId=${params.providerId}`,
+        );
+
+        const draftsData = await draftsResponse.json().catch(() => ({}));
+
+        if (!draftsResponse.ok || !draftsData.success) {
+          continue;
+        }
+
+        const refreshedDrafts: Draft[] = draftsData.drafts || [];
+        const refreshedDraft = refreshedDrafts.find(
+          (draft) => draft.id === params.draft.id,
+        );
+
+        setDrafts(refreshedDrafts);
+
+        if (refreshedDraft) {
+          setSelectedDraft((current) =>
+            current?.id === refreshedDraft.id ? refreshedDraft : current,
+          );
+
+          if (
+            refreshedDraft.workflow_status === "completed" ||
+            refreshedDraft.workflow_status === "failed"
+          ) {
+            break;
+          }
+        }
+      }
 
       await loadDrafts(params.providerId);
       await loadQueue(params.providerId, params.queueStatus);

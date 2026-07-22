@@ -736,17 +736,17 @@ export async function POST(req: Request) {
     const now = new Date().toISOString();
 
     /*
-     * This preserves your existing database behaviour.
+     * The helper job has only been queued at this point.
      *
-     * A later improvement should change this to a queued/running
-     * workflow status and only mark it completed after the worker
-     * confirms the MediRef draft was successfully created.
+     * Keep the letter visible in the Approved queue and mark the workflow as
+     * running. The MediRef browser worker will set emailed_to_referrer_at and
+     * complete or fail the workflow after it has actually processed the job.
      */
     const { error: updateDraftError } =
       await supabase
         .from("report_drafts")
         .update({
-          emailed_to_referrer_at: now,
+          emailed_to_referrer_at: null,
           emailed_to_referrer_email:
             referrerEmail ||
             finalReferrerName ||
@@ -757,6 +757,12 @@ export async function POST(req: Request) {
             actor.actorInitials,
           emailed_by_name:
             actor.actorFullName,
+          workflow_status: "running",
+          workflow_mediref_status: "pending",
+          workflow_completed_at: null,
+          workflow_error: null,
+          workflow_last_message:
+            "MediRef send queued. Waiting for the helper.",
           updated_at: now,
         })
         .eq("id", draftId);
