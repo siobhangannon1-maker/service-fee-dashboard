@@ -2447,24 +2447,6 @@ export default function TypistPage() {
   async function sendViaMedirefFromModal() {
     if (!selectedDraft) return;
 
-    if (
-      !medirefRecipientName.trim() &&
-      !medirefRecipientPracticeName.trim() &&
-      !medirefRecipientEmail.trim() &&
-      !medirefRecipientProviderNumber.trim()
-    ) {
-      alert("Enter a referrer name, practice name, email, or provider number.");
-      return;
-    }
-
-    if (
-      medirefRecipientEmail.trim() &&
-      hasInvalidEmail(medirefRecipientEmail)
-    ) {
-      alert("Please check the recipient email address.");
-      return;
-    }
-
     if (medirefPatientEmail.trim() && hasInvalidEmail(medirefPatientEmail)) {
       alert("Please check the patient email address.");
       return;
@@ -2486,7 +2468,7 @@ export default function TypistPage() {
       draftId: draftSnapshot.id,
       referrerName: medirefRecipientName.trim(),
       referrerPracticeName: medirefRecipientPracticeName.trim(),
-      medirefAutoMatchRecipient,
+      medirefAutoMatchRecipient: false,
       referrerEmail: medirefRecipientEmail.trim(),
       referrerProviderNumber: medirefRecipientProviderNumber.trim(),
       patientEmail: medirefPatientEmail.trim(),
@@ -6118,8 +6100,8 @@ export default function TypistPage() {
               </h2>
               <p className="mt-1 text-sm text-slate-500">
                 This will queue the branded PDF for the Cloud MediRef helper.
-                The helper will attach the PDF and send it through the shared
-                practice MediRef session.
+                The helper will prepare the letter in the shared practice
+                MediRef session.
               </p>
             </div>
 
@@ -6146,160 +6128,12 @@ export default function TypistPage() {
               </div>
 
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
-                <div className="font-semibold">
-                  Automatic MediRef recipient matching
-                </div>
+                <div className="font-semibold">MediRef draft preparation</div>
                 <p className="mt-1 text-sm">
-                  The Cloud helper will search the MediRef directory using the
-                  referrer name and practice name below, then select the best
-                  matching directory result before attaching the PDF.
+                  The helper will open the shared practice MediRef session,
+                  enter the patient details, attach the branded PDF, add the
+                  message below, and leave the prepared draft open in MediRef.
                 </p>
-              </div>
-
-              <label className="block">
-                <div className="mb-1 text-sm font-semibold text-slate-700">
-                  Referrer name
-                </div>
-                <input
-                  className="w-full rounded-xl border border-slate-300 p-3"
-                  value={medirefRecipientName}
-                  onChange={(event) => {
-                    setMedirefRecipientName(event.target.value);
-                    setMedirefConfirmed(false);
-                  }}
-                  placeholder="Dr Smith"
-                />
-              </label>
-
-              <label className="block">
-                <div className="mb-1 text-sm font-semibold text-slate-700">
-                  Practice name
-                </div>
-                <input
-                  className="w-full rounded-xl border border-slate-300 p-3"
-                  value={medirefRecipientPracticeName}
-                  onChange={(event) => {
-                    setMedirefRecipientPracticeName(event.target.value);
-                    setMedirefConfirmed(false);
-                  }}
-                  placeholder="Practice name from the selected referrer"
-                />
-                <p className="mt-1 text-xs text-slate-500">
-                  Pulled from the first line of the saved referrer address. You
-                  can edit it if MediRef uses a slightly different practice
-                  name.
-                </p>
-              </label>
-
-              <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={medirefAutoMatchRecipient}
-                  onChange={(event) => {
-                    setMedirefAutoMatchRecipient(event.target.checked);
-                    setMedirefConfirmed(false);
-                  }}
-                  className="mt-1"
-                />
-                <span>
-                  <span className="font-semibold">
-                    Match recipient in MediRef automatically
-                  </span>
-                  <br />
-                  Searches by referrer name first, then practice name if needed.
-                </span>
-              </label>
-
-              <details className="rounded-xl border border-slate-200 bg-white p-3">
-                <summary className="cursor-pointer text-sm font-semibold text-slate-700">
-                  Optional manual fallback details
-                </summary>
-
-                <div className="mt-3 space-y-4">
-                  <label className="block">
-                    <div className="mb-1 text-sm font-semibold text-slate-700">
-                      Recipient email, optional
-                    </div>
-                    <input
-                      className="w-full rounded-xl border border-slate-300 p-3"
-                      value={medirefRecipientEmail}
-                      onChange={(event) => {
-                        setMedirefRecipientEmail(event.target.value);
-                        setMedirefConfirmed(false);
-                      }}
-                      placeholder="referrer@example.com"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <div className="mb-1 text-sm font-semibold text-slate-700">
-                      MediRef provider number, optional
-                    </div>
-                    <input
-                      className="w-full rounded-xl border border-slate-300 p-3"
-                      value={medirefRecipientProviderNumber}
-                      onChange={(event) => {
-                        setMedirefRecipientProviderNumber(event.target.value);
-                        setMedirefConfirmed(false);
-                      }}
-                      placeholder="Provider number if known"
-                    />
-                  </label>
-                </div>
-              </details>
-
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <div>
-                  <div className="text-sm font-semibold text-slate-700">
-                    Additional MediRef recipient(s)
-                  </div>
-                  <p className="mt-1 text-xs text-slate-500">
-                    These are searched in MediRef as extra recipients. The list
-                    is prefilled from the PDF CC field when possible.
-                  </p>
-                </div>
-
-                <ReferrerSearchBox
-                  onSelect={(referrer) =>
-                    addMedirefAdditionalRecipient(referrer)
-                  }
-                />
-
-                {medirefAdditionalRecipients.length > 0 ? (
-                  <div className="space-y-2">
-                    {medirefAdditionalRecipients.map((recipient) => (
-                      <div
-                        key={recipient.id}
-                        className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 text-sm"
-                      >
-                        <div>
-                          <div className="font-semibold text-slate-900">
-                            {recipient.name}
-                          </div>
-                          {recipient.practiceName ? (
-                            <div className="text-xs text-slate-500">
-                              {recipient.practiceName}
-                            </div>
-                          ) : null}
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            removeMedirefAdditionalRecipient(recipient.id)
-                          }
-                          className="text-xs font-semibold text-red-600"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3 text-xs text-slate-500">
-                    No additional MediRef recipients selected.
-                  </div>
-                )}
               </div>
 
               <label className="block">
@@ -6366,9 +6200,8 @@ export default function TypistPage() {
                   className="mt-1"
                 />
                 <span>
-                  I have checked the patient, recipient/referrer, additional
-                  recipients, patient email, and attachments before sending via
-                  MediRef.
+                  I have checked the patient details, patient email, message,
+                  and attachments before preparing the MediRef draft.
                 </span>
               </label>
             </div>
@@ -6398,8 +6231,8 @@ export default function TypistPage() {
                     ? "Completing..."
                     : "Queuing..."
                   : medirefCompleteWorkflow
-                    ? "Complete Workflow + Queue MediRef Send"
-                    : "Queue MediRef Send"}
+                    ? "Complete Workflow + Prepare MediRef Draft"
+                    : "Prepare MediRef Draft"}
               </button>
             </div>
           </div>

@@ -595,7 +595,22 @@ async function downloadStorageFile(path: string) {
 async function embedStorageImage(pdfDoc: PDFDocument, image: DraftImage) {
   const bytes = await downloadStorageFile(image.storage_path);
 
+  /*
+    react-easy-crop calculates crop_area_* against the rotated image canvas.
+    Therefore the custom rotation must be applied before the pixel crop.
+
+    This also means the saved crop remains a fixed landscape, portrait or
+    square rectangle while only the photograph inside it is rotated.
+  */
   let pipeline = sharp(bytes).rotate();
+
+  const cropRotation = Number(image.crop_rotation ?? 0);
+
+  if (cropRotation) {
+    pipeline = pipeline.rotate(cropRotation, {
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    });
+  }
 
   const cropAreaX = image.crop_area_x;
   const cropAreaY = image.crop_area_y;
@@ -614,15 +629,21 @@ async function embedStorageImage(pdfDoc: PDFDocument, image: DraftImage) {
     const imageWidth = metadata.width || 0;
     const imageHeight = metadata.height || 0;
 
-    const left = Math.max(0, Math.round(Number(cropAreaX)));
-    const top = Math.max(0, Math.round(Number(cropAreaY)));
+    const left = Math.min(
+      Math.max(0, Math.round(Number(cropAreaX))),
+      Math.max(0, imageWidth - 1),
+    );
+    const top = Math.min(
+      Math.max(0, Math.round(Number(cropAreaY))),
+      Math.max(0, imageHeight - 1),
+    );
     const width = Math.min(
       imageWidth - left,
-      Math.round(Number(cropAreaWidth)),
+      Math.max(1, Math.round(Number(cropAreaWidth))),
     );
     const height = Math.min(
       imageHeight - top,
-      Math.round(Number(cropAreaHeight)),
+      Math.max(1, Math.round(Number(cropAreaHeight))),
     );
 
     if (width > 0 && height > 0) {
@@ -633,14 +654,6 @@ async function embedStorageImage(pdfDoc: PDFDocument, image: DraftImage) {
         height,
       });
     }
-  }
-
-  const cropRotation = Number(image.crop_rotation ?? 0);
-
-  if (cropRotation) {
-    pipeline = pipeline.rotate(cropRotation, {
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
-    });
   }
 
   const pngBytes = await pipeline
@@ -762,7 +775,16 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
 
     const topMarginFirstPage = 93;
     const topMarginOtherPages = 120;
-    const bottomLimit = 105;
+
+    /*
+      The letterhead footer artwork extends higher than the visible contact
+      details. Keep all flowing body text, images, captions and signatures
+      above this protected boundary on every page.
+
+      PDF coordinates start at the bottom of the page, so increasing this
+      value moves the usable content boundary upward.
+    */
+    const bottomLimit = 140;
 
     const fontSize = 10;
     const lineHeight = 14;
@@ -932,11 +954,11 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         (contentWidth * Math.min(Math.max(displayWidthPercent, 30), 100)) /
         100;
 
-      const embeddedDims = embeddedImage.scale(1);
-      const actualAspectRatio = embeddedDims.width / embeddedDims.height;
-
+      // The frame follows the selected crop shape, not the rotated image dimensions.
+      // Rotating the photograph therefore never rotates or changes the frame.
+      const frameAspectRatio = getImageAspect(image.crop_aspect);
       const frameWidth = imageWidth;
-      const frameHeight = frameWidth / actualAspectRatio;
+      const frameHeight = frameWidth / frameAspectRatio;
 
       const captionLines = image.caption ? wrapText(image.caption, 75) : [];
 
@@ -1022,11 +1044,11 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         (contentWidth * Math.min(Math.max(displayWidthPercent, 30), 55)) /
         100;
 
-      const embeddedDims = embeddedImage.scale(1);
-      const actualAspectRatio = embeddedDims.width / embeddedDims.height;
-
+      // The frame follows the selected crop shape, not the rotated image dimensions.
+      // Rotating the photograph therefore never rotates or changes the frame.
+      const frameAspectRatio = getImageAspect(image.crop_aspect);
       const frameWidth = imageWidth;
-      const frameHeight = frameWidth / actualAspectRatio;
+      const frameHeight = frameWidth / frameAspectRatio;
 
       const gap = 18;
       const alignment = image.display_alignment === "right" ? "right" : "left";
@@ -1345,8 +1367,8 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         /*
           Keep the final sentence with the signature when the page is genuinely
           nearly full, but do not create a half-empty page just to move a short
-          final paragraph. Lowering bottomLimit above also gives the letter more
-          usable vertical space while still staying clear of the footer.
+          final paragraph. The protected bottomLimit also ensures that neither
+          the paragraph nor the signature enters the letterhead footer area.
         */
         if (remainingSpace < neededSpace && remainingSpace < 90) {
           y = newPage();

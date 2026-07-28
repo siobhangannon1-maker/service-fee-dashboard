@@ -465,8 +465,8 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
                 </div>
 
                 <p className="mt-3 text-center text-xs text-slate-500">
-                  Drag the crop handles. The saved crop will be used in the final
-                  PDF.
+                  Drag the image to position it inside the fixed crop frame. Rotate
+                  and zoom affect the image only; the saved frame keeps the selected shape.
                 </p>
               </div>
 
@@ -525,11 +525,51 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
                     type="range"
                     min="-180"
                     max="180"
-                    step="5"
+                    step="1"
                     value={cropRotation}
                     onChange={(e) => setCropRotation(Number(e.target.value))}
                     className="w-full"
                   />
+
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCropRotation((current) =>
+                          Math.max(-180, Math.min(180, current - 90))
+                        )
+                      }
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Rotate left 90°
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCropRotation((current) =>
+                          Math.max(-180, Math.min(180, current + 90))
+                        )
+                      }
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Rotate right 90°
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setCropRotation(0)}
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Straighten
+                    </button>
+                  </div>
+
+                  <p className="mt-2 text-xs text-slate-500">
+                    Use the slider for small head-tilt corrections. The crop frame
+                    remains landscape, portrait, or square while the image rotates
+                    underneath it.
+                  </p>
                 </label>
 
                 <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4">

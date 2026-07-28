@@ -822,30 +822,29 @@ async function updateDraftAfterMedirefSuccess(
   }
 
   const completedAt = nowIso();
-  const wasSent = result.sent === true;
   const recipient = job.payload?.recipient || {};
   const recipientLabel = String(
     recipient.email || recipient.name || "",
   ).trim();
 
+  /*
+   * Recipient matching has intentionally been removed from the helper.
+   * Once the patient details and PDFs are prepared in MediRef, DocuDental
+   * considers the workflow complete and removes the letter from Approved.
+   * No separate manual confirmation is required.
+   */
   const values: Record<string, unknown> = {
     workflow_status: "completed",
     workflow_mediref_status: "completed",
     workflow_completed_at: completedAt,
     workflow_error: null,
-    workflow_last_message: wasSent
-      ? "Workflow completed."
-      : "MediRef draft prepared. Final send was not clicked.",
+    workflow_last_message:
+      "MediRef draft prepared with the PDF attached. Recipient matching was skipped.",
+    emailed_to_referrer_at: completedAt,
     emailed_to_referrer_email: recipientLabel || null,
     emailed_to_referrer_resend_id: `mediref:${job.id}`,
     updated_at: completedAt,
   };
-
-  if (wasSent) {
-    values.emailed_to_referrer_at = completedAt;
-  } else {
-    values.emailed_to_referrer_at = null;
-  }
 
   const { error } = await supabase
     .from("report_drafts")
@@ -2060,18 +2059,16 @@ async function sendMedirefLetterWithBrowser(
   localPdfPaths: string[],
 ) {
   const request = job.payload;
-  const recipient = request.recipient || {};
-  const cc = Array.isArray(request.cc) ? request.cc : [];
-  const practiceName = getRecipientPracticeName(request);
 
   await openComposePage(page);
 
   await fillComposePatientDetails(page, request);
 
   /*
-   * Attach the PDFs before recipient matching. This makes the attachment step
-   * independent of directory matching and leaves the prepared draft visibly
-   * attached even when MediRef changes its recipient-search UI.
+   * Recipient matching is intentionally disabled.
+   * The helper now performs only the reliable parts of the workflow:
+   * open Compose, enter the patient details, attach the PDFs, add the message,
+   * and leave the MediRef draft open.
    */
   console.log("Starting MediRef PDF attachment.", {
     count: localPdfPaths.length,
@@ -2083,9 +2080,7 @@ async function sendMedirefLetterWithBrowser(
   if (!uploaded) {
     await debugVisibleInputs(page);
 
-    throw new Error(
-      "Could not find a MediRef PDF upload field. Recipient matching was not attempted.",
-    );
+    throw new Error("Could not find a MediRef PDF upload field.");
   }
 
   await page.waitForTimeout(2500);
@@ -2094,82 +2089,25 @@ async function sendMedirefLetterWithBrowser(
     count: localPdfPaths.length,
   });
 
-  await searchAndSelectMedirefRecipient(page, request);
-
-  const additionalRecipients = parseAdditionalRecipientsFromRequest(request);
-
-  for (const additionalRecipient of additionalRecipients) {
-    console.log("Searching additional MediRef recipient:", additionalRecipient);
-
-    await searchAndSelectMedirefRecipient(page, {
-      ...request,
-      recipient: additionalRecipient,
-    });
-  }
-
-  if (cc.length > 0) {
-    await fillFirstVisibleTextFieldByHints(
-      page,
-      ["cc", "copy"],
-      cc
-        .map((item: any) => item.email || item.name || item.providerNumber)
-        .filter(Boolean)
-        .join(", "),
-    );
-  }
-
   await fillFirstVisibleTextFieldByHints(
     page,
     ["message", "note", "body", "details"],
     String(request.message || ""),
   );
 
-  if (!AUTO_SEND) {
-    console.log(
-      "MediRef job prepared but not sent because MEDIREF_AUTO_SEND is not true.",
-    );
-
-    return {
-      prepared: true,
-      sent: false,
-      autoSend: false,
-      currentUrl: await safePageUrl(page),
-      recipient: {
-        name: recipient.name || null,
-        practiceName: practiceName || null,
-        email: recipient.email || null,
-        providerNumber: recipient.providerNumber || null,
-      },
-      message:
-        "MediRef form was prepared and PDF was attached. Final send was not clicked because MEDIREF_AUTO_SEND is false.",
-    };
-  }
-
-  const clickedSend = await clickFirstVisible(page, [
-    'button:has-text("Send")',
-    'button:has-text("Submit")',
-    'button:has-text("Deliver")',
-    'button:has-text("Continue")',
-    'input[type="submit"]',
-  ]);
-
-  if (!clickedSend) {
-    throw new Error("Could not find the final MediRef Send button.");
-  }
-
-  await page.waitForTimeout(6000);
+  console.log(
+    "MediRef draft prepared. Recipient matching and final Send click were intentionally skipped.",
+  );
 
   return {
     prepared: true,
-    sent: true,
-    autoSend: true,
+    sent: false,
+    autoSend: false,
+    recipientMatchingSkipped: true,
     currentUrl: await safePageUrl(page),
-    recipient: {
-      name: recipient.name || null,
-      practiceName: practiceName || null,
-      email: recipient.email || null,
-      providerNumber: recipient.providerNumber || null,
-    },
+    attachmentCount: localPdfPaths.length,
+    message:
+      "MediRef draft prepared with patient details and PDF attachment. Recipient matching was skipped.",
   };
 }
 

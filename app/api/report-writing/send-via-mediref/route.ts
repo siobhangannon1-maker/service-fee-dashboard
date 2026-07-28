@@ -534,23 +534,6 @@ export async function POST(req: Request) {
       referrerName ||
       String(draft.referrer_name || "").trim();
 
-    if (
-      !finalReferrerName &&
-      !referrerEmail &&
-      !referrerProviderNumber
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Please enter a MediRef recipient name, email, or provider number.",
-        },
-        {
-          status: 400,
-        },
-      );
-    }
-
     const patientName = String(
       draft.patient_name || "Patient",
     ).trim();
@@ -707,14 +690,14 @@ export async function POST(req: Request) {
             dob: draft.patient_dob || null,
           },
           recipient: {
-            name: finalReferrerName,
-            practiceName:
-              referrerPracticeName || null,
-            email: referrerEmail || null,
-            providerNumber:
-              referrerProviderNumber || null,
+            // The helper-job request type requires strings here.
+            // Empty strings explicitly mean that recipient matching is disabled.
+            name: "",
+            practiceName: "",
+            email: "",
+            providerNumber: "",
           },
-          medirefAutoMatchRecipient,
+          medirefAutoMatchRecipient: false,
           attachments,
           message:
             message ||
@@ -783,14 +766,8 @@ export async function POST(req: Request) {
         jobId: job.id,
         usedExistingStagedPdf,
         originalStagedPdf: null,
-        recipient: {
-          name: finalReferrerName,
-          practiceName:
-            referrerPracticeName || null,
-          email: referrerEmail || null,
-          providerNumber:
-            referrerProviderNumber || null,
-        },
+        recipient: null,
+        recipientMatchingSkipped: true,
         patientEmail: patientEmail || null,
         additionalRecipients,
         additionalRecipientsText,
