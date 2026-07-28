@@ -2,9 +2,17 @@ import "server-only";
 
 import {
   getPraktikaSession,
-  updatePraktikaSession,
   type PraktikaSessionMode,
 } from "@/lib/praktika/hybrid-session-store";
+
+type DisconnectedStatus =
+  | "not_started"
+  | "expired"
+  | "error"
+  | "refresh_requested"
+  | "refreshing"
+  | "waiting_for_mfa"
+  | "waiting_for_credentials";
 
 type ValidateResult =
   | {
@@ -14,61 +22,64 @@ type ValidateResult =
     }
   | {
       connected: false;
-      status:
-        | "not_started"
-        | "expired"
-        | "error"
-        | "refresh_requested"
-        | "refreshing"
-        | "waiting_for_mfa"
-        | "waiting_for_credentials";
+      status: DisconnectedStatus;
       reason: string;
       message: string;
     };
 
 /**
- * IMPORTANT:
- * Do not validate Praktika by replaying copied cookies from Vercel/Next.js.
- * Praktika often rejects copied-cookie requests as "hijacked or expired session"
- * even while the local helper browser can still perform actions correctly.
+ * This function reports the saved helper/browser state.
  *
- * This status helper therefore reports the saved helper/session state only.
- * For routes converted to helper jobs, the real source of truth is whether the
- * local helper can process the job successfully.
+ * It deliberately does not:
+ * - promote "refreshing" to "connected";
+ * - treat a stored cookie as proof of an active browser session;
+ * - update last_used_at merely because a status check was performed.
+ *
+ * Only the Playwright Praktika helper should change a session to "connected"
+ * after it has confirmed that the browser UI is logged in.
  */
 export async function validatePraktikaSession(
   mode: PraktikaSessionMode = { scope: "practice" },
 ): Promise<ValidateResult> {
   const session = await getPraktikaSession(mode);
 
-  if (!session.cookie && session.status === "connected") {
-    await updatePraktikaSession(mode, {
-      status: "not_started",
-      message:
-        mode.scope === "practice"
-          ? "Practice Praktika session has no saved browser session."
-          : "Your Praktika session has no saved browser session.",
-    });
+  const hasCookie = Boolean(session.cookie);
+  const currentUrl = String(session.current_url || "").toLowerCase();
 
-    return {
-      connected: false,
-      status: "not_started",
-      reason: "missing_cookie",
-      message: "No Praktika browser session is saved for this user.",
-    };
-  }
+  const isLoginOrLogoutUrl =
+    currentUrl.includes("/login") ||
+    currentUrl.includes("/v2/login") ||
+    currentUrl.includes("/logout");
 
-  if (session.status === "connected" && session.cookie) {
-    await updatePraktikaSession(mode, {
-      last_used_at: new Date().toISOString(),
-    });
+  if (session.status === "connected") {
+    if (!hasCookie) {
+      return {
+        connected: false,
+        status: "not_started",
+        reason: "missing_cookie",
+        message:
+          mode.scope === "practice"
+            ? "The practice Praktika session has no saved browser cookies."
+            : "Your Praktika session has no saved browser cookies.",
+      };
+    }
+
+    if (isLoginOrLogoutUrl) {
+      return {
+        connected: false,
+        status: "expired",
+        reason: "login_or_logout_url",
+        message:
+          "The Praktika helper is currently on a login or logout page.",
+      };
+    }
 
     return {
       connected: true,
       status: "connected",
       message:
         session.message ||
-        "Praktika helper session is marked connected. Helper jobs can be attempted.",
+        "The Praktika helper browser is marked as connected.",
     };
   }
 
@@ -77,7 +88,7 @@ export async function validatePraktikaSession(
       connected: false,
       status: "waiting_for_mfa",
       reason: "waiting_for_mfa",
-      message: session.message || "Praktika is waiting for MFA.",
+      message: session.message || "Praktika is waiting for an MFA code.",
     };
   }
 
@@ -86,7 +97,8 @@ export async function validatePraktikaSession(
       connected: false,
       status: "waiting_for_credentials",
       reason: "waiting_for_credentials",
-      message: session.message || "Praktika login details are needed.",
+      message:
+        session.message || "Praktika login details are required.",
     };
   }
 
@@ -95,43 +107,29 @@ export async function validatePraktikaSession(
       connected: false,
       status: "refresh_requested",
       reason: "refresh_requested",
-      message: session.message || "Praktika reconnect has been requested.",
+      message:
+        session.message ||
+        "A Praktika reconnection has been requested.",
     };
   }
 
   if (session.status === "refreshing") {
-  if (session.cookie) {
-    await updatePraktikaSession(mode, {
-      status: "connected",
-      message:
-        session.message ||
-        "Praktika cloud helper is connected. Helper jobs can be attempted.",
-      last_used_at: new Date().toISOString(),
-    });
-
     return {
-      connected: true,
-      status: "connected",
+      connected: false,
+      status: "refreshing",
+      reason: "refreshing",
       message:
         session.message ||
-        "Praktika cloud helper is connected. Helper jobs can be attempted.",
+        "The Praktika helper is checking or reconnecting the browser session.",
     };
   }
-
-  return {
-    connected: false,
-    status: "refreshing",
-    reason: "refreshing",
-    message: session.message || "Praktika helper is reconnecting.",
-  };
-}
 
   if (session.status === "expired") {
     return {
       connected: false,
       status: "expired",
       reason: "expired",
-      message: session.message || "Praktika session has expired.",
+      message: session.message || "The Praktika session has expired.",
     };
   }
 
@@ -140,7 +138,8 @@ export async function validatePraktikaSession(
       connected: false,
       status: "error",
       reason: "error",
-      message: session.message || "Praktika connection has an error.",
+      message:
+        session.message || "The Praktika connection has encountered an error.",
     };
   }
 
@@ -148,6 +147,7 @@ export async function validatePraktikaSession(
     connected: false,
     status: "not_started",
     reason: "not_started",
-    message: session.message || "Praktika session has not been started.",
+    message:
+      session.message || "The Praktika session has not been started.",
   };
 }
