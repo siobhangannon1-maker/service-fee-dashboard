@@ -82,7 +82,7 @@ type QueueItem = {
   raw_json?: Record<string, unknown> | null;
 };
 
-type ListTab = "queue" | "awaiting" | "completed";
+type ListTab = "queue" | "drafts" | "awaiting" | "completed";
 
 type QueueStatusTab = "active" | "queued" | "started" | "completed";
 
@@ -1294,6 +1294,12 @@ export default function TypistPage() {
     selectedProvider?.typist_letters_require_approval !== false;
 
   const filteredDrafts = useMemo(() => {
+    if (listTab === "drafts") {
+      return drafts.filter((draft) =>
+        ["draft", "edited_by_typist"].includes(draft.status),
+      );
+    }
+
     if (listTab === "awaiting") {
       return drafts.filter(
         (draft) => draft.status === "awaiting_provider_approval",
@@ -1307,7 +1313,7 @@ export default function TypistPage() {
       );
     }
 
-    return drafts;
+    return [];
   }, [drafts, listTab]);
 
   const visibleDraftIds = filteredDrafts.map((draft) => draft.id);
@@ -4159,11 +4165,12 @@ export default function TypistPage() {
     setLoading(true);
 
     try {
-      if (imageDraftId) {
-        const response = await fetch("/api/report-writing/update-draft", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+      const endpoint = imageDraftId
+        ? "/api/report-writing/update-draft"
+        : "/api/report-writing/save-draft";
+
+      const requestBody = imageDraftId
+        ? {
             draftId: imageDraftId,
             editedText: finalLetterTextForSave,
             status,
@@ -4179,115 +4186,92 @@ export default function TypistPage() {
             praktikaPatientId: selectedPraktikaPatientId || null,
             learnFromEdits: status === "approved" && hasEditedAiText,
             learningSource: "typist_image_workspace_final_save",
-          }),
-        });
+          }
+        : {
+            providerId: selectedProviderId,
+            patientName,
+            patientDob,
+            patientGender,
+            referrerName,
+            referrerAddress,
+            reportType,
+            clinicalNotes,
+            typistQueries,
+            generatedReport: originalAiText,
+            editedText: finalApprovedText,
+            finalApprovedText,
+            originalAiText,
+            learnFromEdits: status === "approved" && hasEditedAiText,
+            learningSource: "typist_direct_approval",
+            praktikaPatientId: selectedPraktikaPatientId || null,
+            queueId: activeQueueItemId,
+            status,
+          };
 
-        const data = await response.json().catch(() => ({}));
-
-        if (!response.ok || !data.success) {
-          alert(data.error || "Failed to save letter");
-          return;
-        }
-
-        alert(
-          status === "approved"
-            ? "Letter approved."
-            : status === "awaiting_provider_approval"
-              ? "Letter sent to provider approval."
-              : status === "edited_by_typist"
-                ? "Draft saved for typist."
-                : "Draft saved.",
-        );
-
-        if (activeQueueItemId) {
-          await fetch("/api/report-writing/letter-queue", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              queueId: activeQueueItemId,
-              status: "completed",
-              reportDraftId: imageDraftId,
-            }),
-          });
-
-          setActiveQueueItemId(null);
-          await loadQueue(selectedProviderId, queueStatusTab);
-        }
-
-        setSaveStatus("saved");
-        setLastSavedAt(new Date().toISOString());
-
-        await loadDrafts(selectedProviderId);
-        clearForm();
-        return;
-      }
-
-      const response = await fetch("/api/report-writing/save-draft", {
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          providerId: selectedProviderId,
-          patientName,
-          patientDob,
-          patientGender,
-          referrerName,
-          referrerAddress,
-          reportType,
-          clinicalNotes,
-          typistQueries,
-          generatedReport: originalAiText,
-          editedText: finalApprovedText,
-          finalApprovedText,
-          originalAiText,
-          learnFromEdits: status === "approved" && hasEditedAiText,
-          learningSource: "typist_direct_approval",
-          praktikaPatientId: selectedPraktikaPatientId || null,
-          queueId: activeQueueItemId,
-          status,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
-      if (!data.success) {
+      if (!response.ok || !data.success) {
         alert(data.error || "Failed to save letter");
         return;
       }
 
-      alert(
-        status === "approved"
-          ? "Letter approved."
-          : status === "awaiting_provider_approval"
-            ? "Letter sent to provider approval."
-            : status === "edited_by_typist"
-              ? "Draft saved for typist."
-              : "Draft saved.",
-      );
+      const savedDraft = data.draft as Draft | undefined;
+      const savedDraftId = String(
+        savedDraft?.id || imageDraftId || data.draftId || data.id || "",
+      ).trim();
 
+      if (!savedDraftId) {
+        alert("The letter was saved, but no draft ID was returned.");
+        return;
+      }
+
+      /*
+        Saving a draft must never complete its queue item. A completed queue row
+        disappears from the active queue, which previously made a saved typist
+        draft look as though it had been lost.
+      */
       if (activeQueueItemId) {
         await fetch("/api/report-writing/letter-queue", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             queueId: activeQueueItemId,
-            status: "completed",
-            reportDraftId: data.draft?.id || data.draftId || data.id,
+            status: status === "approved" ? "completed" : "started",
+            reportDraftId: savedDraftId,
           }),
         });
 
-        setActiveQueueItemId(null);
         await loadQueue(selectedProviderId, queueStatusTab);
       }
 
       setSaveStatus("saved");
       setLastSavedAt(new Date().toISOString());
+      lastAutosavedTextRef.current = finalLetterTextForSave;
+      setImageDraftId(savedDraftId);
+      setActiveQueueItemId(null);
 
       await loadDrafts(selectedProviderId);
-      clearForm();
+
+      if (savedDraft) {
+        selectDraft(savedDraft);
+      }
+
+      if (status === "approved") {
+        setListTab("completed");
+        alert("Letter approved.");
+      } else if (status === "awaiting_provider_approval") {
+        setListTab("awaiting");
+        alert("Letter sent to provider approval.");
+      } else {
+        setListTab("drafts");
+        alert("Draft saved. You can reopen it from Saved Drafts.");
+      }
     } finally {
       setLoading(false);
     }
@@ -4841,9 +4825,10 @@ export default function TypistPage() {
               New Letter
             </button>
 
-            <div className="mt-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
+            <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1 xl:grid-cols-4">
               {[
                 ["queue", `Queue (${queue.length})`],
+                ["drafts", `Saved Drafts (${countDrafts})`],
                 ["awaiting", `Awaiting Approval (${countAwaiting})`],
                 ["completed", `Approved (${countCompleted})`],
               ].map(([key, label]) => (
@@ -4890,13 +4875,15 @@ export default function TypistPage() {
                   </button>
                 </div>
 
-                <button
-                  onClick={bulkGenerateApprovedPdfs}
-                  disabled={loading || selectedDraftIds.length === 0}
-                  className="w-full rounded-lg bg-purple-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
-                >
-                  Bulk Generate Branded PDFs
-                </button>
+                {listTab === "completed" ? (
+                  <button
+                    onClick={bulkGenerateApprovedPdfs}
+                    disabled={loading || selectedDraftIds.length === 0}
+                    className="w-full rounded-lg bg-purple-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                  >
+                    Bulk Generate Branded PDFs
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -5718,6 +5705,14 @@ export default function TypistPage() {
               <>
                 {selectedDraft.status !== "approved" ? (
                   <>
+                    <button
+                      onClick={() => updateExistingDraft(selectedDraft.status)}
+                      disabled={loading}
+                      className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                    >
+                      Save Draft
+                    </button>
+
                     <button
                       onClick={() => updateExistingDraft("approved")}
                       disabled={loading}

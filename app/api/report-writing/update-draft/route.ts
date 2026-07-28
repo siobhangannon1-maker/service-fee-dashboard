@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
-import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
+import {
+  createReportAuditEvent,
+  getAuditActor,
+} from "@/lib/report-writing/audit"
 
 export const runtime = "nodejs"
 
@@ -30,14 +33,20 @@ async function saveLearningExample(params: {
   if (!params.finalText.trim()) return
   if (params.originalText.trim() === params.finalText.trim()) return
 
-  await supabase.from("provider_report_edit_examples").insert({
-    provider_id: params.providerId,
-    report_draft_id: params.draftId,
-    report_type: params.reportType,
-    original_text: params.originalText,
-    final_text: params.finalText,
-    source: params.source,
-  })
+  const { error } = await supabase
+    .from("provider_report_edit_examples")
+    .insert({
+      provider_id: params.providerId,
+      report_draft_id: params.draftId,
+      report_type: params.reportType,
+      original_text: params.originalText,
+      final_text: params.finalText,
+      source: params.source,
+    })
+
+  if (error) {
+    console.warn("Draft updated, but learning example could not be saved:", error)
+  }
 }
 
 async function updateLinkedQueueRows(params: {
@@ -52,11 +61,36 @@ async function updateLinkedQueueRows(params: {
     updated_at: new Date().toISOString(),
   }
 
-  if (params.referrerName !== undefined) queueUpdate.referrer_name = params.referrerName
-  if (params.referrerAddress !== undefined) queueUpdate.referrer_address = params.referrerAddress
-  if (params.sourceText !== undefined) queueUpdate.source_clinical_notes = params.sourceText
-  if (params.praktikaPatientId !== undefined) queueUpdate.praktika_patient_id = params.praktikaPatientId
-  if (params.status === "approved") queueUpdate.status = "completed"
+  if (params.referrerName !== undefined) {
+    queueUpdate.referrer_name = params.referrerName
+  }
+
+  if (params.referrerAddress !== undefined) {
+    queueUpdate.referrer_address = params.referrerAddress
+  }
+
+  if (params.sourceText !== undefined) {
+    queueUpdate.source_clinical_notes = params.sourceText
+  }
+
+  if (params.praktikaPatientId !== undefined) {
+    queueUpdate.praktika_patient_id = params.praktikaPatientId
+  }
+
+  /*
+    A queue row is completed only when the letter is genuinely approved.
+    Saving a typist draft or sending it for provider review must keep the
+    queue row linked and recoverable.
+  */
+  if (params.status === "approved") {
+    queueUpdate.status = "completed"
+  } else if (
+    params.status === "draft" ||
+    params.status === "edited_by_typist" ||
+    params.status === "awaiting_provider_approval"
+  ) {
+    queueUpdate.status = "started"
+  }
 
   if (Object.keys(queueUpdate).length <= 1) return
 
@@ -66,7 +100,10 @@ async function updateLinkedQueueRows(params: {
     .eq("report_draft_id", params.draftId)
 
   if (error) {
-    console.warn("Draft updated, but linked queue row could not be updated:", error)
+    console.warn(
+      "Draft updated, but linked queue row could not be updated:",
+      error
+    )
   }
 }
 
@@ -117,7 +154,9 @@ export async function POST(req: Request) {
       updated_at: now,
     }
 
-    if (typeof editedText === "string") updatePayload.edited_text = editedText
+    if (typeof editedText === "string") {
+      updatePayload.edited_text = editedText
+    }
 
     if (Object.prototype.hasOwnProperty.call(body, "referrerName")) {
       updatePayload.referrer_name = cleanOrNull(referrerName)
@@ -209,13 +248,19 @@ export async function POST(req: Request) {
       referrerName: Object.prototype.hasOwnProperty.call(body, "referrerName")
         ? cleanOrNull(referrerName)
         : undefined,
-      referrerAddress: Object.prototype.hasOwnProperty.call(body, "referrerAddress")
+      referrerAddress: Object.prototype.hasOwnProperty.call(
+        body,
+        "referrerAddress"
+      )
         ? cleanOrNull(referrerAddress)
         : undefined,
       sourceText: Object.prototype.hasOwnProperty.call(body, "clinicalNotes")
         ? cleanOrNull(clinicalNotes)
         : undefined,
-      praktikaPatientId: Object.prototype.hasOwnProperty.call(body, "praktikaPatientId")
+      praktikaPatientId: Object.prototype.hasOwnProperty.call(
+        body,
+        "praktikaPatientId"
+      )
         ? cleanOrNull(praktikaPatientId)
         : undefined,
       status: typeof status === "string" ? status : null,
@@ -245,13 +290,16 @@ export async function POST(req: Request) {
       providerId: data.provider_id,
       patientName: data.patient_name,
       action:
-        Object.prototype.hasOwnProperty.call(body, "praktikaPatientId") && !status
+        Object.prototype.hasOwnProperty.call(body, "praktikaPatientId") &&
+        !status
           ? "Updated Praktika patient match"
           : status === "approved"
             ? "Approved report"
             : status === "awaiting_provider_approval"
               ? "Sent report to provider for approval"
-              : "Updated report",
+              : status === "edited_by_typist" || status === "draft"
+                ? "Saved draft report"
+                : "Updated report",
       details: {
         status: data.status,
         sentForProviderReviewAt:
