@@ -111,13 +111,35 @@ function formatDob(value: string | null | undefined) {
   return date.toLocaleDateString("en-AU");
 }
 
+function decodeBasicHtmlEntities(value: string) {
+  return String(value || "")
+    .replace(/&apos;|&#39;/gi, "'")
+    .replace(/&quot;|&#34;/gi, '"')
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&nbsp;/gi, " ");
+}
+
 function formatPdfCcLine(value: string) {
-  const cleanValue = String(value || "").trim();
+  const cleanValue = decodeBasicHtmlEntities(String(value || "")).trim();
 
   if (!cleanValue) return "";
-  if (/^cc\.?\s+/i.test(cleanValue)) return cleanValue.replace(/^cc/i, "cc");
 
-  return `cc. ${cleanValue}`;
+  const withoutCcPrefix = cleanValue.replace(/^cc\.?\s*/i, "");
+
+  const singleLineDetails = withoutCcPrefix
+    .split(/\r?\n|;/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => part.replace(/^cc\.?\s*/i, "").trim())
+    .filter(Boolean)
+    .join(", ")
+    .replace(/\s*,\s*,+/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^,\s*|,\s*$/g, "");
+
+  return singleLineDetails ? `cc. ${singleLineDetails}` : "";
 }
 
 function cleanLetterText(text: string) {
@@ -184,6 +206,51 @@ function stripMarkdownMarkers(text: string) {
     .replace(/\*\*/g, "")
     .replace(/__/g, "")
     .replace(/_/g, "");
+}
+
+
+type MarkdownTable = {
+  headers: string[];
+  rows: string[][];
+};
+
+function splitMarkdownTableRow(line: string) {
+  return String(line || "")
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isMarkdownTableSeparator(line: string) {
+  const cells = splitMarkdownTableRow(line);
+
+  return (
+    cells.length > 0 &&
+    cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")))
+  );
+}
+
+function parseMarkdownTable(lines: string[]): MarkdownTable | null {
+  if (lines.length < 2) return null;
+
+  const headers = splitMarkdownTableRow(lines[0]);
+
+  if (headers.length === 0 || !isMarkdownTableSeparator(lines[1])) {
+    return null;
+  }
+
+  const rows = lines.slice(2).map(splitMarkdownTableRow);
+  const columnCount = headers.length;
+
+  return {
+    headers,
+    rows: rows.map((row) => [
+      ...row.slice(0, columnCount),
+      ...Array(Math.max(0, columnCount - row.length)).fill(""),
+    ]),
+  };
 }
 
 
@@ -855,6 +922,39 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
       });
     }
 
+
+    function wrapPlainTextToWidth(params: {
+      text: string;
+      maxWidth: number;
+      textFont: typeof font;
+      size: number;
+    }) {
+      const words = String(params.text || "").split(/\s+/).filter(Boolean);
+      const lines: string[] = [];
+      let currentLine = "";
+
+      for (const word of words) {
+        const candidate = currentLine ? `${currentLine} ${word}` : word;
+        const candidateWidth = params.textFont.widthOfTextAtSize(
+          preparePdfText(candidate),
+          params.size,
+        );
+
+        if (currentLine && candidateWidth > params.maxWidth) {
+          lines.push(currentLine);
+          currentLine = word;
+        } else {
+          currentLine = candidate;
+        }
+      }
+
+      if (currentLine) {
+        lines.push(currentLine);
+      }
+
+      return lines;
+    }
+
     function drawInlineRuns(runs: TextRun[]) {
       const maxWidth = contentWidth;
       const words: TextRun[] = [];
@@ -941,6 +1041,148 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
       }
 
       drawInlineRuns(parseMarkdownRuns(text));
+    }
+
+
+    function wrapCellText(
+      text: string,
+      cellWidth: number,
+      cellFont = font,
+      size = fontSize,
+    ) {
+      const cleanText = stripMarkdownMarkers(text).trim();
+
+      if (!cleanText) return [""];
+
+      const words = cleanText.split(/\s+/);
+      const lines: string[] = [];
+      let current = "";
+
+      for (const word of words) {
+        const candidate = current ? `${current} ${word}` : word;
+        const candidateWidth = cellFont.widthOfTextAtSize(
+          preparePdfText(candidate),
+          size,
+        );
+
+        if (current && candidateWidth > cellWidth) {
+          lines.push(current);
+          current = word;
+        } else {
+          current = candidate;
+        }
+      }
+
+      if (current) lines.push(current);
+      return lines.length ? lines : [""];
+    }
+
+    function drawMarkdownTable(table: MarkdownTable) {
+      const columnCount = table.headers.length;
+      if (columnCount === 0) return;
+
+      const borderWidth = 0.6;
+      const cellPaddingX = 6;
+      const cellPaddingY = 5;
+      const tableFontSize = 9;
+      const tableLineHeight = 12;
+      const columnWidth = contentWidth / columnCount;
+
+      const allRows = [table.headers, ...table.rows];
+
+      function getRowLayout(row: string[], isHeader: boolean) {
+        const rowFont = isHeader ? boldFont : font;
+        const wrappedCells = row.map((cell) =>
+          wrapCellText(
+            cell,
+            columnWidth - cellPaddingX * 2,
+            rowFont,
+            tableFontSize,
+          ),
+        );
+
+        const maximumLines = Math.max(
+          1,
+          ...wrappedCells.map((lines) => lines.length),
+        );
+
+        return {
+          wrappedCells,
+          height: maximumLines * tableLineHeight + cellPaddingY * 2,
+        };
+      }
+
+      function drawRow(row: string[], isHeader: boolean) {
+        const layout = getRowLayout(row, isHeader);
+
+        if (y - layout.height < bottomLimit) {
+          y = newPage();
+
+          if (!isHeader) {
+            drawRow(table.headers, true);
+          }
+        }
+
+        const rowTop = y;
+        const rowBottom = y - layout.height;
+        const rowFont = isHeader ? boldFont : font;
+
+        if (isHeader) {
+          page.drawRectangle({
+            x: marginLeft,
+            y: rowBottom,
+            width: contentWidth,
+            height: layout.height,
+            color: rgb(0.94, 0.94, 0.94),
+          });
+        }
+
+        page.drawRectangle({
+          x: marginLeft,
+          y: rowBottom,
+          width: contentWidth,
+          height: layout.height,
+          borderColor: rgb(0, 0, 0),
+          borderWidth,
+        });
+
+        for (let columnIndex = 1; columnIndex < columnCount; columnIndex++) {
+          const dividerX = marginLeft + columnIndex * columnWidth;
+
+          page.drawLine({
+            start: { x: dividerX, y: rowBottom },
+            end: { x: dividerX, y: rowTop },
+            thickness: borderWidth,
+            color: rgb(0, 0, 0),
+          });
+        }
+
+        layout.wrappedCells.forEach((cellLines, columnIndex) => {
+          const textX =
+            marginLeft + columnIndex * columnWidth + cellPaddingX;
+          let textY = rowTop - cellPaddingY - tableFontSize;
+
+          for (const cellLine of cellLines) {
+            page.drawText(preparePdfText(cellLine), {
+              x: textX,
+              y: textY,
+              size: tableFontSize,
+              font: rowFont,
+              color: rgb(0, 0, 0),
+            });
+
+            textY -= tableLineHeight;
+          }
+        });
+
+        y = rowBottom;
+      }
+
+      allRows.forEach((row, index) => {
+        drawRow(row, index === 0);
+      });
+
+      y -= 10;
     }
 
     const usedInlineImageIds = new Set<string>();
@@ -1307,6 +1549,27 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
       const rawParagraph = paragraphs[paragraphIndex];
       const cleanParagraph = rawParagraph.trim();
 
+      if (cleanParagraph.startsWith("|")) {
+        const tableLines: string[] = [];
+        let tableEndIndex = paragraphIndex;
+
+        while (
+          tableEndIndex < paragraphs.length &&
+          paragraphs[tableEndIndex]?.trim().startsWith("|")
+        ) {
+          tableLines.push(paragraphs[tableEndIndex].trim());
+          tableEndIndex += 1;
+        }
+
+        const table = parseMarkdownTable(tableLines);
+
+        if (table) {
+          drawMarkdownTable(table);
+          paragraphIndex = tableEndIndex - 1;
+          continue;
+        }
+      }
+
       if (!cleanParagraph) {
         y -= lineHeight;
 
@@ -1415,19 +1678,28 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
     if (pdfCcLine) {
       y -= 6;
 
-      if (y < bottomLimit) {
-        y = newPage();
-      }
-
-      page.drawText(preparePdfText(pdfCcLine), {
-        x: marginLeft,
-        y,
+      const ccLines = wrapPlainTextToWidth({
+        text: pdfCcLine,
+        maxWidth: contentWidth,
+        textFont: italicFont,
         size: fontSize,
-        font: italicFont,
-        color: rgb(0, 0, 0),
       });
 
-      y -= lineHeight;
+      for (const ccLine of ccLines) {
+        if (y < bottomLimit) {
+          y = newPage();
+        }
+
+        page.drawText(preparePdfText(ccLine), {
+          x: marginLeft,
+          y,
+          size: fontSize,
+          font: italicFont,
+          color: rgb(0, 0, 0),
+        });
+
+        y -= lineHeight;
+      }
     }
 
     const unusedImages = images.filter(

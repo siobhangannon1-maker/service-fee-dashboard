@@ -128,6 +128,7 @@ export async function POST(req: Request) {
       patientDob,
       patientName,
       reportType,
+      unapprove,
     } = body
 
     if (!draftId) {
@@ -207,12 +208,24 @@ export async function POST(req: Request) {
       )
     }
 
+    const isUnapproving =
+      Boolean(unapprove) &&
+      existingDraft.status === "approved" &&
+      status === "awaiting_provider_approval"
+
     if (typeof status === "string" && status.trim()) {
       updatePayload.status = status
 
       if (status === "awaiting_provider_approval") {
-        updatePayload.sent_for_provider_review_at =
-          existingDraft.sent_for_provider_review_at || now
+        updatePayload.sent_for_provider_review_at = isUnapproving
+          ? now
+          : existingDraft.sent_for_provider_review_at || now
+      }
+
+      if (isUnapproving) {
+        updatePayload.provider_approved_at = null
+        updatePayload.approved_by_initials = null
+        updatePayload.approved_by_name = null
       }
 
       if (status === "approved") {
@@ -293,15 +306,19 @@ export async function POST(req: Request) {
         Object.prototype.hasOwnProperty.call(body, "praktikaPatientId") &&
         !status
           ? "Updated Praktika patient match"
-          : status === "approved"
-            ? "Approved report"
-            : status === "awaiting_provider_approval"
-              ? "Sent report to provider for approval"
+          : isUnapproving
+            ? "Unapproved report"
+            : status === "approved"
+              ? "Approved report"
+              : status === "awaiting_provider_approval"
+                ? "Sent report to provider for approval"
               : status === "edited_by_typist" || status === "draft"
                 ? "Saved draft report"
                 : "Updated report",
       details: {
         status: data.status,
+        unapproved: isUnapproving,
+        previousStatus: existingDraft.status,
         sentForProviderReviewAt:
           status === "awaiting_provider_approval"
             ? data.sent_for_provider_review_at

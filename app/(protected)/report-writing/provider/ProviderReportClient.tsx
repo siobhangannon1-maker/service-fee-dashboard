@@ -592,6 +592,60 @@ export default function ProviderReportClient({
     );
   }
 
+  async function unapproveLetter(draft: Draft | null) {
+    if (!draft) return;
+
+    const confirmed = confirm(
+      `Unapprove the letter for ${draft.patient_name || "this patient"}? It will move back to Approval Required.`,
+    );
+
+    if (!confirmed) return;
+
+    setLoading(true);
+    setSavedMessage("");
+
+    try {
+      const response = await fetch("/api/report-writing/update-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draftId: draft.id,
+          editedText: getReportText(draft),
+          status: "awaiting_provider_approval",
+          unapprove: true,
+          learnFromEdits: false,
+          typistInstructions: draft.typist_instructions || "",
+          typistQueries: draft.typist_queries || "",
+        }),
+      });
+
+      const data = await readJsonSafely(response);
+
+      if (!response.ok || !data.success) {
+        alert(data.error || "Failed to unapprove letter.");
+        return;
+      }
+
+      setSelectedApprovedDraft(null);
+      setSelectedApprovalDraft(data.draft || null);
+      setActiveTab("approval");
+      setSidebarView("approval");
+
+      showSavedConfirmation(
+        "Letter unapproved",
+        "The letter has moved back to Approval Required.",
+      );
+
+      setSavedMessage(
+        "Letter unapproved. It is now waiting in Approval Required.",
+      );
+
+      await loadDrafts();
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function updateExistingDraftFromEditor(options?: {
     status?: string;
     showToast?: boolean;
@@ -2255,6 +2309,14 @@ export default function ProviderReportClient({
                         className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                       >
                         Edit Letter
+                      </button>
+
+                      <button
+                        onClick={() => unapproveLetter(selectedApprovedDraft)}
+                        disabled={loading}
+                        className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        Unapprove Letter
                       </button>
 
                       <button

@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
 
-import { supabaseAdmin } from "@/lib/supabase/admin";
-
 import {
   getCurrentUserPraktikaSessionMode,
   getPraktikaSession,
@@ -11,35 +9,14 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const WORKER_HEARTBEAT_STALE_MS = 30_000;
+function isLoginOrLogoutUrl(currentUrl: string | null) {
+  const url = String(currentUrl || "").toLowerCase();
 
-function heartbeatIsFresh(lastHeartbeatAt: string | null | undefined) {
-  if (!lastHeartbeatAt) return false;
-
-  const heartbeatTime = new Date(lastHeartbeatAt).getTime();
-
-  if (!Number.isFinite(heartbeatTime)) return false;
-
-  return Date.now() - heartbeatTime <= WORKER_HEARTBEAT_STALE_MS;
-}
-
-function sessionIsConnected({
-  status,
-  hasCookie,
-  currentUrl,
-}: {
-  status: string;
-  hasCookie: boolean;
-  currentUrl: string | null;
-}) {
-  const lowerUrl = String(currentUrl || "").toLowerCase();
-
-  const isLoginOrLogoutUrl =
-    lowerUrl.includes("/login") ||
-    lowerUrl.includes("/v2/login") ||
-    lowerUrl.includes("/logout");
-
-  return status === "connected" && hasCookie && !isLoginOrLogoutUrl;
+  return (
+    url.includes("/login") ||
+    url.includes("/v2/login") ||
+    url.includes("/logout")
+  );
 }
 
 export async function GET(request: Request) {
@@ -55,71 +32,39 @@ export async function GET(request: Request) {
       mode = await getCurrentUserPraktikaSessionMode();
     }
 
-    const [session, workerResult] = await Promise.all([
-      getPraktikaSession(mode),
-
-      supabaseAdmin
-        .from("automation_workers")
-        .select(
-          "id, name, type, status, is_paused, last_heartbeat_at, updated_at",
-        )
-        .eq("type", "praktika")
-        .order("last_heartbeat_at", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-    ]);
-
-    if (workerResult.error) {
-      console.warn(
-        "Could not load Praktika worker heartbeat:",
-        workerResult.error.message,
-      );
-    }
-
-    const worker = workerResult.data ?? null;
-
-    const workerOnline =
-      Boolean(worker) &&
-      !worker?.is_paused &&
-      heartbeatIsFresh(worker?.last_heartbeat_at);
+    const session = await getPraktikaSession(mode);
 
     const hasCookie = Boolean(session.cookie);
+    const invalidCurrentUrl = isLoginOrLogoutUrl(session.current_url);
 
-    const browserSessionConnected = sessionIsConnected({
-      status: session.status,
-      hasCookie,
-      currentUrl: session.current_url,
-    });
+    const connected =
+      session.status === "connected" &&
+      hasCookie &&
+      !invalidCurrentUrl;
 
-    const connected = workerOnline && browserSessionConnected;
-
-    let effectiveStatus = session.status;
-    let effectiveMessage =
+    let status = session.status;
+    let message =
       session.message || "Praktika session status is unavailable.";
 
-    if (!workerOnline) {
-      effectiveStatus = "error";
-      effectiveMessage =
-        "The Praktika cloud worker is offline or has stopped sending heartbeats.";
-    } else if (
-      session.status === "connected" &&
-      !browserSessionConnected
-    ) {
-      effectiveStatus = "expired";
-      effectiveMessage =
-        "The saved Praktika session cannot currently be confirmed as connected.";
+    /*
+     * Protect against inconsistent saved states without changing the database.
+     */
+    if (session.status === "connected" && !hasCookie) {
+      status = "not_started";
+      message = "No saved Praktika browser session was found.";
+    }
+
+    if (session.status === "connected" && invalidCurrentUrl) {
+      status = "expired";
+      message =
+        "The Praktika helper is currently on a login or logout page.";
     }
 
     return NextResponse.json(
       {
         connected,
-
-        // This is the status the popup should display.
-        status: effectiveStatus,
-        message: effectiveMessage,
-
-        // The raw database session status is included for debugging.
-        sessionStatus: session.status,
+        status,
+        message,
 
         scope: session.scope,
         appUserId: session.app_user_id,
@@ -133,16 +78,6 @@ export async function GET(request: Request) {
         updatedAt: session.updated_at,
         refreshRequestedAt: session.refresh_requested_at,
         mfaCodeUpdatedAt: session.mfa_code_updated_at,
-
-        worker: {
-          found: Boolean(worker),
-          online: workerOnline,
-          id: worker?.id ?? null,
-          name: worker?.name ?? null,
-          storedStatus: worker?.status ?? null,
-          isPaused: worker?.is_paused ?? false,
-          lastHeartbeatAt: worker?.last_heartbeat_at ?? null,
-        },
       },
       {
         status: 200,
@@ -163,7 +98,6 @@ export async function GET(request: Request) {
       {
         connected: false,
         status: "error",
-        sessionStatus: "error",
         message,
 
         scope: null,
@@ -178,16 +112,6 @@ export async function GET(request: Request) {
         updatedAt: null,
         refreshRequestedAt: null,
         mfaCodeUpdatedAt: null,
-
-        worker: {
-          found: false,
-          online: false,
-          id: null,
-          name: null,
-          storedStatus: null,
-          isPaused: false,
-          lastHeartbeatAt: null,
-        },
       },
       {
         status: 200,
