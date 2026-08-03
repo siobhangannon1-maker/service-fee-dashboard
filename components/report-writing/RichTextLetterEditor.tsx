@@ -123,6 +123,7 @@ const RichTextLetterEditor = forwardRef<RichTextLetterEditorHandle, Props>(
         6,
         Math.max(1, Number.parseInt(columnInput, 10) || 3),
       );
+
       const rowCount = Math.min(
         20,
         Math.max(1, Number.parseInt(rowInput, 10) || 2),
@@ -137,7 +138,9 @@ const RichTextLetterEditor = forwardRef<RichTextLetterEditorHandle, Props>(
         " |";
 
       const separatorRow =
-        "| " + Array.from({ length: columnCount }, () => "---").join(" | ") + " |";
+        "| " +
+        Array.from({ length: columnCount }, () => "---").join(" | ") +
+        " |";
 
       const dataRows = Array.from({ length: rowCount }, () => {
         return (
@@ -148,12 +151,14 @@ const RichTextLetterEditor = forwardRef<RichTextLetterEditorHandle, Props>(
       });
 
       const tableText = [headerRow, separatorRow, ...dataRows].join("\n");
+
       const prefix =
         value.length > 0 && !value.endsWith("\n\n")
           ? value.endsWith("\n")
             ? "\n"
             : "\n\n"
           : "";
+
       const suffix = "\n\n";
 
       insertTextAtCursor(`${prefix}${tableText}${suffix}`);
@@ -222,7 +227,7 @@ const RichTextLetterEditor = forwardRef<RichTextLetterEditorHandle, Props>(
           onChange={(e) => updateValue(e.target.value)}
           className={[
             minHeightClassName,
-            "w-full rounded-xl border border-slate-300 p-4 font-mono",
+            "w-full rounded-xl border border-slate-300 p-4 font-sans",
             readOnly ? "bg-slate-50" : "bg-white",
           ].join(" ")}
         />

@@ -41,6 +41,20 @@ type ProviderReportClientProps = {
 
 type LetterSourceType = "dictation" | "smart_dictation" | "clinical_notes";
 
+function isLetterSourceType(value: unknown): value is LetterSourceType {
+  return (
+    value === "dictation" ||
+    value === "smart_dictation" ||
+    value === "clinical_notes"
+  );
+}
+
+function sourceTypeToTab(sourceType: LetterSourceType): ActiveTab {
+  if (sourceType === "smart_dictation") return "smart";
+  if (sourceType === "clinical_notes") return "notes";
+  return "dictate";
+}
+
 type PatientGender = "male" | "female" | "neutral";
 
 type PatientAndReferrerFieldsProps = {
@@ -74,6 +88,129 @@ type ActiveTab =
 
 type SidebarView = "drafts" | "approval" | "approved";
 
+const DOB_MONTHS: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
+function expandDobYear(value: string) {
+  const numericYear = Number(value);
+
+  if (value.length === 4) {
+    return numericYear;
+  }
+
+  const currentYear = new Date().getFullYear();
+  const currentTwoDigitYear = currentYear % 100;
+
+  return numericYear <= currentTwoDigitYear
+    ? 2000 + numericYear
+    : 1900 + numericYear;
+}
+
+function formatDobAsIso(day: number, month: number, year: number) {
+  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) {
+    return null;
+  }
+
+  if (year < 1900 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+
+  const candidate = new Date(year, month - 1, day);
+
+  const isValidDate =
+    candidate.getFullYear() === year &&
+    candidate.getMonth() === month - 1 &&
+    candidate.getDate() === day;
+
+  if (!isValidDate) {
+    return null;
+  }
+
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+
+  if (candidate > today) {
+    return null;
+  }
+
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function parsePastedDob(rawValue: string) {
+  const value = rawValue
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!value) {
+    return null;
+  }
+
+  // ISO format, including a date copied from another date field.
+  const isoMatch = value.match(/(?:^|\D)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\D|$)/);
+  if (isoMatch) {
+    return formatDobAsIso(
+      Number(isoMatch[3]),
+      Number(isoMatch[2]),
+      Number(isoMatch[1]),
+    );
+  }
+
+  // Australian numeric formats: DD/MM/YYYY, DD-MM-YYYY or DD.MM.YYYY.
+  const numericMatch = value.match(
+    /(?:^|\D)(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})(?:\D|$)/,
+  );
+  if (numericMatch) {
+    return formatDobAsIso(
+      Number(numericMatch[1]),
+      Number(numericMatch[2]),
+      expandDobYear(numericMatch[3]),
+    );
+  }
+
+  // Written formats: 1 Feb 1980, 1 February 1980, or 1st Feb 1980.
+  const writtenMatch = value.match(
+    /(?:^|\D)(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]{3,9})\.?[,]?\s+(\d{2}|\d{4})(?:\D|$)/i,
+  );
+  if (writtenMatch) {
+    const month = DOB_MONTHS[writtenMatch[2].toLowerCase()];
+
+    if (month) {
+      return formatDobAsIso(
+        Number(writtenMatch[1]),
+        month,
+        expandDobYear(writtenMatch[3]),
+      );
+    }
+  }
+
+  return null;
+}
+
 function PatientAndReferrerFields({
   patientFirstName,
   setPatientFirstName,
@@ -95,6 +232,7 @@ function PatientAndReferrerFields({
   typistQueriesForProvider,
 }: PatientAndReferrerFieldsProps) {
   const [dobFocused, setDobFocused] = useState(false);
+  const [dobPasteError, setDobPasteError] = useState("");
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -121,15 +259,48 @@ function PatientAndReferrerFields({
 
         <input
           className={[
-            "w-full rounded-xl border border-slate-300 p-3",
+            "w-full rounded-xl border p-3",
+            dobPasteError ? "border-red-400" : "border-slate-300",
             !patientDob && !dobFocused ? "text-transparent" : "text-slate-900",
           ].join(" ")}
           type="date"
           value={patientDob}
           onFocus={() => setDobFocused(true)}
           onBlur={() => setDobFocused(false)}
-          onChange={(e) => setPatientDob(e.target.value)}
+          onChange={(e) => {
+            setDobPasteError("");
+            setPatientDob(e.target.value);
+          }}
+          onPaste={(event) => {
+            const pastedText = event.clipboardData.getData("text");
+            const parsedDob = parsePastedDob(pastedText);
+
+            event.preventDefault();
+
+            if (!parsedDob) {
+              setDobPasteError(
+                "Could not recognise that DOB. Try DD/MM/YYYY, DD-MM-YYYY or 1 Feb 1980.",
+              );
+              return;
+            }
+
+            setDobPasteError("");
+            setPatientDob(parsedDob);
+          }}
+          aria-invalid={Boolean(dobPasteError)}
+          aria-describedby={dobPasteError ? "patient-dob-error" : undefined}
+          title="Choose a date or paste a DOB such as 01/02/1980"
         />
+
+        {dobPasteError ? (
+          <p id="patient-dob-error" className="mt-1 text-xs text-red-600">
+            {dobPasteError}
+          </p>
+        ) : (
+          <p className="mt-1 text-xs text-slate-500">
+            You can choose a date or paste a DOB such as 01/02/1980.
+          </p>
+        )}
       </div>
 
       <select
@@ -408,6 +579,10 @@ export default function ProviderReportClient({
   const [approvalSearch, setApprovalSearch] = useState("");
   const [approvedSearch, setApprovedSearch] = useState("");
   const [showOriginal, setShowOriginal] = useState(false);
+  const [defaultLetterSource, setDefaultLetterSource] =
+    useState<LetterSourceType>("dictation");
+  const [preferenceLoading, setPreferenceLoading] = useState(true);
+  const [preferenceSaving, setPreferenceSaving] = useState(false);
 
   const patientName = `${patientFirstName} ${patientLastName}`.trim();
 
@@ -446,6 +621,77 @@ export default function ProviderReportClient({
         .includes(query);
     });
   }, [approvedDrafts, approvedSearch]);
+
+  async function loadProviderLetterPreference() {
+    setPreferenceLoading(true);
+
+    try {
+      const response = await fetch(
+        `/api/report-writing/provider-letter-preference?providerId=${encodeURIComponent(providerId)}`,
+        { cache: "no-store" },
+      );
+
+      const data = await readJsonSafely(response);
+
+      if (!response.ok || !data.success) {
+        console.error(
+          "Could not load provider letter preference:",
+          data.error || "Unknown error",
+        );
+        return;
+      }
+
+      if (isLetterSourceType(data.defaultLetterSource)) {
+        setDefaultLetterSource(data.defaultLetterSource);
+      }
+    } catch (error) {
+      console.error("Could not load provider letter preference:", error);
+    } finally {
+      setPreferenceLoading(false);
+    }
+  }
+
+  async function saveProviderLetterPreference(
+    nextPreference: LetterSourceType,
+  ) {
+    const previousPreference = defaultLetterSource;
+
+    setDefaultLetterSource(nextPreference);
+    setPreferenceSaving(true);
+
+    try {
+      const response = await fetch(
+        "/api/report-writing/provider-letter-preference",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            providerId,
+            defaultLetterSource: nextPreference,
+          }),
+        },
+      );
+
+      const data = await readJsonSafely(response);
+
+      if (!response.ok || !data.success) {
+        setDefaultLetterSource(previousPreference);
+        alert(data.error || "Could not save the default letter method.");
+        return;
+      }
+
+      showSavedConfirmation(
+        "Default method saved",
+        `${data.label || "Letter method"} will open for each new letter.`,
+      );
+    } catch (error) {
+      console.error("Could not save provider letter preference:", error);
+      setDefaultLetterSource(previousPreference);
+      alert("Could not save the default letter method.");
+    } finally {
+      setPreferenceSaving(false);
+    }
+  }
 
   async function loadReportTypes() {
     const response = await fetch(
@@ -499,8 +745,9 @@ export default function ProviderReportClient({
   useEffect(() => {
     loadDrafts();
     loadReportTypes();
+    loadProviderLetterPreference();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [providerId]);
 
   useEffect(() => {
     if (recordingState !== "recording") return;
@@ -1383,7 +1630,7 @@ export default function ProviderReportClient({
               type="button"
               onClick={() => {
                 resetLetterEditor();
-                setActiveTab("dictate");
+                setActiveTab(sourceTypeToTab(defaultLetterSource));
                 setSidebarView("drafts");
                 loadReportTypes();
               }}
@@ -1391,6 +1638,34 @@ export default function ProviderReportClient({
             >
               + New Letter
             </button>
+
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <label
+                htmlFor="default-letter-source"
+                className="block text-xs font-bold uppercase tracking-wide text-slate-600"
+              >
+                Default new-letter method
+              </label>
+              <select
+                id="default-letter-source"
+                value={defaultLetterSource}
+                disabled={preferenceLoading || preferenceSaving}
+                onChange={(event) => {
+                  const nextPreference = event.target.value;
+                  if (isLetterSourceType(nextPreference)) {
+                    void saveProviderLetterPreference(nextPreference);
+                  }
+                }}
+                className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <option value="dictation">Dictate</option>
+                <option value="smart_dictation">Smart Dictate</option>
+                <option value="clinical_notes">Generate from Clinical Notes</option>
+              </select>
+              <p className="mt-2 text-[11px] leading-4 text-slate-500">
+                This provider&apos;s selection will open when New Letter is clicked.
+              </p>
+            </div>
           </div>
 
           <div className="grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">

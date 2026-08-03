@@ -353,21 +353,24 @@ function getTitleFromName(value: string) {
 
 function getDearLine(
   referrerName: string | null | undefined,
-  referrerTitle?: string | null,
+  _referrerTitle?: string | null,
 ) {
-  const cleanName = String(referrerName || "").trim();
-  const title =
-    cleanReferrerTitle(referrerTitle) || getTitleFromName(cleanName) || "Dr";
+  const cleanName = decodeBasicHtmlEntities(
+    String(referrerName || ""),
+  ).trim();
 
-  if (!cleanName) return title ? `Dear ${title},` : "Dear Doctor,";
+  if (!cleanName) {
+    return "Dear Colleague,";
+  }
 
   const withoutTitle = stripKnownTitleFromName(cleanName);
-  const parts = withoutTitle.split(/\s+/).filter(Boolean);
-  const lastName = parts[parts.length - 1] || withoutTitle;
+  const firstName = withoutTitle.split(/\s+/).filter(Boolean)[0] || "";
 
-  if (!lastName) return title ? `Dear ${title},` : "Dear Doctor,";
+  if (!firstName) {
+    return "Dear Colleague,";
+  }
 
-  return `Dear ${title} ${lastName},`;
+  return `Dear ${firstName},`;
 }
 
 function normaliseForMatch(value: unknown) {
@@ -1187,6 +1190,48 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
 
     const usedInlineImageIds = new Set<string>();
 
+
+    function drawEmbeddedImageCover(params: {
+      embeddedImage: Awaited<ReturnType<PDFDocument["embedPng"]>>;
+      frameX: number;
+      frameY: number;
+      frameWidth: number;
+      frameHeight: number;
+    }) {
+      const sourceWidth = params.embeddedImage.width;
+      const sourceHeight = params.embeddedImage.height;
+
+      if (!sourceWidth || !sourceHeight) {
+        return;
+      }
+
+      /*
+        Scale proportionally until the frame is fully covered. Any excess is
+        clipped by the existing frame clipping path, rather than stretching
+        the image horizontally or vertically.
+      */
+      const scale = Math.max(
+        params.frameWidth / sourceWidth,
+        params.frameHeight / sourceHeight,
+      );
+
+      const drawWidth = sourceWidth * scale;
+      const drawHeight = sourceHeight * scale;
+
+      const drawX =
+        params.frameX + (params.frameWidth - drawWidth) / 2;
+      const drawY =
+        params.frameY + (params.frameHeight - drawHeight) / 2;
+
+      page.drawImage(params.embeddedImage, {
+        x: drawX,
+        y: drawY,
+        width: drawWidth,
+        height: drawHeight,
+      });
+    }
+
+
     async function drawImageBlock(image: DraftImage) {
       const embeddedImage = await embedStorageImage(pdfDoc, image);
 
@@ -1236,11 +1281,12 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         endPath(),
       );
 
-      page.drawImage(embeddedImage, {
-        x,
-        y: frameY,
-        width: frameWidth,
-        height: frameHeight,
+      drawEmbeddedImageCover({
+        embeddedImage,
+        frameX: x,
+        frameY,
+        frameWidth,
+        frameHeight,
       });
 
       page.pushOperators(popGraphicsState());
@@ -1331,11 +1377,12 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         endPath(),
       );
 
-      page.drawImage(embeddedImage, {
-        x: imageX,
-        y: frameY,
-        width: frameWidth,
-        height: frameHeight,
+      drawEmbeddedImageCover({
+        embeddedImage,
+        frameX: imageX,
+        frameY,
+        frameWidth,
+        frameHeight,
       });
 
       page.pushOperators(popGraphicsState());
