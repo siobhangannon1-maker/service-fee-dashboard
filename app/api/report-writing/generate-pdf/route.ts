@@ -1275,7 +1275,10 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
 
 
 
-    async function drawImageWithSideText(image: DraftImage, sideText: string) {
+    async function drawImageWithSideText(
+      image: DraftImage,
+      sideParagraphs: string[],
+    ) {
       const embeddedImage = await embedStorageImage(pdfDoc, image);
 
       const displayWidthPercent = Number(image.display_width_percent ?? 45);
@@ -1286,13 +1289,12 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         (contentWidth * Math.min(Math.max(displayWidthPercent, 30), 55)) /
         100;
 
-      // The frame follows the selected crop shape, not the rotated image dimensions.
-      // Rotating the photograph therefore never rotates or changes the frame.
       const frameAspectRatio = getImageAspect(image.crop_aspect);
       const frameWidth = imageWidth;
       const frameHeight = frameWidth / frameAspectRatio;
 
       const gap = 18;
+      const paragraphGap = 8;
       const alignment = image.display_alignment === "right" ? "right" : "left";
 
       const imageX =
@@ -1347,7 +1349,12 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
             .filter((piece) => piece.length > 0);
 
           for (const piece of splitPieces) {
-            pieces.push({ text: piece, bold: run.bold, italic: run.italic, underline: run.underline });
+            pieces.push({
+              text: piece,
+              bold: run.bold,
+              italic: run.italic,
+              underline: run.underline,
+            });
           }
         }
 
@@ -1384,10 +1391,6 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         return lines;
       }
 
-      const wrappedLines = wrapRunsToWidth(parseMarkdownRuns(sideText), textWidth);
-      const remainingLines: TextRun[][] = [];
-      let textY = startY;
-
       function drawRunLine(line: TextRun[], x: number, lineY: number) {
         let currentX = x;
 
@@ -1412,14 +1415,54 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         }
       }
 
-      for (const line of wrappedLines) {
-        if (textY < frameY) {
-          remainingLines.push(line);
-          continue;
+      type OverflowParagraph = {
+        lines: TextRun[][];
+        startsAtLine: number;
+      };
+
+      const overflowParagraphs: OverflowParagraph[] = [];
+      let textY = startY;
+      let sideSpaceExhausted = false;
+
+      for (const paragraph of sideParagraphs) {
+        const wrappedLines = wrapRunsToWidth(
+          parseMarkdownRuns(paragraph),
+          textWidth,
+        );
+
+        let firstOverflowLine = wrappedLines.length;
+
+        if (!sideSpaceExhausted) {
+          for (let lineIndex = 0; lineIndex < wrappedLines.length; lineIndex++) {
+            if (textY < frameY) {
+              firstOverflowLine = lineIndex;
+              sideSpaceExhausted = true;
+              break;
+            }
+
+            drawRunLine(wrappedLines[lineIndex], textX, textY);
+            textY -= lineHeight;
+          }
+        } else {
+          firstOverflowLine = 0;
         }
 
-        drawRunLine(line, textX, textY);
-        textY -= lineHeight;
+        if (firstOverflowLine < wrappedLines.length) {
+          overflowParagraphs.push({
+            lines: wrappedLines,
+            startsAtLine: firstOverflowLine,
+          });
+        }
+
+        if (!sideSpaceExhausted) {
+          // Preserve visible paragraph separation while continuing to use the
+          // available column beside the image.
+          textY -= paragraphGap;
+
+          if (textY < frameY) {
+            sideSpaceExhausted = true;
+          }
+        }
       }
 
       y = frameY - 22;
@@ -1430,7 +1473,10 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
             y = newPage();
           }
 
-          const captionWidth = boldFont.widthOfTextAtSize(preparePdfText(captionLine), 9);
+          const captionWidth = boldFont.widthOfTextAtSize(
+            preparePdfText(captionLine),
+            9,
+          );
           const captionX = imageX + frameWidth / 2 - captionWidth / 2;
 
           page.drawText(preparePdfText(captionLine), {
@@ -1447,8 +1493,9 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         y -= 8;
       }
 
-      if (remainingLines.length > 0) {
-        const remainingText = remainingLines
+      for (const overflow of overflowParagraphs) {
+        const remainingText = overflow.lines
+          .slice(overflow.startsAtLine)
           .map((line) => line.map((run) => run.text).join(""))
           .join(" ")
           .replace(/\s+/g, " ")
@@ -1458,7 +1505,9 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
           drawRichParagraph(remainingText);
           y -= 8;
         }
-      } else {
+      }
+
+      if (overflowParagraphs.length === 0) {
         y -= 8;
       }
     }
@@ -1519,7 +1568,11 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
 
     const paragraphs = letterText.split(/\n/);
 
-    const signatureBlockHeight = 125;
+    /*
+      Includes Warm Regards, signature image, provider name, qualifications,
+      and a small safety allowance before any CC line.
+    */
+    const signatureBlockHeight = 150;
 
     function estimateRichParagraphHeight(
       text: string,
@@ -1595,17 +1648,48 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
             nextTextParagraphIndex += 1;
           }
 
-          const nextParagraph = paragraphs[nextTextParagraphIndex]?.trim() || "";
-          const nextParagraphImageNumber = getInlineImageMarker(nextParagraph);
+          const firstNextParagraph =
+            paragraphs[nextTextParagraphIndex]?.trim() || "";
+          const firstNextParagraphImageNumber =
+            getInlineImageMarker(firstNextParagraph);
 
-          const canWrapNextParagraphBesideImage =
-            nextParagraph.length > 0 &&
-            !nextParagraphImageNumber &&
+          const canWrapTextBesideImage =
+            firstNextParagraph.length > 0 &&
+            !firstNextParagraphImageNumber &&
             ["left", "right"].includes(image.display_alignment || "");
 
-          if (canWrapNextParagraphBesideImage) {
-            await drawImageWithSideText(image, nextParagraph);
-            paragraphIndex = nextTextParagraphIndex;
+          if (canWrapTextBesideImage) {
+            const sideParagraphs: string[] = [];
+            let scanIndex = nextTextParagraphIndex;
+
+            /*
+              Collect consecutive paragraphs so the text column can continue
+              down the full height of the image. Keep the final meaningful
+              paragraph outside this block so the existing signature
+              keep-together logic can still protect it.
+            */
+            while (scanIndex < paragraphs.length) {
+              const candidate = paragraphs[scanIndex]?.trim() || "";
+
+              if (!candidate) {
+                scanIndex += 1;
+                continue;
+              }
+
+              if (getInlineImageMarker(candidate)) break;
+              if (candidate.startsWith("|")) break;
+              if (scanIndex === lastTextParagraphIndex) break;
+
+              sideParagraphs.push(candidate);
+              scanIndex += 1;
+            }
+
+            if (sideParagraphs.length > 0) {
+              await drawImageWithSideText(image, sideParagraphs);
+              paragraphIndex = scanIndex - 1;
+            } else {
+              await drawImageBlock(image);
+            }
           } else {
             await drawImageBlock(image);
           }
@@ -1628,12 +1712,14 @@ const bwGradualBoldBytes = await downloadStorageFileCached(
         const neededSpace = finalParagraphHeight + signatureBlockHeight;
 
         /*
-          Keep the final sentence with the signature when the page is genuinely
-          nearly full, but do not create a half-empty page just to move a short
-          final paragraph. The protected bottomLimit also ensures that neither
-          the paragraph nor the signature enters the letterhead footer area.
+          Keep the final meaningful paragraph and the entire signature block
+          together. If they cannot both fit in the remaining printable area,
+          move the final paragraph to a new page before drawing it.
+
+          This deliberately prioritises avoiding an orphaned signature block,
+          even when the current page still has some unused space.
         */
-        if (remainingSpace < neededSpace && remainingSpace < 90) {
+        if (remainingSpace < neededSpace) {
           y = newPage();
         }
       }

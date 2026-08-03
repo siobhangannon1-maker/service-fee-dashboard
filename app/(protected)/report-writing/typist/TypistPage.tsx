@@ -1167,8 +1167,7 @@ export default function TypistPage() {
   const selectedDraftIdRef = useRef<string | null>(null);
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [listTab, setListTab] = useState<ListTab>("queue");
-  const [queueStatusTab, setQueueStatusTab] =
-    useState<QueueStatusTab>("active");
+  const [queueStatusTab] = useState<QueueStatusTab>("queued");
 
   const [patientFirstName, setPatientFirstName] = useState("");
   const [patientLastName, setPatientLastName] = useState("");
@@ -1315,6 +1314,14 @@ export default function TypistPage() {
 
     return [];
   }, [drafts, listTab]);
+
+  const visibleQueue = useMemo(
+    () =>
+      queue.filter(
+        (item) => item.status === "queued" && !item.report_draft_id,
+      ),
+    [queue],
+  );
 
   const visibleDraftIds = filteredDrafts.map((draft) => draft.id);
 
@@ -4890,39 +4897,13 @@ export default function TypistPage() {
 
           {listTab === "queue" ? (
             <div className="space-y-3 p-3">
-              <div className="grid grid-cols-2 gap-2">
-                {(
-                  [
-                    "active",
-                    "queued",
-                    "started",
-                    "completed",
-                  ] as QueueStatusTab[]
-                ).map((status) => (
-                  <button
-                    key={status}
-                    type="button"
-                    onClick={() => setQueueStatusTab(status)}
-                    className={[
-                      "rounded-xl border px-3 py-2 text-xs font-semibold",
-                      queueStatusTab === status
-                        ? "border-blue-600 bg-blue-50 text-blue-900"
-                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100",
-                    ].join(" ")}
-                  >
-                    {getQueueStatusLabel(status)}
-                  </button>
-                ))}
-              </div>
-
-              {queue.length === 0 ? (
+              {visibleQueue.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">
-                  No {getQueueStatusLabel(queueStatusTab).toLowerCase()} queue
-                  items.
+                  No unstarted queue items.
                 </div>
               ) : null}
 
-              {queue.map((item) => (
+              {visibleQueue.map((item) => (
                 <div
                   key={item.id}
                   className={[
@@ -5409,13 +5390,15 @@ export default function TypistPage() {
                 />
               </label>
 
-              <RichTextLetterEditor
-                ref={letterEditorRef}
-                value={letterText}
-                onChange={handleLetterTextChange}
-                placeholder="Letter text..."
-                minHeightClassName="min-h-96"
-              />
+              <div className="[&_*]:!font-sans">
+                <RichTextLetterEditor
+                  ref={letterEditorRef}
+                  value={letterText}
+                  onChange={handleLetterTextChange}
+                  placeholder="Letter text..."
+                  minHeightClassName="min-h-96"
+                />
+              </div>
 
               <label className="mt-4 block rounded-xl border border-indigo-100 bg-indigo-50 p-3">
                 <div className="text-sm font-bold text-indigo-950">
@@ -5733,7 +5716,7 @@ export default function TypistPage() {
                   </>
                 ) : null}
 
-                {selectedDraftCanComplete ? (
+                {listTab !== "drafts" && selectedDraftCanComplete ? (
                   <>
                     <button
                       onClick={() => previewPdf(selectedDraft)}
@@ -5741,15 +5724,6 @@ export default function TypistPage() {
                       className="rounded-xl bg-slate-700 px-5 py-3 font-semibold text-white disabled:opacity-50"
                     >
                       Preview PDF
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={previewHtmlPdf}
-                      disabled={loading || !selectedDraft}
-                      className="rounded-xl border border-purple-300 bg-purple-50 px-4 py-2 text-sm font-semibold text-purple-800 hover:bg-purple-100 disabled:opacity-50"
-                    >
-                      Test HTML PDF
                     </button>
 
                     <button
@@ -5764,25 +5738,29 @@ export default function TypistPage() {
                   </>
                 ) : null}
 
-                <button
-                  onClick={() => openMedirefModal({ completeWorkflow: true })}
-                  disabled={
-                    loading ||
-                    !selectedDraftCanComplete ||
-                    !selectedDraftHasPraktikaPatient
-                  }
-                  className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                >
-                  Complete: Upload + Send Via MediRef
-                </button>
+                {listTab !== "drafts" ? (
+                  <>
+                    <button
+                      onClick={() => openMedirefModal({ completeWorkflow: true })}
+                      disabled={
+                        loading ||
+                        !selectedDraftCanComplete ||
+                        !selectedDraftHasPraktikaPatient
+                      }
+                      className="rounded-xl bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                    >
+                      Complete: Upload + Send Via MediRef
+                    </button>
 
-                <button
-                  onClick={deleteSelectedDraft}
-                  disabled={loading}
-                  className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
-                >
-                  Delete Letter
-                </button>
+                    <button
+                      onClick={deleteSelectedDraft}
+                      disabled={loading}
+                      className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                    >
+                      Delete Letter
+                    </button>
+                  </>
+                ) : null}
               </>
             )}
           </div>
