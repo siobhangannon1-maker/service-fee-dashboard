@@ -1,1895 +1,880 @@
-import {
-  PDFDocument,
-  rgb,
-  StandardFonts,
-  pushGraphicsState,
-  popGraphicsState,
-  moveTo,
-  lineTo,
-  closePath,
-  clip,
-  endPath,
-} from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import sharp from "sharp";
+import { NextResponse } from "next/server"
+import OpenAI from "openai"
+import { createClient } from "@supabase/supabase-js"
 
-export const runtime = "nodejs";
+export const runtime = "nodejs"
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+})
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
 
-type DraftImage = {
-  id: string;
-  storage_path: string;
-  original_filename: string | null;
-  caption: string | null;
-  crop_x: number | null;
-  crop_y: number | null;
-  crop_zoom: number | null;
-  crop_rotation: number | null;
-  crop_aspect: string | null;
-  crop_area_x: number | null;
-  crop_area_y: number | null;
-  crop_area_width: number | null;
-  crop_area_height: number | null;
-  display_width_percent: number | null;
-  display_alignment: string | null;
-  display_page_break_before: boolean | null;
-};
+type TrainingData = {
+  rulesText: string
+  terminologyText: string
+  examplesText: string
+  editLearningText: string
+  providerKnowledgeText: string
+  exampleDebug: Array<{
+    id: string
+    title: string | null
+    report_type: string
+    scenario_tags: string[] | null
+    scenario_summary: string | null
+    is_preferred: boolean | null
+    relevance_score: number
+  }>
+}
 
-const pdfAssetCache = new Map<string, Buffer>();
+type ClinicalScenario = {
+  summary: string
+  procedure_category: string
+  implant_count: number | null
+  implant_sites: string[]
+  guided_surgery: boolean | null
+  grafting_performed: boolean | null
+  immediate_implant: boolean | null
+  extraction_performed: boolean | null
+  sinus_lift: boolean | null
+  membrane_used: boolean | null
+  provisionalisation: boolean | null
+  key_clinical_features: string[]
+  missing_or_unclear_details: string[]
+}
 
-async function downloadStorageFileCached(path: string) {
-  const cached = pdfAssetCache.get(path);
+type PatientGender = "male" | "female" | "neutral"
 
-  if (cached) {
-    return cached;
+function cleanString(value: unknown) {
+  return String(value ?? "").trim()
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function normaliseScore(value: unknown, fallback = 70) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+
+  // Some AI outputs use 0.9 instead of 90.
+  if (numeric > 0 && numeric <= 1) return Math.round(numeric * 100)
+
+  return Math.max(1, Math.min(100, Math.round(numeric)))
+}
+
+async function safeSelect<T>(query: PromiseLike<{ data: T | null; error: any }>) {
+  const result = await query
+
+  if (result.error) {
+    console.warn("Optional provider training query failed:", result.error.message)
+    return null
   }
 
-  const { data, error } = await supabase.storage
-    .from("report-assets")
-    .download(path);
+  return result.data
+}
 
-  if (error || !data) {
-    throw new Error(error?.message || `Could not download ${path}`);
+async function getProviderKnowledgeText(providerId: string | null, reportType: string) {
+  if (!providerId) return "No provider behaviours, preferred phrases, or template blocks saved."
+
+  const data = await safeSelect<any[]>(
+    supabase
+      .from("provider_behaviours")
+      .select("*")
+      .eq("provider_id", providerId)
+      .eq("status", "active")
+      .in("report_type", [reportType, "all"])
+      .order("confidence", { ascending: false })
+      .order("support_count", { ascending: false })
+      .limit(120)
+  )
+
+  if (!data || data.length === 0) {
+    return "No provider behaviours, preferred phrases, or template blocks saved."
   }
 
-  const buffer = Buffer.from(await data.arrayBuffer());
-  pdfAssetCache.set(path, buffer);
-
-  return buffer;
-}
-
-function extractPdfCcText(text: string) {
-  const match = String(text || "").match(/\[\[PDF_CC:([\s\S]*?)\]\]/);
-  return match?.[1]?.trim() || "";
-}
-
-function extractPdfDateText(text: string) {
-  const match = String(text || "").match(/\[\[PDF_DATE:([\s\S]*?)\]\]/);
-  return match?.[1]?.trim() || "";
-}
-
-function stripPdfMarkers(text: string) {
-  return String(text || "")
-    .replace(/\n?\[\[PDF_CC:[\s\S]*?\]\]/g, "")
-    .replace(/\n?\[\[PDF_DATE:[\s\S]*?\]\]/g, "")
-    .trimEnd();
-}
-
-function formatPdfLetterDate(value: string) {
-  const cleanValue = String(value || "").trim();
-
-  if (!cleanValue) {
-    return new Date().toLocaleDateString("en-AU");
-  }
-
-  const date = new Date(`${cleanValue}T00:00:00`);
-
-  if (Number.isNaN(date.getTime())) {
-    return cleanValue;
-  }
-
-  return date.toLocaleDateString("en-AU");
-}
-
-function formatDob(value: string | null | undefined) {
-  const cleanValue = String(value || "").trim();
-
-  if (!cleanValue) return "";
-
-  const date = new Date(`${cleanValue}T00:00:00`);
-
-  if (Number.isNaN(date.getTime())) {
-    return cleanValue;
-  }
-
-  return date.toLocaleDateString("en-AU");
-}
-
-function decodeBasicHtmlEntities(value: string) {
-  return String(value || "")
-    .replace(/&apos;|&#39;/gi, "'")
-    .replace(/&quot;|&#34;/gi, '"')
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&nbsp;/gi, " ");
-}
-
-function formatPdfCcLine(value: string) {
-  const cleanValue = decodeBasicHtmlEntities(String(value || "")).trim();
-
-  if (!cleanValue) return "";
-
-  const withoutCcPrefix = cleanValue.replace(/^cc\.?\s*/i, "");
-
-  const singleLineDetails = withoutCcPrefix
-    .split(/\r?\n|;/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => part.replace(/^cc\.?\s*/i, "").trim())
-    .filter(Boolean)
-    .join(", ")
-    .replace(/\s*,\s*,+/g, ", ")
-    .replace(/\s{2,}/g, " ")
-    .replace(/^,\s*|,\s*$/g, "");
-
-  return singleLineDetails ? `cc. ${singleLineDetails}` : "";
-}
-
-function cleanLetterText(text: string) {
-  return stripPdfMarkers(text)
-    .replace(/^---$/gm, "")
-    .replace(/^Signature:.*$/gim, "")
-    .replace(/^Dr .*$/gim, "")
-    .replace(/^Specialist .*$/gim, "")
-    .trimEnd();
-}
-
-type TextRun = {
-  text: string;
-  bold: boolean;
-  italic: boolean;
-  underline: boolean;
-};
-
-function parseMarkdownRuns(text: string): TextRun[] {
-  const runs: TextRun[] = [];
-  let current = "";
-  let bold = false;
-  let italic = false;
-  let underline = false;
-
-  function flush() {
-    if (!current) return;
-    runs.push({ text: current, bold, italic, underline });
-    current = "";
-  }
-
-  for (let i = 0; i < text.length; i++) {
-    const nextTwo = text.slice(i, i + 2);
-
-    if (nextTwo === "**") {
-      flush();
-      bold = !bold;
-      i++;
-      continue;
-    }
-
-    if (nextTwo === "__") {
-      flush();
-      underline = !underline;
-      i++;
-      continue;
-    }
-
-    if (text[i] === "_") {
-      flush();
-      italic = !italic;
-      continue;
-    }
-
-    current += text[i];
-  }
-
-  flush();
-  return runs;
-}
-
-function stripMarkdownMarkers(text: string) {
-  return String(text || "")
-    .replace(/\*\*/g, "")
-    .replace(/__/g, "")
-    .replace(/_/g, "");
-}
-
-
-type MarkdownTable = {
-  headers: string[];
-  rows: string[][];
-};
-
-function splitMarkdownTableRow(line: string) {
-  return String(line || "")
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
-}
-
-function isMarkdownTableSeparator(line: string) {
-  const cells = splitMarkdownTableRow(line);
-
-  return (
-    cells.length > 0 &&
-    cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")))
-  );
-}
-
-function parseMarkdownTable(lines: string[]): MarkdownTable | null {
-  if (lines.length < 2) return null;
-
-  const headers = splitMarkdownTableRow(lines[0]);
-
-  if (headers.length === 0 || !isMarkdownTableSeparator(lines[1])) {
-    return null;
-  }
-
-  const rows = lines.slice(2).map(splitMarkdownTableRow);
-  const columnCount = headers.length;
-
-  return {
-    headers,
-    rows: rows.map((row) => [
-      ...row.slice(0, columnCount),
-      ...Array(Math.max(0, columnCount - row.length)).fill(""),
-    ]),
-  };
-}
-
-
-function preparePdfText(value: string) {
-  /*
-    pdf-lib + some custom OpenType fonts can render common ligatures
-    such as ff/fi/fl with incorrect spacing or text extraction.
-
-    Adding a zero-width non-joiner after the first "f" prevents the font
-    from substituting the ligature glyph, while keeping the visible text
-    as normal "ff", "fi", or "fl".
-  */
-  return String(value || "")
-    .normalize("NFC")
-    .replace(/f(?=f|i|l)/g, "f\u200C")
-    .replace(/F(?=F|I|L)/g, "F\u200C");
-}
-
-function wrapText(text: string, maxChars: number) {
-  const words = text.split(/\s+/);
-  const lines: string[] = [];
-  let line = "";
-
-  for (const word of words) {
-    if ((line + " " + word).trim().length > maxChars) {
-      lines.push(line.trim());
-      line = word;
-    } else {
-      line += " " + word;
-    }
-  }
-
-  if (line.trim()) lines.push(line.trim());
-  return lines;
-}
-
-function cleanReferrerTitle(value: unknown) {
-  const cleanValue = String(value || "")
-    .trim()
-    .replace(/\.+$/g, "");
-
-  if (!cleanValue) return "";
-
-  const normalised = cleanValue.toLowerCase();
-
-  const titleMap: Record<string, string> = {
-    dr: "Dr",
-    doctor: "Dr",
-    prof: "Prof",
-    professor: "Prof",
-    mr: "Mr",
-    mister: "Mr",
-    ms: "Ms",
-    miss: "Miss",
-    mrs: "Mrs",
-    mx: "Mx",
-    assocprof: "Assoc Prof",
-    "assoc prof": "Assoc Prof",
-    associateprofessor: "Assoc Prof",
-    "associate professor": "Assoc Prof",
-  };
-
-  return titleMap[normalised] || cleanValue;
-}
-
-function getReferrerTitleFromRecord(referrer: any) {
-  const raw = referrer?.raw_json || {};
-
-  return cleanReferrerTitle(
-    referrer?.title ||
-      referrer?.provider_title ||
-      referrer?.referrer_title ||
-      raw?.title ||
-      raw?.provider_title ||
-      raw?.providerTitle ||
-      raw?.referrer_title ||
-      raw?.referrerTitle ||
-      raw?.vchTitle ||
-      raw?.vchProviderTitle,
-  );
-}
-
-function stripKnownTitleFromName(value: string) {
-  return String(value || "")
-    .trim()
-    .replace(
-      /^(assoc\.?\s*prof\.?|associate\s+professor|professor|prof\.?|doctor|dr\.?|mister|mr\.?|miss|ms\.?|mrs\.?|mx\.?)\s+/i,
-      "",
-    )
-    .trim();
-}
-
-function getTitleFromName(value: string) {
-  const match = String(value || "")
-    .trim()
-    .match(/^(assoc\.?\s*prof\.?|associate\s+professor|professor|prof\.?|doctor|dr\.?|mister|mr\.?|miss|ms\.?|mrs\.?|mx\.?)\s+/i);
-
-  return cleanReferrerTitle(match?.[1] || "");
-}
-
-function getDearLine(
-  referrerName: string | null | undefined,
-  referrerTitle?: string | null,
-) {
-  const cleanName = String(referrerName || "").trim();
-  const title =
-    cleanReferrerTitle(referrerTitle) || getTitleFromName(cleanName) || "Dr";
-
-  if (!cleanName) return title ? `Dear ${title},` : "Dear Doctor,";
-
-  const withoutTitle = stripKnownTitleFromName(cleanName);
-  const parts = withoutTitle.split(/\s+/).filter(Boolean);
-  const lastName = parts[parts.length - 1] || withoutTitle;
-
-  if (!lastName) return title ? `Dear ${title},` : "Dear Doctor,";
-
-  return `Dear ${title} ${lastName},`;
-}
-
-function normaliseForMatch(value: unknown) {
-  return stripKnownTitleFromName(String(value ?? ""))
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function formatReferrerAddressWithPractice(params: {
-  practiceName?: string | null;
-  address?: string | null;
-}) {
-  const practiceName = String(params.practiceName || "").trim();
-  const address = String(params.address || "").trim();
-
-  if (!practiceName) return address || null;
-  if (!address) return practiceName;
-
-  const firstAddressLine = address.split(/\n+/)[0]?.trim().toLowerCase();
-
-  if (firstAddressLine === practiceName.toLowerCase()) {
-    return address;
-  }
-
-  return [practiceName, address].filter(Boolean).join("\n");
-}
-
-function getPossibleReferrerNames(draft: any) {
-  const rawJson = draft?.raw_json || {};
-  const sourceText = String(
-    draft?.source_text ||
-      draft?.clinical_notes ||
-      draft?.source_clinical_notes ||
-      "",
-  );
-
-  const appointmentReferrerMatch = sourceText.match(
-    /(?:^|\n)\s*Referrer\s*:\s*([^\n\r]+)/i,
-  );
-
-  const names = [
-    draft?.referrer_name,
-    rawJson?.referrer_name,
-    rawJson?.referrerName,
-    rawJson?.vchReferrer,
-    rawJson?.vchReferralProvider,
-    rawJson?.vchProvider,
-    appointmentReferrerMatch?.[1],
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-
-  return Array.from(new Set(names));
-}
-
-function getInlineImageMarker(paragraph: string) {
-  const match = String(paragraph || "")
-    .trim()
-    .match(/^\[\[\s*IMAGE\s*:?\s*(\d+)\s*\]\]$/i);
-
-  if (!match) return null;
-
-  const imageNumber = Number(match[1]);
-
-  if (!Number.isFinite(imageNumber) || imageNumber < 1) {
-    return null;
-  }
-
-  return imageNumber;
-}
-
-async function resolveDraftReferrer(draft: any) {
-  const existingName = String(draft?.referrer_name || "").trim();
-  const existingAddress = String(draft?.referrer_address || "").trim();
-
-  const { data: linkedQueueRows, error: queueError } = await supabase
-    .from("report_letter_queue")
-    .select("referrer_name, referrer_address, raw_json")
-    .eq("report_draft_id", draft.id)
-    .limit(1);
-
-  if (queueError) {
-    console.warn("Could not look up linked report_letter_queue row:", queueError);
-  }
-
-  const linkedQueue = linkedQueueRows?.[0] || null;
-  const queueName = String(linkedQueue?.referrer_name || "").trim();
-  const queueAddress = String(linkedQueue?.referrer_address || "").trim();
-
-  const possibleNames = [
-    ...getPossibleReferrerNames(draft),
-    queueName,
-    linkedQueue?.raw_json?.referrer_name,
-    linkedQueue?.raw_json?.referrerName,
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-
-  const fallbackName = existingName || queueName || possibleNames[0] || null;
-  const fallbackAddress = existingAddress || queueAddress || null;
-
-  /*
-    Important:
-    If a referrer address has already been saved on the draft or linked queue row,
-    still look up the referrer title, but keep that exact saved address. This
-    prevents the duplicate-practice issue when one referrer works at more than
-    one practice.
-  */
-  if (possibleNames.length === 0) {
-    return {
-      referrerName: fallbackName,
-      referrerTitle: getTitleFromName(fallbackName || ""),
-      referrerAddress: fallbackAddress,
-      source: fallbackName ? "draft_or_queue_name_only" : "empty",
-    };
-  }
-
-  const { data: referrers, error } = await supabase
-    .from("report_referrers")
-    .select("name, practice_name, address, raw_json")
-    .limit(10000);
-
-  if (error) {
-    console.warn("Could not look up report_referrers for PDF fallback:", error);
-    return {
-      referrerName: fallbackName,
-      referrerTitle: getTitleFromName(fallbackName || ""),
-      referrerAddress: fallbackAddress,
-      source: "lookup_error",
-    };
-  }
-
-  const candidates = possibleNames.map(normaliseForMatch).filter(Boolean);
-
-  let bestReferrer: any = null;
-  let bestScore = 0;
-
-  for (const referrer of referrers || []) {
-    const raw = referrer.raw_json || {};
-    const fields = [
-      referrer.name,
-      referrer.practice_name,
-      raw.vchProvider,
-      raw.vchClinic,
-    ]
-      .map(normaliseForMatch)
-      .filter(Boolean);
-
-    let score = 0;
-
-    for (const candidate of candidates) {
-      const candidateWords = new Set(
-        candidate.split(" ").filter((word) => word.length > 2),
-      );
-
-      for (const field of fields) {
-        if (candidate === field) score = Math.max(score, 120);
-        if (candidate.includes(field)) score = Math.max(score, 90);
-        if (field.includes(candidate)) score = Math.max(score, 80);
-
-        const fieldWords = new Set(
-          field.split(" ").filter((word) => word.length > 2),
-        );
-        const overlap = [...candidateWords].filter((word) =>
-          fieldWords.has(word),
-        ).length;
-
-        score = Math.max(score, overlap * 20);
-      }
-    }
-
-    if (score > bestScore) {
-      bestReferrer = referrer;
-      bestScore = score;
-    }
-  }
-
-  if (!bestReferrer || bestScore < 40) {
-    return {
-      referrerName: fallbackName,
-      referrerTitle: getTitleFromName(fallbackName || ""),
-      referrerAddress: fallbackAddress,
-      source: "no_match",
-    };
-  }
-
-  return {
-    referrerName: fallbackName || bestReferrer.name || null,
-    referrerTitle:
-      getReferrerTitleFromRecord(bestReferrer) ||
-      getTitleFromName(fallbackName || bestReferrer.name || ""),
-    referrerAddress:
-      fallbackAddress ||
-      formatReferrerAddressWithPractice({
-        practiceName: bestReferrer.practice_name,
-        address: bestReferrer.address,
-      }),
-    source: fallbackAddress
-      ? existingAddress
-        ? "selected_draft_address_with_referrer_title"
-        : "selected_queue_address_with_referrer_title"
-      : "report_referrers_fallback",
-  };
-}
-
-function getImageAspect(aspect: string | null | undefined) {
-  if (aspect === "square") return 1;
-  if (aspect === "portrait") return 3 / 4;
-  if (aspect === "landscape") return 16 / 9;
-  return 16 / 9;
-}
-
-function getAlignedX(params: {
-  alignment: string | null | undefined;
-  marginLeft: number;
-  contentWidth: number;
-  imageWidth: number;
-}) {
-  if (params.alignment === "left") return params.marginLeft;
-
-  if (params.alignment === "right") {
-    return params.marginLeft + params.contentWidth - params.imageWidth;
-  }
-
-  return params.marginLeft + (params.contentWidth - params.imageWidth) / 2;
-}
-
-function getSafePatientName(patientName: string | null | undefined) {
-  return patientName
-    ? String(patientName)
-        .trim()
-        .replace(/[^a-z0-9]+/gi, "_")
-        .replace(/^_+|_+$/g, "")
-    : "Patient";
-}
-
-function formatPdfFileDate(value: string) {
-  const cleanValue = String(value || "").trim();
-
-  if (!cleanValue) {
-    const today = new Date();
+  const behaviours = data.filter((item) => {
+    const type = cleanString(item.knowledge_type || "behaviour")
+    return type === "behaviour" || !type
+  })
+
+  const phrases = data.filter((item) => {
+    const type = cleanString(item.knowledge_type)
+    return type === "preferred_phrase"
+  })
+
+  const templateBlocks = data.filter((item) => {
+    const type = cleanString(item.knowledge_type)
+    return type === "template_block"
+  })
+
+  const formatItem = (item: any, index: number) => {
+    const confidence = normaliseScore(item.confidence, 70)
+    const supportCount = Number(item.support_count || 1)
+    const category = cleanString(item.category) || "general"
+    const text =
+      cleanString(item.behaviour_text) ||
+      cleanString(item.phrase_text) ||
+      cleanString(item.template_block_text)
+
+    const evidence = cleanString(item.evidence_summary)
 
     return [
-      String(today.getDate()).padStart(2, "0"),
-      String(today.getMonth() + 1).padStart(2, "0"),
-      today.getFullYear(),
-    ].join(".");
+      `${index + 1}. [${item.report_type || reportType} / ${category} / confidence ${confidence}% / seen ${supportCount}]`,
+      text,
+      evidence ? `Evidence: ${evidence}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n")
   }
 
-  const date = new Date(`${cleanValue}T00:00:00`);
+  const sections: string[] = []
 
-  if (Number.isNaN(date.getTime())) {
-    return cleanValue.replace(/\//g, ".");
+  if (behaviours.length > 0) {
+    sections.push(
+      [
+        "LEARNED PROVIDER BEHAVIOURS",
+        "Use these as provider-specific style and content preferences.",
+        behaviours.map(formatItem).join("\n\n"),
+      ].join("\n")
+    )
+  }
+
+  if (phrases.length > 0) {
+    sections.push(
+      [
+        "PREFERRED PROVIDER PHRASES",
+        "When clinically appropriate, prefer these phrases or very close wording rather than generic wording.",
+        phrases.map(formatItem).join("\n\n"),
+      ].join("\n")
+    )
+  }
+
+  if (templateBlocks.length > 0) {
+    sections.push(
+      [
+        "PROVIDER TEMPLATE BLOCKS",
+        "Use these as reusable paragraph or section structures when the clinical scenario matches.",
+        templateBlocks.map(formatItem).join("\n\n"),
+      ].join("\n")
+    )
+  }
+
+  return sections.join("\n\n---\n\n")
+}
+
+async function getProviderTraining(
+  providerId: string | null,
+  reportType: string,
+  scenarioTags: string[] = [],
+  preferredExampleId: string | null = null
+): Promise<TrainingData> {
+  const safeScenarioTags = Array.isArray(scenarioTags) ? scenarioTags : []
+  const safePreferredExampleId = cleanString(preferredExampleId)
+
+  const universalRulesResult = await supabase
+    .from("universal_report_rules")
+    .select("report_type, rule_text")
+    .in("report_type", [reportType, "all"])
+
+  const universalRules =
+    universalRulesResult.data && universalRulesResult.data.length > 0
+      ? universalRulesResult.data.map((rule) => rule.rule_text)
+      : []
+
+  const providerKnowledgeText = await getProviderKnowledgeText(providerId, reportType)
+
+  if (!providerId) {
+    return {
+      rulesText:
+        universalRules.length > 0
+          ? universalRules.map((rule, index) => `${index + 1}. ${rule}`).join("\n")
+          : "No report rules saved.",
+      terminologyText: "No provider-specific terminology rules saved.",
+      examplesText: "No provider-specific examples saved.",
+      editLearningText: "No provider-specific edit examples saved.",
+      providerKnowledgeText,
+      exampleDebug: [],
+    }
+  }
+
+  const [rulesResult, terminologyResult, examplesResult, editExamplesResult] =
+    await Promise.all([
+      supabase
+        .from("provider_report_rules")
+        .select("report_type, rule_text")
+        .eq("provider_id", providerId)
+        .in("report_type", [reportType, "all"]),
+
+      supabase
+        .from("provider_terminology_rules")
+        .select("spoken_or_written_text, preferred_text")
+        .eq("provider_id", providerId),
+
+      supabase
+        .from("provider_report_examples")
+        .select(
+          "id, report_type, title, example_text, scenario_tags, scenario_summary, is_preferred, created_at"
+        )
+        .eq("provider_id", providerId)
+        .eq("report_type", reportType)
+        .order("created_at", { ascending: false })
+        .limit(40),
+
+      supabase
+        .from("provider_report_edit_examples")
+        .select("report_type, original_text, final_text")
+        .eq("provider_id", providerId)
+        .eq("report_type", reportType)
+        .order("created_at", { ascending: false })
+        .limit(8),
+    ])
+
+  const providerRules =
+    rulesResult.data && rulesResult.data.length > 0
+      ? rulesResult.data.map((rule) => rule.rule_text)
+      : []
+
+  const allRules = [...universalRules, ...providerRules]
+
+  const rulesText =
+    allRules.length > 0
+      ? allRules.map((rule, index) => `${index + 1}. ${rule}`).join("\n")
+      : "No report rules saved."
+
+  const terminologyText =
+    terminologyResult.data && terminologyResult.data.length > 0
+      ? terminologyResult.data
+          .map(
+            (item, index) =>
+              `${index + 1}. Replace "${item.spoken_or_written_text}" with "${item.preferred_text}"`
+          )
+          .join("\n")
+      : "No provider-specific terminology rules saved."
+
+  const allExamples = examplesResult.data || []
+
+  const scoredExamples = allExamples
+    .map((example) => {
+      const tags: string[] = Array.isArray(example.scenario_tags)
+        ? example.scenario_tags
+        : []
+      const tagMatches = safeScenarioTags.filter((tag: string) => tags.includes(tag)).length
+
+      let relevanceScore = 0
+
+      if (safePreferredExampleId && example.id === safePreferredExampleId) {
+        relevanceScore += 1000
+      }
+
+      if (example.is_preferred) {
+        relevanceScore += 25
+      }
+
+      relevanceScore += tagMatches * 10
+
+      if (safeScenarioTags.length > 0 && tags.length > 0) {
+        const extraTags = tags.filter((tag: string) => !safeScenarioTags.includes(tag)).length
+        relevanceScore -= extraTags
+      }
+
+      return {
+        ...example,
+        relevance_score: relevanceScore,
+      }
+    })
+    .sort((a, b) => {
+      if (b.relevance_score !== a.relevance_score) {
+        return b.relevance_score - a.relevance_score
+      }
+
+      const aDate = a.created_at ? new Date(a.created_at).getTime() : 0
+      const bDate = b.created_at ? new Date(b.created_at).getTime() : 0
+      return bDate - aDate
+    })
+    .slice(0, safePreferredExampleId ? 8 : 6)
+
+  const examplesText =
+    scoredExamples.length > 0
+      ? scoredExamples
+          .map((example, index) => {
+            return [
+              `Example ${index + 1}: ${example.title || "Untitled"}`,
+              `Report type: ${example.report_type}`,
+              `Scenario tags: ${(example.scenario_tags || []).join(", ") || "none"}`,
+              `Scenario summary: ${example.scenario_summary || "none"}`,
+              `Preferred example: ${example.is_preferred ? "yes" : "no"}`,
+              `Relevance score: ${example.relevance_score}`,
+              example.example_text,
+            ].join("\n")
+          })
+          .join("\n\n---\n\n")
+      : "No provider-specific examples saved."
+
+  const editLearningText =
+    editExamplesResult.data && editExamplesResult.data.length > 0
+      ? editExamplesResult.data
+          .map((example, index) => {
+            return [
+              `Provider edit example ${index + 1}:`,
+              "Original AI version:",
+              example.original_text,
+              "Final provider-approved version:",
+              example.final_text,
+            ].join("\n")
+          })
+          .join("\n\n---\n\n")
+      : "No provider-specific edit examples saved."
+
+  return {
+    rulesText,
+    terminologyText,
+    examplesText,
+    editLearningText,
+    providerKnowledgeText,
+    exampleDebug: scoredExamples.map((example) => ({
+      id: example.id,
+      title: example.title,
+      report_type: example.report_type,
+      scenario_tags: example.scenario_tags,
+      scenario_summary: example.scenario_summary,
+      is_preferred: example.is_preferred,
+      relevance_score: example.relevance_score,
+    })),
+  }
+}
+
+async function enforceExactPatientFirstName(
+  report: string,
+  patientFirstName: string,
+  patientFullName?: string
+) {
+  const firstName = cleanString(patientFirstName)
+  const fullName = cleanString(patientFullName)
+
+  if (!firstName) return report
+
+  let fixed = report
+
+  if (fullName && fullName !== firstName) {
+    fixed = fixed.replace(
+      new RegExp(`\\b${escapeRegExp(fullName)}\\b`, "g"),
+      firstName
+    )
+
+    const nameParts = fullName.split(/\s+/).filter(Boolean)
+    const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : ""
+
+    if (lastName && lastName !== firstName) {
+      fixed = fixed.replace(
+        new RegExp(`\\b${escapeRegExp(lastName)}\\b`, "g"),
+        firstName
+      )
+    }
+  }
+
+  return fixed
+}
+
+function getReportTypeLabel(reportType: string) {
+  const labels: Record<string, string> = {
+    consultation_report: "consultation report",
+    treatment_report: "treatment report",
+    review: "review letter",
+    SPT_report: "supportive periodontal therapy report",
+    osseointegration_letter: "osseointegration letter",
+    surgery_report: "surgery report",
+    referral_reply: "referral reply",
+    post_op_letter: "post-operative letter",
+    medico_legal_report: "medico-legal report",
+    patient_letter: "patient letter",
+    gp_letter: "GP letter",
+    dictated_letter: "dictated letter",
+  }
+
+  return labels[reportType] || reportType.replace(/_/g, " ")
+}
+
+function safeJsonParse<T>(text: string, fallback: T): T {
+  try {
+    const cleaned = text
+      .trim()
+      .replace(/^```json/i, "")
+      .replace(/^```/i, "")
+      .replace(/```$/i, "")
+      .trim()
+
+    return JSON.parse(cleaned) as T
+  } catch {
+    return fallback
+  }
+}
+
+function normaliseStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+}
+
+function normaliseClinicalScenario(
+  value: Partial<ClinicalScenario> | null | undefined,
+  reportType: string
+): ClinicalScenario {
+  return {
+    summary: cleanString(value?.summary) || "No structured scenario detected.",
+    procedure_category: cleanString(value?.procedure_category) || reportType,
+    implant_count:
+      typeof value?.implant_count === "number" && Number.isFinite(value.implant_count)
+        ? value.implant_count
+        : null,
+    implant_sites: normaliseStringArray(value?.implant_sites),
+    guided_surgery:
+      typeof value?.guided_surgery === "boolean" ? value.guided_surgery : null,
+    grafting_performed:
+      typeof value?.grafting_performed === "boolean" ? value.grafting_performed : null,
+    immediate_implant:
+      typeof value?.immediate_implant === "boolean" ? value.immediate_implant : null,
+    extraction_performed:
+      typeof value?.extraction_performed === "boolean" ? value.extraction_performed : null,
+    sinus_lift:
+      typeof value?.sinus_lift === "boolean" ? value.sinus_lift : null,
+    membrane_used:
+      typeof value?.membrane_used === "boolean" ? value.membrane_used : null,
+    provisionalisation:
+      typeof value?.provisionalisation === "boolean" ? value.provisionalisation : null,
+    key_clinical_features: normaliseStringArray(value?.key_clinical_features),
+    missing_or_unclear_details: normaliseStringArray(value?.missing_or_unclear_details),
+  }
+}
+
+async function detectClinicalScenario(
+  clinicalNotes: string,
+  reportType: string
+): Promise<ClinicalScenario> {
+  const fallback: ClinicalScenario = {
+    summary: "No structured scenario detected.",
+    procedure_category: reportType,
+    implant_count: null,
+    implant_sites: [],
+    guided_surgery: null,
+    grafting_performed: null,
+    immediate_implant: null,
+    extraction_performed: null,
+    sinus_lift: null,
+    membrane_used: null,
+    provisionalisation: null,
+    key_clinical_features: [],
+    missing_or_unclear_details: [],
+  }
+
+  const scenarioPrompt = `
+You are analysing dental clinical notes before a letter is written.
+
+Extract the clinical scenario from the notes.
+
+Return JSON only. Do not include markdown.
+
+Use true, false, or null where details are unclear.
+
+JSON shape:
+{
+  "summary": "brief plain English summary",
+  "procedure_category": "brief category, e.g. single implant guided placement with graft",
+  "implant_count": number or null,
+  "implant_sites": ["tooth/site labels if stated"],
+  "guided_surgery": true/false/null,
+  "grafting_performed": true/false/null,
+  "immediate_implant": true/false/null,
+  "extraction_performed": true/false/null,
+  "sinus_lift": true/false/null,
+  "membrane_used": true/false/null,
+  "provisionalisation": true/false/null,
+  "key_clinical_features": ["important clinical facts only from notes"],
+  "missing_or_unclear_details": ["important details that are unclear or not stated"]
+}
+
+Report type:
+${reportType}
+
+Clinical notes:
+${clinicalNotes}
+`
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You extract structured dental clinical facts from notes. You return valid JSON only and do not invent facts.",
+      },
+      {
+        role: "user",
+        content: scenarioPrompt,
+      },
+    ],
+  })
+
+  const content = completion.choices[0]?.message?.content || ""
+
+  const parsed = safeJsonParse<Partial<ClinicalScenario>>(content, fallback)
+
+  return normaliseClinicalScenario(parsed, reportType)
+}
+
+function formatClinicalScenario(scenario: ClinicalScenario) {
+  return [
+    `Scenario summary: ${scenario.summary}`,
+    `Procedure category: ${scenario.procedure_category}`,
+    `Implant count: ${scenario.implant_count ?? "Not clearly stated"}`,
+    `Implant sites: ${
+      scenario.implant_sites.length > 0
+        ? scenario.implant_sites.join(", ")
+        : "Not clearly stated"
+    }`,
+    `Guided surgery: ${scenario.guided_surgery ?? "Not clearly stated"}`,
+    `Grafting performed: ${scenario.grafting_performed ?? "Not clearly stated"}`,
+    `Immediate implant: ${scenario.immediate_implant ?? "Not clearly stated"}`,
+    `Extraction performed: ${
+      scenario.extraction_performed ?? "Not clearly stated"
+    }`,
+    `Sinus lift: ${scenario.sinus_lift ?? "Not clearly stated"}`,
+    `Membrane used: ${scenario.membrane_used ?? "Not clearly stated"}`,
+    `Provisionalisation: ${scenario.provisionalisation ?? "Not clearly stated"}`,
+    "",
+    "Key clinical features:",
+    scenario.key_clinical_features.length > 0
+      ? scenario.key_clinical_features.map((item) => `- ${item}`).join("\n")
+      : "- None detected",
+    "",
+    "Missing or unclear details:",
+    scenario.missing_or_unclear_details.length > 0
+      ? scenario.missing_or_unclear_details.map((item) => `- ${item}`).join("\n")
+      : "- None detected",
+  ].join("\n")
+}
+
+function getScenarioTagsFromClinicalScenario(scenario: ClinicalScenario) {
+  const tags: string[] = []
+
+  if (scenario.implant_count === 1) tags.push("single_implant")
+  if ((scenario.implant_count || 0) > 1) tags.push("multiple_implants")
+  if (scenario.guided_surgery === true) tags.push("guided")
+  if (scenario.grafting_performed === true) tags.push("graft")
+  if (scenario.immediate_implant === true) tags.push("immediate")
+  if (scenario.extraction_performed === true) tags.push("extraction")
+  if (scenario.sinus_lift === true) tags.push("sinus_lift")
+  if (scenario.membrane_used === true) tags.push("membrane")
+  if (scenario.provisionalisation === true) tags.push("provisionalisation")
+
+  return tags
+}
+
+function normalisePatientGender(value: unknown): PatientGender {
+  if (value === "male" || value === "female" || value === "neutral") {
+    return value
+  }
+
+  return "neutral"
+}
+
+function getGenderInstruction(patientGender: PatientGender) {
+  if (patientGender === "male") {
+    return [
+      "Patient gender/pronoun setting: male.",
+      "Use male pronouns where pronouns are required: he, him, his.",
+      "Do not use female pronouns for this patient.",
+    ].join("\n")
+  }
+
+  if (patientGender === "female") {
+    return [
+      "Patient gender/pronoun setting: female.",
+      "Use female pronouns where pronouns are required: she, her, hers.",
+      "Do not use male pronouns for this patient.",
+    ].join("\n")
   }
 
   return [
-    String(date.getDate()).padStart(2, "0"),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    date.getFullYear(),
-  ].join(".");
-}
-
-function getSafeFilePart(value: string | null | undefined, fallback: string) {
-  return String(value || fallback)
-    .trim()
-    .replace(/[\\/:*?"<>|]+/g, "")
-    .replace(/\s+/g, " ");
-}
-
-function formatReportTypeForFileName(value: string | null | undefined) {
-  return String(value || "Report")
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-    .trim();
-}
-
-async function downloadStorageFile(path: string) {
-  const { data, error } = await supabase.storage
-    .from("report-assets")
-    .download(path);
-
-  if (error || !data) {
-    throw new Error(error?.message || `Could not download ${path}`);
-  }
-
-  return Buffer.from(await data.arrayBuffer());
-}
-
-async function embedStorageImage(pdfDoc: PDFDocument, image: DraftImage) {
-  const bytes = await downloadStorageFile(image.storage_path);
-
-  /*
-    react-easy-crop calculates crop_area_* against the rotated image canvas.
-    Therefore the custom rotation must be applied before the pixel crop.
-
-    This also means the saved crop remains a fixed landscape, portrait or
-    square rectangle while only the photograph inside it is rotated.
-  */
-  let pipeline = sharp(bytes).rotate();
-
-  const cropRotation = Number(image.crop_rotation ?? 0);
-
-  if (cropRotation) {
-    pipeline = pipeline.rotate(cropRotation, {
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
-    });
-  }
-
-  const cropAreaX = image.crop_area_x;
-  const cropAreaY = image.crop_area_y;
-  const cropAreaWidth = image.crop_area_width;
-  const cropAreaHeight = image.crop_area_height;
-
-  if (
-    cropAreaX !== null &&
-    cropAreaY !== null &&
-    cropAreaWidth !== null &&
-    cropAreaHeight !== null &&
-    Number(cropAreaWidth) > 0 &&
-    Number(cropAreaHeight) > 0
-  ) {
-    const metadata = await pipeline.metadata();
-    const imageWidth = metadata.width || 0;
-    const imageHeight = metadata.height || 0;
-
-    const left = Math.min(
-      Math.max(0, Math.round(Number(cropAreaX))),
-      Math.max(0, imageWidth - 1),
-    );
-    const top = Math.min(
-      Math.max(0, Math.round(Number(cropAreaY))),
-      Math.max(0, imageHeight - 1),
-    );
-    const width = Math.min(
-      imageWidth - left,
-      Math.max(1, Math.round(Number(cropAreaWidth))),
-    );
-    const height = Math.min(
-      imageHeight - top,
-      Math.max(1, Math.round(Number(cropAreaHeight))),
-    );
-
-    if (width > 0 && height > 0) {
-      pipeline = pipeline.extract({
-        left,
-        top,
-        width,
-        height,
-      });
-    }
-  }
-
-  const pngBytes = await pipeline
-    .png({
-      compressionLevel: 0,
-    })
-    .toBuffer();
-
-  return pdfDoc.embedPng(pngBytes);
+    "Patient gender/pronoun setting: neutral.",
+    "Avoid gendered pronouns where possible.",
+    "Prefer the patient's first name or neutral wording such as 'the patient' when a pronoun would otherwise be needed.",
+    "Do not infer gender from the patient's name or clinical notes.",
+  ].join("\n")
 }
 
 export async function POST(req: Request) {
   try {
-    const { draftId } = await req.json();
-
-    const { data: draft, error: draftError } = await supabase
-      .from("report_drafts")
-      .select("*")
-      .eq("id", draftId)
-      .single();
-
-    if (draftError || !draft) {
+    if (!process.env.OPENAI_API_KEY) {
       return NextResponse.json(
-        { success: false, error: "Draft not found" },
-        { status: 404 },
-      );
-    }
-
-    const { data: provider, error: providerError } = await supabase
-      .from("providers")
-      .select(
-        "id, name, report_display_name, report_qualifications, report_signature_path",
+        {
+          success: false,
+          error: "Missing OPENAI_API_KEY.",
+        },
+        { status: 500 }
       )
-      .eq("id", draft.provider_id)
-      .single();
+    }
 
-    if (providerError || !provider) {
+    const body = await req.json().catch(() => ({}))
+
+    const providerId = cleanString(body.providerId)
+    const patientName = cleanString(body.patientName)
+    const patientFirstName = cleanString(body.patientFirstName) || patientName
+    const patientDob = cleanString(body.patientDob)
+    const patientGender = body.patientGender
+    const referrerName = cleanString(body.referrerName)
+    const referrerAddress = cleanString(body.referrerAddress)
+    const reportType = cleanString(body.reportType)
+    const clinicalNotes = cleanString(body.clinicalNotes)
+    const preferredExampleId = cleanString(body.preferredExampleId)
+    const temporaryRulesText = cleanString(body.temporaryRulesText)
+
+    if (!patientName && !patientFirstName) {
       return NextResponse.json(
-        { success: false, error: "Provider not found" },
-        { status: 404 },
-      );
+        {
+          success: false,
+          error: "Patient name is required.",
+        },
+        { status: 400 }
+      )
     }
 
-    const { data: imageRows, error: imageError } = await supabase
-      .from("report_draft_images")
-      .select("*")
-      .eq("report_draft_id", draft.id)
-      .order("display_order", { ascending: true })
-      .order("created_at", { ascending: true });
-
-    if (imageError) {
+    if (!clinicalNotes) {
       return NextResponse.json(
-        { success: false, error: imageError.message },
-        { status: 500 },
-      );
+        {
+          success: false,
+          error: "Clinical notes are required.",
+        },
+        { status: 400 }
+      )
     }
 
-    const images = (imageRows || []) as DraftImage[];
+    const finalReportType = reportType || "consultation_report"
+    const finalPatientGender = normalisePatientGender(patientGender)
+    const genderInstruction = getGenderInstruction(finalPatientGender)
 
-    const resolvedReferrer = await resolveDraftReferrer(draft);
-    const pdfReferrerName = resolvedReferrer.referrerName;
-    const pdfReferrerTitle = resolvedReferrer.referrerTitle;
-    const pdfReferrerAddress = resolvedReferrer.referrerAddress;
+    const exactFirstName = patientFirstName || patientName
 
-    const letterheadBytes = await downloadStorageFileCached(
-  "letterhead/focus-letterhead.png",
-);
+    const clinicalScenario = await detectClinicalScenario(
+      clinicalNotes,
+      finalReportType
+    )
 
-    const signatureBytes = provider.report_signature_path
-  ? await downloadStorageFileCached(provider.report_signature_path)
-  : null;
+    const scenarioTags = getScenarioTagsFromClinicalScenario(clinicalScenario)
 
-    const pdfDoc = await PDFDocument.create();
-    pdfDoc.registerFontkit(fontkit);
+    const training = await getProviderTraining(
+      providerId || null,
+      finalReportType,
+      scenarioTags,
+      preferredExampleId || null
+    )
 
-    let font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    let boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    let italicFont = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+    const reportTypeLabel = getReportTypeLabel(finalReportType)
+    const scenarioText = formatClinicalScenario(clinicalScenario)
 
-    try {
-      const bwGradualRegularBytes = await downloadStorageFileCached(
-  "fonts/BWGradual-Regular.otf",
-);
-const bwGradualBoldBytes = await downloadStorageFileCached(
-  "fonts/BWGradual-Bold.otf",
-);
+    const prompt = `
+You are an AI specialist dental report writing assistant.
 
-      font = await pdfDoc.embedFont(bwGradualRegularBytes);
-      boldFont = await pdfDoc.embedFont(bwGradualBoldBytes);
-      // Keep Helvetica Oblique for italic markdown, because no BW Gradual italic file is loaded here.
-    } catch (fontError) {
-      console.warn(
-        "BW Gradual font unavailable; falling back to Helvetica:",
-        fontError,
-      );
-    }
+Write a polished specialist dental ${reportTypeLabel}.
 
-    const letterheadImage = await pdfDoc.embedPng(letterheadBytes);
+The report must:
+- CRITICAL: The exact patient first name is "${exactFirstName}". Use this spelling exactly every time.
+- Use the patient first name only in the body of the report unless the provider examples clearly use the full name.
+- Never use the patient surname in the body of the report unless the provider examples clearly require it.
+- Never autocorrect this name. For example, if the entered name is "Sarrah", never write "Sarah".
+- Always use the exact patient first name provided in the patientFirstName field.
+- Never change, infer, shorten, replace or hallucinate the patient name from clinical notes or dictation.
+- Follow the supplied patient gender/pronoun setting exactly.
+- Do not infer gender from the patient name, referrer name, or clinical notes.
+- Be clinically professional and concise.
+- Use Australian English.
+- Use correct dental and medical terminology.
+- Avoid inventing facts that are not in the clinical notes.
+- Use plain text paragraphs for normal report content.
+- Markdown formatting is not permitted except for Markdown tables.
+- IMPORTANT TABLE RULE: When the current clinical notes contain clearly tabular or comparative clinical data, automatically format it as a Markdown table using pipes and a separator row.
+- The Markdown table must not be wrapped in a code block.
+- Do not include a signature block.
+- Do not include "Warm regards" unless it is clearly part of the requested content.
+- Follow universal report rules.
+- Follow provider-specific report rules.
+- Follow learnt provider behaviours, preferred phrases and template blocks.
+- Use the terminology replacement rules exactly.
+- Use the detected clinical scenario to choose the closest matching provider example structure.
+- If the detected scenario says a detail is false, do not mention that detail as if it happened.
+- If the detected scenario says a detail is unclear or not stated, do not invent it.
 
-    const signatureImage = signatureBytes
-      ? await pdfDoc.embedPng(
-          await sharp(signatureBytes)
-            .trim()
-            .png({
-              compressionLevel: 9,
-              adaptiveFiltering: true,
-              force: true,
-            })
-            .toBuffer(),
+Provider example rules:
+- The provider examples are EXTREMELY important.
+- Provider examples override generic writing behaviour.
+- Match the style of the examples as closely as possible.
+- Closely follow the structure, brevity, sequencing, wording style, paragraph structure, and treatment-plan format of the provider examples.
+- If the examples are concise and template-like, the generated letter must also be concise and template-like.
+- Prefer the same overall length as the examples.
+- Do not add extra narrative, radiographic interpretation, consent discussions, or explanatory detail unless the examples include them.
+- Use the examples as the primary guide for writing style.
+- Use the clinical notes only to determine the clinical facts and which example structure is most appropriate.
+- If a preferred example was selected, follow that example's structure most closely.
+- If examples use short paragraphs and numbered treatment plans, use that structure.
+- Avoid generic AI-style explanatory writing.
+- Avoid expanding sections unnecessarily.
+- Provider examples control writing style and structure, but must not prevent the use of a table when the current clinical notes contain clearly tabular data.
+- Provider examples must never supply patient-specific dates, measurements, percentages, tooth numbers, medications, diagnoses, or treatment details.
+
+Clinical data table rules:
+- Recognise data as tabular when it contains two or more dates, visits, stages, categories, or comparison periods together with repeated measurements or labels and a value for each period.
+- Automatically convert clearly tabular or comparative clinical data into a Markdown table.
+- Use this exact Markdown table structure:
+
+| Column heading | Column heading | Column heading |
+| --- | --- | --- |
+| Row value | Row value | Row value |
+
+- Do not wrap the table in a Markdown code fence.
+- Use a single header row followed immediately by the separator row.
+- Keep ordinary clinical narrative outside the table.
+- Preserve every supplied heading, date, stage, measurement label, number, percentage, symbol, and value exactly as written in the current clinical notes.
+- Do not alter, round, reinterpret, summarise, replace, or omit table values merely to make the report shorter.
+- Do not invent missing table cells or values.
+- If a value is genuinely missing or unclear, preserve the row but leave the relevant cell blank.
+- If the same table data appears more than once in the clinical notes, include it only once.
+- Choose the table orientation that best represents the source data. For repeated measurements across dates or visits, use the measurement names as rows and the dates or visits as columns unless the provider examples clearly require the opposite orientation.
+- Tables are the only permitted Markdown formatting.
+- All patient-specific table content must come exclusively from the current clinical notes, never from provider examples, learned examples, template blocks, or prior reports.
+
+Provider knowledge rules:
+- Learned behaviours explain reusable provider preferences.
+- Preferred phrases are important. Use them when the clinical situation matches.
+- Template blocks are important. Use the same block structure when the clinical situation matches.
+- If a learned behaviour conflicts with a manual rule, follow the manual rule.
+- If a preferred phrase conflicts with the clinical notes, do not use it.
+- If a template block requires facts not in the clinical notes, adapt it without inventing facts.
+
+Provider-specific learning rules:
+- Learn from the provider-specific edit examples by imitating the final approved style.
+- Avoid patterns that were removed from the original AI versions.
+
+Patient details:
+Patient full name: ${patientName || exactFirstName || ""}
+Patient first name: ${exactFirstName || ""}
+Patient DOB: ${patientDob || "Not provided"}
+Patient gender/pronoun setting: ${finalPatientGender}
+
+Pronoun instructions:
+${genderInstruction}
+
+Referrer details:
+Referrer name: ${referrerName || "Not provided"}
+Referrer address:
+${referrerAddress || "Not provided"}
+
+Report type:
+${reportTypeLabel}
+
+Detected clinical scenario:
+${scenarioText}
+
+Detected scenario tags:
+${scenarioTags.length > 0 ? scenarioTags.join(", ") : "No scenario tags detected"}
+
+Universal and provider-specific report rules:
+${training.rulesText}
+
+Learned provider behaviours, preferred phrases and template blocks:
+${training.providerKnowledgeText}
+
+Temporary training-loop or preview rules:
+${temporaryRulesText || "No temporary training-loop rules."}
+
+Provider-specific terminology preferences:
+${training.terminologyText}
+
+Provider example letters for style and structure only:
+${training.examplesText}
+
+Provider-specific learning from previously edited/approved reports:
+${training.editLearningText}
+
+Clinical notes:
+${clinicalNotes}
+
+Now write the final report body only.
+`
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      temperature: 0.12,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You write specialist dental reports. You closely follow provider examples, manual rules, learned behaviours, preferred phrases, template blocks, terminology preferences, detected clinical scenario information, and provider-specific edit-learning examples. You do not invent clinical facts. You use the supplied patient first name only unless examples clearly require the full name. You follow the supplied patient gender/pronoun setting exactly and do not infer gender from names. When the current clinical notes contain clearly tabular or comparative data, you automatically format that data as a valid Markdown table without a code fence, while keeping all other report content as plain text.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+    })
+
+    const rawReport = completion.choices[0]?.message?.content?.trim() || ""
+    const report = rawReport
+      ? await enforceExactPatientFirstName(
+          rawReport,
+          exactFirstName || patientName,
+          patientName
         )
-      : null;
-
-    const pageWidth = 595.28;
-    const pageHeight = 841.89;
-
-    const marginLeft = 72;
-    const marginRight = 72;
-    const contentWidth = pageWidth - marginLeft - marginRight;
-
-    const topMarginFirstPage = 93;
-    const topMarginOtherPages = 120;
-
-    /*
-      The letterhead footer artwork extends higher than the visible contact
-      details. Keep all flowing body text, images, captions and signatures
-      above this protected boundary on every page.
-
-      PDF coordinates start at the bottom of the page, so increasing this
-      value moves the usable content boundary upward.
-    */
-    const bottomLimit = 140;
-
-    const fontSize = 10;
-    const lineHeight = 14;
-    const maxChars = 82;
-
-    let page = pdfDoc.addPage([pageWidth, pageHeight]);
-    let y = pageHeight - topMarginFirstPage;
-
-    function drawLetterhead() {
-      page.drawImage(letterheadImage, {
-        x: 0,
-        y: 0,
-        width: pageWidth,
-        height: pageHeight,
-      });
-    }
-
-    function newPage() {
-      page = pdfDoc.addPage([pageWidth, pageHeight]);
-      drawLetterhead();
-      return pageHeight - topMarginOtherPages;
-    }
-
-    function drawLine(
-      text: string,
-      options?: {
-        bold?: boolean;
-        size?: number;
-      },
-    ) {
-      if (y < bottomLimit) {
-        y = newPage();
-      }
-
-      page.drawText(preparePdfText(text), {
-        x: marginLeft,
-        y,
-        size: options?.size || fontSize,
-        font: options?.bold ? boldFont : font,
-        color: rgb(0, 0, 0),
-      });
-
-      y -= lineHeight;
-    }
-
-    function drawParagraph(text: string, options?: { bold?: boolean }) {
-      const wrapped = wrapText(stripMarkdownMarkers(text), maxChars);
-
-      for (const line of wrapped) {
-        drawLine(line, { bold: options?.bold });
-      }
-    }
-
-    function getRunFont(run: TextRun) {
-      if (run.bold) return boldFont;
-      if (run.italic) return italicFont;
-      return font;
-    }
-
-    function drawUnderline(x: number, baselineY: number, width: number) {
-      if (width <= 0) return;
-
-      page.drawLine({
-        start: { x, y: baselineY - 2 },
-        end: { x: x + width, y: baselineY - 2 },
-        thickness: 0.5,
-        color: rgb(0, 0, 0),
-      });
-    }
-
-
-    function wrapPlainTextToWidth(params: {
-      text: string;
-      maxWidth: number;
-      textFont: typeof font;
-      size: number;
-    }) {
-      const words = String(params.text || "").split(/\s+/).filter(Boolean);
-      const lines: string[] = [];
-      let currentLine = "";
-
-      for (const word of words) {
-        const candidate = currentLine ? `${currentLine} ${word}` : word;
-        const candidateWidth = params.textFont.widthOfTextAtSize(
-          preparePdfText(candidate),
-          params.size,
-        );
-
-        if (currentLine && candidateWidth > params.maxWidth) {
-          lines.push(currentLine);
-          currentLine = word;
-        } else {
-          currentLine = candidate;
-        }
-      }
-
-      if (currentLine) {
-        lines.push(currentLine);
-      }
-
-      return lines;
-    }
-
-    function drawInlineRuns(runs: TextRun[]) {
-      const maxWidth = contentWidth;
-      const words: TextRun[] = [];
-
-      for (const run of runs) {
-        const pieces = run.text
-          .split(/(\s+)/)
-          .filter((piece) => piece.length > 0);
-
-        for (const piece of pieces) {
-          words.push({
-            text: piece,
-            bold: run.bold,
-            italic: run.italic,
-            underline: run.underline,
-          });
-        }
-      }
-
-      let line: TextRun[] = [];
-      let lineWidth = 0;
-
-      function measure(run: TextRun) {
-        return getRunFont(run).widthOfTextAtSize(
-          preparePdfText(run.text),
-          fontSize,
-        );
-      }
-
-      function flushLine() {
-        if (line.length === 0) return;
-
-        if (y < bottomLimit) {
-          y = newPage();
-        }
-
-        let x = marginLeft;
-
-        for (const run of line) {
-          const runFont = getRunFont(run);
-          const pdfText = preparePdfText(run.text);
-          const runWidth = runFont.widthOfTextAtSize(pdfText, fontSize);
-
-          page.drawText(pdfText, {
-            x,
-            y,
-            size: fontSize,
-            font: runFont,
-            color: rgb(0, 0, 0),
-          });
-
-          if (run.underline && run.text.trim()) {
-            drawUnderline(x, y, runWidth);
-          }
-
-          x += runWidth;
-        }
-
-        y -= lineHeight;
-        line = [];
-        lineWidth = 0;
-      }
-
-      for (const word of words) {
-        const width = measure(word);
-
-        if (line.length > 0 && lineWidth + width > maxWidth) {
-          flushLine();
-
-          if (/^\s+$/.test(word.text)) continue;
-        }
-
-        line.push(word);
-        lineWidth += width;
-      }
-
-      flushLine();
-    }
-
-    function drawRichParagraph(text: string, options?: { bold?: boolean }) {
-      if (options?.bold) {
-        drawParagraph(text, { bold: true });
-        return;
-      }
-
-      drawInlineRuns(parseMarkdownRuns(text));
-    }
-
-
-    function wrapCellText(
-      text: string,
-      cellWidth: number,
-      cellFont = font,
-      size = fontSize,
-    ) {
-      const cleanText = stripMarkdownMarkers(text).trim();
-
-      if (!cleanText) return [""];
-
-      const words = cleanText.split(/\s+/);
-      const lines: string[] = [];
-      let current = "";
-
-      for (const word of words) {
-        const candidate = current ? `${current} ${word}` : word;
-        const candidateWidth = cellFont.widthOfTextAtSize(
-          preparePdfText(candidate),
-          size,
-        );
-
-        if (current && candidateWidth > cellWidth) {
-          lines.push(current);
-          current = word;
-        } else {
-          current = candidate;
-        }
-      }
-
-      if (current) lines.push(current);
-      return lines.length ? lines : [""];
-    }
-
-    function drawMarkdownTable(table: MarkdownTable) {
-      const columnCount = table.headers.length;
-      if (columnCount === 0) return;
-
-      const borderWidth = 0.6;
-      const cellPaddingX = 6;
-      const cellPaddingY = 5;
-      const tableFontSize = 9;
-      const tableLineHeight = 12;
-      const columnWidth = contentWidth / columnCount;
-
-      const allRows = [table.headers, ...table.rows];
-
-      function getRowLayout(row: string[], isHeader: boolean) {
-        const rowFont = isHeader ? boldFont : font;
-        const wrappedCells = row.map((cell) =>
-          wrapCellText(
-            cell,
-            columnWidth - cellPaddingX * 2,
-            rowFont,
-            tableFontSize,
-          ),
-        );
-
-        const maximumLines = Math.max(
-          1,
-          ...wrappedCells.map((lines) => lines.length),
-        );
-
-        return {
-          wrappedCells,
-          height: maximumLines * tableLineHeight + cellPaddingY * 2,
-        };
-      }
-
-      function drawRow(row: string[], isHeader: boolean) {
-        const layout = getRowLayout(row, isHeader);
-
-        if (y - layout.height < bottomLimit) {
-          y = newPage();
-
-          if (!isHeader) {
-            drawRow(table.headers, true);
-          }
-        }
-
-        const rowTop = y;
-        const rowBottom = y - layout.height;
-        const rowFont = isHeader ? boldFont : font;
-
-        if (isHeader) {
-          page.drawRectangle({
-            x: marginLeft,
-            y: rowBottom,
-            width: contentWidth,
-            height: layout.height,
-            color: rgb(0.94, 0.94, 0.94),
-          });
-        }
-
-        page.drawRectangle({
-          x: marginLeft,
-          y: rowBottom,
-          width: contentWidth,
-          height: layout.height,
-          borderColor: rgb(0, 0, 0),
-          borderWidth,
-        });
-
-        for (let columnIndex = 1; columnIndex < columnCount; columnIndex++) {
-          const dividerX = marginLeft + columnIndex * columnWidth;
-
-          page.drawLine({
-            start: { x: dividerX, y: rowBottom },
-            end: { x: dividerX, y: rowTop },
-            thickness: borderWidth,
-            color: rgb(0, 0, 0),
-          });
-        }
-
-        layout.wrappedCells.forEach((cellLines, columnIndex) => {
-          const textX =
-            marginLeft + columnIndex * columnWidth + cellPaddingX;
-          let textY = rowTop - cellPaddingY - tableFontSize;
-
-          for (const cellLine of cellLines) {
-            page.drawText(preparePdfText(cellLine), {
-              x: textX,
-              y: textY,
-              size: tableFontSize,
-              font: rowFont,
-              color: rgb(0, 0, 0),
-            });
-
-            textY -= tableLineHeight;
-          }
-        });
-
-        y = rowBottom;
-      }
-
-      allRows.forEach((row, index) => {
-        drawRow(row, index === 0);
-      });
-
-      y -= 10;
-    }
-
-    const usedInlineImageIds = new Set<string>();
-
-
-    function drawEmbeddedImageCover(params: {
-      embeddedImage: Awaited<ReturnType<PDFDocument["embedPng"]>>;
-      frameX: number;
-      frameY: number;
-      frameWidth: number;
-      frameHeight: number;
-    }) {
-      const sourceWidth = params.embeddedImage.width;
-      const sourceHeight = params.embeddedImage.height;
-
-      if (!sourceWidth || !sourceHeight) {
-        return;
-      }
-
-      /*
-        Scale proportionally until the frame is fully covered. Any excess is
-        clipped by the existing frame clipping path, rather than stretching
-        the image horizontally or vertically.
-      */
-      const scale = Math.max(
-        params.frameWidth / sourceWidth,
-        params.frameHeight / sourceHeight,
-      );
-
-      const drawWidth = sourceWidth * scale;
-      const drawHeight = sourceHeight * scale;
-
-      const drawX =
-        params.frameX + (params.frameWidth - drawWidth) / 2;
-      const drawY =
-        params.frameY + (params.frameHeight - drawHeight) / 2;
-
-      page.drawImage(params.embeddedImage, {
-        x: drawX,
-        y: drawY,
-        width: drawWidth,
-        height: drawHeight,
-      });
-    }
-
-
-    async function drawImageBlock(image: DraftImage) {
-      const embeddedImage = await embedStorageImage(pdfDoc, image);
-
-      const displayWidthPercent = Number(image.display_width_percent ?? 60);
-
-      const imageWidth =
-        (contentWidth * Math.min(Math.max(displayWidthPercent, 30), 100)) /
-        100;
-
-      // The frame follows the selected crop shape, not the rotated image dimensions.
-      // Rotating the photograph therefore never rotates or changes the frame.
-      const frameAspectRatio = getImageAspect(image.crop_aspect);
-      const frameWidth = imageWidth;
-      const frameHeight = frameWidth / frameAspectRatio;
-
-      const captionLines = image.caption ? wrapText(image.caption, 75) : [];
-
-      const captionHeight =
-        captionLines.length > 0 ? captionLines.length * 12 + 10 : 0;
-
-      const totalImageBlockHeight = frameHeight + captionHeight + 28;
-
-      if (
-        image.display_page_break_before ||
-        y - totalImageBlockHeight < bottomLimit
-      ) {
-        y = newPage();
-      }
-
-      const x = getAlignedX({
-        alignment: image.display_alignment,
-        marginLeft,
-        contentWidth,
-        imageWidth: frameWidth,
-      });
-
-      const frameY = y - frameHeight;
-
-      page.pushOperators(
-        pushGraphicsState(),
-        moveTo(x, frameY),
-        lineTo(x + frameWidth, frameY),
-        lineTo(x + frameWidth, frameY + frameHeight),
-        lineTo(x, frameY + frameHeight),
-        closePath(),
-        clip(),
-        endPath(),
-      );
-
-      drawEmbeddedImageCover({
-        embeddedImage,
-        frameX: x,
-        frameY,
-        frameWidth,
-        frameHeight,
-      });
-
-      page.pushOperators(popGraphicsState());
-
-      y = frameY - 12;
-
-      if (captionLines.length > 0) {
-        for (const captionLine of captionLines) {
-          if (y < bottomLimit) {
-            y = newPage();
-          }
-
-          const captionWidth = boldFont.widthOfTextAtSize(preparePdfText(captionLine), 9);
-          const captionX = x + frameWidth / 2 - captionWidth / 2;
-
-          page.drawText(preparePdfText(captionLine), {
-            x: captionX,
-            y,
-            size: 9,
-            font: boldFont,
-            color: rgb(0, 0, 0),
-          });
-
-          y -= 12;
-        }
-
-        y -= 8;
-      } else {
-        y -= 8;
-      }
-    }
-
-
-
-    async function drawImageWithSideText(
-      image: DraftImage,
-      sideParagraphs: string[],
-    ) {
-      const embeddedImage = await embedStorageImage(pdfDoc, image);
-
-      const displayWidthPercent = Number(image.display_width_percent ?? 45);
-
-      // Side-wrapped images work best when they are not too wide.
-      // This keeps enough room for a readable text column beside the image.
-      const imageWidth =
-        (contentWidth * Math.min(Math.max(displayWidthPercent, 30), 55)) /
-        100;
-
-      const frameAspectRatio = getImageAspect(image.crop_aspect);
-      const frameWidth = imageWidth;
-      const frameHeight = frameWidth / frameAspectRatio;
-
-      const gap = 18;
-      const paragraphGap = 8;
-      const alignment = image.display_alignment === "right" ? "right" : "left";
-
-      const imageX =
-        alignment === "right"
-          ? marginLeft + contentWidth - frameWidth
-          : marginLeft;
-
-      const textX =
-        alignment === "right" ? marginLeft : imageX + frameWidth + gap;
-
-      const textWidth = contentWidth - frameWidth - gap;
-
-      const captionLines = image.caption ? wrapText(image.caption, 45) : [];
-      const captionHeight =
-        captionLines.length > 0 ? captionLines.length * 12 + 18 : 0;
-
-      const totalBlockHeight = frameHeight + captionHeight + 12;
-
-      if (image.display_page_break_before || y - totalBlockHeight < bottomLimit) {
-        y = newPage();
-      }
-
-      const startY = y;
-      const frameY = y - frameHeight;
-
-      page.pushOperators(
-        pushGraphicsState(),
-        moveTo(imageX, frameY),
-        lineTo(imageX + frameWidth, frameY),
-        lineTo(imageX + frameWidth, frameY + frameHeight),
-        lineTo(imageX, frameY + frameHeight),
-        closePath(),
-        clip(),
-        endPath(),
-      );
-
-      drawEmbeddedImageCover({
-        embeddedImage,
-        frameX: imageX,
-        frameY,
-        frameWidth,
-        frameHeight,
-      });
-
-      page.pushOperators(popGraphicsState());
-
-      function wrapRunsToWidth(runs: TextRun[], maxWidth: number) {
-        const pieces: TextRun[] = [];
-
-        for (const run of runs) {
-          const splitPieces = run.text
-            .split(/(\s+)/)
-            .filter((piece) => piece.length > 0);
-
-          for (const piece of splitPieces) {
-            pieces.push({
-              text: piece,
-              bold: run.bold,
-              italic: run.italic,
-              underline: run.underline,
-            });
-          }
-        }
-
-        const lines: TextRun[][] = [];
-        let line: TextRun[] = [];
-        let lineWidth = 0;
-
-        function measure(run: TextRun) {
-          return getRunFont(run).widthOfTextAtSize(
-            preparePdfText(run.text),
-            fontSize,
-          );
-        }
-
-        for (const piece of pieces) {
-          const width = measure(piece);
-
-          if (line.length > 0 && lineWidth + width > maxWidth) {
-            lines.push(line);
-            line = [];
-            lineWidth = 0;
-
-            if (/^\s+$/.test(piece.text)) continue;
-          }
-
-          line.push(piece);
-          lineWidth += width;
-        }
-
-        if (line.length > 0) {
-          lines.push(line);
-        }
-
-        return lines;
-      }
-
-      function drawRunLine(line: TextRun[], x: number, lineY: number) {
-        let currentX = x;
-
-        for (const run of line) {
-          const runFont = getRunFont(run);
-          const pdfText = preparePdfText(run.text);
-          const runWidth = runFont.widthOfTextAtSize(pdfText, fontSize);
-
-          page.drawText(pdfText, {
-            x: currentX,
-            y: lineY,
-            size: fontSize,
-            font: runFont,
-            color: rgb(0, 0, 0),
-          });
-
-          if (run.underline && run.text.trim()) {
-            drawUnderline(currentX, lineY, runWidth);
-          }
-
-          currentX += runWidth;
-        }
-      }
-
-      type OverflowParagraph = {
-        lines: TextRun[][];
-        startsAtLine: number;
-      };
-
-      const overflowParagraphs: OverflowParagraph[] = [];
-      let textY = startY;
-      let sideSpaceExhausted = false;
-
-      for (const paragraph of sideParagraphs) {
-        const wrappedLines = wrapRunsToWidth(
-          parseMarkdownRuns(paragraph),
-          textWidth,
-        );
-
-        let firstOverflowLine = wrappedLines.length;
-
-        if (!sideSpaceExhausted) {
-          for (let lineIndex = 0; lineIndex < wrappedLines.length; lineIndex++) {
-            if (textY < frameY) {
-              firstOverflowLine = lineIndex;
-              sideSpaceExhausted = true;
-              break;
-            }
-
-            drawRunLine(wrappedLines[lineIndex], textX, textY);
-            textY -= lineHeight;
-          }
-        } else {
-          firstOverflowLine = 0;
-        }
-
-        if (firstOverflowLine < wrappedLines.length) {
-          overflowParagraphs.push({
-            lines: wrappedLines,
-            startsAtLine: firstOverflowLine,
-          });
-        }
-
-        if (!sideSpaceExhausted) {
-          // Preserve visible paragraph separation while continuing to use the
-          // available column beside the image.
-          textY -= paragraphGap;
-
-          if (textY < frameY) {
-            sideSpaceExhausted = true;
-          }
-        }
-      }
-
-      y = frameY - 22;
-
-      if (captionLines.length > 0) {
-        for (const captionLine of captionLines) {
-          if (y < bottomLimit) {
-            y = newPage();
-          }
-
-          const captionWidth = boldFont.widthOfTextAtSize(
-            preparePdfText(captionLine),
-            9,
-          );
-          const captionX = imageX + frameWidth / 2 - captionWidth / 2;
-
-          page.drawText(preparePdfText(captionLine), {
-            x: captionX,
-            y,
-            size: 9,
-            font: boldFont,
-            color: rgb(0, 0, 0),
-          });
-
-          y -= 12;
-        }
-
-        y -= 8;
-      }
-
-      for (const overflow of overflowParagraphs) {
-        const remainingText = overflow.lines
-          .slice(overflow.startsAtLine)
-          .map((line) => line.map((run) => run.text).join(""))
-          .join(" ")
-          .replace(/\s+/g, " ")
-          .trim();
-
-        if (remainingText) {
-          drawRichParagraph(remainingText);
-          y -= 8;
-        }
-      }
-
-      if (overflowParagraphs.length === 0) {
-        y -= 8;
-      }
-    }
-
-    drawLetterhead();
-
-    const rawLetterText = draft.edited_text || draft.ai_generated_text || "";
-
-    const appointmentDate =
-      draft.appointment_date ||
-      draft.appointment_at ||
-      draft.appointment_start ||
-      draft.raw_json?.appointment_date ||
-      draft.raw_json?.appointmentDate ||
-      draft.raw_json?.appointment_at ||
-      draft.raw_json?.appointmentStart ||
-      draft.raw_json?.appointment_start ||
-      extractPdfDateText(rawLetterText);
-
-    const letterDate = formatPdfLetterDate(appointmentDate);
-    drawLine(letterDate);
-
-    y -= lineHeight;
-
-    if (pdfReferrerName) {
-      drawLine(pdfReferrerName);
-    }
-
-    if (pdfReferrerAddress) {
-      const addressLines = String(pdfReferrerAddress).split(/\n+/);
-
-      for (const addressLine of addressLines) {
-        if (addressLine.trim()) {
-          drawLine(addressLine.trim());
-        }
-      }
-    }
-
-    y -= lineHeight * 3;
-
-    drawLine(getDearLine(pdfReferrerName, pdfReferrerTitle));
-
-    y -= lineHeight;
-
-    drawLine(
-  `RE: ${draft.patient_name || "Patient"}${
-    draft.patient_dob
-      ? ` (DOB: ${formatDob(draft.patient_dob)})`
       : ""
-  }`,
-  { bold: true },
-);
 
-    y -= lineHeight;
-
-    const pdfCcLine = formatPdfCcLine(extractPdfCcText(rawLetterText));
-    const letterText = cleanLetterText(rawLetterText);
-
-    const paragraphs = letterText.split(/\n/);
-
-    /*
-      Includes Warm Regards, signature image, provider name, qualifications,
-      and a small safety allowance before any CC line.
-    */
-    const signatureBlockHeight = 150;
-
-    function estimateRichParagraphHeight(
-      text: string,
-      options?: { bold?: boolean },
-    ) {
-      const plainText = stripMarkdownMarkers(text);
-      const wrapped = wrapText(plainText, maxChars);
-
-      return Math.max(wrapped.length, 1) * lineHeight +
-        (options?.bold ? 4 : 8);
+    if (!report) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "No report was generated.",
+        },
+        { status: 500 }
+      )
     }
 
-    const lastTextParagraphIndex =
-      paragraphs
-        .map((paragraph, index) => ({
-          paragraph: paragraph.trim(),
-          index,
-        }))
-        .filter(({ paragraph }) => paragraph && !getInlineImageMarker(paragraph))
-        .at(-1)?.index ?? -1;
-
-    for (
-      let paragraphIndex = 0;
-      paragraphIndex < paragraphs.length;
-      paragraphIndex++
-    ) {
-      const rawParagraph = paragraphs[paragraphIndex];
-      const cleanParagraph = rawParagraph.trim();
-
-      if (cleanParagraph.startsWith("|")) {
-        const tableLines: string[] = [];
-        let tableEndIndex = paragraphIndex;
-
-        while (
-          tableEndIndex < paragraphs.length &&
-          paragraphs[tableEndIndex]?.trim().startsWith("|")
-        ) {
-          tableLines.push(paragraphs[tableEndIndex].trim());
-          tableEndIndex += 1;
-        }
-
-        const table = parseMarkdownTable(tableLines);
-
-        if (table) {
-          drawMarkdownTable(table);
-          paragraphIndex = tableEndIndex - 1;
-          continue;
-        }
-      }
-
-      if (!cleanParagraph) {
-        y -= lineHeight;
-
-        if (y < bottomLimit) {
-          y = newPage();
-        }
-
-        continue;
-      }
-
-      const inlineImageNumber = getInlineImageMarker(cleanParagraph);
-
-      if (inlineImageNumber) {
-        const image = images[inlineImageNumber - 1];
-
-        if (image) {
-          let nextTextParagraphIndex = paragraphIndex + 1;
-
-          while (
-            nextTextParagraphIndex < paragraphs.length &&
-            !paragraphs[nextTextParagraphIndex]?.trim()
-          ) {
-            nextTextParagraphIndex += 1;
-          }
-
-          const firstNextParagraph =
-            paragraphs[nextTextParagraphIndex]?.trim() || "";
-          const firstNextParagraphImageNumber =
-            getInlineImageMarker(firstNextParagraph);
-
-          const canWrapTextBesideImage =
-            firstNextParagraph.length > 0 &&
-            !firstNextParagraphImageNumber &&
-            ["left", "right"].includes(image.display_alignment || "");
-
-          if (canWrapTextBesideImage) {
-            const sideParagraphs: string[] = [];
-            let scanIndex = nextTextParagraphIndex;
-
-            /*
-              Collect consecutive paragraphs so the text column can continue
-              down the full height of the image. Keep the final meaningful
-              paragraph outside this block so the existing signature
-              keep-together logic can still protect it.
-            */
-            while (scanIndex < paragraphs.length) {
-              const candidate = paragraphs[scanIndex]?.trim() || "";
-
-              if (!candidate) {
-                scanIndex += 1;
-                continue;
-              }
-
-              if (getInlineImageMarker(candidate)) break;
-              if (candidate.startsWith("|")) break;
-              if (scanIndex === lastTextParagraphIndex) break;
-
-              sideParagraphs.push(candidate);
-              scanIndex += 1;
-            }
-
-            if (sideParagraphs.length > 0) {
-              await drawImageWithSideText(image, sideParagraphs);
-              paragraphIndex = scanIndex - 1;
-            } else {
-              await drawImageBlock(image);
-            }
-          } else {
-            await drawImageBlock(image);
-          }
-
-          usedInlineImageIds.add(image.id);
-        }
-
-        continue;
-      }
-
-      const isHeading =
-        cleanParagraph.endsWith(":") && cleanParagraph.length < 60;
-
-      if (paragraphIndex === lastTextParagraphIndex) {
-        const finalParagraphHeight = estimateRichParagraphHeight(cleanParagraph, {
-          bold: isHeading,
-        });
-
-        const remainingSpace = y - bottomLimit;
-        const neededSpace = finalParagraphHeight + signatureBlockHeight;
-
-        /*
-          Keep the final meaningful paragraph and the entire signature block
-          together. If they cannot both fit in the remaining printable area,
-          move the final paragraph to a new page before drawing it.
-
-          This deliberately prioritises avoiding an orphaned signature block,
-          even when the current page still has some unused space.
-        */
-        if (remainingSpace < neededSpace) {
-          y = newPage();
-        }
-      }
-
-      drawRichParagraph(cleanParagraph, { bold: isHeading });
-
-      y -= isHeading ? 4 : 8;
-    }
-
-    if (y < bottomLimit + signatureBlockHeight) {
-      y = newPage();
-    }
-
-    y -= 10;
-
-    drawLine("Warm Regards,");
-
-    y -= 45;
-
-    if (signatureImage) {
-      const signatureWidth = 120;
-      const signatureHeight = 38;
-
-      page.drawImage(signatureImage, {
-        x: marginLeft,
-        y,
-        width: signatureWidth,
-        height: signatureHeight,
-      });
-    }
-
-    y -= 26;
-
-    drawLine(provider.report_display_name || provider.name, {
-      bold: true,
-    });
-
-    if (provider.report_qualifications) {
-      drawLine(provider.report_qualifications);
-    }
-
-    if (pdfCcLine) {
-      y -= 6;
-
-      const ccLines = wrapPlainTextToWidth({
-        text: pdfCcLine,
-        maxWidth: contentWidth,
-        textFont: italicFont,
-        size: fontSize,
-      });
-
-      for (const ccLine of ccLines) {
-        if (y < bottomLimit) {
-          y = newPage();
-        }
-
-        page.drawText(preparePdfText(ccLine), {
-          x: marginLeft,
-          y,
-          size: fontSize,
-          font: italicFont,
-          color: rgb(0, 0, 0),
-        });
-
-        y -= lineHeight;
-      }
-    }
-
-    const unusedImages = images.filter(
-      (image) => !usedInlineImageIds.has(image.id),
-    );
-
-    if (unusedImages.length > 0) {
-      y -= 12;
-
-      drawLine("Clinical Images:", { bold: true });
-
-      y -= 4;
-
-      for (const image of unusedImages) {
-        await drawImageBlock(image);
-      }
-    }
-
-    const pdfBytes = await pdfDoc.save();
-
-    const fileDate = formatPdfFileDate(appointmentDate);
-
-    const patientNameParts = String(draft.patient_name || "")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-
-    const patientFirstName = getSafeFilePart(patientNameParts[0], "Patient");
-    const patientLastName = getSafeFilePart(
-      patientNameParts.slice(1).join(" "),
-      "",
-    );
-
-    const patientFileName = [patientFirstName, patientLastName]
-      .filter(Boolean)
-      .join(" ");
-
-    const reportTypeFileName = getSafeFilePart(
-      formatReportTypeForFileName(draft.report_type),
-      "Letter",
-    );
-
-    const fileName = `${fileDate} ${patientFileName} - ${reportTypeFileName}.pdf`;
-
-    return new NextResponse(Buffer.from(pdfBytes), {
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${fileName}"`,
+    return NextResponse.json({
+      success: true,
+      report,
+      clinicalScenario,
+      scenarioTags,
+      debug: {
+        providerId,
+        reportType: finalReportType,
+        reportTypeLabel,
+        patientGender: finalPatientGender,
+        preferredExampleId: preferredExampleId || null,
+        temporaryRulesText,
+        scenarioTags,
+        selectedExamples: training.exampleDebug,
+        rulesUsed: training.rulesText,
+        providerKnowledgeUsed: training.providerKnowledgeText,
+        terminologyUsed: training.terminologyText,
+        examplesUsed: training.examplesText,
+        editLearningUsed: training.editLearningText,
       },
-    });
+    })
   } catch (error) {
-    console.error(error);
+    console.error("Generate report failed:", error)
 
     return NextResponse.json(
       {
         success: false,
         error:
-          error instanceof Error ? error.message : "Failed to generate PDF",
+          error instanceof Error
+            ? error.message
+            : "Failed to generate report.",
       },
-      { status: 500 },
-    );
+      { status: 500 }
+    )
   }
 }
