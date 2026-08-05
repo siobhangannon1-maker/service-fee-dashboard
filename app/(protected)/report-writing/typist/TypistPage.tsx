@@ -3655,36 +3655,6 @@ export default function TypistPage() {
     setAutoGenerateStatus("ready");
   }
 
-  useEffect(() => {
-    if (!activeQueueItemId) return;
-    if (selectedDraft || imageDraftId || imageDraftCreating) return;
-    if (!patientFirstName.trim() || !patientLastName.trim()) return;
-
-    // Prevent creating the temporary image/draft workspace while live clinical
-    // notes or referral details are still loading. This is the race-condition fix.
-    if (autoGenerateStatus !== "ready" && autoGenerateStatus !== "error")
-      return;
-    if (referralAutoFillStatus === "loading") return;
-    if (clinicalNotes.includes("Loading same-day Praktika clinical notes"))
-      return;
-
-    if (autoImageDraftQueueIdRef.current === activeQueueItemId) return;
-
-    autoImageDraftQueueIdRef.current = activeQueueItemId;
-    void ensureImageDraftForCurrentWork({ quiet: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    activeQueueItemId,
-    selectedDraft?.id,
-    imageDraftId,
-    imageDraftCreating,
-    patientFirstName,
-    patientLastName,
-    autoGenerateStatus,
-    referralAutoFillStatus,
-    clinicalNotes,
-  ]);
-
   async function updateQueueStatus(queueId: string, status: string) {
     await fetch("/api/report-writing/letter-queue", {
       method: "POST",
@@ -5317,7 +5287,9 @@ export default function TypistPage() {
               </div>
             </div>
 
-            {!selectedDraft ? (
+            {!selectedDraft ||
+            (listTab === "drafts" &&
+              ["draft", "edited_by_typist"].includes(selectedDraft.status)) ? (
               <>
                 <textarea
                   className="h-40 w-full rounded-xl border p-4"
