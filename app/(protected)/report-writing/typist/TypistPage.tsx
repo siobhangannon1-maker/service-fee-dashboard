@@ -1167,7 +1167,7 @@ export default function TypistPage() {
   const selectedDraftIdRef = useRef<string | null>(null);
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [listTab, setListTab] = useState<ListTab>("queue");
-  const [queueStatusTab] = useState<QueueStatusTab>("queued");
+  const [queueStatusTab] = useState<QueueStatusTab>("active");
 
   const [patientFirstName, setPatientFirstName] = useState("");
   const [patientLastName, setPatientLastName] = useState("");
@@ -1318,7 +1318,9 @@ export default function TypistPage() {
   const visibleQueue = useMemo(
     () =>
       queue.filter(
-        (item) => item.status === "queued" && !item.report_draft_id,
+        (item) =>
+          ["queued", "started"].includes(item.status) &&
+          !item.report_draft_id,
       ),
     [queue],
   );
@@ -3326,7 +3328,6 @@ export default function TypistPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               queueId,
-              status: "started",
               referrerName: referral.referrerName,
               referrerAddress: referral.referrerAddress || "",
             }),
@@ -3338,8 +3339,6 @@ export default function TypistPage() {
 
               return {
                 ...queueItem,
-                status:
-                  queueItem.status === "completed" ? "completed" : "started",
                 referrer_name: referral.referrerName,
                 referrer_address:
                   referral.referrerAddress || queueItem.referrer_address,
@@ -3466,28 +3465,6 @@ export default function TypistPage() {
     setPraktikaCandidates([]);
     setSelectedPraktikaPatientId(linkedPraktikaPatientId);
 
-    // Mark the row started without forcing a live referral/notes reload.
-    if (item.status !== "completed") {
-      void fetch("/api/report-writing/letter-queue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          queueId: item.id,
-          status: "started",
-        }),
-      }).catch((error) => {
-        console.warn("Could not mark queue item as started:", error);
-      });
-
-      setQueue((current) =>
-        current.map((queueItem) =>
-          queueItem.id === item.id
-            ? { ...queueItem, status: "started" }
-            : queueItem,
-        ),
-      );
-    }
-
     if (hasCachedReferrer) {
       setReferralAutoFillStatus("found");
     } else if (linkedPraktikaPatientId) {
@@ -3562,7 +3539,6 @@ export default function TypistPage() {
             },
             body: JSON.stringify({
               queueId: item.id,
-              status: item.status === "completed" ? "completed" : "started",
               cachedClinicalNotes: sameDayClinicalNotes,
               cachedClinicalNotesSource: "praktika_live",
             }),
@@ -3576,7 +3552,6 @@ export default function TypistPage() {
 
               return {
                 ...queueItem,
-                status: item.status === "completed" ? "completed" : "started",
                 source_clinical_notes: sameDayClinicalNotes,
                 raw_json: {
                   ...(queueItem.raw_json || {}),
@@ -4890,7 +4865,6 @@ export default function TypistPage() {
                       if (item.status === "completed") return;
 
                       await startLetterFromQueue(item);
-                      await markQueueItemStarted(item);
                     }}
                     className={[
                       "w-full text-left",
