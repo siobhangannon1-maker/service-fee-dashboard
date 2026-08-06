@@ -1315,15 +1315,20 @@ export default function TypistPage() {
     return [];
   }, [drafts, listTab]);
 
-  const visibleQueue = useMemo(
-    () =>
-      queue.filter(
-        (item) =>
-          ["queued", "started"].includes(item.status) &&
-          !item.report_draft_id,
-      ),
-    [queue],
-  );
+  const visibleQueue = useMemo(() => {
+    const loadedDraftIds = new Set(drafts.map((draft) => draft.id));
+
+    return queue.filter((item) => {
+      const hasVisibleLinkedDraft = Boolean(
+        item.report_draft_id && loadedDraftIds.has(item.report_draft_id),
+      );
+
+      return (
+        ["queued", "started"].includes(item.status) &&
+        !hasVisibleLinkedDraft
+      );
+    });
+  }, [queue, drafts]);
 
   const visibleDraftIds = filteredDrafts.map((draft) => draft.id);
 
@@ -4779,7 +4784,7 @@ export default function TypistPage() {
 
             <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1 xl:grid-cols-4">
               {[
-                ["queue", `Queue (${queue.length})`],
+                ["queue", `Queue (${visibleQueue.length})`],
                 ["drafts", `Saved Drafts (${countDrafts})`],
                 ["awaiting", `Awaiting Approval (${countAwaiting})`],
                 ["completed", `Approved (${countCompleted})`],
