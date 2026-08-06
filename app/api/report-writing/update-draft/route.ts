@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
-import {
-  createReportAuditEvent,
-  getAuditActor,
-} from "@/lib/report-writing/audit"
+import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
+import { noLearningRequested, processApprovedEdit } from "@/lib/report-writing/edit-learning"
 
 export const runtime = "nodejs"
 
@@ -21,34 +19,6 @@ function cleanOrNull(value: unknown) {
   return cleaned || null
 }
 
-async function saveLearningExample(params: {
-  providerId: string
-  draftId: string
-  reportType: string
-  originalText: string
-  finalText: string
-  source: string
-}) {
-  if (!params.originalText.trim()) return
-  if (!params.finalText.trim()) return
-  if (params.originalText.trim() === params.finalText.trim()) return
-
-  const { error } = await supabase
-    .from("provider_report_edit_examples")
-    .insert({
-      provider_id: params.providerId,
-      report_draft_id: params.draftId,
-      report_type: params.reportType,
-      original_text: params.originalText,
-      final_text: params.finalText,
-      source: params.source,
-    })
-
-  if (error) {
-    console.warn("Draft updated, but learning example could not be saved:", error)
-  }
-}
-
 async function updateLinkedQueueRows(params: {
   draftId: string
   referrerName?: string | null
@@ -61,27 +31,11 @@ async function updateLinkedQueueRows(params: {
     updated_at: new Date().toISOString(),
   }
 
-  if (params.referrerName !== undefined) {
-    queueUpdate.referrer_name = params.referrerName
-  }
+  if (params.referrerName !== undefined) queueUpdate.referrer_name = params.referrerName
+  if (params.referrerAddress !== undefined) queueUpdate.referrer_address = params.referrerAddress
+  if (params.sourceText !== undefined) queueUpdate.source_clinical_notes = params.sourceText
+  if (params.praktikaPatientId !== undefined) queueUpdate.praktika_patient_id = params.praktikaPatientId
 
-  if (params.referrerAddress !== undefined) {
-    queueUpdate.referrer_address = params.referrerAddress
-  }
-
-  if (params.sourceText !== undefined) {
-    queueUpdate.source_clinical_notes = params.sourceText
-  }
-
-  if (params.praktikaPatientId !== undefined) {
-    queueUpdate.praktika_patient_id = params.praktikaPatientId
-  }
-
-  /*
-    A queue row is completed only when the letter is genuinely approved.
-    Saving a typist draft or sending it for provider review must keep the
-    queue row linked and recoverable.
-  */
   if (params.status === "approved") {
     queueUpdate.status = "completed"
   } else if (
@@ -100,10 +54,7 @@ async function updateLinkedQueueRows(params: {
     .eq("report_draft_id", params.draftId)
 
   if (error) {
-    console.warn(
-      "Draft updated, but linked queue row could not be updated:",
-      error
-    )
+    console.warn("Draft updated, but linked queue row could not be updated:", error)
   }
 }
 
@@ -151,13 +102,9 @@ export async function POST(req: Request) {
       )
     }
 
-    const updatePayload: Record<string, unknown> = {
-      updated_at: now,
-    }
+    const updatePayload: Record<string, unknown> = { updated_at: now }
 
-    if (typeof editedText === "string") {
-      updatePayload.edited_text = editedText
-    }
+    if (typeof editedText === "string") updatePayload.edited_text = editedText
 
     if (Object.prototype.hasOwnProperty.call(body, "referrerName")) {
       updatePayload.referrer_name = cleanOrNull(referrerName)
@@ -229,8 +176,7 @@ export async function POST(req: Request) {
       }
 
       if (status === "approved") {
-        updatePayload.provider_approved_at =
-          existingDraft.provider_approved_at || now
+        updatePayload.provider_approved_at = existingDraft.provider_approved_at || now
         updatePayload.approved_by_initials = actor.actorInitials
         updatePayload.approved_by_name = actor.actorFullName
       }
@@ -245,13 +191,8 @@ export async function POST(req: Request) {
 
     if (error) {
       console.error("Update draft failed:", error)
-
       return NextResponse.json(
-        {
-          success: false,
-          error: error.message,
-          details: error,
-        },
+        { success: false, error: error.message, details: error },
         { status: 500 }
       )
     }
@@ -261,19 +202,13 @@ export async function POST(req: Request) {
       referrerName: Object.prototype.hasOwnProperty.call(body, "referrerName")
         ? cleanOrNull(referrerName)
         : undefined,
-      referrerAddress: Object.prototype.hasOwnProperty.call(
-        body,
-        "referrerAddress"
-      )
+      referrerAddress: Object.prototype.hasOwnProperty.call(body, "referrerAddress")
         ? cleanOrNull(referrerAddress)
         : undefined,
       sourceText: Object.prototype.hasOwnProperty.call(body, "clinicalNotes")
         ? cleanOrNull(clinicalNotes)
         : undefined,
-      praktikaPatientId: Object.prototype.hasOwnProperty.call(
-        body,
-        "praktikaPatientId"
-      )
+      praktikaPatientId: Object.prototype.hasOwnProperty.call(body, "praktikaPatientId")
         ? cleanOrNull(praktikaPatientId)
         : undefined,
       status: typeof status === "string" ? status : null,
@@ -287,14 +222,19 @@ export async function POST(req: Request) {
     const finalText =
       clean(finalApprovedText) || clean(editedText) || clean(data.edited_text)
 
-    if (status === "approved" && learnFromEdits) {
-      await saveLearningExample({
+    let learning = noLearningRequested()
+
+    if (status === "approved" && Boolean(learnFromEdits)) {
+      learning = await processApprovedEdit({
         providerId: data.provider_id,
         draftId: data.id,
         reportType: data.report_type || "consultation_report",
         originalText: aiText,
         finalText,
-        source: learningSource || "approval_edit",
+        source: clean(learningSource) || "approval_edit",
+        actor,
+        approvedByProvider:
+          actor.actorRole === "provider" || actor.actorRole === "admin",
       })
     }
 
@@ -303,8 +243,7 @@ export async function POST(req: Request) {
       providerId: data.provider_id,
       patientName: data.patient_name,
       action:
-        Object.prototype.hasOwnProperty.call(body, "praktikaPatientId") &&
-        !status
+        Object.prototype.hasOwnProperty.call(body, "praktikaPatientId") && !status
           ? "Updated Praktika patient match"
           : isUnapproving
             ? "Unapproved report"
@@ -312,9 +251,9 @@ export async function POST(req: Request) {
               ? "Approved report"
               : status === "awaiting_provider_approval"
                 ? "Sent report to provider for approval"
-              : status === "edited_by_typist" || status === "draft"
-                ? "Saved draft report"
-                : "Updated report",
+                : status === "edited_by_typist" || status === "draft"
+                  ? "Saved draft report"
+                  : "Updated report",
       details: {
         status: data.status,
         unapproved: isUnapproving,
@@ -330,25 +269,18 @@ export async function POST(req: Request) {
         typistQueriesSaved: Boolean(data.typist_queries),
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
-        learningSaved:
-          status === "approved" &&
-          Boolean(learnFromEdits) &&
-          aiText !== finalText,
+        actorRole: actor.actorRole,
+        learning,
       },
     })
 
-    return NextResponse.json({
-      success: true,
-      draft: data,
-    })
+    return NextResponse.json({ success: true, draft: data, learning })
   } catch (error) {
     console.error("Update draft server error:", error)
-
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to update draft.",
+        error: error instanceof Error ? error.message : "Failed to update draft.",
       },
       { status: 500 }
     )

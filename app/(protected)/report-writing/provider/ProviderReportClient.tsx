@@ -1084,18 +1084,31 @@ export default function ProviderReportClient({
   }) {
     const sourceType =
       options?.sourceType ||
-      (selectedDraft ? inferDraftSourceType(selectedDraft) : dictatedLetter.trim() ? "dictation" : "clinical_notes");
+      (selectedDraft
+        ? inferDraftSourceType(selectedDraft)
+        : dictatedLetter.trim()
+          ? "dictation"
+          : "clinical_notes");
 
-    const text = (
+    const finalApprovedText = (
       selectedDraft
         ? dictatedLetter || generatedReport || getReportText(selectedDraft)
         : dictatedLetter || generatedReport
     ).trim();
 
-    if (!text) {
+    if (!finalApprovedText) {
       alert("There is no letter text to approve.");
       return;
     }
+
+    const originalAiText = String(
+      selectedDraft?.ai_generated_text || originalGeneratedReport || "",
+    ).trim();
+
+    const hasEditedAiText =
+      sourceType !== "dictation" &&
+      Boolean(originalAiText) &&
+      originalAiText !== finalApprovedText;
 
     if (selectedDraft) {
       setLoading(true);
@@ -1106,10 +1119,12 @@ export default function ProviderReportClient({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             draftId: selectedDraft.id,
-            editedText:
-              dictatedLetter || generatedReport || getReportText(selectedDraft),
+            editedText: finalApprovedText,
             status: "approved",
-            learnFromEdits: false,
+            originalAiText,
+            finalApprovedText,
+            learnFromEdits: hasEditedAiText,
+            learningSource: "provider_existing_draft_approval",
             typistInstructions,
           }),
         });
@@ -1121,9 +1136,13 @@ export default function ProviderReportClient({
           return;
         }
 
+        const learningMessage = hasEditedAiText
+          ? " Provider edit-learning was submitted."
+          : " No AI edit-learning was required for this letter.";
+
         showSavedConfirmation(
           "Letter approved",
-          "The letter has moved to Approved Letters.",
+          `The letter has moved to Approved Letters.${learningMessage}`,
         );
         resetLetterEditor();
         setActiveTab("approved");
@@ -1140,6 +1159,11 @@ export default function ProviderReportClient({
     setSavedMessage("");
 
     try {
+      const storedAiText =
+        sourceType === "dictation"
+          ? finalApprovedText
+          : originalAiText || finalApprovedText;
+
       const response = await fetch("/api/report-writing/save-draft", {
         method: "POST",
         headers: {
@@ -1152,15 +1176,17 @@ export default function ProviderReportClient({
           referrerName,
           referrerAddress,
           reportType: sourceType === "dictation" ? "dictated_letter" : reportType,
-          clinicalNotes: sourceType === "clinical_notes" ? clinicalNotes : text,
+          clinicalNotes:
+            sourceType === "clinical_notes" ? clinicalNotes : finalApprovedText,
           typistInstructions,
-          generatedReport: text,
-          editedText: text,
-          originalAiText: originalGeneratedReport || text,
-          finalApprovedText: text,
+          generatedReport: storedAiText,
+          editedText: finalApprovedText,
+          originalAiText: storedAiText,
+          finalApprovedText,
           sourceType,
           status: "approved",
-          learnFromEdits: false,
+          learnFromEdits: hasEditedAiText,
+          learningSource: "provider_direct_approval",
           praktikaPatientId: null,
         }),
       });
@@ -1172,9 +1198,13 @@ export default function ProviderReportClient({
         return;
       }
 
+      const learningMessage = hasEditedAiText
+        ? " Provider edit-learning was submitted."
+        : " No AI edit-learning was required for this letter.";
+
       showSavedConfirmation(
         "Letter approved",
-        "The letter has moved to Approved Letters.",
+        `The letter has moved to Approved Letters.${learningMessage}`,
       );
       resetLetterEditor();
       setActiveTab("approved");
@@ -1243,11 +1273,10 @@ export default function ProviderReportClient({
       return;
     }
 
-    const originalAiText = originalGeneratedReport || generatedReport;
-    const finalApprovedText = generatedReport;
-    const hasEditedAiText =
-      originalAiText.trim() !== finalApprovedText.trim() &&
-      Boolean(originalAiText.trim());
+    const originalAiText = String(
+      originalGeneratedReport || generatedReport,
+    ).trim();
+    const finalDraftText = generatedReport.trim();
 
     setLoading(true);
     setSavedMessage("");
@@ -1268,11 +1297,11 @@ export default function ProviderReportClient({
           clinicalNotes,
           typistInstructions,
           generatedReport: originalAiText,
-          editedText: finalApprovedText,
+          editedText: finalDraftText,
           originalAiText,
-          finalApprovedText,
-          learnFromEdits: hasEditedAiText,
-          learningSource: "provider_direct_generation_approval",
+          finalApprovedText: finalDraftText,
+          learnFromEdits: false,
+          learningSource: "provider_draft_save",
           sourceType: "clinical_notes",
           status: "draft",
           praktikaPatientId: null,
@@ -1287,7 +1316,7 @@ export default function ProviderReportClient({
       }
 
       const successMessage =
-        "Draft saved. You can reopen it from the Drafts panel.";
+        "Draft saved. Edit-learning will be assessed when the letter is approved.";
 
       setSavedMessage(successMessage);
       showSavedConfirmation("Letter saved", successMessage);

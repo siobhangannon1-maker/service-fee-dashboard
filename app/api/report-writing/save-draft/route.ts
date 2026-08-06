@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
+import { noLearningRequested, processApprovedEdit } from "@/lib/report-writing/edit-learning"
 
 export const runtime = "nodejs"
 
@@ -16,28 +17,6 @@ function clean(value: unknown) {
 function cleanOrNull(value: unknown) {
   const cleaned = clean(value)
   return cleaned || null
-}
-
-async function saveLearningExample(params: {
-  providerId: string
-  draftId: string
-  reportType: string
-  originalText: string
-  finalText: string
-  source: string
-}) {
-  if (!params.originalText.trim()) return
-  if (!params.finalText.trim()) return
-  if (params.originalText.trim() === params.finalText.trim()) return
-
-  await supabase.from("provider_report_edit_examples").insert({
-    provider_id: params.providerId,
-    report_draft_id: params.draftId,
-    report_type: params.reportType,
-    original_text: params.originalText,
-    final_text: params.finalText,
-    source: params.source,
-  })
 }
 
 async function updateLinkedQueueItem(params: {
@@ -102,7 +81,6 @@ export async function POST(req: Request) {
     const typistInstructions = cleanOrNull(
       body.typistInstructions ?? body.typist_instructions
     )
-
     const typistQueries = cleanOrNull(
       body.typistQueries ?? body.typist_queries
     )
@@ -176,14 +154,19 @@ export async function POST(req: Request) {
       praktikaPatientId: finalPraktikaPatientId,
     })
 
-    if (finalStatus === "approved" && learnFromEdits) {
-      await saveLearningExample({
+    let learning = noLearningRequested()
+
+    if (finalStatus === "approved" && Boolean(learnFromEdits)) {
+      learning = await processApprovedEdit({
         providerId,
         draftId: data.id,
         reportType: finalReportType,
         originalText: aiText,
         finalText,
-        source: learningSource || "typist_direct_approval",
+        source: clean(learningSource) || "direct_approval",
+        actor,
+        approvedByProvider:
+          actor.actorRole === "provider" || actor.actorRole === "admin",
       })
     }
 
@@ -210,20 +193,14 @@ export async function POST(req: Request) {
         linkedQueueId: clean(queueId) || null,
         actorInitials: actor.actorInitials,
         actorFullName: actor.actorFullName,
-        learningSaved:
-          finalStatus === "approved" &&
-          Boolean(learnFromEdits) &&
-          aiText !== finalText,
+        actorRole: actor.actorRole,
+        learning,
       },
     })
 
-    return NextResponse.json({
-      success: true,
-      draft: data,
-    })
+    return NextResponse.json({ success: true, draft: data, learning })
   } catch (error) {
     console.error(error)
-
     return NextResponse.json(
       {
         success: false,

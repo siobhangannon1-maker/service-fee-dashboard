@@ -7,6 +7,22 @@ const serviceSupabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+export type AuditActorRole =
+  | "provider"
+  | "typist"
+  | "admin"
+  | "staff"
+  | "unknown"
+
+export type AuditActor = {
+  actorUserId: string | null
+  actorFullName: string
+  actorEmail: string | null
+  actorInitials: string
+  actorRole: AuditActorRole
+  rawProfileRole: string | null
+}
+
 function makeReadableNameFromEmail(email?: string | null) {
   const localPart = String(email || "")
     .trim()
@@ -40,7 +56,25 @@ function getInitials(name?: string | null, email?: string | null) {
   return "?"
 }
 
-export async function getAuditActor() {
+export function normaliseAuditActorRole(value: unknown): AuditActorRole {
+  const role = String(value || "").trim().toLowerCase()
+
+  if (role === "provider" || role === "provider_readonly") return "provider"
+  if (role === "typist") return "typist"
+  if (role === "admin" || role === "super_admin") return "admin"
+
+  if (
+    role === "staff" ||
+    role === "practice_manager" ||
+    role === "billing_staff"
+  ) {
+    return "staff"
+  }
+
+  return "unknown"
+}
+
+export async function getAuditActor(): Promise<AuditActor> {
   try {
     const cookieStore = await cookies()
 
@@ -67,16 +101,22 @@ export async function getAuditActor() {
         actorFullName: "Unknown user",
         actorEmail: null,
         actorInitials: "?",
+        actorRole: "unknown",
+        rawProfileRole: null,
       }
     }
 
     const email = user.email || null
 
-    const { data: profile } = await serviceSupabase
+    const { data: profile, error: profileError } = await serviceSupabase
       .from("profiles")
-      .select("full_name, email")
+      .select("full_name, email, role")
       .eq("id", user.id)
       .maybeSingle()
+
+    if (profileError) {
+      console.warn("Could not load audit actor profile:", profileError)
+    }
 
     const profileFullName = String(profile?.full_name || "").trim()
     const metadataFullName = String(user.user_metadata?.full_name || "").trim()
@@ -91,11 +131,16 @@ export async function getAuditActor() {
       email ||
       "Unknown user"
 
+    const resolvedEmail = profile?.email || email
+    const rawProfileRole = String(profile?.role || "").trim() || null
+
     return {
       actorUserId: user.id,
       actorFullName: fullName,
-      actorEmail: profile?.email || email,
-      actorInitials: getInitials(fullName, profile?.email || email),
+      actorEmail: resolvedEmail,
+      actorInitials: getInitials(fullName, resolvedEmail),
+      actorRole: normaliseAuditActorRole(rawProfileRole),
+      rawProfileRole,
     }
   } catch (error) {
     console.error("Failed to get audit actor:", error)
@@ -105,6 +150,8 @@ export async function getAuditActor() {
       actorFullName: "Unknown user",
       actorEmail: null,
       actorInitials: "?",
+      actorRole: "unknown",
+      rawProfileRole: null,
     }
   }
 }
@@ -125,7 +172,6 @@ export async function createReportAuditEvent({
   const actor = await getAuditActor()
 
   const queueId = typeof details?.queueId === "string" ? details.queueId : null
-
   const entityType = reportDraftId ? "report_draft" : "report_letter_queue"
   const entityId = reportDraftId || queueId
 
@@ -136,7 +182,6 @@ export async function createReportAuditEvent({
       providerId,
       details,
     })
-
     return
   }
 
@@ -154,6 +199,8 @@ export async function createReportAuditEvent({
       details: {
         ...(details || {}),
         actorUserId: actor.actorUserId,
+        actorRole: actor.actorRole,
+        rawProfileRole: actor.rawProfileRole,
       },
     })
 
