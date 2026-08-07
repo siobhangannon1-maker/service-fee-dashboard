@@ -754,25 +754,13 @@ function getQueueReferrerName(item: QueueItem) {
 
   return (
     cleanString(item.referrer_name) ||
-    getFirstCleanString(raw, [
-      "referrer_name",
-      "referrerName",
-      "referring_provider_name",
-      "referringProviderName",
-      "referral_provider_name",
-      "referralProviderName",
-      "vchReferrerName",
-      "vchReferralProvider",
-      "vchReferralProviderName",
-      "vchProviderName",
-    ]) ||
-    getFirstCleanString(referral, [
+    getFirstCleanString(latestReferral, [
       "referrerName",
       "referrer_name",
       "providerName",
       "name",
     ]) ||
-    getFirstCleanString(latestReferral, [
+    getFirstCleanString(referral, [
       "referrerName",
       "referrer_name",
       "providerName",
@@ -783,6 +771,17 @@ function getQueueReferrerName(item: QueueItem) {
       "referrer_name",
       "providerName",
       "name",
+    ]) ||
+    getFirstCleanString(raw, [
+      "referrer_name",
+      "referrerName",
+      "referring_provider_name",
+      "referringProviderName",
+      "referral_provider_name",
+      "referralProviderName",
+      "vchReferrerName",
+      "vchReferralProvider",
+      "vchReferralProviderName",
     ])
   );
 }
@@ -992,13 +991,12 @@ function getQueueAppointmentNotes(item: QueueItem) {
 function getQueueSyncedClinicalNotes(item: QueueItem) {
   const raw = getQueueRawObject(item);
 
-  /*
-    Important:
-    item.source_clinical_notes and raw.source_clinical_notes are often only
-    appointment notes from the lightweight queue sync. Do NOT treat those as
-    true same-day clinical notes. Real same-day notes should come from the
-    cached Praktika clinical-note lookup fields below.
-  */
+  // The hydrated queue column may already contain the full same-day clinical
+  // note. Appointment-only text is rejected by cleanClinicalNoteText.
+  const hydratedQueueNotes = cleanClinicalNoteText(item.source_clinical_notes);
+
+  if (hydratedQueueNotes) return hydratedQueueNotes;
+
   const directNotes = getFirstCleanString(raw, [
     "cached_clinical_notes",
     "same_day_clinical_notes",
@@ -3486,19 +3484,11 @@ export default function TypistPage() {
     }
 
     if (hasCachedClinicalNotes) {
-      const combinedCachedClinicalNotes = [
-        appointmentNotes,
-        appointmentNotes ? "Same-day Praktika clinical notes:" : "",
-        cachedClinicalNotes,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-
-      setClinicalNotes(combinedCachedClinicalNotes || cachedClinicalNotes);
+      setClinicalNotes(cachedClinicalNotes);
 
       const aiReportType = await classifyReportTypeWithAi({
         providerId: selectedProviderId,
-        clinicalNotes: combinedCachedClinicalNotes || cachedClinicalNotes,
+        clinicalNotes: cachedClinicalNotes,
         appointmentNotes,
         reportTypes,
         fallbackReportType: inferredReportType,
@@ -3582,16 +3572,7 @@ export default function TypistPage() {
             : "Unknown clinical notes lookup error.";
 
         if (fallbackCachedNotes) {
-          const fallbackCombinedNotes = [
-            appointmentNotes,
-            "Same-day Praktika clinical notes:",
-            fallbackCachedNotes,
-            `Clinical notes live refresh warning: ${errorMessage}`,
-          ]
-            .filter(Boolean)
-            .join("\n\n");
-
-          setClinicalNotes(fallbackCombinedNotes);
+          setClinicalNotes(fallbackCachedNotes);
         } else {
           const fallbackNotes = [
             appointmentNotes,
@@ -3611,19 +3592,13 @@ export default function TypistPage() {
 
     if (!isCurrentQueueSelection()) return;
 
-    const combinedClinicalNotes = [
-      appointmentNotes,
-      sameDayClinicalNotes ? "Same-day Praktika clinical notes:" : "",
-      sameDayClinicalNotes,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const finalClinicalNotes = sameDayClinicalNotes || appointmentNotes;
 
-    setClinicalNotes(combinedClinicalNotes || appointmentNotes);
+    setClinicalNotes(finalClinicalNotes);
 
     const aiReportType = await classifyReportTypeWithAi({
       providerId: selectedProviderId,
-      clinicalNotes: combinedClinicalNotes || appointmentNotes,
+      clinicalNotes: finalClinicalNotes,
       appointmentNotes,
       reportTypes,
       fallbackReportType: inferredReportType,
