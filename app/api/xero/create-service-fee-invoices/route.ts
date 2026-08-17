@@ -81,7 +81,7 @@ export async function POST(request: Request) {
             Description: "Lab/materials expenses",
             Quantity: 1,
             UnitAmount: money(provider.labMaterialsExGst),
-            AccountCode: "220",
+            AccountCode: "225",
             TaxType: "OUTPUT",
           },
           {

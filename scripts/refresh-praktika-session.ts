@@ -504,9 +504,14 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
 }
 
 async function performRealBrowserActivity(page: Page) {
+  if (page.isClosed()) {
+    throw new Error("Praktika browser page is closed.");
+  }
+
   const currentUrl = page.url();
 
   if (
+    !currentUrl.toLowerCase().startsWith(PRAKTIKA_BASE_URL.toLowerCase()) ||
     currentUrl.includes("/login") ||
     currentUrl.includes("/v2/login") ||
     currentUrl.includes("/logout") ||
@@ -515,12 +520,60 @@ async function performRealBrowserActivity(page: Page) {
     return;
   }
 
-  await page.reload({
-    waitUntil: "domcontentloaded",
-    timeout: 90_000,
-  });
+  /*
+   * IMPORTANT:
+   * Do not use page.reload() here. On the Render-hosted Chromium helper,
+   * a full Praktika reload can crash the renderer and leave the otherwise
+   * valid session unusable.
+   *
+   * Instead, make a same-origin background request to Praktika. This gives
+   * the server genuine authenticated activity without navigating or
+   * rebuilding the visible Praktika application.
+   */
+  const probe = await page.evaluate(async (url) => {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        redirect: "follow",
+      });
 
-  await page.waitForTimeout(2500);
+      return {
+        ok: response.ok,
+        status: response.status,
+        finalUrl: response.url,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        finalUrl: "",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }, `${PRAKTIKA_BASE_URL}/v2/`);
+
+  if (!probe.ok) {
+    console.warn(
+      `Praktika lightweight keep-alive returned ${probe.status || "no status"}${
+        "error" in probe && probe.error ? `: ${probe.error}` : ""
+      }.`,
+    );
+  }
+
+  const finalUrl = String(probe.finalUrl || "").toLowerCase();
+
+  if (
+    finalUrl.includes("/login") ||
+    finalUrl.includes("/v2/login") ||
+    finalUrl.includes("/logout")
+  ) {
+    console.warn(
+      "Praktika lightweight keep-alive was redirected to a login/logout page.",
+    );
+  }
+
   await dismissBlockingDialogs(page);
 }
 
