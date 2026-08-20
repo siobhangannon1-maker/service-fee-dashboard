@@ -10,7 +10,6 @@ import {
   clip,
   endPath,
 } from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import sharp from "sharp";
@@ -255,18 +254,7 @@ function parseMarkdownTable(lines: string[]): MarkdownTable | null {
 
 
 function preparePdfText(value: string) {
-  /*
-    pdf-lib + some custom OpenType fonts can render common ligatures
-    such as ff/fi/fl with incorrect spacing or text extraction.
-
-    Adding a zero-width non-joiner after the first "f" prevents the font
-    from substituting the ligature glyph, while keeping the visible text
-    as normal "ff", "fi", or "fl".
-  */
-  return String(value || "")
-    .normalize("NFC")
-    .replace(/f(?=f|i|l)/g, "f\u200C")
-    .replace(/F(?=F|I|L)/g, "F\u200C");
+  return String(value || "").normalize("NFC");
 }
 
 function wrapText(text: string, maxChars: number) {
@@ -797,29 +785,9 @@ export async function POST(req: Request) {
   : null;
 
     const pdfDoc = await PDFDocument.create();
-    pdfDoc.registerFontkit(fontkit);
-
-    let font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    let boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    let italicFont = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-
-    try {
-      const bwGradualRegularBytes = await downloadStorageFileCached(
-  "fonts/BWGradual-Regular.otf",
-);
-const bwGradualBoldBytes = await downloadStorageFileCached(
-  "fonts/BWGradual-Bold.otf",
-);
-
-      font = await pdfDoc.embedFont(bwGradualRegularBytes);
-      boldFont = await pdfDoc.embedFont(bwGradualBoldBytes);
-      // Keep Helvetica Oblique for italic markdown, because no BW Gradual italic file is loaded here.
-    } catch (fontError) {
-      console.warn(
-        "BW Gradual font unavailable; falling back to Helvetica:",
-        fontError,
-      );
-    }
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const italicFont = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
 
     const letterheadImage = await pdfDoc.embedPng(letterheadBytes);
 

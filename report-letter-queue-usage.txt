@@ -1,0 +1,31 @@
+./app/(protected)/report-writing/dashboard/page.tsx:485:        .from("report_letter_queue")
+./app/(protected)/report-writing/productivity/page.tsx:369:        .from("report_letter_queue")
+./app/api/report-writing/update-draft/route.ts:52:    .from("report_letter_queue")
+./app/api/report-writing/email-secure-pdf/route.ts:178:    .from("report_letter_queue")
+./app/api/report-writing/letter-queue/route.ts:36:    .from("report_letter_queue")
+./app/api/report-writing/letter-queue/route.ts:101:      .from("report_letter_queue")
+./app/api/report-writing/letter-queue/route.ts:157:      .from("report_letter_queue")
+./app/api/report-writing/letter-queue/route.ts:232:      .from("report_letter_queue")
+./app/api/report-writing/letter-queue/route.ts:254:      .from("report_letter_queue")
+./app/api/report-writing/letter-queue/sync-praktika/route.ts:330:        job_type: "hydrate_report_letter_queue_item",
+./app/api/report-writing/letter-queue/sync-praktika/route.ts:559:      .from("report_letter_queue")
+./app/api/report-writing/letter-queue/sync-praktika/route.ts:636:      .from("report_letter_queue")
+./app/api/report-writing/letter-queue/sync/route.ts:17:    .from("report_letter_queue")
+./app/api/report-writing/letter-queue/sync/route.ts:67:    .from("report_letter_queue")
+./app/api/report-writing/letter-queue/enrich-praktika/route.ts:690:      .from("report_letter_queue")
+./app/api/report-writing/letter-queue/enrich-praktika/route.ts:711:      .from("report_letter_queue")
+./app/api/report-writing/letter-queue/enrich-praktika/route.ts:741:      .from("report_letter_queue")
+./app/api/report-writing/hydrate-letter-queue/route.ts:13:const HYDRATION_JOB_TYPE = "hydrate_report_letter_queue_item";
+./app/api/report-writing/hydrate-letter-queue/route.ts:93:      .from("report_letter_queue")
+./app/api/report-writing/generate-pdf-html/route.ts:295:    .from("report_letter_queue")
+./app/api/report-writing/generate-pdf-html/route.ts:301:    console.warn("Could not look up linked report_letter_queue row:", queueError);
+./app/api/report-writing/generate-pdf/route.ts:441:    .from("report_letter_queue")
+./app/api/report-writing/generate-pdf/route.ts:447:    console.warn("Could not look up linked report_letter_queue row:", queueError);
+./app/api/report-writing/update-praktika-letter-icons/route.ts:100:      .from("report_letter_queue")
+./app/api/report-writing/update-praktika-letter-icons/route.ts:111:      .from("report_letter_queue")
+./app/api/report-writing/update-praktika-letter-icons/route.ts:357:          .from("report_letter_queue")
+./app/api/report-writing/save-draft/route.ts:46:    .from("report_letter_queue")
+./scripts/praktika-helper-job-processor.ts:972:    .from("report_letter_queue")
+./scripts/praktika-helper-job-processor.ts:1119:    .from("report_letter_queue")
+./scripts/praktika-helper-job-processor.ts:1153:      job.job_type === "hydrate_report_letter_queue_item"
+./lib/report-writing/audit.ts:175:  const entityType = reportDraftId ? "report_draft" : "report_letter_queue"

@@ -3458,6 +3458,7 @@ export default function TypistPage() {
     setReferralAutoFillStatus(hasCachedReferrer ? "found" : "idle");
     setReportType(inferredReportType);
     setPreferredExampleId("");
+    setTypistQueries("");
     setLetterText("");
     setGeneratedAiLetterText("");
     setPdfCcText("");
@@ -5146,6 +5147,7 @@ export default function TypistPage() {
 
               <div className="space-y-2 md:col-span-2">
                 <ReferrerSearchBox
+                  key={`primary-referrer-${activeQueueItemId || selectedDraft?.id || "empty"}`}
                   selectedName={referrerName}
                   selectedAddress={referrerAddress}
                   onClear={() => {
