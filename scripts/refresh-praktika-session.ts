@@ -56,6 +56,14 @@ const HELPER_BUSY_PAUSE_MS = Number(
   process.env.PRAKTIKA_HELPER_BUSY_PAUSE_MS || 250,
 );
 
+const HELPER_IDLE_SHUTDOWN_MS = Number(
+  process.env.PRAKTIKA_HELPER_IDLE_SHUTDOWN_MS || 90 * 60_000,
+);
+
+const MEMORY_LOG_INTERVAL_MS = Number(
+  process.env.PRAKTIKA_MEMORY_LOG_INTERVAL_MS || 5 * 60_000,
+);
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -85,6 +93,22 @@ function nowIso() {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatMb(bytes: number) {
+  return Math.round((bytes / 1024 / 1024) * 10) / 10;
+}
+
+function logProcessMemory(label: string) {
+  const memory = process.memoryUsage();
+
+  console.log(
+    `[memory] ${label} rss=${formatMb(memory.rss)}MB heapUsed=${formatMb(
+      memory.heapUsed,
+    )}MB heapTotal=${formatMb(memory.heapTotal)}MB external=${formatMb(
+      memory.external,
+    )}MB`,
+  );
 }
 
 function decryptTemporaryCredential(value: string | null | undefined) {
@@ -598,13 +622,17 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
       KEEP_ALIVE_INTERVAL_MS / 1000,
     )} seconds, check for jobs every ${Math.round(
       HELPER_IDLE_POLL_INTERVAL_MS / 1000,
-    )} seconds, and perform browser activity every ${Math.round(
+    )} seconds, perform browser activity every ${Math.round(
       REAL_ACTIVITY_INTERVAL_MS / 1000,
-    )} seconds. Copied-cookie API validation is disabled.`,
+    )} seconds, and shut down after ${Math.round(
+      HELPER_IDLE_SHUTDOWN_MS / 60_000,
+    )} minutes without processing a helper job.`,
   );
 
   let lastRealActivityAt = 0;
   let lastCookieRefreshAt = 0;
+  let lastUsefulWorkAt = Date.now();
+  let lastMemoryLogAt = 0;
 
   while (true) {
     let sleepAfterCycleMs = HELPER_IDLE_POLL_INTERVAL_MS;
@@ -613,8 +641,14 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
       const session = await getSession();
       const now = Date.now();
 
+      if (now - lastMemoryLogAt >= MEMORY_LOG_INTERVAL_MS) {
+        logProcessMemory(`session=${session.id}`);
+        lastMemoryLogAt = now;
+      }
+
       if (session.mfa_code && (await pageHasMfaInput(page))) {
         await submitMfaCodeIfAvailable(page);
+        lastUsefulWorkAt = Date.now();
       }
 
       if (now - lastRealActivityAt >= REAL_ACTIVITY_INTERVAL_MS) {
@@ -638,15 +672,55 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         );
 
         if (processedCount > 0) {
+          lastUsefulWorkAt = Date.now();
+
           console.log(
             `Processed ${processedCount} Praktika helper job${
               processedCount === 1 ? "" : "s"
             } for session ${session.id}.`,
           );
+
           sleepAfterCycleMs = HELPER_BUSY_PAUSE_MS;
+        } else if (Date.now() - lastUsefulWorkAt >= HELPER_IDLE_SHUTDOWN_MS) {
+          await saveCookies(
+            context,
+            page,
+            `Praktika helper is sleeping after ${Math.round(
+              HELPER_IDLE_SHUTDOWN_MS / 60_000,
+            )} minutes without helper jobs. It will restart automatically when new work arrives.`,
+          ).catch((error) => {
+            console.warn(
+              "Could not save cookies immediately before idle shutdown:",
+              error,
+            );
+          });
+
+          await updateSession({
+            status: "connected",
+            message:
+              `Praktika helper is sleeping after ${Math.round(
+                HELPER_IDLE_SHUTDOWN_MS / 60_000,
+              )} minutes of inactivity. It will restart automatically when new work arrives.`,
+            refresh_requested_at: null,
+            last_used_at: nowIso(),
+          }).catch((error) => {
+            console.warn(
+              "Could not update session before idle shutdown:",
+              error,
+            );
+          });
+
+          console.log(
+            `Session ${session.id} reached the ${Math.round(
+              HELPER_IDLE_SHUTDOWN_MS / 60_000,
+            )}-minute idle limit. Closing Chromium to release memory.`,
+          );
+
+          return;
         }
       } else if (await pageHasMfaInput(page)) {
         await submitMfaCodeIfAvailable(page);
+        lastUsefulWorkAt = Date.now();
       } else if (await pageHasVisiblePasswordInput(page)) {
         const hasNewCredentials = Boolean(
           session.pending_praktika_username && session.pending_praktika_password,
@@ -654,6 +728,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
 
         if (hasNewCredentials) {
           await fillLoginIfCredentialsAvailable(page);
+          lastUsefulWorkAt = Date.now();
         } else {
           await updateSession({
             status: "waiting_for_credentials",
@@ -662,7 +737,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
             refresh_requested_at: null,
           });
         }
-                  } else {
+      } else {
         if (pageIsLogoutUrl(page)) {
           await updateSession({
             status: "waiting_for_credentials",
@@ -678,6 +753,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           });
 
           await page.waitForTimeout(2500);
+          lastUsefulWorkAt = Date.now();
           continue;
         }
 
@@ -705,7 +781,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         });
 
         console.warn("Praktika helper browser/context closed. Exiting helper.");
-        process.exit(0);
+        return;
       }
 
       await updateSession({
@@ -835,9 +911,8 @@ async function refreshOnce() {
 
     throw error;
   } finally {
-    if (!KEEP_BROWSER_OPEN) {
-      await context.close().catch(() => {});
-    }
+    await context.close().catch(() => {});
+    logProcessMemory(`session=${session.id} after-context-close`);
   }
 }
 

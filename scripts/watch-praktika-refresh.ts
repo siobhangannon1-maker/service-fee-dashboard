@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { spawn } from "node:child_process";
 
 dotenv.config({ path: ".env.local" });
+dotenv.config();
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -14,14 +15,34 @@ const POLL_INTERVAL_MS = Number(
   process.env.PRAKTIKA_WATCHER_POLL_INTERVAL_MS || 10_000,
 );
 
+const MEMORY_LOG_INTERVAL_MS = Number(
+  process.env.PRAKTIKA_MEMORY_LOG_INTERVAL_MS || 5 * 60_000,
+);
+
 const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
 const running = new Set<string>();
+let checkInProgress = false;
+let lastMemoryLogAt = 0;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function formatMb(bytes: number) {
+  return Math.round((bytes / 1024 / 1024) * 10) / 10;
+}
+
+function logWatcherMemory() {
+  const memory = process.memoryUsage();
+
+  console.log(
+    `[memory] watcher rss=${formatMb(memory.rss)}MB heapUsed=${formatMb(
+      memory.heapUsed,
+    )}MB activeHelpers=${running.size}`,
+  );
 }
 
 async function startHelperForSession(session: any, reason: string) {
@@ -33,7 +54,7 @@ async function startHelperForSession(session: any, reason: string) {
   running.add(session.id);
 
   console.log(
-    `Starting Praktika helper for ${session.scope} session ${session.id}. Reason: ${reason}`,
+    `Starting Praktika helper for ${session.scope} session ${session.id}. Reason: ${reason}. Active helpers: ${running.size}`,
   );
 
   await supabase
@@ -42,8 +63,8 @@ async function startHelperForSession(session: any, reason: string) {
       status: "refreshing",
       message:
         reason === "pending_job"
-          ? "Local Praktika helper is starting to process queued jobs."
-          : "Local Praktika helper is starting.",
+          ? "Cloud Praktika helper is starting to process queued jobs."
+          : "Cloud Praktika helper is starting.",
       updated_at: nowIso(),
     })
     .eq("id", session.id);
@@ -60,14 +81,36 @@ async function startHelperForSession(session: any, reason: string) {
 
   child.on("exit", async (code) => {
     running.delete(session.id);
-    console.log(`Praktika helper for ${session.id} exited with code ${code}`);
+
+    console.log(
+      `Praktika helper for ${session.id} exited with code ${code}. Active helpers: ${running.size}`,
+    );
+
+    /*
+     * A zero exit is expected when the helper reaches its idle shutdown.
+     * Leave the session connected so the watcher can automatically restart
+     * it when another pending job appears.
+     */
+    if (code === 0) {
+      await supabase
+        .from("praktika_sessions")
+        .update({
+          status: "connected",
+          message:
+            "Praktika helper is sleeping to save memory. It will restart automatically when new work arrives.",
+          updated_at: nowIso(),
+        })
+        .eq("id", session.id);
+
+      return;
+    }
 
     await supabase
       .from("praktika_sessions")
       .update({
         status: "error",
         message:
-          "Local Praktika helper stopped. Click Reconnect before syncing again.",
+          "Cloud Praktika helper stopped unexpectedly. Click Reconnect before syncing again.",
         updated_at: nowIso(),
       })
       .eq("id", session.id);
@@ -82,7 +125,7 @@ async function startHelperForSession(session: any, reason: string) {
       .from("praktika_sessions")
       .update({
         status: "error",
-        message: `Local Praktika helper failed to start: ${error.message}`,
+        message: `Cloud Praktika helper failed to start: ${error.message}`,
         updated_at: nowIso(),
       })
       .eq("id", session.id);
@@ -146,10 +189,18 @@ async function checkPendingJobs() {
     .in("app_user_id", userIds);
 
   if (sessionError) {
-    console.error("Could not load Praktika sessions for jobs:", sessionError.message);
+    console.error(
+      "Could not load Praktika sessions for jobs:",
+      sessionError.message,
+    );
     return;
   }
 
+  /*
+   * Multiple different staff sessions are deliberately allowed to run
+   * simultaneously. The running Set only prevents duplicate helpers for
+   * the same session.
+   */
   for (const userId of userIds) {
     const session = sessions?.find((item) => item.app_user_id === userId);
 
@@ -163,8 +214,26 @@ async function checkPendingJobs() {
 }
 
 async function check() {
-  await checkRefreshRequests();
-  await checkPendingJobs();
+  if (checkInProgress) {
+    console.log("Watcher check skipped because the previous check is still running.");
+    return;
+  }
+
+  checkInProgress = true;
+
+  try {
+    const now = Date.now();
+
+    if (now - lastMemoryLogAt >= MEMORY_LOG_INTERVAL_MS) {
+      logWatcherMemory();
+      lastMemoryLogAt = now;
+    }
+
+    await checkRefreshRequests();
+    await checkPendingJobs();
+  } finally {
+    checkInProgress = false;
+  }
 }
 
 async function main() {
