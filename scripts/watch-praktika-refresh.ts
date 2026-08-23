@@ -19,6 +19,14 @@ const MEMORY_LOG_INTERVAL_MS = Number(
   process.env.PRAKTIKA_MEMORY_LOG_INTERVAL_MS || 5 * 60_000,
 );
 
+const MAX_CONCURRENT_HELPERS = Number(
+  process.env.PRAKTIKA_MAX_CONCURRENT_HELPERS || 3,
+);
+
+const PENDING_JOB_SCAN_LIMIT = Number(
+  process.env.PRAKTIKA_PENDING_JOB_SCAN_LIMIT || 500,
+);
+
 const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
@@ -41,20 +49,31 @@ function logWatcherMemory() {
   console.log(
     `[memory] watcher rss=${formatMb(memory.rss)}MB heapUsed=${formatMb(
       memory.heapUsed,
-    )}MB activeHelpers=${running.size}`,
+    )}MB activeHelpers=${running.size}/${MAX_CONCURRENT_HELPERS}`,
   );
+}
+
+function helperCapacityAvailable() {
+  return running.size < MAX_CONCURRENT_HELPERS;
 }
 
 async function startHelperForSession(session: any, reason: string) {
   if (running.has(session.id)) {
     console.log(`Helper already running for ${session.id}. Reason: ${reason}`);
-    return;
+    return false;
+  }
+
+  if (!helperCapacityAvailable()) {
+    console.log(
+      `Helper capacity reached (${running.size}/${MAX_CONCURRENT_HELPERS}). Session ${session.id} will remain queued. Reason: ${reason}`,
+    );
+    return false;
   }
 
   running.add(session.id);
 
   console.log(
-    `Starting Praktika helper for ${session.scope} session ${session.id}. Reason: ${reason}. Active helpers: ${running.size}`,
+    `Starting Praktika helper for ${session.scope} session ${session.id}. Reason: ${reason}. Active helpers: ${running.size}/${MAX_CONCURRENT_HELPERS}`,
   );
 
   await supabase
@@ -83,14 +102,9 @@ async function startHelperForSession(session: any, reason: string) {
     running.delete(session.id);
 
     console.log(
-      `Praktika helper for ${session.id} exited with code ${code}. Active helpers: ${running.size}`,
+      `Praktika helper for ${session.id} exited with code ${code}. Active helpers: ${running.size}/${MAX_CONCURRENT_HELPERS}`,
     );
 
-    /*
-     * A zero exit is expected when the helper reaches its idle shutdown.
-     * Leave the session connected so the watcher can automatically restart
-     * it when another pending job appears.
-     */
     if (code === 0) {
       await supabase
         .from("praktika_sessions")
@@ -130,9 +144,13 @@ async function startHelperForSession(session: any, reason: string) {
       })
       .eq("id", session.id);
   });
+
+  return true;
 }
 
 async function checkRefreshRequests() {
+  if (!helperCapacityAvailable()) return;
+
   const { data, error } = await supabase
     .from("praktika_sessions")
     .select("id, scope, app_user_id, status, message, refresh_requested_at")
@@ -146,47 +164,63 @@ async function checkRefreshRequests() {
   }
 
   for (const session of data || []) {
+    if (!helperCapacityAvailable()) break;
     await startHelperForSession(session, "refresh_requested");
   }
 }
 
-async function checkPendingJobs() {
+async function loadPendingUsersFairly() {
   const { data: jobs, error } = await supabase
     .from("praktika_helper_jobs")
     .select("id, app_user_id, job_type, status, available_at, created_at")
     .eq("status", "pending")
     .lte("available_at", nowIso())
-    .order("priority", { ascending: true })
     .order("created_at", { ascending: true })
-    .limit(20);
+    .limit(PENDING_JOB_SCAN_LIMIT);
 
   if (error) {
     console.error("Could not check Praktika helper jobs:", error.message);
-    return;
+    return [];
   }
 
-  if (!jobs || jobs.length === 0) return;
+  if (!jobs || jobs.length === 0) return [];
 
-  const userIds = Array.from(
-    new Set(
-      jobs
-        .map((job) => job.app_user_id)
-        .filter((value): value is string => Boolean(value)),
-    ),
+  const firstPendingJobByUser = new Map<
+    string,
+    { appUserId: string; createdAt: string }
+  >();
+
+  for (const job of jobs) {
+    const appUserId = String(job.app_user_id || "").trim();
+    if (!appUserId) continue;
+
+    if (!firstPendingJobByUser.has(appUserId)) {
+      firstPendingJobByUser.set(appUserId, {
+        appUserId,
+        createdAt: String(job.created_at || ""),
+      });
+    }
+  }
+
+  return Array.from(firstPendingJobByUser.values()).sort((a, b) =>
+    a.createdAt.localeCompare(b.createdAt),
   );
+}
 
-  if (userIds.length === 0) {
-    console.warn(
-      "There are pending Praktika helper jobs with no app_user_id. These cannot be processed by user-scoped helpers.",
-    );
-    return;
-  }
+async function checkPendingJobs() {
+  if (!helperCapacityAvailable()) return;
+
+  const pendingUsers = await loadPendingUsersFairly();
+
+  if (pendingUsers.length === 0) return;
+
+  const appUserIds = pendingUsers.map((item) => item.appUserId);
 
   const { data: sessions, error: sessionError } = await supabase
     .from("praktika_sessions")
     .select("id, scope, app_user_id, status, message, refresh_requested_at")
     .eq("scope", "user")
-    .in("app_user_id", userIds);
+    .in("app_user_id", appUserIds);
 
   if (sessionError) {
     console.error(
@@ -196,16 +230,39 @@ async function checkPendingJobs() {
     return;
   }
 
-  /*
-   * Multiple different staff sessions are deliberately allowed to run
-   * simultaneously. The running Set only prevents duplicate helpers for
-   * the same session.
-   */
-  for (const userId of userIds) {
-    const session = sessions?.find((item) => item.app_user_id === userId);
+  const sessionByUserId = new Map(
+    (sessions || [])
+      .filter((session) => Boolean(session.app_user_id))
+      .map((session) => [String(session.app_user_id), session]),
+  );
+
+  for (const pendingUser of pendingUsers) {
+    if (!helperCapacityAvailable()) break;
+
+    const session = sessionByUserId.get(pendingUser.appUserId);
 
     if (!session) {
-      console.warn(`No Praktika session exists for app user ${userId}.`);
+      console.warn(
+        `No Praktika session exists for app user ${pendingUser.appUserId}.`,
+      );
+      continue;
+    }
+
+    if (running.has(session.id)) {
+      continue;
+    }
+
+    const sessionStatus = String(session.status || "").trim();
+
+    if (
+      sessionStatus === "waiting_for_credentials" ||
+      sessionStatus === "waiting_for_mfa" ||
+      sessionStatus === "error" ||
+      sessionStatus === "expired"
+    ) {
+      console.log(
+        `Skipping session ${session.id} for app user ${pendingUser.appUserId} because status=${sessionStatus}. Pending jobs remain queued.`,
+      );
       continue;
     }
 
@@ -241,6 +298,10 @@ async function main() {
     `Watching Praktika refresh requests and helper jobs every ${Math.round(
       POLL_INTERVAL_MS / 1000,
     )} seconds...`,
+  );
+
+  console.log(
+    `Praktika helper concurrency limit: ${MAX_CONCURRENT_HELPERS}. Pending job scan limit: ${PENDING_JOB_SCAN_LIMIT}.`,
   );
 
   await check();
