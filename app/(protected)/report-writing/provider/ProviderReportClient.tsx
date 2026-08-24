@@ -1926,8 +1926,7 @@ export default function ProviderReportClient({
               {sharedPatientFields}
 
               <ProviderSimpleImageUpload
-  reportDraftId={selectedDraft?.id || null}
-  onCreateDraft={createImageDraftForUpload}
+  reportDraftId={selectedApprovedDraft.id}
 />
 
               <div className="space-y-6 rounded-2xl border bg-white p-5">
