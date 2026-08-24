@@ -1,26 +1,23 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { createReportAuditEvent } from "@/lib/report-writing/audit"
+import { processApprovedEdit } from "@/lib/report-writing/edit-learning"
+
+export const runtime = "nodejs"
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-function hasMeaningfulEdit(originalText: string | null, finalText: string | null) {
-  const original = String(originalText || "").trim()
-  const final = String(finalText || "").trim()
-
-  if (!original || !final) return false
-  if (original === final) return false
-
-  const differenceSize = Math.abs(original.length - final.length)
-  return differenceSize > 20 || original.slice(0, 500) !== final.slice(0, 500)
+function clean(value: unknown) {
+  return String(value ?? "").trim()
 }
 
 export async function POST(req: Request) {
   try {
-    const { draftId } = await req.json()
+    const body = await req.json().catch(() => ({}))
+    const draftId = clean(body.draftId)
 
     if (!draftId) {
       return NextResponse.json(
@@ -42,12 +39,14 @@ export async function POST(req: Request) {
       )
     }
 
+    const now = new Date().toISOString()
+
     const { data, error } = await supabase
       .from("report_drafts")
       .update({
         status: "approved",
-        provider_approved_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        provider_approved_at: now,
+        updated_at: now,
       })
       .eq("id", draftId)
       .select()
@@ -60,24 +59,54 @@ export async function POST(req: Request) {
       )
     }
 
-    if (
-      hasMeaningfulEdit(
-        draftBeforeApproval.ai_generated_text,
-        draftBeforeApproval.edited_text
-      )
-    ) {
-      const { error: learningError } = await supabase
-        .from("provider_report_edit_examples")
-        .insert({
-          provider_id: draftBeforeApproval.provider_id,
-          report_type: draftBeforeApproval.report_type,
-          original_text: draftBeforeApproval.ai_generated_text,
-          final_text: draftBeforeApproval.edited_text,
-          created_from_draft_id: draftBeforeApproval.id,
-        })
+    /*
+     * IMPORTANT LEARNING CHANGE
+     * -------------------------
+     * Do NOT directly insert the whole before/after letter into
+     * provider_report_edit_examples here.
+     *
+     * processApprovedEdit() does all of the following:
+     * - saves the edit as evidence
+     * - prevents duplicate processing with a fingerprint
+     * - analyses whether the edit contains reusable provider behaviour
+     * - ignores patient-specific / factual corrections
+     * - creates or reinforces structured provider_behaviours
+     *
+     * Raw edit examples remain evidence/audit data only. They are no longer
+     * intended to directly drive future letter generation.
+     */
+    let learningResult = null
 
-      if (learningError) {
-        console.error("Failed to save provider edit-learning example:", learningError)
+    const originalText = clean(draftBeforeApproval.ai_generated_text)
+    const finalText = clean(draftBeforeApproval.edited_text)
+
+    if (originalText && finalText && originalText !== finalText) {
+      learningResult = await processApprovedEdit({
+        providerId: clean(draftBeforeApproval.provider_id),
+        draftId: clean(draftBeforeApproval.id),
+        reportType:
+          clean(draftBeforeApproval.report_type) || "consultation_report",
+        originalText,
+        finalText,
+        source: "provider_approval",
+
+        // This endpoint represents provider approval. If you later pass real
+        // signed-in actor details into this route, replace these values with
+        // those authenticated details.
+        actor: {
+          actorRole: "provider",
+          actorUserId: null,
+          actorFullName: null,
+        } as any,
+
+        approvedByProvider: true,
+      })
+
+      if (learningResult.error) {
+        console.warn(
+          "Provider edit learning completed with a warning:",
+          learningResult.error
+        )
       }
     }
 
@@ -89,18 +118,27 @@ export async function POST(req: Request) {
       details: {
         reportType: data.report_type,
         providerSpecificLearningChecked: true,
+        learningRequested: Boolean(learningResult?.requested),
+        learningAnalysisStatus: learningResult?.analysisStatus || "not_requested",
+        behavioursCreated: learningResult?.behavioursCreated || 0,
+        behavioursReinforced: learningResult?.behavioursReinforced || 0,
       },
     })
 
     return NextResponse.json({
       success: true,
       draft: data,
+      learning: learningResult,
     })
   } catch (error) {
-    console.error(error)
+    console.error("Approve draft failed:", error)
 
     return NextResponse.json(
-      { success: false, error: "Failed to approve draft." },
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to approve draft.",
+      },
       { status: 500 }
     )
   }

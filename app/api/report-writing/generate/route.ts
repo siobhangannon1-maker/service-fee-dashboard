@@ -17,7 +17,6 @@ type TrainingData = {
   rulesText: string
   terminologyText: string
   examplesText: string
-  editLearningText: string
   providerKnowledgeText: string
   exampleDebug: Array<{
     id: string
@@ -96,17 +95,37 @@ async function getProviderKnowledgeText(providerId: string | null, reportType: s
     return "No provider behaviours, preferred phrases, or template blocks saved."
   }
 
-  const behaviours = data.filter((item) => {
+  // Learned edit behaviours should not influence future letters after only one edit.
+  // Formatting/structure/treatment-plan behaviours require stronger repeated evidence.
+  const usableData = data.filter((item) => {
+    const source = cleanString(item.source).toLowerCase()
+    const supportCount = Number(item.support_count || 1)
+    const category = cleanString(item.category).toLowerCase()
+
+    if (source !== "approved_edit_learning") return true
+
+    if (["formatting", "structure", "treatment_plan"].includes(category)) {
+      return supportCount >= 3
+    }
+
+    return supportCount >= 2
+  })
+
+  if (usableData.length === 0) {
+    return "No learned provider behaviours have enough supporting evidence yet."
+  }
+
+  const behaviours = usableData.filter((item) => {
     const type = cleanString(item.knowledge_type || "behaviour")
     return type === "behaviour" || !type
   })
 
-  const phrases = data.filter((item) => {
+  const phrases = usableData.filter((item) => {
     const type = cleanString(item.knowledge_type)
     return type === "preferred_phrase"
   })
 
-  const templateBlocks = data.filter((item) => {
+  const templateBlocks = usableData.filter((item) => {
     const type = cleanString(item.knowledge_type)
     return type === "template_block"
   })
@@ -195,43 +214,33 @@ async function getProviderTraining(
           : "No report rules saved.",
       terminologyText: "No provider-specific terminology rules saved.",
       examplesText: "No provider-specific examples saved.",
-      editLearningText: "No provider-specific edit examples saved.",
       providerKnowledgeText,
       exampleDebug: [],
     }
   }
 
-  const [rulesResult, terminologyResult, examplesResult, editExamplesResult] =
-    await Promise.all([
-      supabase
-        .from("provider_report_rules")
-        .select("report_type, rule_text")
-        .eq("provider_id", providerId)
-        .in("report_type", [reportType, "all"]),
+  const [rulesResult, terminologyResult, examplesResult] = await Promise.all([
+    supabase
+      .from("provider_report_rules")
+      .select("report_type, rule_text")
+      .eq("provider_id", providerId)
+      .in("report_type", [reportType, "all"]),
 
-      supabase
-        .from("provider_terminology_rules")
-        .select("spoken_or_written_text, preferred_text")
-        .eq("provider_id", providerId),
+    supabase
+      .from("provider_terminology_rules")
+      .select("spoken_or_written_text, preferred_text")
+      .eq("provider_id", providerId),
 
-      supabase
-        .from("provider_report_examples")
-        .select(
-          "id, report_type, title, example_text, scenario_tags, scenario_summary, is_preferred, created_at"
-        )
-        .eq("provider_id", providerId)
-        .eq("report_type", reportType)
-        .order("created_at", { ascending: false })
-        .limit(40),
-
-      supabase
-        .from("provider_report_edit_examples")
-        .select("report_type, original_text, final_text")
-        .eq("provider_id", providerId)
-        .eq("report_type", reportType)
-        .order("created_at", { ascending: false })
-        .limit(8),
-    ])
+    supabase
+      .from("provider_report_examples")
+      .select(
+        "id, report_type, title, example_text, scenario_tags, scenario_summary, is_preferred, created_at"
+      )
+      .eq("provider_id", providerId)
+      .eq("report_type", reportType)
+      .order("created_at", { ascending: false })
+      .limit(40),
+  ])
 
   const providerRules =
     rulesResult.data && rulesResult.data.length > 0
@@ -314,26 +323,10 @@ async function getProviderTraining(
           .join("\n\n---\n\n")
       : "No provider-specific examples saved."
 
-  const editLearningText =
-    editExamplesResult.data && editExamplesResult.data.length > 0
-      ? editExamplesResult.data
-          .map((example, index) => {
-            return [
-              `Provider edit example ${index + 1}:`,
-              "Original AI version:",
-              example.original_text,
-              "Final provider-approved version:",
-              example.final_text,
-            ].join("\n")
-          })
-          .join("\n\n---\n\n")
-      : "No provider-specific edit examples saved."
-
   return {
     rulesText,
     terminologyText,
     examplesText,
-    editLearningText,
     providerKnowledgeText,
     exampleDebug: scoredExamples.map((example) => ({
       id: example.id,
@@ -756,10 +749,6 @@ Provider knowledge rules:
 - If a preferred phrase conflicts with the clinical notes, do not use it.
 - If a template block requires facts not in the clinical notes, adapt it without inventing facts.
 
-Provider-specific learning rules:
-- Learn from the provider-specific edit examples by imitating the final approved style.
-- Avoid patterns that were removed from the original AI versions.
-
 Patient details:
 Patient full name: ${patientName || exactFirstName || ""}
 Patient first name: ${exactFirstName || ""}
@@ -798,9 +787,6 @@ ${training.terminologyText}
 Provider example letters for style and structure only:
 ${training.examplesText}
 
-Provider-specific learning from previously edited/approved reports:
-${training.editLearningText}
-
 Clinical notes:
 ${clinicalNotes}
 
@@ -814,7 +800,7 @@ Now write the final report body only.
         {
           role: "system",
           content:
-            "You write specialist dental reports. You closely follow provider examples, manual rules, learned behaviours, preferred phrases, template blocks, terminology preferences, detected clinical scenario information, and provider-specific edit-learning examples. You do not invent clinical facts. You use the supplied patient first name only unless examples clearly require the full name. You follow the supplied patient gender/pronoun setting exactly and do not infer gender from names. When the current clinical notes contain clearly tabular or comparative data, you automatically format that data as a valid Markdown table without a code fence, while keeping all other report content as plain text.",
+            "You write specialist dental reports. You closely follow provider examples, manual rules, sufficiently supported learned behaviours, preferred phrases, template blocks, terminology preferences, and detected clinical scenario information. You do not invent clinical facts. You use the supplied patient first name only unless examples clearly require the full name. You follow the supplied patient gender/pronoun setting exactly and do not infer gender from names. When the current clinical notes contain clearly tabular or comparative data, you automatically format that data as a valid Markdown table without a code fence, while keeping all other report content as plain text.",
         },
         {
           role: "user",
@@ -860,7 +846,6 @@ Now write the final report body only.
         providerKnowledgeUsed: training.providerKnowledgeText,
         terminologyUsed: training.terminologyText,
         examplesUsed: training.examplesText,
-        editLearningUsed: training.editLearningText,
       },
     })
   } catch (error) {
