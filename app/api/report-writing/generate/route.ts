@@ -77,34 +77,77 @@ async function safeSelect<T>(query: PromiseLike<{ data: T | null; error: any }>)
 }
 
 async function getProviderKnowledgeText(providerId: string | null, reportType: string) {
-  if (!providerId) return "No provider behaviours, preferred phrases, or template blocks saved."
+  if (!providerId) {
+    return "No provider behaviours, preferred phrases, template blocks, or provider knowledge saved."
+  }
 
-  const data = await safeSelect<any[]>(
-    supabase
-      .from("provider_behaviours")
-      .select("*")
-      .eq("provider_id", providerId)
-      .eq("status", "active")
-      .in("report_type", [reportType, "all"])
-      .order("confidence", { ascending: false })
-      .order("support_count", { ascending: false })
-      .limit(120)
-  )
+  const [behaviourData, knowledgeData] = await Promise.all([
+    safeSelect<any[]>(
+      supabase
+        .from("provider_behaviours")
+        .select("*")
+        .eq("provider_id", providerId)
+        .eq("status", "active")
+        .in("report_type", [reportType, "all"])
+        .order("confidence", { ascending: false })
+        .order("support_count", { ascending: false })
+        .limit(160)
+    ),
+    safeSelect<any[]>(
+      supabase
+        .from("provider_knowledge")
+        .select("*")
+        .eq("provider_id", providerId)
+        .eq("status", "active")
+        .in("report_type", [reportType, "all"])
+        .order("confidence", { ascending: false })
+        .order("evidence_count", { ascending: false })
+        .limit(160)
+    ),
+  ])
 
-  if (!data || data.length === 0) {
-    return "No provider behaviours, preferred phrases, or template blocks saved."
+  const normalisedBehaviours = (behaviourData || []).map((item) => ({
+    ...item,
+    origin: "provider_behaviours",
+    support_count: Number(item.support_count || 1),
+    behaviour_text: cleanString(item.behaviour_text),
+    phrase_text: cleanString(item.preferred_phrase || item.phrase_text),
+    template_block_text: cleanString(item.template_block || item.template_block_text),
+  }))
+
+  const normalisedKnowledge = (knowledgeData || []).map((item) => {
+    const knowledgeType = cleanString(item.knowledge_type || "behaviour")
+    const knowledgeText = cleanString(item.knowledge_text)
+
+    return {
+      ...item,
+      origin: "provider_knowledge",
+      knowledge_type: knowledgeType,
+      support_count: Number(item.evidence_count || 1),
+      behaviour_text: knowledgeType === "behaviour" ? knowledgeText : "",
+      phrase_text: knowledgeType === "preferred_phrase" ? knowledgeText : "",
+      template_block_text: knowledgeType === "template_block" ? knowledgeText : "",
+    }
+  })
+
+  const combinedData = [...normalisedBehaviours, ...normalisedKnowledge]
+
+  if (combinedData.length === 0) {
+    return "No provider behaviours, preferred phrases, template blocks, or provider knowledge saved."
   }
 
   // Learned edit behaviours should not influence future letters after only one edit.
   // Formatting/structure/treatment-plan behaviours require stronger repeated evidence.
-  const usableData = data.filter((item) => {
+  // Training-case/provider-knowledge records are allowed through because they were
+  // deliberately created from provider training material rather than a single edit.
+  const usableData = combinedData.filter((item) => {
     const source = cleanString(item.source).toLowerCase()
     const supportCount = Number(item.support_count || 1)
     const category = cleanString(item.category).toLowerCase()
 
     if (source !== "approved_edit_learning") return true
 
-    if (["formatting", "structure", "treatment_plan"].includes(category)) {
+    if (["formatting", "structure", "treatment_plan", "treatment_plan_format"].includes(category)) {
       return supportCount >= 3
     }
 
@@ -115,17 +158,66 @@ async function getProviderKnowledgeText(providerId: string | null, reportType: s
     return "No learned provider behaviours have enough supporting evidence yet."
   }
 
-  const behaviours = usableData.filter((item) => {
+  // The same learned preference can exist in both provider_knowledge and
+  // provider_behaviours. Deduplicate by report type + knowledge type + text.
+  const deduped = new Map<string, any>()
+
+  for (const item of usableData) {
+    const type = cleanString(item.knowledge_type || "behaviour") || "behaviour"
+    const textValue =
+      cleanString(item.behaviour_text) ||
+      cleanString(item.phrase_text) ||
+      cleanString(item.template_block_text) ||
+      cleanString(item.knowledge_text)
+
+    if (!textValue) continue
+
+    const key = [
+      cleanString(item.report_type || reportType).toLowerCase(),
+      type.toLowerCase(),
+      textValue.toLowerCase().replace(/\s+/g, " "),
+    ].join("|")
+
+    const existing = deduped.get(key)
+
+    if (!existing) {
+      deduped.set(key, item)
+      continue
+    }
+
+    const existingConfidence = normaliseScore(existing.confidence, 70)
+    const candidateConfidence = normaliseScore(item.confidence, 70)
+    const existingSupport = Number(existing.support_count || 1)
+    const candidateSupport = Number(item.support_count || 1)
+
+    if (
+      candidateConfidence > existingConfidence ||
+      (candidateConfidence === existingConfidence && candidateSupport > existingSupport)
+    ) {
+      deduped.set(key, item)
+    }
+  }
+
+  const uniqueData = Array.from(deduped.values()).sort((a, b) => {
+    const confidenceDiff =
+      normaliseScore(b.confidence, 70) - normaliseScore(a.confidence, 70)
+
+    if (confidenceDiff !== 0) return confidenceDiff
+
+    return Number(b.support_count || 1) - Number(a.support_count || 1)
+  })
+
+  const behaviours = uniqueData.filter((item) => {
     const type = cleanString(item.knowledge_type || "behaviour")
     return type === "behaviour" || !type
   })
 
-  const phrases = usableData.filter((item) => {
+  const phrases = uniqueData.filter((item) => {
     const type = cleanString(item.knowledge_type)
     return type === "preferred_phrase"
   })
 
-  const templateBlocks = usableData.filter((item) => {
+  const templateBlocks = uniqueData.filter((item) => {
     const type = cleanString(item.knowledge_type)
     return type === "template_block"
   })
@@ -137,12 +229,14 @@ async function getProviderKnowledgeText(providerId: string | null, reportType: s
     const text =
       cleanString(item.behaviour_text) ||
       cleanString(item.phrase_text) ||
-      cleanString(item.template_block_text)
+      cleanString(item.template_block_text) ||
+      cleanString(item.knowledge_text)
 
     const evidence = cleanString(item.evidence_summary)
+    const origin = cleanString(item.origin) || "provider_learning"
 
     return [
-      `${index + 1}. [${item.report_type || reportType} / ${category} / confidence ${confidence}% / seen ${supportCount}]`,
+      `${index + 1}. [${item.report_type || reportType} / ${category} / confidence ${confidence}% / seen ${supportCount} / ${origin}]`,
       text,
       evidence ? `Evidence: ${evidence}` : "",
     ]
@@ -156,7 +250,8 @@ async function getProviderKnowledgeText(providerId: string | null, reportType: s
     sections.push(
       [
         "LEARNED PROVIDER BEHAVIOURS",
-        "Use these as provider-specific style and content preferences.",
+        "Use these as provider-specific style, structure, formatting, and content preferences.",
+        "High-confidence repeated formatting and treatment-plan behaviours override conflicting example formatting.",
         behaviours.map(formatItem).join("\n\n"),
       ].join("\n")
     )
@@ -372,9 +467,28 @@ async function enforceExactPatientFirstName(
   return fixed
 }
 
+function getReportFormattingInstruction(reportType: string) {
+  if (
+    reportType === "consultation_report" ||
+    reportType === "periodontal_consultation_report"
+  ) {
+    return [
+      "MANDATORY TREATMENT-PLAN FORMAT FOR THIS REPORT TYPE:",
+      "- Write the treatment plan as concise narrative prose in normal paragraphs.",
+      "- Do NOT use a numbered treatment plan.",
+      "- Do NOT use bullet points for the treatment plan.",
+      "- If provider examples contain a numbered or bulleted treatment plan, ignore that example formatting and preserve only the clinically appropriate content and sequencing.",
+      "- This formatting instruction overrides conflicting provider-example formatting.",
+    ].join("\n")
+  }
+
+  return "No additional report-type formatting override."
+}
+
 function getReportTypeLabel(reportType: string) {
   const labels: Record<string, string> = {
     consultation_report: "consultation report",
+    periodontal_consultation_report: "periodontal consultation report",
     treatment_report: "treatment report",
     review: "review letter",
     SPT_report: "supportive periodontal therapy report",
@@ -669,6 +783,7 @@ export async function POST(req: Request) {
     )
 
     const reportTypeLabel = getReportTypeLabel(finalReportType)
+    const reportFormattingInstruction = getReportFormattingInstruction(finalReportType)
     const scenarioText = formatClinicalScenario(clinicalScenario)
 
     const prompt = `
@@ -704,20 +819,19 @@ The report must:
 - If the detected scenario says a detail is unclear or not stated, do not invent it.
 
 Provider example rules:
-- The provider examples are EXTREMELY important.
-- Provider examples override generic writing behaviour.
-- Match the style of the examples as closely as possible.
-- Closely follow the structure, brevity, sequencing, wording style, paragraph structure, and treatment-plan format of the provider examples.
-- If the examples are concise and template-like, the generated letter must also be concise and template-like.
+- Provider examples are important guides for tone, brevity, sequencing, wording style, and paragraph structure.
+- Provider examples override only generic writing behaviour; they do NOT override manual rules, report-type formatting instructions, or sufficiently supported learned provider behaviours.
+- Match the style of the examples as closely as possible where it does not conflict with higher-priority rules.
+- If the examples are concise and template-like, the generated letter should also be concise and template-like.
 - Prefer the same overall length as the examples.
 - Do not add extra narrative, radiographic interpretation, consent discussions, or explanatory detail unless the examples include them.
-- Use the examples as the primary guide for writing style.
+- Use the examples as a strong style guide, but obey the rule hierarchy below.
 - Use the clinical notes only to determine the clinical facts and which example structure is most appropriate.
-- If a preferred example was selected, follow that example's structure most closely.
-- If examples use short paragraphs and numbered treatment plans, use that structure.
+- If a preferred example was selected, follow that example's structure most closely unless it conflicts with a higher-priority formatting or provider rule.
+- IMPORTANT: If a manual rule, report-type formatting instruction, or learned provider behaviour says the treatment plan must be narrative prose, do not copy numbering or bullets from an example.
 - Avoid generic AI-style explanatory writing.
 - Avoid expanding sections unnecessarily.
-- Provider examples control writing style and structure, but must not prevent the use of a table when the current clinical notes contain clearly tabular data.
+- Provider examples must not prevent the use of a table when the current clinical notes contain clearly tabular data.
 - Provider examples must never supply patient-specific dates, measurements, percentages, tooth numbers, medications, diagnoses, or treatment details.
 
 Clinical data table rules:
@@ -741,11 +855,19 @@ Clinical data table rules:
 - Tables are the only permitted Markdown formatting.
 - All patient-specific table content must come exclusively from the current clinical notes, never from provider examples, learned examples, template blocks, or prior reports.
 
-Provider knowledge rules:
+Provider knowledge rules and hierarchy:
+- Follow this priority order when instructions conflict:
+  1. Current clinical facts and patient safety/accuracy.
+  2. Manual universal/provider report rules and the report-type formatting instruction.
+  3. Sufficiently supported learned provider behaviours from provider_behaviours and provider_knowledge.
+  4. Preferred phrases and template blocks.
+  5. Provider example formatting and style.
+  6. Generic writing behaviour.
 - Learned behaviours explain reusable provider preferences.
+- High-confidence repeated formatting, structure, and treatment-plan behaviours must be followed even when an older provider example uses a different format.
 - Preferred phrases are important. Use them when the clinical situation matches.
 - Template blocks are important. Use the same block structure when the clinical situation matches.
-- If a learned behaviour conflicts with a manual rule, follow the manual rule.
+- If a learned behaviour conflicts with a manual rule or report-type formatting instruction, follow the manual/report-type rule.
 - If a preferred phrase conflicts with the clinical notes, do not use it.
 - If a template block requires facts not in the clinical notes, adapt it without inventing facts.
 
@@ -765,6 +887,9 @@ ${referrerAddress || "Not provided"}
 
 Report type:
 ${reportTypeLabel}
+
+Report-type formatting instruction:
+${reportFormattingInstruction}
 
 Detected clinical scenario:
 ${scenarioText}
@@ -837,6 +962,7 @@ Now write the final report body only.
         providerId,
         reportType: finalReportType,
         reportTypeLabel,
+        reportFormattingInstruction,
         patientGender: finalPatientGender,
         preferredExampleId: preferredExampleId || null,
         temporaryRulesText,
