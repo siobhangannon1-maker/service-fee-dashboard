@@ -965,42 +965,87 @@ export default function ProviderReportClient({
   }
 
   async function createImageDraftForUpload() {
-  if (!patientFirstName.trim() || !patientLastName.trim()) {
-    alert("Please enter the patient first and last name before uploading images.");
-    return null;
+    // Existing records must never create a second draft just to attach an image.
+    // This also makes the helper safe if the upload component invokes the
+    // fallback unexpectedly while viewing Approval or Approved.
+    if (activeTab === "approved" && selectedApprovedDraft?.id) {
+      return selectedApprovedDraft;
+    }
+
+    if (activeTab === "approval" && selectedApprovalDraft?.id) {
+      return selectedApprovalDraft;
+    }
+
+    if (selectedDraft?.id) {
+      return selectedDraft;
+    }
+
+    if (!patientFirstName.trim() || !patientLastName.trim()) {
+      alert("Please enter the patient first and last name before uploading images.");
+      return null;
+    }
+
+    const response = await fetch("/api/report-writing/save-draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        providerId,
+        patientName,
+        patientDob,
+        referrerName,
+        referrerAddress,
+        reportType,
+        clinicalNotes: "",
+        generatedReport: "",
+        editedText: "",
+        sourceType: "clinical_notes",
+        status: "draft",
+        typistInstructions,
+      }),
+    });
+
+    const data = await readJsonSafely(response);
+
+    if (!response.ok || !data.success) {
+      alert(data.error || "Could not create draft for image upload.");
+      return null;
+    }
+
+    // Support the common response shapes used by our report-writing routes.
+    // ProviderSimpleImageUpload needs an object with an `id` property.
+    const returnedId = String(
+      data?.draft?.id || data?.draftId || data?.id || "",
+    ).trim();
+
+    if (!returnedId) {
+      console.error("Image draft creation returned no usable ID:", data);
+      alert("Draft was created, but no draft ID was returned by the server.");
+      return null;
+    }
+
+    const createdDraft: Draft = data?.draft?.id
+      ? data.draft
+      : {
+          id: returnedId,
+          patient_name: patientName,
+          patient_dob: patientDob || null,
+          referrer_name: referrerName || null,
+          referrer_address: referrerAddress || null,
+          report_type: reportType,
+          edited_text: "",
+          ai_generated_text: "",
+          status: "draft",
+          created_at: new Date().toISOString(),
+          typist_instructions: typistInstructions || "",
+          typist_queries: null,
+          source_type: "clinical_notes",
+        };
+
+    setSelectedDraft(createdDraft);
+    await loadDrafts();
+
+    return createdDraft;
   }
-
-  const response = await fetch("/api/report-writing/save-draft", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      providerId,
-      patientName,
-      patientDob,
-      referrerName,
-      referrerAddress,
-      reportType,
-      clinicalNotes: "",
-      generatedReport: "",
-      editedText: "",
-      sourceType: "clinical_notes",
-      status: "draft",
-      typistInstructions,
-    }),
-  });
-
-  const data = await response.json();
-
-  if (!response.ok || !data.success) {
-    alert(data.error || "Could not create draft for image upload.");
-    return null;
-  }
-
-  setSelectedDraft(data.draft);
-  await loadDrafts();
-
-  return data.draft;
-}
 
   async function saveLetterAsDraft(options?: {
   text?: string;
@@ -2407,9 +2452,8 @@ export default function ProviderReportClient({
                     ) : null}
 
                     <ProviderSimpleImageUpload
-  reportDraftId={selectedDraft?.id || null}
-  onCreateDraft={createImageDraftForUpload}
-/>
+                      reportDraftId={selectedApprovalDraft.id}
+                    />
 
                     {selectedApprovalDraft.ai_generated_text ? (
                       <div className="flex justify-end">
