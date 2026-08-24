@@ -91,6 +91,24 @@ function makeKnowledgeKey(
     .slice(0, 150)
 }
 
+function deidentifyExampleText(text: string, patientFirstName: string) {
+  let result = text
+
+  const firstName = clean(patientFirstName)
+  if (firstName) {
+    const escaped = firstName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    result = result.replace(new RegExp(`\\b${escaped}\\b`, "gi"), "[PATIENT FIRST NAME]")
+  }
+
+  return result
+    .replace(/\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/g, "[DATE]")
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, "[DATE]")
+    .replace(/\b04\d{2}\s?\d{3}\s?\d{3}\b/g, "[PHONE]")
+    .replace(/\b0\d\s?\d{4}\s?\d{4}\b/g, "[PHONE]")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[EMAIL]")
+    .replace(/\bDOB[:\s]*[^\n,]+/gi, "DOB: [DOB]")
+}
+
 async function generateLetter(origin: string, payload: Record<string, unknown>) {
   const response = await fetch(`${origin}/api/report-writing/generate`, {
     method: "POST",
@@ -204,15 +222,18 @@ Allowed knowledge_type values:
 - behaviour
 - preferred_phrase
 - template_block
+- terminology
 - other
 
 Do not use any other knowledge_type values.
+Do NOT create manual_rule automatically. Manual rules are reserved for explicit human/admin input.
 
 Knowledge types:
 1. behaviour: a general reusable provider preference.
 2. preferred_phrase: an exact or near-exact phrase the provider commonly uses.
 3. template_block: a reusable paragraph or section structure.
-4. other: only use if none of the above fit.
+4. terminology: a reusable terminology preference where the ideal letter consistently replaces one dental/medical term or wording with another.
+5. other: only use if none of the above fit.
 
 Confidence and match_score:
 - Use whole numbers from 1 to 100.
@@ -224,6 +245,8 @@ Do not extract patient-specific clinical facts as provider knowledge.
 Do not invent facts.
 If the generated letter includes unwanted procedural details that are absent from the ideal, extract a content_exclusion behaviour.
 If the ideal uses a distinctive sentence or paragraph, extract it as a preferred_phrase or template_block.
+If the ideal consistently corrects a reusable dental/medical term or wording choice, extract a terminology item.
+Do not create terminology from a one-off patient-specific phrase.
 
 Return JSON only with this exact shape:
 {
@@ -326,11 +349,19 @@ export async function POST(req: Request) {
       (item) => item.knowledge_text && item.applies_to_future_letters
     )
 
+    // Only active-strength knowledge should influence the immediate regenerated
+    // preview. Lower-confidence items can still be saved as needs_review.
+    const previewKnowledgeItems = knowledgeItems.filter(
+      (item) => normalisePercent(item.confidence, 70) >= 65
+    )
+
     const savedKnowledge: any[] = []
     const reinforcedKnowledge: any[] = []
 
     for (const item of knowledgeItems) {
-      const safeReportType = clean(item.report_type) || reportType
+      // Training from one selected report type should not leak knowledge into a
+      // different report type merely because the analysis model returned another value.
+      const safeReportType = reportType
       const knowledgeType = normalizeKnowledgeType(item.knowledge_type)
       const category = clean(item.category) || "general"
       const knowledgeText = clean(item.knowledge_text)
@@ -403,7 +434,7 @@ export async function POST(req: Request) {
 
     let regeneratedLetter = ""
 
-    if (regeneratePreview && knowledgeItems.length > 0) {
+    if (regeneratePreview && previewKnowledgeItems.length > 0) {
       regeneratedLetter = await generateLetter(origin, {
         providerId,
         reportType,
@@ -412,24 +443,44 @@ export async function POST(req: Request) {
         patientGender,
         referrerName,
         clinicalNotes,
-        temporaryRulesText: formatKnowledgeForPrompt(knowledgeItems),
+        temporaryRulesText: formatKnowledgeForPrompt(previewKnowledgeItems),
       })
     }
 
-    const { data: example, error: exampleError } = await supabase
+    const deidentifiedIdealExample = deidentifyExampleText(
+      idealLetter,
+      patientFirstName
+    )
+
+    const { data: existingExample, error: existingExampleError } = await supabase
       .from("provider_report_examples")
-      .insert({
-        provider_id: providerId,
-        report_type: reportType,
-        title: `Ideal ${reportType} - ${new Date().toLocaleDateString(
-          "en-AU"
-        )}`,
-        example_text: idealLetter,
-      })
-      .select()
+      .select("*")
+      .eq("provider_id", providerId)
+      .eq("report_type", reportType)
+      .eq("example_text", deidentifiedIdealExample)
       .maybeSingle()
 
-    if (exampleError) throw new Error(exampleError.message)
+    if (existingExampleError) throw new Error(existingExampleError.message)
+
+    let example = existingExample
+
+    if (!example) {
+      const { data: insertedExample, error: exampleError } = await supabase
+        .from("provider_report_examples")
+        .insert({
+          provider_id: providerId,
+          report_type: reportType,
+          title: `Ideal ${reportType} - ${new Date().toLocaleDateString(
+            "en-AU"
+          )}`,
+          example_text: deidentifiedIdealExample,
+        })
+        .select()
+        .maybeSingle()
+
+      if (exampleError) throw new Error(exampleError.message)
+      example = insertedExample
+    }
 
     const { data: trainingCase, error: trainingCaseError } = await supabase
       .from("provider_training_cases")

@@ -222,6 +222,21 @@ async function getProviderKnowledgeText(providerId: string | null, reportType: s
     return type === "template_block"
   })
 
+  const manualKnowledgeRules = uniqueData.filter((item) => {
+    const type = cleanString(item.knowledge_type)
+    return type === "manual_rule"
+  })
+
+  const terminologyKnowledge = uniqueData.filter((item) => {
+    const type = cleanString(item.knowledge_type)
+    return type === "terminology"
+  })
+
+  const otherKnowledge = uniqueData.filter((item) => {
+    const type = cleanString(item.knowledge_type)
+    return type === "other"
+  })
+
   const formatItem = (item: any, index: number) => {
     const confidence = normaliseScore(item.confidence, 70)
     const supportCount = Number(item.support_count || 1)
@@ -246,6 +261,17 @@ async function getProviderKnowledgeText(providerId: string | null, reportType: s
 
   const sections: string[] = []
 
+  if (manualKnowledgeRules.length > 0) {
+    sections.push(
+      [
+        "MANUAL PROVIDER KNOWLEDGE RULES",
+        "These are explicit provider/admin rules. Treat them as high-priority instructions.",
+        "They override learned behaviours, preferred phrases, template blocks, provider examples, and generic writing style when there is a conflict.",
+        manualKnowledgeRules.map(formatItem).join("\n\n"),
+      ].join("\n")
+    )
+  }
+
   if (behaviours.length > 0) {
     sections.push(
       [
@@ -253,6 +279,16 @@ async function getProviderKnowledgeText(providerId: string | null, reportType: s
         "Use these as provider-specific style, structure, formatting, and content preferences.",
         "High-confidence repeated formatting and treatment-plan behaviours override conflicting example formatting.",
         behaviours.map(formatItem).join("\n\n"),
+      ].join("\n")
+    )
+  }
+
+  if (terminologyKnowledge.length > 0) {
+    sections.push(
+      [
+        "LEARNED PROVIDER TERMINOLOGY",
+        "Use these terminology preferences when the clinical context matches.",
+        terminologyKnowledge.map(formatItem).join("\n\n"),
       ].join("\n")
     )
   }
@@ -273,6 +309,16 @@ async function getProviderKnowledgeText(providerId: string | null, reportType: s
         "PROVIDER TEMPLATE BLOCKS",
         "Use these as reusable paragraph or section structures when the clinical scenario matches.",
         templateBlocks.map(formatItem).join("\n\n"),
+      ].join("\n")
+    )
+  }
+
+  if (otherKnowledge.length > 0) {
+    sections.push(
+      [
+        "OTHER PROVIDER KNOWLEDGE",
+        "Use this only when clinically relevant and when it does not conflict with higher-priority rules.",
+        otherKnowledge.map(formatItem).join("\n\n"),
       ].join("\n")
     )
   }
@@ -858,16 +904,16 @@ Clinical data table rules:
 Provider knowledge rules and hierarchy:
 - Follow this priority order when instructions conflict:
   1. Current clinical facts and patient safety/accuracy.
-  2. Manual universal/provider report rules and the report-type formatting instruction.
+  2. Manual universal/provider report rules, manual_rule items from provider_knowledge, and the report-type formatting instruction.
   3. Sufficiently supported learned provider behaviours from provider_behaviours and provider_knowledge.
-  4. Preferred phrases and template blocks.
+  4. Provider terminology preferences, preferred phrases, and template blocks.
   5. Provider example formatting and style.
   6. Generic writing behaviour.
 - Learned behaviours explain reusable provider preferences.
 - High-confidence repeated formatting, structure, and treatment-plan behaviours must be followed even when an older provider example uses a different format.
 - Preferred phrases are important. Use them when the clinical situation matches.
 - Template blocks are important. Use the same block structure when the clinical situation matches.
-- If a learned behaviour conflicts with a manual rule or report-type formatting instruction, follow the manual/report-type rule.
+- If a learned behaviour conflicts with a manual rule (including a manual_rule from provider_knowledge) or report-type formatting instruction, follow the manual/report-type rule.
 - If a preferred phrase conflicts with the clinical notes, do not use it.
 - If a template block requires facts not in the clinical notes, adapt it without inventing facts.
 
