@@ -1926,7 +1926,8 @@ export default function ProviderReportClient({
               {sharedPatientFields}
 
               <ProviderSimpleImageUpload
-  reportDraftId={selectedApprovedDraft.id}
+  reportDraftId={selectedDraft?.id || null}
+  onCreateDraft={createImageDraftForUpload}
 />
 
               <div className="space-y-6 rounded-2xl border bg-white p-5">
@@ -2569,9 +2570,8 @@ export default function ProviderReportClient({
                     />
 
                     <ProviderSimpleImageUpload
-  reportDraftId={selectedDraft?.id || null}
-  onCreateDraft={createImageDraftForUpload}
-/>
+                      reportDraftId={selectedApprovedDraft.id}
+                    />
 
                     {selectedApprovedDraft.typist_instructions?.trim() ? (
                       <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
