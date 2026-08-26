@@ -1015,17 +1015,12 @@ function getQueueSyncedClinicalNotes(item: QueueItem) {
     "vchTreatmentNotes",
   ]);
 
+  // Only return genuine/canonical cached clinical notes. Do NOT fall back to
+  // appointment `source_clinical_notes` — those are metadata and must not be
+  // treated as canonical clinical notes.
   const cachedQueueNotes = cleanClinicalNoteText(directNotes);
 
   if (cachedQueueNotes) return cachedQueueNotes;
-
-  const hydratedQueueNotes = cleanClinicalNoteText(item.source_clinical_notes);
-
-  if (hydratedQueueNotes) return hydratedQueueNotes;
-
-  const cleanedDirectNotes = cleanClinicalNoteText(directNotes);
-
-  if (cleanedDirectNotes) return cleanedDirectNotes;
 
   const noteMatches = collectDeepStringMatches(raw, (key) => {
     if (key.includes("appointment")) return false;
@@ -3506,16 +3501,11 @@ export default function TypistPage() {
       return;
     }
 
-    const initialClinicalNotes = [
-      appointmentNotes,
-      linkedPraktikaPatientId && appointmentDate
-        ? "Loading same-day Praktika clinical notes..."
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-
-    setClinicalNotes(initialClinicalNotes || appointmentNotes);
+    // No genuine cached clinical notes yet. Do NOT seed the editable
+    // `clinicalNotes` state with appointment/admin `source_clinical_notes`.
+    // Show a subtle loading message in the UI instead by leaving
+    // `clinicalNotes` blank so the textarea remains empty for manual typing.
+    setClinicalNotes("");
 
     let sameDayClinicalNotes = "";
 
@@ -5274,7 +5264,14 @@ export default function TypistPage() {
                               {cached}
                             </div>
                           </div>
-                        ) : null}
+                        ) : (
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                              Clinical Notes
+                            </div>
+                            <div className="mt-2 text-slate-500">Clinical notes are still syncing from Praktika.</div>
+                          </div>
+                        )}
 
                         {!isDuplicate && appointment ? (
                           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
