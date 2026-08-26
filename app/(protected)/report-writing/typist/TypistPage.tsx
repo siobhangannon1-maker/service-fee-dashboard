@@ -5251,6 +5251,46 @@ export default function TypistPage() {
             (listTab === "drafts" &&
               ["draft", "edited_by_typist"].includes(selectedDraft.status)) ? (
               <>
+                {/* Show cached clinical notes and appointment notes separately when both exist */}
+                {activeQueueItemId ? (
+                  (() => {
+                    const current = queue.find((q) => q.id === activeQueueItemId) || null;
+                    if (!current) return null;
+
+                    const cached = getQueueSyncedClinicalNotes(current).trim();
+                    const appointment = getQueueAppointmentNotes(current).trim();
+
+                    const normalize = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+                    const isDuplicate = cached && appointment && normalize(cached) === normalize(appointment);
+
+                    return (
+                      <div className="space-y-3">
+                        {cached ? (
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                              Clinical Notes
+                            </div>
+                            <div className="mt-2 whitespace-pre-line leading-6 text-slate-800">
+                              {cached}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {!isDuplicate && appointment ? (
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                              Appointment Notes
+                            </div>
+                            <div className="mt-2 whitespace-pre-line leading-6 text-slate-800">
+                              {appointment}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })()
+                ) : null}
+
                 <textarea
                   className="h-40 w-full rounded-xl border p-4"
                   placeholder="Paste clinical notes here..."
