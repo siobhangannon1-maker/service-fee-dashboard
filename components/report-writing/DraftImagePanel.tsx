@@ -507,7 +507,7 @@ export default function DraftImagePanel({ reportDraftId }: Props) {
 
                   <input
                     type="range"
-                    min="1"
+                    min="0.25"
                     max="5"
                     step="0.1"
                     value={cropZoom}
