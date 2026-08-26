@@ -116,6 +116,7 @@ export async function POST(req: Request) {
     const candidateRows = (rows || []).filter((row: any) => {
       const raw = asObject(row.raw_json);
       const hasClinicalNotes = Boolean(clean(raw.cached_clinical_notes));
+      const hasNoClinicalNotesResult = clean(raw.clinical_notes_hydration_result) === "none_found";
       const latestReferral = asObject(raw.latest_referral || raw.latestReferral);
       const hasLatestReferral = Object.keys(latestReferral).length > 0;
       const hasReferrer =
@@ -126,6 +127,8 @@ export async function POST(req: Request) {
       return (
         Boolean(clean(row.id)) &&
         Boolean(clean(row.praktika_patient_id)) &&
+        !hasClinicalNotes &&
+        !hasNoClinicalNotesResult &&
         (!hasClinicalNotes || !hasReferrer)
       );
     });

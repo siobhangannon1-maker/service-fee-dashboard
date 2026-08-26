@@ -991,12 +991,8 @@ function getQueueAppointmentNotes(item: QueueItem) {
 function getQueueSyncedClinicalNotes(item: QueueItem) {
   const raw = getQueueRawObject(item);
 
-  // The hydrated queue column may already contain the full same-day clinical
-  // note. Appointment-only text is rejected by cleanClinicalNoteText.
-  const hydratedQueueNotes = cleanClinicalNoteText(item.source_clinical_notes);
-
-  if (hydratedQueueNotes) return hydratedQueueNotes;
-
+  // Genuine cached clinical notes are the canonical source. Appointment-only
+  // queue text is metadata and should never override a valid cached note.
   const directNotes = getFirstCleanString(raw, [
     "cached_clinical_notes",
     "same_day_clinical_notes",
@@ -1018,6 +1014,14 @@ function getQueueSyncedClinicalNotes(item: QueueItem) {
     "vchProgressNotes",
     "vchTreatmentNotes",
   ]);
+
+  const cachedQueueNotes = cleanClinicalNoteText(directNotes);
+
+  if (cachedQueueNotes) return cachedQueueNotes;
+
+  const hydratedQueueNotes = cleanClinicalNoteText(item.source_clinical_notes);
+
+  if (hydratedQueueNotes) return hydratedQueueNotes;
 
   const cleanedDirectNotes = cleanClinicalNoteText(directNotes);
 

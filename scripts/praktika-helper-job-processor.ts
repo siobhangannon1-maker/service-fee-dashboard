@@ -404,6 +404,71 @@ function isoDateOnly(value: unknown) {
   return "";
 }
 
+function formatBrisbaneDateIso(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Australia/Brisbane",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const map = Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
+  );
+
+  return `${map.year}-${map.month}-${map.day}`;
+}
+
+function asBrisbaneDateIso(value: unknown) {
+  const text = clean(value);
+  if (!text) return "";
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+  const directIso = text.match(/^(\d{4})-(\d{2})-(\d{2})[T\s].*$/);
+  if (directIso) {
+    return formatBrisbaneDateIso(new Date(text));
+  }
+
+  const isoDate = isoDateOnly(text);
+  if (isoDate) return isoDate;
+
+  const auDate = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (auDate) {
+    return `${auDate[3]}-${auDate[2].padStart(2, "0")}-${auDate[1].padStart(2, "0")}`;
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    return formatBrisbaneDateIso(parsed);
+  }
+
+  return "";
+}
+
+function addCalendarDays(dateIso: string, days: number) {
+  const [year, month, day] = dateIso.split("-").map(Number);
+  const utcDate = new Date(Date.UTC(year, month - 1, day));
+  utcDate.setUTCDate(utcDate.getUTCDate() + days);
+
+  return `${utcDate.getUTCFullYear()}-${String(utcDate.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    utcDate.getUTCDate(),
+  ).padStart(2, "0")}`;
+}
+
+function dateDifferenceDays(dateA: string, dateB: string) {
+  const left = new Date(`${dateA}T00:00:00Z`);
+  const right = new Date(`${dateB}T00:00:00Z`);
+  return Math.round((left.getTime() - right.getTime()) / 86_400_000);
+}
+
+function getDateWindowCandidates(value: unknown) {
+  const target = asBrisbaneDateIso(value);
+  if (!target) return [];
+
+  return [0, -1, 1].map((offset) => addCalendarDays(target, offset));
+}
+
 function auDateFromIso(value: string) {
   const iso = isoDateOnly(value);
   const [year, month, day] = iso.split("-");
@@ -935,15 +1000,63 @@ function noteMatchesDate(note: ClinicalNote, appointmentDate: string) {
   );
 }
 
+function getClinicalNoteAppointmentIdCandidates(note: ClinicalNote) {
+  const values = [
+    note.appointmentid,
+    note.appointmentId,
+    note.appointment_id,
+    note.iAppointmentId,
+    note.appointmentID,
+    note.iAppointmentID,
+  ];
+
+  return Array.from(
+    new Set(
+      values
+        .map((value) => clean(value))
+        .filter(Boolean),
+    ),
+  );
+}
+
 function noteMatchesAppointment(note: ClinicalNote, appointmentId: string) {
   if (!appointmentId) return false;
+  return getClinicalNoteAppointmentIdCandidates(note).includes(appointmentId);
+}
 
-  return (
-    clean(note.appointmentid) === appointmentId ||
-    clean(note.appointmentId) === appointmentId ||
-    clean(note.appointment_id) === appointmentId ||
-    clean(note.iAppointmentId) === appointmentId
+function getClinicalNoteDateCandidates(note: ClinicalNote) {
+  const values = [note.date, note.dateCreated, note.createdDate, note.created];
+
+  return Array.from(
+    new Set(
+      values
+        .map((value) => asBrisbaneDateIso(value))
+        .filter(Boolean),
+    ),
   );
+}
+
+function getClinicalNoteMatchStrategy(
+  note: ClinicalNote,
+  appointmentId: string,
+  appointmentDate: string,
+): "appointment_id" | "appointment_date" | "appointment_date_minus_1" | "appointment_date_plus_1" | "none" {
+  const appointmentIdMatch = noteMatchesAppointment(note, appointmentId);
+  if (appointmentIdMatch) return "appointment_id";
+
+  const targetDate = asBrisbaneDateIso(appointmentDate);
+  if (!targetDate) return "none";
+
+  const dateCandidates = getClinicalNoteDateCandidates(note);
+  if (dateCandidates.includes(targetDate)) return "appointment_date";
+
+  const minusOne = addCalendarDays(targetDate, -1);
+  if (dateCandidates.includes(minusOne)) return "appointment_date_minus_1";
+
+  const plusOne = addCalendarDays(targetDate, 1);
+  if (dateCandidates.includes(plusOne)) return "appointment_date_plus_1";
+
+  return "none";
 }
 
 function looksLikeAppointmentOnlyText(value: unknown) {
@@ -959,7 +1072,7 @@ function looksLikeAppointmentOnlyText(value: unknown) {
     text.includes("fasting 6 hours prior");
 
   const hasClinicalMarker =
-    /\b(la:|lignocaine|irrigated|closed|suture|ha,|poig|extraction completed|flap|socket|curett|debrid|implant|graft|probe|bpe|bleeding|calculus|plaque|periodontal|reviewed|consented|anaesthetic|sutured)\b/i.test(
+    /\b(la:|lignocaine|irrigated|closed|suture|ha,|poig|extraction completed|flap|socket|curett|debrid|implant|graft|probe|bpe|bleeding|calculus|plaque|periodontal|reviewed|consented|anaesthetic|sutured|denture|restoration|filling|exam|history|assessment|diagnosis|plan|treatment|medication|allergy|prophylaxis|pain|swelling|infection|occlusal|bop|gum|gingival|oral|tooth|teeth|crown|bridge|root|canal|reline|smile|planned)\b/i.test(
       text,
     );
 
@@ -1058,6 +1171,15 @@ async function hydrateReportLetterQueueItem(context: BrowserContext, job: any) {
   }
 
   let clinicalNotesText = cleanClinicalNoteText(rawJson.cached_clinical_notes);
+  let matchStrategy: "appointment_id" | "appointment_date" | "appointment_date_minus_1" | "appointment_date_plus_1" | "none" = "none";
+  let notesReturned = 0;
+  let notesAfterDeletedFilter = 0;
+  let appointmentMatches = 0;
+  let sameDayMatches = 0;
+  let minusOneDayMatches = 0;
+  let plusOneDayMatches = 0;
+  let clinicalCandidates = 0;
+  let selectedNoteDates: string[] = [];
 
   if (!clinicalNotesText) {
     const notesParsed = await runPraktikaRequest(context, {
@@ -1078,26 +1200,69 @@ async function hydrateReportLetterQueueItem(context: BrowserContext, job: any) {
       ],
     });
 
-    const notes = extractClinicalNotes(notesParsed).filter((note) => !note.deleted);
+    const notes = extractClinicalNotes(notesParsed);
+    notesReturned = notes.length;
+    const activeNotes = notes.filter((note) => !note.deleted);
+    notesAfterDeletedFilter = activeNotes.length;
 
-    const matchingNotes = notes.filter((note) => {
-      return (
-        noteMatchesAppointment(note, appointmentId) ||
-        noteMatchesDate(note, appointmentDate)
-      );
+    appointmentMatches = activeNotes.filter((note) => noteMatchesAppointment(note, appointmentId)).length;
+    sameDayMatches = activeNotes.filter((note) => getClinicalNoteMatchStrategy(note, appointmentId, appointmentDate) === "appointment_date").length;
+    minusOneDayMatches = activeNotes.filter((note) => getClinicalNoteMatchStrategy(note, appointmentId, appointmentDate) === "appointment_date_minus_1").length;
+    plusOneDayMatches = activeNotes.filter((note) => getClinicalNoteMatchStrategy(note, appointmentId, appointmentDate) === "appointment_date_plus_1").length;
+
+    const matchingNotes = activeNotes.filter((note) => {
+      const strategy = getClinicalNoteMatchStrategy(note, appointmentId, appointmentDate);
+      return strategy !== "none";
     });
 
-    clinicalNotesText = matchingNotes
-      .map((note) => getClinicalNoteText(note))
-      .filter(Boolean)
-      .filter((noteText) => !looksLikeAppointmentOnlyText(noteText))
-      .join("\n\n---\n\n")
-      .trim();
+    clinicalCandidates = matchingNotes.length;
+
+    const selectedNotes = matchingNotes
+      .map((note) => ({
+        note,
+        text: getClinicalNoteText(note),
+        strategy: getClinicalNoteMatchStrategy(note, appointmentId, appointmentDate),
+      }))
+      .filter(({ text, strategy }) => {
+        const cleaned = cleanClinicalNoteText(text);
+        return Boolean(cleaned) && strategy !== "none";
+      })
+      .filter(({ text }) => !looksLikeAppointmentOnlyText(text));
+
+    if (selectedNotes.length > 0) {
+      const best = selectedNotes.sort((a, b) => {
+        const priority: Record<string, number> = {
+          appointment_id: 0,
+          appointment_date: 1,
+          appointment_date_minus_1: 2,
+          appointment_date_plus_1: 3,
+          none: 99,
+        };
+
+        return (priority[a.strategy] ?? 99) - (priority[b.strategy] ?? 99);
+      })[0];
+
+      if (best) {
+        matchStrategy = best.strategy;
+        selectedNoteDates = selectedNotes
+          .map(({ note }) => getClinicalNoteDateCandidates(note))
+          .flat()
+          .filter(Boolean)
+          .slice(0, 10);
+        clinicalNotesText = selectedNotes
+          .map(({ text }) => cleanClinicalNoteText(text))
+          .filter(Boolean)
+          .join("\n\n---\n\n")
+          .trim();
+      }
+    }
   }
 
   const nextRawJson = {
     ...rawJson,
     hydrated_by_helper_at: nowIso(),
+    clinical_notes_hydration_checked_at: nowIso(),
+    clinical_notes_hydration_result: clinicalNotesText ? "found" : "none_found",
     ...(latestReferralPayload && Object.keys(latestReferralPayload).length
       ? {
           latest_referral: latestReferralPayload,
@@ -1126,10 +1291,6 @@ async function hydrateReportLetterQueueItem(context: BrowserContext, job: any) {
     if (referralAddress) updatePayload.referrer_address = referralAddress;
   }
 
-  if (clinicalNotesText) {
-    updatePayload.source_clinical_notes = clinicalNotesText;
-  }
-
   const { data: updated, error: updateError } = await supabase
     .from("report_letter_queue")
     .update(updatePayload)
@@ -1139,13 +1300,30 @@ async function hydrateReportLetterQueueItem(context: BrowserContext, job: any) {
 
   if (updateError) throw new Error(updateError.message);
 
+  const persistedClinicalNotes = clean(asObject(updated?.raw_json).cached_clinical_notes);
+  const clinicalNotesFilled = Boolean(persistedClinicalNotes);
+
   return {
     success: true,
     queueId,
     patientId,
     referrerFilled: Boolean(clean(updated?.referrer_name)),
     referrerAddressFilled: Boolean(clean(updated?.referrer_address)),
-    clinicalNotesFilled: Boolean(clean(updated?.source_clinical_notes)),
+    clinicalNotesFilled,
+    notesReturned,
+    notesAfterDeletedFilter,
+    appointmentMatches,
+    sameDayMatches,
+    minusOneDayMatches,
+    plusOneDayMatches,
+    clinicalCandidates,
+    selectedNotes: selectedNoteDates.length,
+    selectedNoteDates,
+    dateOffsets: selectedNoteDates.map((date) => {
+      const target = asBrisbaneDateIso(appointmentDate);
+      return target ? dateDifferenceDays(date, target) : 0;
+    }),
+    matchStrategy,
   };
 }
 
