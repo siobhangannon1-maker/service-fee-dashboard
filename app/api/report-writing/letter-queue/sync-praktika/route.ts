@@ -286,6 +286,32 @@ async function getHydrationAppUserId() {
   return clean(data?.app_user_id) || null;
 }
 
+async function getAlreadyQueuedQueueIds(queueIds: string[]) {
+  if (queueIds.length === 0) return new Set<string>();
+
+  const { data, error } = await supabase
+    .from("praktika_helper_jobs")
+    .select("request")
+    .eq("job_type", "hydrate_report_letter_queue_item")
+    .in("status", ["pending", "processing", "running"]);
+
+  if (error) {
+    console.warn("Could not check existing hydration jobs:", error.message);
+    return new Set<string>();
+  }
+
+  const requested = new Set(queueIds);
+  const existing = new Set<string>();
+
+  for (const job of data || []) {
+    const request = asObject(job.request);
+    const queueId = clean(request.queueId);
+    if (requested.has(queueId)) existing.add(queueId);
+  }
+
+  return existing;
+}
+
 async function enqueueHydrationJobs(queueRows: any[], practiceId: string) {
   const appUserId = await getHydrationAppUserId();
 
@@ -322,8 +348,16 @@ async function enqueueHydrationJobs(queueRows: any[], practiceId: string) {
         hasLatestReferral;
 
       const hasClinicalNotes = Boolean(clean(raw.cached_clinical_notes));
+      const hydrationResult = clean(raw.clinical_notes_hydration_result).toLowerCase();
 
-      if (hasReferrer && hasClinicalNotes) return null;
+      // Do not enqueue if we already have canonical cached notes or we've
+      // previously recorded a hydration result (found/none_found).
+      if (
+        hasClinicalNotes ||
+        hydrationResult === "found" ||
+        hydrationResult === "none_found"
+      )
+        return null;
 
       return {
         app_user_id: appUserId,
@@ -351,7 +385,21 @@ async function enqueueHydrationJobs(queueRows: any[], practiceId: string) {
     };
   }
 
-  const { error } = await supabase.from("praktika_helper_jobs").insert(jobsToInsert);
+  // Filter out queueIds that already have pending/processing/running hydration jobs
+  const queueIdsToInsert = jobsToInsert.map((j) => j.request.queueId).filter(Boolean);
+  const alreadyQueued = await getAlreadyQueuedQueueIds(queueIdsToInsert as string[]);
+
+  const before = jobsToInsert.length;
+  const filteredJobs = jobsToInsert.filter((j) => !alreadyQueued.has(j.request.queueId));
+  const skippedBecauseAlreadyQueued = before - filteredJobs.length;
+
+  if (skippedBecauseAlreadyQueued > 0) {
+    console.log(
+      `Skipped ${skippedBecauseAlreadyQueued} hydration job(s) because they are already pending/processing.`,
+    );
+  }
+
+  const { error } = await supabase.from("praktika_helper_jobs").insert(filteredJobs);
 
   if (error) {
     console.warn("Could not enqueue queue hydration jobs:", error.message);
@@ -363,10 +411,16 @@ async function enqueueHydrationJobs(queueRows: any[], practiceId: string) {
     };
   }
 
+  const enqueuedCount = filteredJobs.length;
+
+  if (!error) {
+    console.log(`Queued ${enqueuedCount} new hydration job(s).`);
+  }
+
   return {
-    enqueued: jobsToInsert.length,
-    skipped: queueRows.length - jobsToInsert.length,
-    message: "Hydration jobs enqueued for the local Praktika helper.",
+    enqueued: enqueuedCount,
+    skipped: queueRows.length - enqueuedCount,
+    message: error ? String(((error as any)?.message) ?? error) : "Hydration jobs enqueued for the local Praktika helper.",
   };
 }
 
