@@ -366,6 +366,21 @@ async function markSessionNeedsReconnectForJob(job: any, message: string) {
     .eq("app_user_id", job.app_user_id);
 }
 
+async function markSessionWaitingForCredentialsForJob(job: any) {
+  if (!job.app_user_id) return;
+
+  await supabase
+    .from("praktika_sessions")
+    .update({
+      status: "waiting_for_credentials",
+      message: "Enter your Praktika username and password in DocuDental.",
+      refresh_requested_at: null,
+      updated_at: nowIso(),
+    })
+    .eq("scope", "user")
+    .eq("app_user_id", job.app_user_id);
+}
+
 async function runPraktikaRequest(context: BrowserContext, request: any) {
   if (request.contentType === "multipart_storage") {
     return await runMultipartStorageRequest(context, request);
@@ -1134,13 +1149,19 @@ async function hydrateReportLetterQueueItem(context: BrowserContext, job: any) {
   };
 }
 
+export type PraktikaJobResult =
+  | { outcome: "none" }
+  | { outcome: "completed"; jobId: string }
+  | { outcome: "failed"; jobId: string }
+  | { outcome: "needs_reconnect"; jobId: string };
+
 export async function processOnePraktikaHelperJob(
   context: BrowserContext,
   appUserId?: string | null,
-) {
+): Promise<PraktikaJobResult> {
   const job = await claimNextJob(appUserId || null);
 
-  if (!job) return false;
+  if (!job) return { outcome: "none" };
 
   console.log(
     `Processing Praktika helper job ${job.id}: ${job.job_type}${
@@ -1157,23 +1178,26 @@ export async function processOnePraktikaHelperJob(
     await completeJob(job.id, response);
     await markSessionConnectedForJob(job);
     console.log(`Completed Praktika helper job ${job.id}`);
+    return { outcome: "completed", jobId: job.id };
   } catch (error: any) {
     const message = error?.message || "Praktika helper job failed.";
     console.error(`Failed Praktika helper job ${job.id}:`, message);
 
-    if (
+    const isLoggedOutOrExpired =
       message.toLowerCase().includes("logged out") ||
       message.toLowerCase().includes("expired session") ||
-      message.toLowerCase().includes("session is logged out")
-    ) {
-      await markSessionNeedsReconnectForJob(
-        job,
-        "Praktika helper session expired. Please reconnect Praktika.",
-      );
+      message.toLowerCase().includes("session is logged out") ||
+      message.toLowerCase().includes("logged-out") ||
+      message.toLowerCase().includes("not logged in") ||
+      message.toLowerCase().includes("hijacked or expired session");
+
+    if (isLoggedOutOrExpired) {
+      await markSessionWaitingForCredentialsForJob(job);
+      await failJob(job, message);
+      return { outcome: "needs_reconnect", jobId: job.id };
     }
 
     await failJob(job, message);
+    return { outcome: "failed", jobId: job.id };
   }
-
-  return true;
 }

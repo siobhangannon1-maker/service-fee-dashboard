@@ -319,6 +319,32 @@ Do not bypass an authorization issue simply to make a page load.
 
 ---
 
+# Current Production Automation Entry Points
+
+Production browser automation runs on Render.
+
+For Praktika, the currently confirmed production execution path is:
+
+Render
+→ `npm run watch:praktika-refresh`
+→ `scripts/watch-praktika-refresh.ts`
+→ `scripts/refresh-praktika-session.ts`
+→ `scripts/praktika-helper-job-processor.ts`
+→ Praktika
+
+`watch-praktika-refresh.ts` is therefore production-active and must not be treated as legacy/local-only code.
+
+The repository also contains an alternative orchestration path:
+
+`npm run cloud:praktika-worker`
+→ `scripts/cloud-automation-worker.ts`
+
+Do not assume this alternative path is active or obsolete without checking the current Render deployment configuration.
+
+The same rule applies to MediRef: determine the actual Render start command before classifying watcher or worker code as legacy.
+
+The Mac Mini is not part of the active production automation architecture.
+
 # Supabase MCP Access
 
 Codex has read-only access to the live Supabase project through MCP.
@@ -407,6 +433,54 @@ A requested feature should not result in:
 If significant refactoring would genuinely improve safety or maintainability, propose it separately.
 
 ---
+
+# Confirmed Production Automation
+
+Production automation runs on Render.
+
+## Praktika
+
+The confirmed production execution path is:
+
+Render
+→ `npm run watch:praktika-refresh`
+→ `scripts/watch-praktika-refresh.ts`
+→ `scripts/refresh-praktika-session.ts`
+→ `scripts/praktika-helper-job-processor.ts`
+→ Praktika
+
+`watch-praktika-refresh.ts` is production-active and must not be treated as legacy or local-only.
+
+## MediRef
+
+The confirmed production execution path is:
+
+Render
+→ `scripts/watch-mediref-refresh.ts`
+→ `scripts/refresh-mediref-session.ts`
+→ MediRef
+
+`watch-mediref-refresh.ts` is production-active and must not be treated as legacy or local-only.
+
+## Docker / Alternative Worker Path
+
+The repository Dockerfile currently defines:
+
+`npm run cloud:praktika-worker`
+
+which runs:
+
+`scripts/cloud-automation-worker.ts`
+
+However, both current Render production services explicitly override the Dockerfile CMD.
+
+Therefore `cloud-automation-worker.ts` is not currently used as the production startup path for Praktika or MediRef.
+
+Treat this as an alternative/dormant architecture unless deployment configuration proves otherwise.
+
+Do not delete or repurpose it without explicit approval.
+
+The Mac Mini is not part of the active production automation architecture.
 
 # Dependencies
 

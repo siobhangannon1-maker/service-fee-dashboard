@@ -3,7 +3,10 @@ import crypto from "node:crypto";
 import dotenv from "dotenv";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { createClient } from "@supabase/supabase-js";
-import { processOnePraktikaHelperJob } from "./praktika-helper-job-processor";
+import {
+  processOnePraktikaHelperJob,
+  type PraktikaJobResult,
+} from "./praktika-helper-job-processor";
 
 dotenv.config({ path: ".env.local" });
 dotenv.config();
@@ -601,19 +604,34 @@ async function performRealBrowserActivity(page: Page) {
   await dismissBlockingDialogs(page);
 }
 
-async function drainAvailableHelperJobs(context: BrowserContext, appUserId: string | null) {
-  let processedCount = 0;
+async function drainAvailableHelperJobs(
+  context: BrowserContext,
+  appUserId: string | null,
+): Promise<{ completedCount: number; failedCount: number; needsReconnect: boolean }> {
+  let completedCount = 0;
+  let failedCount = 0;
+  let needsReconnect = false;
 
-  while (processedCount < HELPER_JOB_DRAIN_LIMIT) {
-    const processed = await processOnePraktikaHelperJob(context, appUserId);
+  while (completedCount + failedCount < HELPER_JOB_DRAIN_LIMIT) {
+    const result: PraktikaJobResult = await processOnePraktikaHelperJob(
+      context,
+      appUserId,
+    );
 
-    if (!processed) break;
+    if (result.outcome === "none") break;
+    if (result.outcome === "completed") {
+      completedCount += 1;
+    } else if (result.outcome === "failed") {
+      failedCount += 1;
+    } else if (result.outcome === "needs_reconnect") {
+      needsReconnect = true;
+      break;
+    }
 
-    processedCount += 1;
     await sleep(HELPER_BUSY_PAUSE_MS);
   }
 
-  return processedCount;
+  return { completedCount, failedCount, needsReconnect };
 }
 
 async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
@@ -666,21 +684,34 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           lastCookieRefreshAt = now;
         }
 
-        const processedCount = await drainAvailableHelperJobs(
+        const jobSummary = await drainAvailableHelperJobs(
           context,
           session.app_user_id,
         );
 
-        if (processedCount > 0) {
+        if (jobSummary.completedCount > 0) {
           lastUsefulWorkAt = Date.now();
-
           console.log(
-            `Processed ${processedCount} Praktika helper job${
-              processedCount === 1 ? "" : "s"
+            `Completed ${jobSummary.completedCount} Praktika helper job${
+              jobSummary.completedCount === 1 ? "" : "s"
             } for session ${session.id}.`,
           );
-
           sleepAfterCycleMs = HELPER_BUSY_PAUSE_MS;
+        }
+
+        if (jobSummary.failedCount > 0) {
+          console.log(
+            `Failed ${jobSummary.failedCount} Praktika helper job attempt${
+              jobSummary.failedCount === 1 ? "" : "s"
+            } for session ${session.id}.`,
+          );
+        }
+
+        if (jobSummary.needsReconnect) {
+          console.log(
+            `Praktika session requires reconnect. Stopping job drain for session ${session.id}.`,
+          );
+          sleepAfterCycleMs = HELPER_IDLE_POLL_INTERVAL_MS;
         } else if (Date.now() - lastUsefulWorkAt >= HELPER_IDLE_SHUTDOWN_MS) {
           await saveCookies(
             context,
