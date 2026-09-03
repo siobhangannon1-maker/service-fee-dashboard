@@ -145,7 +145,6 @@ function cleanLetterText(text: string) {
   return stripPdfMarkers(text)
     .replace(/^---$/gm, "")
     .replace(/^Signature:.*$/gim, "")
-    .replace(/^Dr .*$/gim, "")
     .replace(/^Specialist .*$/gim, "")
     .trimEnd();
 }
@@ -1583,6 +1582,8 @@ export async function POST(req: Request) {
 
     const paragraphs = letterText.split(/\n/);
 
+    // (temporary diagnostics removed)
+
     /*
       Includes Warm Regards, signature image, provider name, qualifications,
       and a small safety allowance before any CC line.
@@ -1726,6 +1727,8 @@ export async function POST(req: Request) {
         const remainingSpace = y - bottomLimit;
         const neededSpace = finalParagraphHeight + signatureBlockHeight;
 
+        // (final-paragraph diagnostics removed)
+
         /*
           Keep the final meaningful paragraph and the entire signature block
           together. If they cannot both fit in the remaining printable area,
@@ -1740,6 +1743,8 @@ export async function POST(req: Request) {
       }
 
       drawRichParagraph(cleanParagraph, { bold: isHeading });
+
+      // (final-paragraph-after-draw diagnostics removed)
 
       y -= isHeading ? 4 : 8;
     }
@@ -1820,6 +1825,8 @@ export async function POST(req: Request) {
     }
 
     const pdfBytes = await pdfDoc.save();
+
+    // (pdf size diagnostic removed)
 
     const fileDate = formatPdfFileDate(appointmentDate);
 
