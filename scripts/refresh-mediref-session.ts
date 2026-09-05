@@ -2,6 +2,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import dotenv from "dotenv";
+import { enterPatientDob } from "./mediref-dob";
 import { chromium, type BrowserContext, type Locator, type Page } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 
@@ -1099,62 +1100,11 @@ async function debugRecipientResults(page: Page) {
 }
 
 async function fillPatientDobField(page: Page, rawDob: unknown) {
-  const htmlDateValue = normaliseDateForHtmlDateInput(rawDob);
-  const humanDateValue = formatDateForHumanTextInput(rawDob);
-
-  if (!htmlDateValue && !humanDateValue) return false;
-
-  const selectors = [
-    'input[data-testid="patient-dob-input"]',
-    'input[type="date"][name*="dob" i]',
-    'input[type="date"][id*="dob" i]',
-    'input[type="date"][aria-label*="dob" i]',
-    'input[type="date"][placeholder*="dob" i]',
-    'input[type="date"][name*="birth" i]',
-    'input[type="date"][id*="birth" i]',
-    'input[type="date"][aria-label*="birth" i]',
-    'input[type="date"][placeholder*="birth" i]',
-    'input[type="date"]',
-    'input[name*="dob" i]',
-    'input[id*="dob" i]',
-    'input[placeholder*="dob" i]',
-    'input[aria-label*="dob" i]',
-    'input[name*="birth" i]',
-    'input[id*="birth" i]',
-    'input[placeholder*="birth" i]',
-    'input[aria-label*="birth" i]',
-  ].join(", ");
-
-  const locator = page.locator(selectors);
-  const count = await locator.count().catch(() => 0);
-
-  for (let i = 0; i < count; i += 1) {
-    const field = locator.nth(i);
-    const visible = await field.isVisible().catch(() => false);
-    if (!visible) continue;
-
-    const type = String((await field.getAttribute("type").catch(() => "")) || "").toLowerCase();
-    const valueToFill = type === "date" ? htmlDateValue : humanDateValue || htmlDateValue;
-
-    if (!valueToFill) continue;
-
-    await field.fill(valueToFill);
-    return true;
-  }
-
-  const labelledDob = page.getByLabel(/date of birth|dob/i).first();
-
-  if ((await labelledDob.count().catch(() => 0)) > 0) {
-    const type = String((await labelledDob.getAttribute("type").catch(() => "")) || "").toLowerCase();
-    const valueToFill = type === "date" ? htmlDateValue : humanDateValue || htmlDateValue;
-
-    if (valueToFill) {
-      await labelledDob.fill(valueToFill);
-      return true;
-    }
-  }
-
-  return false;
+  return enterPatientDob(
+    page,
+    normaliseDateForHtmlDateInput(rawDob),
+    formatDateForHumanTextInput(rawDob),
+  );
 }
 
 async function fillFirstVisibleTextFieldByHints(
