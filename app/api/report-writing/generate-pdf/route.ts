@@ -1,7 +1,6 @@
 import {
   PDFDocument,
   rgb,
-  StandardFonts,
   pushGraphicsState,
   popGraphicsState,
   moveTo,
@@ -10,6 +9,9 @@ import {
   clip,
   endPath,
 } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
+import fs from "fs";
+import path from "path";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import sharp from "sharp";
@@ -784,9 +786,21 @@ export async function POST(req: Request) {
   : null;
 
     const pdfDoc = await PDFDocument.create();
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    const italicFont = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+    pdfDoc.registerFontkit(fontkit);
+
+    const notoRegularBytes = await fs.promises.readFile(
+      path.join(process.cwd(), "assets", "fonts", "NotoSans-Regular.ttf"),
+    );
+    const notoBoldBytes = await fs.promises.readFile(
+      path.join(process.cwd(), "assets", "fonts", "NotoSans-Bold.ttf"),
+    );
+    const notoItalicBytes = await fs.promises.readFile(
+      path.join(process.cwd(), "assets", "fonts", "NotoSans-Italic.ttf"),
+    );
+
+    const font = await pdfDoc.embedFont(notoRegularBytes, { subset: true });
+    const boldFont = await pdfDoc.embedFont(notoBoldBytes, { subset: true });
+    const italicFont = await pdfDoc.embedFont(notoItalicBytes, { subset: true });
 
     const letterheadImage = await pdfDoc.embedPng(letterheadBytes);
 
@@ -829,6 +843,7 @@ export async function POST(req: Request) {
 
     let page = pdfDoc.addPage([pageWidth, pageHeight]);
     let y = pageHeight - topMarginFirstPage;
+    let pageNumber = 1;
 
     function drawLetterhead() {
       page.drawImage(letterheadImage, {
@@ -842,7 +857,53 @@ export async function POST(req: Request) {
     function newPage() {
       page = pdfDoc.addPage([pageWidth, pageHeight]);
       drawLetterhead();
+      pageNumber += 1;
       return pageHeight - topMarginOtherPages;
+    }
+
+    // Tail-buffer to implement widow/orphan rule: keep last up to 2 body lines
+    // unrendered until we decide whether they must move with the signature.
+    const tailBuffer: Array<{
+      paragraphIndex: number;
+      runs: TextRun[];
+      size: number;
+      // Side-column lines reserve their original position while awaiting the signature.
+      placement?: { page: typeof page; x: number; y: number };
+    }> = [];
+
+    let recordingParagraphIndex: number | null = null;
+    let pendingParagraphGapParagraphIndex: number | null = null;
+    let pendingParagraphGapAmount: number | null = null;
+
+    function flushOldestTailLine() {
+      if (tailBuffer.length === 0) return;
+
+      const item = tailBuffer.shift()!;
+
+      if (item.placement) {
+        drawRunLine(item.runs, item.placement.x, item.placement.y, item.size, item.placement.page);
+      } else {
+        if (y < bottomLimit) y = newPage();
+        drawRunLine(item.runs, marginLeft, y, item.size);
+        y -= lineHeight;
+      }
+
+      // If this was the last pending line for a paragraph that has a deferred
+      // paragraph gap, apply that gap now.
+      if (
+        pendingParagraphGapParagraphIndex !== null &&
+        !tailBuffer.some((t) => t.paragraphIndex === pendingParagraphGapParagraphIndex)
+      ) {
+        if (pendingParagraphGapAmount) {
+          y -= pendingParagraphGapAmount;
+        }
+        pendingParagraphGapParagraphIndex = null;
+        pendingParagraphGapAmount = null;
+      }
+    }
+
+    function flushAllTailLines() {
+      while (tailBuffer.length > 0) flushOldestTailLine();
     }
 
     function drawLine(
@@ -852,6 +913,25 @@ export async function POST(req: Request) {
         size?: number;
       },
     ) {
+      const size = options?.size || fontSize;
+
+      // If we're currently recording a body paragraph, buffer the final two
+      // lines rather than drawing them immediately to support the widow/orphan
+      // rule.
+      if (recordingParagraphIndex !== null) {
+        tailBuffer.push({
+          paragraphIndex: recordingParagraphIndex,
+          runs: [{ text, bold: Boolean(options?.bold), italic: false, underline: false }],
+          size,
+        });
+
+        if (tailBuffer.length > 2) {
+          flushOldestTailLine();
+        }
+
+        return;
+      }
+
       if (y < bottomLimit) {
         y = newPage();
       }
@@ -859,7 +939,7 @@ export async function POST(req: Request) {
       page.drawText(preparePdfText(text), {
         x: marginLeft,
         y,
-        size: options?.size || fontSize,
+        size,
         font: options?.bold ? boldFont : font,
         color: rgb(0, 0, 0),
       });
@@ -881,10 +961,10 @@ export async function POST(req: Request) {
       return font;
     }
 
-    function drawUnderline(x: number, baselineY: number, width: number) {
+    function drawUnderline(x: number, baselineY: number, width: number, targetPage = page) {
       if (width <= 0) return;
 
-      page.drawLine({
+      targetPage.drawLine({
         start: { x, y: baselineY - 2 },
         end: { x: x + width, y: baselineY - 2 },
         thickness: 0.5,
@@ -925,6 +1005,30 @@ export async function POST(req: Request) {
       return lines;
     }
 
+    function drawRunLine(line: TextRun[], x: number, lineY: number, size = fontSize, targetPage = page) {
+      let currentX = x;
+
+      for (const run of line) {
+        const runFont = getRunFont(run);
+        const pdfText = preparePdfText(run.text);
+        const runWidth = runFont.widthOfTextAtSize(pdfText, size);
+
+        targetPage.drawText(pdfText, {
+          x: currentX,
+          y: lineY,
+          size,
+          font: runFont,
+          color: rgb(0, 0, 0),
+        });
+
+        if (run.underline && run.text.trim()) {
+          drawUnderline(currentX, lineY, runWidth, targetPage);
+        }
+
+        currentX += runWidth;
+      }
+    }
+
     function drawInlineRuns(runs: TextRun[]) {
       const maxWidth = contentWidth;
       const words: TextRun[] = [];
@@ -957,31 +1061,26 @@ export async function POST(req: Request) {
       function flushLine() {
         if (line.length === 0) return;
 
+        // If we're in a recording paragraph, buffer this rendered line.
+        if (recordingParagraphIndex !== null) {
+          tailBuffer.push({
+            paragraphIndex: recordingParagraphIndex,
+            runs: line.map((run) => ({ ...run })),
+            size: fontSize,
+          });
+
+          if (tailBuffer.length > 2) flushOldestTailLine();
+
+          line = [];
+          lineWidth = 0;
+          return;
+        }
+
         if (y < bottomLimit) {
           y = newPage();
         }
 
-        let x = marginLeft;
-
-        for (const run of line) {
-          const runFont = getRunFont(run);
-          const pdfText = preparePdfText(run.text);
-          const runWidth = runFont.widthOfTextAtSize(pdfText, fontSize);
-
-          page.drawText(pdfText, {
-            x,
-            y,
-            size: fontSize,
-            font: runFont,
-            color: rgb(0, 0, 0),
-          });
-
-          if (run.underline && run.text.trim()) {
-            drawUnderline(x, y, runWidth);
-          }
-
-          x += runWidth;
-        }
+        drawRunLine(line, marginLeft, y);
 
         y -= lineHeight;
         line = [];
@@ -1199,7 +1298,7 @@ export async function POST(req: Request) {
     }
 
 
-    async function drawImageBlock(image: DraftImage) {
+    async function drawImageBlock(image: DraftImage, signatureReserve = 0) {
       const embeddedImage = await embedStorageImage(pdfDoc, image);
 
       const displayWidthPercent = Number(image.display_width_percent ?? 60);
@@ -1221,10 +1320,14 @@ export async function POST(req: Request) {
 
       const totalImageBlockHeight = frameHeight + captionHeight + 28;
 
+      const requiredHeight = totalImageBlockHeight + signatureReserve;
       if (
         image.display_page_break_before ||
-        y - totalImageBlockHeight < bottomLimit
+        y - requiredHeight < bottomLimit
       ) {
+        if (signatureReserve && requiredHeight > pageHeight - topMarginOtherPages - bottomLimit) {
+          throw new Error("Final image and signature cannot fit together on one page without changing image size or document order.");
+        }
         y = newPage();
       }
 
@@ -1290,7 +1393,7 @@ export async function POST(req: Request) {
 
     async function drawImageWithSideText(
       image: DraftImage,
-      sideParagraphs: string[],
+      sideParagraphs: Array<{ text: string; index: number }>,
     ) {
       const embeddedImage = await embedStorageImage(pdfDoc, image);
 
@@ -1405,31 +1508,8 @@ export async function POST(req: Request) {
         return lines;
       }
 
-      function drawRunLine(line: TextRun[], x: number, lineY: number) {
-        let currentX = x;
-
-        for (const run of line) {
-          const runFont = getRunFont(run);
-          const pdfText = preparePdfText(run.text);
-          const runWidth = runFont.widthOfTextAtSize(pdfText, fontSize);
-
-          page.drawText(pdfText, {
-            x: currentX,
-            y: lineY,
-            size: fontSize,
-            font: runFont,
-            color: rgb(0, 0, 0),
-          });
-
-          if (run.underline && run.text.trim()) {
-            drawUnderline(currentX, lineY, runWidth);
-          }
-
-          currentX += runWidth;
-        }
-      }
-
       type OverflowParagraph = {
+        paragraphIndex: number;
         lines: TextRun[][];
         startsAtLine: number;
       };
@@ -1440,7 +1520,7 @@ export async function POST(req: Request) {
 
       for (const paragraph of sideParagraphs) {
         const wrappedLines = wrapRunsToWidth(
-          parseMarkdownRuns(paragraph),
+          parseMarkdownRuns(paragraph.text),
           textWidth,
         );
 
@@ -1454,7 +1534,18 @@ export async function POST(req: Request) {
               break;
             }
 
-            drawRunLine(wrappedLines[lineIndex], textX, textY);
+            if (paragraph.index === lastTextParagraphIndex &&
+                !(paragraph.text.endsWith(":") && paragraph.text.length < 60)) {
+              tailBuffer.push({
+                paragraphIndex: paragraph.index,
+                runs: wrappedLines[lineIndex].map((run) => ({ ...run })),
+                size: fontSize,
+                placement: { page, x: textX, y: textY },
+              });
+              if (tailBuffer.length > 2) flushOldestTailLine();
+            } else {
+              drawRunLine(wrappedLines[lineIndex], textX, textY);
+            }
             textY -= lineHeight;
           }
         } else {
@@ -1463,6 +1554,7 @@ export async function POST(req: Request) {
 
         if (firstOverflowLine < wrappedLines.length) {
           overflowParagraphs.push({
+            paragraphIndex: paragraph.index,
             lines: wrappedLines,
             startsAtLine: firstOverflowLine,
           });
@@ -1508,16 +1600,37 @@ export async function POST(req: Request) {
       }
 
       for (const overflow of overflowParagraphs) {
-        const remainingText = overflow.lines
-          .slice(overflow.startsAtLine)
-          .map((line) => line.map((run) => run.text).join(""))
-          .join(" ")
-          .replace(/\s+/g, " ")
-          .trim();
+        let previousEndsWithSpace = true;
+        const remainingRuns = overflow.lines.slice(overflow.startsAtLine)
+          .flatMap((line, index) => index === 0 ? line : [
+            { text: " ", bold: false, italic: false, underline: false }, ...line,
+          ])
+          .map((run) => {
+            // Keep the existing overflow whitespace normalization without flattening styles.
+            let text = run.text.replace(/\s+/g, " ");
+            if (previousEndsWithSpace) text = text.replace(/^ +/, "");
+            if (text) previousEndsWithSpace = text.endsWith(" ");
+            return { ...run, text };
+          })
+          .filter((run) => run.text.length > 0);
+        if (remainingRuns.length > 0) {
+          remainingRuns[remainingRuns.length - 1].text =
+            remainingRuns[remainingRuns.length - 1].text.trimEnd();
+        }
 
-        if (remainingText) {
-          drawRichParagraph(remainingText);
-          y -= 8;
+        if (remainingRuns.length > 0) {
+          recordingParagraphIndex = overflow.paragraphIndex === lastTextParagraphIndex &&
+            !(paragraphs[overflow.paragraphIndex].trim().endsWith(":") &&
+              paragraphs[overflow.paragraphIndex].trim().length < 60)
+            ? overflow.paragraphIndex : null;
+          drawInlineRuns(remainingRuns);
+          if (tailBuffer.some((item) => item.paragraphIndex === overflow.paragraphIndex)) {
+            pendingParagraphGapParagraphIndex = overflow.paragraphIndex;
+            pendingParagraphGapAmount = paragraphGap;
+          } else {
+            y -= paragraphGap;
+          }
+          recordingParagraphIndex = null;
         }
       }
 
@@ -1585,10 +1698,10 @@ export async function POST(req: Request) {
     // (temporary diagnostics removed)
 
     /*
-      Includes Warm Regards, signature image, provider name, qualifications,
-      and a small safety allowance before any CC line.
+      Signature block measurement will be calculated dynamically below.
+      (Includes Warm Regards, signature image, provider name, qualifications,
+      and the small vertical gaps used when rendering.)
     */
-    const signatureBlockHeight = 150;
 
     function estimateRichParagraphHeight(
       text: string,
@@ -1610,6 +1723,13 @@ export async function POST(req: Request) {
         .filter(({ paragraph }) => paragraph && !getInlineImageMarker(paragraph))
         .at(-1)?.index ?? -1;
 
+    const lastContentIndex = paragraphs.findLastIndex((paragraph) => paragraph.trim());
+
+    const measuredSignatureBlockHeight = measureSignatureBlockHeight({
+      signatureImage,
+      providerName: provider.report_display_name || provider.name,
+      providerQualifications: provider.report_qualifications,
+    });
     for (
       let paragraphIndex = 0;
       paragraphIndex < paragraphs.length;
@@ -1640,6 +1760,10 @@ export async function POST(req: Request) {
       }
 
       if (!cleanParagraph) {
+        if (tailBuffer.length > 0) {
+          pendingParagraphGapAmount = (pendingParagraphGapAmount || 0) + lineHeight;
+          continue;
+        }
         y -= lineHeight;
 
         if (y < bottomLimit) {
@@ -1652,6 +1776,8 @@ export async function POST(req: Request) {
       const inlineImageNumber = getInlineImageMarker(cleanParagraph);
 
       if (inlineImageNumber) {
+        // A marker is a hard flow boundary: earlier text must stay before its image.
+        flushAllTailLines();
         const image = images[inlineImageNumber - 1];
 
         if (image) {
@@ -1675,15 +1801,10 @@ export async function POST(req: Request) {
             ["left", "right"].includes(image.display_alignment || "");
 
           if (canWrapTextBesideImage) {
-            const sideParagraphs: string[] = [];
+            const sideParagraphs: Array<{ text: string; index: number }> = [];
             let scanIndex = nextTextParagraphIndex;
 
-            /*
-              Collect consecutive paragraphs so the text column can continue
-              down the full height of the image. Keep the final meaningful
-              paragraph outside this block so the existing signature
-              keep-together logic can still protect it.
-            */
+            // Keep source indices so the final side paragraph uses the shared tail buffer.
             while (scanIndex < paragraphs.length) {
               const candidate = paragraphs[scanIndex]?.trim() || "";
 
@@ -1694,9 +1815,7 @@ export async function POST(req: Request) {
 
               if (getInlineImageMarker(candidate)) break;
               if (candidate.startsWith("|")) break;
-              if (scanIndex === lastTextParagraphIndex) break;
-
-              sideParagraphs.push(candidate);
+              sideParagraphs.push({ text: candidate, index: scanIndex });
               scanIndex += 1;
             }
 
@@ -1707,7 +1826,8 @@ export async function POST(req: Request) {
               await drawImageBlock(image);
             }
           } else {
-            await drawImageBlock(image);
+            await drawImageBlock(image,
+              paragraphIndex === lastContentIndex ? measuredSignatureBlockHeight : 0);
           }
 
           usedInlineImageIds.add(image.id);
@@ -1719,40 +1839,107 @@ export async function POST(req: Request) {
       const isHeading =
         cleanParagraph.endsWith(":") && cleanParagraph.length < 60;
 
-      if (paragraphIndex === lastTextParagraphIndex) {
-        const finalParagraphHeight = estimateRichParagraphHeight(cleanParagraph, {
-          bold: isHeading,
-        });
 
-        const remainingSpace = y - bottomLimit;
-        const neededSpace = finalParagraphHeight + signatureBlockHeight;
-
-        // (final-paragraph diagnostics removed)
-
-        /*
-          Keep the final meaningful paragraph and the entire signature block
-          together. If they cannot both fit in the remaining printable area,
-          move the final paragraph to a new page before drawing it.
-
-          This deliberately prioritises avoiding an orphaned signature block,
-          even when the current page still has some unused space.
-        */
-        if (remainingSpace < neededSpace) {
-          y = newPage();
-        }
-      }
+      // Render every body paragraph normally. Only record lines for the
+      // final meaningful paragraph (lastTextParagraphIndex) so that the
+      // widow/orphan logic only affects the trailing body content before
+      // the signature. This avoids buffering lines for every paragraph and
+      // prevents paragraph-gap insertion between wrapped lines of ordinary
+      // paragraphs.
+      recordingParagraphIndex =
+        !isHeading && paragraphIndex === lastTextParagraphIndex
+          ? paragraphIndex
+          : null;
 
       drawRichParagraph(cleanParagraph, { bold: isHeading });
 
-      // (final-paragraph-after-draw diagnostics removed)
+      // After rendering the paragraph, if any lines from this paragraph are
+      // currently buffered (not yet flushed), defer the paragraph gap until
+      // those lines are flushed. Otherwise apply the paragraph gap now.
+      const paragraphGap = isHeading ? 4 : 8;
 
-      y -= isHeading ? 4 : 8;
+      const hasBufferedLines = tailBuffer.some((t) => t.paragraphIndex === paragraphIndex);
+
+      if (hasBufferedLines) {
+        pendingParagraphGapParagraphIndex = paragraphIndex;
+        pendingParagraphGapAmount = paragraphGap;
+      } else {
+        y -= paragraphGap;
+      }
+
+      recordingParagraphIndex = null;
     }
 
-    if (y < bottomLimit + signatureBlockHeight) {
+    function measureSignatureBlockHeight(opts: {
+      signatureImage: Awaited<ReturnType<PDFDocument["embedPng"]>> | null;
+      providerName: string | null | undefined;
+      providerQualifications: string | null | undefined;
+    }) {
+      let h = 0;
+
+      // y -= 10 before Warm Regards
+      h += 10;
+
+      // Warm Regards line consumes one lineHeight via drawLine
+      h += lineHeight;
+
+      // y -= 45 after Warm Regards
+      h += 45;
+
+      // If a signature image exists, include its visual height
+      const signatureImageHeight = opts.signatureImage ? 38 : 0;
+      h += signatureImageHeight;
+
+      // y -= 26 after signature image
+      h += 26;
+
+      // Provider name line
+      h += lineHeight;
+
+      // Provider qualifications may wrap; measure using same text-wrapping
+      if (opts.providerQualifications) {
+        const qualLines = wrapPlainTextToWidth({
+          text: String(opts.providerQualifications || ""),
+          maxWidth: contentWidth,
+          textFont: font,
+          size: fontSize,
+        });
+
+        h += qualLines.length * lineHeight;
+      }
+
+      return h;
+    }
+
+    // Determine whether the signature block fits on the current page along
+    // with the buffered final lines. If not, move the buffered lines to the
+    // next page with the signature (widow/orphan rule).
+    const tailBufferHeight = tailBuffer.filter((item) => !item.placement).length * lineHeight +
+      (pendingParagraphGapAmount && pendingParagraphGapParagraphIndex !== null ? pendingParagraphGapAmount : 0);
+
+    if (y - (tailBufferHeight + measuredSignatureBlockHeight) < bottomLimit) {
+      if (tailBuffer.length === 0) {
+        throw new Error("Cannot move signature to a new page without preceding body content; review the final document element.");
+      }
+      const movedGap = pendingParagraphGapAmount ?? 8;
+      if (tailBuffer.length * lineHeight + movedGap + measuredSignatureBlockHeight >
+          pageHeight - topMarginOtherPages - bottomLimit) {
+        throw new Error("Trailing body lines and signature cannot fit together on one page.");
+      }
+      // Retain rendered line breaks/styles, but move side-column lines to the new page.
+      for (const item of tailBuffer) item.placement = undefined;
+      pendingParagraphGapParagraphIndex = tailBuffer[tailBuffer.length - 1].paragraphIndex;
+      pendingParagraphGapAmount = movedGap;
       y = newPage();
+
+      // Draw buffered lines first on the new page
+      flushAllTailLines();
+    } else {
+      // Draw buffered lines on the current page, then continue
+      flushAllTailLines();
     }
 
+    // Now render the signature block (kept together)
     y -= 10;
 
     drawLine("Warm Regards,");

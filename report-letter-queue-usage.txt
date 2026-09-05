@@ -17,8 +17,6 @@
 ./app/api/report-writing/letter-queue/enrich-praktika/route.ts:741:      .from("report_letter_queue")
 ./app/api/report-writing/hydrate-letter-queue/route.ts:13:const HYDRATION_JOB_TYPE = "hydrate_report_letter_queue_item";
 ./app/api/report-writing/hydrate-letter-queue/route.ts:93:      .from("report_letter_queue")
-./app/api/report-writing/generate-pdf-html/route.ts:295:    .from("report_letter_queue")
-./app/api/report-writing/generate-pdf-html/route.ts:301:    console.warn("Could not look up linked report_letter_queue row:", queueError);
 ./app/api/report-writing/generate-pdf/route.ts:441:    .from("report_letter_queue")
 ./app/api/report-writing/generate-pdf/route.ts:447:    console.warn("Could not look up linked report_letter_queue row:", queueError);
 ./app/api/report-writing/update-praktika-letter-icons/route.ts:100:      .from("report_letter_queue")

@@ -1462,7 +1462,7 @@ export default function TypistPage() {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/report-writing/generate-pdf-html", {
+      const response = await fetch("/api/report-writing/generate-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ draftId: selectedDraft.id }),
@@ -1470,7 +1470,7 @@ export default function TypistPage() {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(errorText || "Failed to generate HTML PDF.");
+        throw new Error(errorText || "Failed to generate PDF.");
       }
 
       const blob = await response.blob();
@@ -1478,7 +1478,7 @@ export default function TypistPage() {
 
       setPdfPreviewUrl(url);
       setPdfPreviewTitle(
-        `HTML PDF Test - ${selectedDraft.patient_name || "Patient"}.pdf`,
+        `PDF Test - ${selectedDraft.patient_name || "Patient"}.pdf`,
       );
       setPdfPreviewModalOpen(true);
     } catch (error) {
