@@ -30,7 +30,10 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         const originalLog = console.log; const originalWarn = console.warn;
         console.log = (...args: unknown[]) => { logs.push(args); };
         console.warn = (...args: unknown[]) => { logs.push(args); };
-        try { await assert.rejects(enter, /Unable to enter patient DOB in MediRef date control/); }
+        try {
+          if (mode === "lost-focus") assert.equal(await enter(), true);
+          else await assert.rejects(enter, /Unable to enter patient DOB in MediRef date control/);
+        }
         finally { console.log = originalLog; console.warn = originalWarn; }
         const has = (phase: string) => logs.some(row => row[0] === `[MediRef] DOB ${phase}`);
         assert.ok(has("day_selection_started"));
@@ -292,121 +295,95 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
       await page.locator('[data-segment="day"]').evaluate((field) => field.setAttribute("aria-valuenow", "31"));
       await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
     });
-    for (const mode of ["success", "ignored", "revert", "unsafe-selection", "replace-on-focus", "blocked-click", "unsafe-focus"] as const) {
-      await t.test(`keyboard-only year replacement: ${mode}`, async () => {
-        await page.setContent(`<p>Outside selection sentinel</p><div data-date-field-input>
-          <span role="spinbutton" contenteditable="true" data-segment="day" aria-valuenow="31">31</span>
-          <span role="spinbutton" contenteditable="true" data-segment="month" aria-valuenow="12">12</span>
-          <span role="spinbutton" contenteditable="true" data-segment="year" tabindex="0" inputmode="numeric"
+    for (const mode of ["accepted", "outside-selection", "no-effect", "conflict", "other-part", "revert", "replaced", "detached", "keyboard-only"]) {
+      await t.test(`atomic custom year with unrelated active button: ${mode}`, async () => {
+        await page.setContent(`<div data-date-field-input>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="day" aria-valuenow="31">31</span>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="month" aria-valuenow="12">12</span>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="year" inputmode="numeric"
             aria-valuemin="1" aria-valuemax="9999" aria-valuenow="2001" aria-valuetext="2001">2001</span>
-        </div><button>Next</button>`);
-        await page.locator('[data-segment]').evaluateAll((elements, mode) => {
-          for (const element of elements) {
-            if (element.getAttribute("data-segment") !== "year") {
-              element.addEventListener("input", () => element.setAttribute("aria-valuenow", String(Number(element.textContent))));
-              continue;
-            }
-            if (mode === "replace-on-focus") {
-              element.addEventListener("focus", () => element.replaceWith(element.cloneNode(true)), { once: true });
-            }
-            let selectedByKeyboard = false;
-            let digits = "";
-            element.addEventListener("beforeinput", event => event.preventDefault());
-            element.addEventListener("keydown", event => {
-              const key = event as KeyboardEvent;
-              if ((key.ctrlKey || key.metaKey) && key.key.toLowerCase() === "a") {
-                selectedByKeyboard = true;
-                if (mode === "unsafe-selection") {
-                  key.preventDefault();
-                  const range = document.createRange(); range.selectNodeContents(document.body);
-                  document.getSelection()?.removeAllRanges(); document.getSelection()?.addRange(range);
-                }
+        </div><button>Outside</button>`);
+        await page.evaluate(mode => {
+          const fields = Array.from(document.querySelectorAll<HTMLElement>('[data-segment]'));
+          const year = document.querySelector<HTMLElement>('[data-segment="year"]')!;
+          const button = document.querySelector("button")!;
+          document.addEventListener("keydown", () => { document.body.dataset.keyboardUsed = "true"; });
+          for (const field of fields) {
+            if (field !== year || mode !== "revert") field.addEventListener("focus", () => button.focus());
+            field.addEventListener("input", event => {
+              field.setAttribute("aria-valuenow", String(Number(field.textContent)));
+              if (field === year) {
+                field.setAttribute("aria-valuetext", mode === "conflict" ? "2001" : String(Number(field.textContent)));
+                field.dataset.insertions = String(Number(field.dataset.insertions || 0) + 1);
+                field.dataset.insertLength = String((event as InputEvent).data?.length);
+                if (mode === "other-part") fields[0].textContent = "08";
               }
-              if (!/^\d$/.test(key.key)) return;
-              key.preventDefault();
-              if (!selectedByKeyboard || mode === "ignored") return;
-              if (!digits && document.getSelection()?.toString() !== element.textContent) return;
-              digits += key.key;
-              element.setAttribute("data-digit-keys", String(digits.length));
-              element.textContent = digits;
-              element.setAttribute("aria-valuenow", String(Number(digits)));
-              element.setAttribute("aria-valuetext", String(Number(digits)));
-            });
-            element.addEventListener("blur", () => {
-              if (mode === "revert") setTimeout(() => {
-                element.textContent = "2001";
-                element.setAttribute("aria-valuenow", "2001");
-                element.setAttribute("aria-valuetext", "2001");
-              }, 100);
             });
           }
-        }, mode);
-        const year = page.locator('[data-segment="year"]');
-        if (mode === "blocked-click") {
-          await year.evaluate(element => {
-            const overlay = document.createElement("div");
-            const bounds = element.getBoundingClientRect();
-            Object.assign(overlay.style, { position: "fixed", left: `${bounds.left}px`, top: `${bounds.top}px`,
-              width: `${bounds.width}px`, height: `${bounds.height}px`, zIndex: "9999" });
-            document.body.append(overlay);
+          document.addEventListener("beforeinput", event => {
+            const selection = window.getSelection();
+            if (year.contains(selection?.anchorNode ?? null) && ["no-effect", "keyboard-only"].includes(mode)) event.preventDefault();
+          }, true);
+          if (mode === "replaced" || mode === "detached") year.addEventListener("focus", () => {
+            if (mode === "replaced") year.replaceWith(year.cloneNode(true));
+            else year.remove();
+          }, { once: true });
+          if (mode === "revert") year.addEventListener("blur", () => {
+            setTimeout(() => {
+              year.textContent = "2001"; year.setAttribute("aria-valuenow", "2001"); year.setAttribute("aria-valuetext", "2001");
+            }, 100);
           });
-          await assert.rejects(year.click({ timeout: 300 }), /intercepts pointer events/);
-        }
-        // DOM selection alone does not activate this fixture's keyboard replacement mode.
-        if (mode !== "replace-on-focus") {
-          await year.selectText();
-          await year.pressSequentially("1958");
-        }
-        if (mode === "unsafe-focus") {
-          await year.blur();
-          await year.evaluate(element => element.addEventListener("focus", () => document.querySelector("button")!.focus()));
-        }
-        assert.equal(await year.getAttribute("aria-valuenow"), "2001");
+          const getSelection = document.getSelection.bind(document);
+          document.getSelection = () => {
+            const selection = getSelection()!;
+            if (mode === "outside-selection" && year.contains(selection.anchorNode)) {
+              const range = document.createRange(); range.selectNodeContents(document.body);
+              selection.removeAllRanges(); selection.addRange(range);
+            }
+            return selection;
+          };
+        }, mode);
         const logs: unknown[][] = [];
-        const originalLog = console.log;
-        const originalWarn = console.warn;
+        const originalLog = console.log; const originalWarn = console.warn;
         console.log = (...args: unknown[]) => { logs.push(args); };
         console.warn = (...args: unknown[]) => { logs.push(args); };
         try {
-          const enterYear = () => enterPatientDob(page, "1958-05-09", "09/05/1958");
-          if ((mode === "success" || mode === "blocked-click")) assert.equal(await enterYear(), true);
-          else await assert.rejects(enterYear, { message: "Unable to enter patient DOB in MediRef date control" });
-        } finally { console.log = originalLog; console.warn = originalWarn; }
-        if ((mode === "success" || mode === "blocked-click")) {
-          assert.equal(await year.getAttribute("aria-valuenow"), "1958");
-          assert.equal(await year.getAttribute("data-digit-keys"), "4");
-          assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB final verification completed"));
+          if (mode === "accepted") assert.equal(await enter(), true);
+          else await assert.rejects(enter, /Unable to enter patient DOB in MediRef date control/);
+        } finally {
+          console.log = originalLog; console.warn = originalWarn;
+          await page.evaluate(() => { delete (document as unknown as Record<string, unknown>).getSelection; });
         }
-        if ((mode === "success" || mode === "blocked-click")) {
-          const phases = logs.map(entry => entry[0]);
+        const has = (phase: string) => logs.some(row => row[0] === `[MediRef] DOB ${phase}`);
+        assert.equal(has("year_single_insert_started"), !["outside-selection", "replaced", "detached"].includes(mode));
+        assert.equal(has("month_pre_navigation_focus"), false);
+        assert.equal(has("year_selection_focus_started"), false);
+        assert.equal(await page.locator("body").getAttribute("data-keyboard-used"), null);
+        if (mode === "accepted") {
+          for (const part of ["day", "month", "year"]) {
+            assert.deepEqual(logs.find(row => row[0] === `[MediRef] DOB ${part}_selection_safety`)![1],
+              { activeElementIsPart: false, selectionInsidePart: true });
+          }
+          const year = page.locator('[data-segment="year"]');
+          assert.equal(await year.getAttribute("data-insertions"), "1");
+          assert.equal(await year.getAttribute("data-insert-length"), "4");
+          assert.deepEqual(await page.locator('[data-segment]').allTextContents(), ["09", "06", "1990"]);
+          assert.equal(await page.locator("button").evaluate(element => element === document.activeElement), true);
           let previous = -1;
-          for (const phase of ["year_resolve_started", "year_resolved", "year_active_element_verified", "year_select_all_started", "year_select_all_sent",
-            "year_selection_inspection_started", "year_selection_verified", "year_write_started", "year_write_completed",
-            "year_verify", "year_post_blur_verify"]) {
-            const index = phases.indexOf(`[MediRef] DOB ${phase}`);
+          for (const phase of ["year_selection_resolve_started", "year_selection_started", "year_selectText_completed",
+            "year_selection_inspection_started", "year_selection_inspection", "year_selection_safety",
+            "year_single_insert_started", "year_single_insert_completed", "year_after_insert_focus", "year_verify", "year_post_blur_verify", "final verification completed"]) {
+            const index = logs.findIndex(row => row[0] === `[MediRef] DOB ${phase}`);
             assert.ok(index > previous, phase); previous = index;
           }
         }
-        if (mode === "replace-on-focus" || mode === "unsafe-focus") {
-          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "year_navigation_after_tab");
-          assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB year_select_all_started"));
-        }
-        if (mode === "unsafe-selection") {
-          const selection = logs.find(entry => entry[0] === "[MediRef] DOB year_selection")?.[1] as Record<string, unknown>;
-          assert.equal(selection.rangeInsideYear, false);
-          assert.equal(selection.selectionExists, true);
-          assert.equal(selection.rangeCount, 1);
-          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "year_selection_inspection_started");
-          assert.equal(await year.getAttribute("data-digit-keys"), null);
-          assert.equal(await page.locator("p").textContent(), "Outside selection sentinel");
-        }
-        assert.ok(!JSON.stringify(logs).includes("1958"));
-        assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB month_pre_navigation_focus"));
+        if (mode === "revert") assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "year_post_blur_verify");
+        assert.ok(!JSON.stringify(logs).includes("1990"));
       });
     }
     for (const mode of ["auto", "tab", "focus-lost-after-write", "wrong-target", "unavailable", "committed-wrong-target", "bad-month-commit", "single-insert", "ignored-day-insert", "ignored-month-insert", "conflicting-day"]) {
       const advance = mode === "auto";
-      await t.test(`keyboard navigation with ineffective year focus: ${mode}`, async () => {
+      await t.test(`custom segments with ineffective year focus: ${mode}`, async () => {
         await page.setContent(`<div data-date-field-input>
           <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="day" aria-valuenow="31">31</span>
           <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="month" aria-valuenow="12">12</span>
@@ -504,26 +481,22 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
           assert.equal(await page.locator("button").evaluate(element => document.activeElement === element), true);
           await month.evaluate(element => element.removeAttribute("data-digit-keys"));
         }
-        const attempts = await year.getAttribute("data-focus-attempts");
+        const shouldSucceed = ["tab", "auto", "single-insert", "focus-lost-after-write", "wrong-target", "unavailable", "committed-wrong-target"].includes(mode);
         const logs: unknown[][] = [];
         const originalLog = console.log; const originalWarn = console.warn;
         console.log = (...args: unknown[]) => { logs.push(args); };
         console.warn = (...args: unknown[]) => { logs.push(args); };
         try {
-          if (["tab", "auto", "single-insert"].includes(mode)) assert.equal(await enter(), true);
+          if (shouldSucceed) assert.equal(await enter(), true);
           else await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
         } finally { console.log = originalLog; console.warn = originalWarn; }
-        if (["tab", "auto", "single-insert"].includes(mode)) {
-          assert.equal(await year.getAttribute("data-focus-attempts"), attempts);
+        if (shouldSucceed) {
           assert.equal(await year.getAttribute("aria-valuenow"), "1990");
-          assert.ok(logs.some(entry => entry[0] === `[MediRef] DOB ${advance ? "year_existing_focus_reused" : "year_navigation_verified"}`));
-          for (const phase of ["after_month_verify", "before_year_entry"]) {
-            const info = logs.find(entry => entry[0] === `[MediRef] DOB ${phase}`)?.[1] as { matches: { year: boolean } };
-            assert.equal(info.matches.year, true);
-          }
+          assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB year_single_insert_completed"));
+          assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB month_pre_navigation_focus"));
         } else {
           assert.equal(await year.getAttribute("aria-valuenow"), "2001");
-          assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB year_write_started"));
+          assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB year_single_insert_started"));
         }
         if (mode === "single-insert") {
           for (const part of ["day", "month"]) {
@@ -534,7 +507,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
           }
         }
         if (mode === "focus-lost-after-write") {
-          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "month_pre_navigation_focus");
+          assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB final verification completed"));
           assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB year_navigation_tab_started"));
           const active = logs.find(entry => entry[0] === "[MediRef] DOB month_after_insert_focus")?.[1] as { tagName: string; matchesMonth: boolean };
           assert.equal(active.matchesMonth, false);

@@ -73,21 +73,6 @@ async function segmentMatches(field: Locator, expected: string) {
   return numeric.length > 0 && numeric.every((value) => value === Number(expected));
 }
 
-async function observeYear(field: Locator, phase: string, previous?: Array<string | null>) {
-  const state = await field.evaluate((element) => [
-    element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent,
-  ]);
-  const numeric = state.filter((value): value is string => value !== null).map(numericSegment)
-    .filter((value): value is number => value !== null);
-  console.log("[MediRef] DOB year state", {
-    part: "year", phase,
-    hasAriaValueNow: state[0] !== null, hasAriaValueText: state[1] !== null, hasTextContent: Boolean(state[2]?.trim()),
-    numericSourcesAgree: numeric.length > 1 ? new Set(numeric).size === 1 : null,
-    changedSincePrevious: previous ? state.some((value, index) => value !== previous[index]) : null,
-  });
-  return state;
-}
-
 async function waitForSegment(field: Locator, expected: string) {
   const deadline = Date.now() + timeout;
   do {
@@ -159,7 +144,7 @@ async function logActiveSegment(group: Locator, phase: string, navigation = fals
   console.log(`[MediRef] DOB ${phase}`, { ...structure, ...(navigation ? { matchesDay: matches.day, matchesMonth: matches.month, matchesYear: matches.year } : { matches }) });
 }
 
-async function insertCustomPart(group: Locator, part: "day" | "month", expected: string, step: (operation: string) => void) {
+async function insertCustomPart(group: Locator, part: "day" | "month" | "year", expected: string, step: (operation: string) => void) {
   const field = segment(group, part);
   const selectionStep = (operation: string) => {
     step(`${part}_${operation}`);
@@ -173,8 +158,10 @@ async function insertCustomPart(group: Locator, part: "day" | "month", expected:
   ])));
   let before: Array<Array<string | null>>;
   try {
-    selectionStep("selection_focus_started");
-    await field.focus({ timeout });
+    if (part !== "year") {
+      selectionStep("selection_focus_started");
+      await field.focus({ timeout });
+    }
     selectionStep("selection_started");
     await field.selectText({ timeout });
     selectionStep("selectText_completed");
@@ -202,7 +189,7 @@ async function insertCustomPart(group: Locator, part: "day" | "month", expected:
       };
     }, { original, groupSelector });
     step(`${part}_selection_inspection`);
-    const name = part === "day" ? "Day" : "Month";
+    const name = part === "day" ? "Day" : part === "month" ? "Month" : "Year";
     console.log(`[MediRef] DOB ${part}_selection_inspection`, {
       [`activeElementIs${name}`]: inspection.active,
       selectionExists: inspection.selectionExists, rangeCount: inspection.rangeCount,
@@ -344,66 +331,15 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
         const customYear = part === "year" && structure.isContentEditable && structure.role === "spinbutton";
         if (customYear) {
           usedCustomYear = true;
-          const yearStep = (name: string) => {
-            operation = name;
-            console.log(`[MediRef] DOB ${name}`);
-          };
-          yearStep("year_resolve_started");
-          const year = segment(group, "year");
-          yearStep("year_resolved");
-          operation = "year_read_before_write";
-          let yearState = await observeYear(year, "before write");
-          operation = "year_navigation_inspection";
-          if (!await year.evaluate(element => document.activeElement === element)) throw new Error(failure);
-          yearStep("year_active_element_verified");
-          yearStep("year_select_all_started");
-          await page.keyboard.press("ControlOrMeta+A");
-          yearStep("year_select_all_sent");
-          yearStep("year_selection_inspection_started");
-          const selectionState = await year.evaluate((element) => {
-            const selection = document.getSelection();
-            const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null;
-            return {
-              selectionExists: Boolean(selection),
-              rangeCount: selection?.rangeCount ?? 0,
-              anchorInsideYear: Boolean(selection?.anchorNode && element.contains(selection.anchorNode)),
-              focusInsideYear: Boolean(selection?.focusNode && element.contains(selection.focusNode)),
-              rangeInsideYear: Boolean(range && element.contains(range.startContainer) && element.contains(range.endContainer)),
-              activeElementIsYear: document.activeElement === element,
-              coversYearText: Boolean(selection && selection.toString() === element.textContent),
-              collapsed: selection?.isCollapsed ?? true,
-            };
-          });
-          console.log("[MediRef] DOB year_selection", selectionState);
-          const scoped = selectionState.activeElementIsYear && selectionState.selectionExists &&
-            selectionState.rangeCount === 1 && selectionState.rangeInsideYear &&
-            selectionState.coversYearText && !selectionState.collapsed;
-          if (!scoped) {
-            // Never type over a page-wide or unconfirmed selection.
-            await year.evaluate(() => document.getSelection()?.removeAllRanges());
-            throw new Error(failure);
-          }
-          yearStep("year_selection_verified");
-          yearStep("year_write_started");
-          // Preserve the confirmed native focus; Locator typing would focus again.
-          for (const digit of values.year) {
-            if (!await year.evaluate(element => document.activeElement === element)) throw new Error(failure);
-            await page.keyboard.press(digit);
-          }
-          yearStep("year_write_completed");
-          yearState = await observeYear(year, "year_write", yearState);
+          await insertCustomPart(group, part, values.year, value => { operation = value; });
           operation = "year_verify";
-          // Some controls publish semantic state only on blur. Record acceptance now,
-          // but require all numeric sources to agree after the component commits.
-          const matchesBeforeBlur = await segmentMatches(year, values.year);
-          console.log("[MediRef] DOB year_verify", { matches: matchesBeforeBlur });
+          console.log("[MediRef] DOB year_verify", { matches: await segmentMatches(segment(group, "year"), values.year) });
           operation = "year_post_blur_verify";
-          await year.blur({ timeout });
+          await segment(group, "year").blur({ timeout });
           try {
             await waitForPersistedDate(group, values);
           } finally {
-            await observeYear(year, "year_post_blur_verify", yearState);
-            console.log("[MediRef] DOB year_post_blur_verify", { matches: await segmentMatches(year, values.year) });
+            console.log("[MediRef] DOB year_post_blur_verify", { matches: await segmentMatches(segment(group, "year"), values.year) });
           }
           console.log("[MediRef] DOB segment verified", { part });
           continue;
@@ -433,7 +369,7 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           if (part !== "year") await logActiveSegment(group, `after_${part}_entry`);
           if (structure.isContentEditable) {
             operation = "commit";
-            if (part === "month" && keyboardYear) {
+            if (part === "month" && keyboardYear && structure.role !== "spinbutton") {
               operation = "month_pre_navigation_focus";
               await logActiveSegment(group, operation, true);
               if (await segment(group, "year").evaluate(element => document.activeElement === element)) {
