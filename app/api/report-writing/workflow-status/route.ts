@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 
 import { claimWorkflowStart } from "@/lib/report-writing/complete-workflow";
 import { getAuditActor } from "@/lib/report-writing/audit";
+import { enqueueFailure } from "@/lib/mediref/enqueue-transition";
 import { getUserStatus } from "@/lib/getUserStatus";
 
 export const runtime = "nodejs";
@@ -54,6 +55,24 @@ export async function POST(req: Request) {
         { success: false, error: "Missing draftId." },
         { status: 400 },
       );
+    }
+
+    if (body.failMedirefEnqueue === true) {
+      const actor = await getAuditActor();
+      if (!actor.actorUserId || !await getUserStatus(actor.actorUserId)) {
+        return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
+      }
+      const { data: active, error: activeError } = await supabase.from("mediref_helper_jobs").select("id")
+        .eq("job_type", "send_mediref_letter").eq("payload->>draftId", draftId)
+        .in("status", ["pending", "processing"]).limit(1).abortSignal(AbortSignal.timeout(5000)).maybeSingle();
+      if (activeError) return NextResponse.json({ success: false, error: enqueueFailure }, { status: 503 });
+      if (active) return NextResponse.json({ success: true, jobId: active.id });
+      const { error } = await supabase.from("report_drafts").update({
+        workflow_status: "failed", workflow_mediref_status: "failed", workflow_error: enqueueFailure,
+        workflow_last_message: "MediRef preparation or queueing failed.", updated_at: new Date().toISOString(),
+      }).eq("id", draftId).eq("workflow_status", "running").in("workflow_mediref_status", ["pending", "running"]).is("deleted_at", null)
+        .abortSignal(AbortSignal.timeout(5000));
+      return NextResponse.json({ success: !error }, { status: error ? 503 : 200 });
     }
 
     const now = new Date().toISOString();

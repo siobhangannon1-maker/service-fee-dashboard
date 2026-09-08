@@ -33,6 +33,8 @@ const store: RetryStore = {
     const { data, error } = await db.from("report_drafts").update(update)
       .eq("id", draft.id).eq("updated_at", draft.updated_at).eq("status", draft.status)
       .eq("workflow_mediref_status", "failed").is("deleted_at", null)
+      // An uncertain Complete Workflow insert must not be retried using an older failed job.
+      .or("emailed_to_referrer_resend_id.is.null,emailed_to_referrer_resend_id.not.like.mediref:preparing:%")
       .is("emailed_to_referrer_at", null).select("id");
     if (error) throw error;
     return data?.length === 1;

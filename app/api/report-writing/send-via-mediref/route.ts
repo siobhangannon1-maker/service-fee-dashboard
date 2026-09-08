@@ -5,6 +5,9 @@ import {
   createReportAuditEvent,
   getAuditActor,
 } from "@/lib/report-writing/audit";
+import { enqueueMedirefTransition, enqueueFailure, EnqueueBusy } from "@/lib/mediref/enqueue-transition";
+import { getUserStatus } from "@/lib/getUserStatus";
+import type { MedirefHelperRequest } from "@/lib/mediref/helper-jobs";
 import { generatePeriodontalChartPdf } from "@/lib/praktika/periodontal-chart";
 
 export const runtime = "nodejs";
@@ -361,10 +364,12 @@ async function generateAndStageLetterPdf(params: {
   origin: string;
   draftId: string;
   draft: any;
+  signal: AbortSignal;
 }): Promise<StagedPdfAttachment> {
   const pdfResponse = await fetch(
     `${params.origin}/api/report-writing/generate-pdf`,
     {
+      signal: params.signal,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -424,10 +429,14 @@ export async function POST(req: Request) {
   const stagedPaths: string[] = [];
 
   let medirefJobCreated = false;
+  let insertionAttempted = false;
 
   try {
     const body = await req.json();
     const actor = await getAuditActor();
+    if (!actor.actorUserId || !await getUserStatus(actor.actorUserId)) {
+      return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
+    }
 
     const draftId = String(body.draftId || "").trim();
 
@@ -498,6 +507,7 @@ export async function POST(req: Request) {
         .from("report_drafts")
         .select("*")
         .eq("id", draftId)
+        .is("deleted_at", null)
         .single();
 
     logStep("Loaded draft", draftLoadStartedAt);
@@ -540,107 +550,84 @@ export async function POST(req: Request) {
 
     const splitName = splitPatientName(patientName);
 
-    const letterStartedAt = nowMs();
+    const claimId = `mediref:preparing:${crypto.randomUUID()}`;
+    async function activeJob() {
+      const { data, error } = await supabase.from("mediref_helper_jobs").select("id")
+        .eq("job_type", "send_mediref_letter").eq("payload->>draftId", draftId)
+        .in("status", ["pending", "processing"]).order("created_at", { ascending: false }).limit(1).abortSignal(AbortSignal.timeout(10000)).maybeSingle();
+      if (error) throw new Error(enqueueFailure);
+      return data;
+    }
+    const transition = await enqueueMedirefTransition({
+      active: activeJob,
+      claim: async () => {
+        const { data, error } = await supabase.from("report_drafts").update({
+          workflow_status: "running", workflow_mediref_status: "pending",
+          workflow_last_message: "Preparing MediRef send.", workflow_error: null,
+          emailed_to_referrer_resend_id: claimId, updated_at: new Date().toISOString(),
+        }).eq("id", draftId).eq("updated_at", draft.updated_at).is("deleted_at", null)
+          .in("status", ["approved", "uploaded_to_praktika"])
+          .or("emailed_to_referrer_resend_id.is.null,emailed_to_referrer_resend_id.not.like.mediref:preparing:%")
+          .select("id").abortSignal(AbortSignal.timeout(10000)).maybeSingle();
+        if (error) throw new Error(enqueueFailure);
+        return Boolean(data);
+      },
+      prepare: async (signal) => {
+        if (!splitName.firstName || !splitName.lastName || !draft.patient_dob) throw new Error(enqueueFailure);
+        const letterStartedAt = nowMs();
 
-    /*
-     * MediRef always generates and stages its own PDF in report-assets.
-     *
-     * Do not reuse Praktika's temporary staged file. The Praktika helper may
-     * remove that object as soon as its upload finishes, which can leave the
-     * MediRef workflow pointing to a path that no longer exists.
-     */
-    const origin = new URL(req.url).origin;
+        /*
+         * MediRef always generates and stages its own PDF in report-assets.
+         *
+         * Do not reuse Praktika's temporary staged file. The Praktika helper may
+         * remove that object as soon as its upload finishes, which can leave the
+         * MediRef workflow pointing to a path that no longer exists.
+         */
+        const origin = new URL(req.url).origin;
 
-    const letterAttachment =
-      await generateAndStageLetterPdf({
-        origin,
-        draftId,
-        draft,
-      });
+        const letterAttachment =
+          await generateAndStageLetterPdf({
+            origin,
+            draftId,
+            draft,
+            signal,
+          });
 
-    stagedPaths.push(letterAttachment.storagePath);
+        stagedPaths.push(letterAttachment.storagePath);
+        signal.throwIfAborted();
 
-    const usedExistingStagedPdf = false;
+        const usedExistingStagedPdf = false;
 
-    logStep(
-      "Prepared letter attachment",
-      letterStartedAt,
-    );
+        logStep(
+          "Prepared letter attachment",
+          letterStartedAt,
+        );
 
-    const attachments: StagedPdfAttachment[] = [
-      letterAttachment,
-    ];
+        const attachments: StagedPdfAttachment[] = [
+          letterAttachment,
+        ];
 
-    let periodontalChartAttached = false;
+        let periodontalChartAttached = false;
 
-    let periodontalChartAttachmentName:
-      | string
-      | null = null;
+        let periodontalChartAttachmentName:
+          | string
+          | null = null;
 
-    let periodontalChartError: string | null =
-      null;
+        let periodontalChartError: string | null =
+          null;
 
-    if (attachPeriodontalChart) {
-      const perioStartedAt = nowMs();
+        if (attachPeriodontalChart) {
+          const perioStartedAt = nowMs();
 
-      const finalPraktikaPatientId =
-        requestedPraktikaPatientId ||
-        String(
-          draft.praktika_patient_id || "",
-        ).trim();
+          const finalPraktikaPatientId =
+            requestedPraktikaPatientId ||
+            String(
+              draft.praktika_patient_id || "",
+            ).trim();
 
-      if (!finalPraktikaPatientId) {
-        periodontalChartError =
-          "Periodontal chart was requested, but no Praktika patient ID is linked.";
-
-        await updatePerioStatus({
-          draftId,
-          attachedAt: null,
-          attachmentName: null,
-          error: periodontalChartError,
-        });
-      } else {
-        try {
-          const perioChart =
-            await generatePeriodontalChartPdf({
-              patientId: finalPraktikaPatientId,
-              appointmentDate: null,
-              patientName,
-              providerName:
-                actor.actorFullName || null,
-            });
-
-          if (perioChart) {
-            const perioAttachment =
-              await stagePdf({
-                buffer: perioChart.buffer,
-                draftId,
-                fileName: perioChart.fileName,
-                folder: "mediref-uploads",
-              });
-
-            stagedPaths.push(
-              perioAttachment.storagePath,
-            );
-
-            attachments.push(perioAttachment);
-
-            periodontalChartAttached = true;
-
-            periodontalChartAttachmentName =
-              perioChart.fileName;
-
-            await updatePerioStatus({
-              draftId,
-              attachedAt:
-                new Date().toISOString(),
-              attachmentName:
-                perioChart.fileName,
-              error: null,
-            });
-          } else {
+          if (!finalPraktikaPatientId) {
             periodontalChartError =
-              "Periodontal chart was requested, but no periodontal chart was found.";
+              "Periodontal chart was requested, but no Praktika patient ID is linked.";
 
             await updatePerioStatus({
               draftId,
@@ -648,40 +635,87 @@ export async function POST(req: Request) {
               attachmentName: null,
               error: periodontalChartError,
             });
-          }
-        } catch (error) {
-          periodontalChartError =
-            error instanceof Error
-              ? error.message
-              : "Failed to generate periodontal chart.";
+          } else {
+            try {
+              const perioChart =
+                await generatePeriodontalChartPdf({
+                  patientId: finalPraktikaPatientId,
+                  appointmentDate: null,
+                  patientName,
+                  providerName:
+                    actor.actorFullName || null,
+                });
 
+              if (perioChart) {
+                const perioAttachment =
+                  await stagePdf({
+                    buffer: perioChart.buffer,
+                    draftId,
+                    fileName: perioChart.fileName,
+                    folder: "mediref-uploads",
+                  });
+
+                stagedPaths.push(
+                  perioAttachment.storagePath,
+                );
+
+                attachments.push(perioAttachment);
+
+                periodontalChartAttached = true;
+
+                periodontalChartAttachmentName =
+                  perioChart.fileName;
+
+                await updatePerioStatus({
+                  draftId,
+                  attachedAt:
+                    new Date().toISOString(),
+                  attachmentName:
+                    perioChart.fileName,
+                  error: null,
+                });
+              } else {
+                periodontalChartError =
+                  "Periodontal chart was requested, but no periodontal chart was found.";
+
+                await updatePerioStatus({
+                  draftId,
+                  attachedAt: null,
+                  attachmentName: null,
+                  error: periodontalChartError,
+                });
+              }
+            } catch (error) {
+              periodontalChartError =
+                error instanceof Error
+                  ? error.message
+                  : "Failed to generate periodontal chart.";
+
+              await updatePerioStatus({
+                draftId,
+                attachedAt: null,
+                attachmentName: null,
+                error: periodontalChartError,
+              });
+            }
+          }
+
+          logStep(
+            "Prepared periodontal chart attachment",
+            perioStartedAt,
+          );
+        } else {
           await updatePerioStatus({
             draftId,
             attachedAt: null,
             attachmentName: null,
-            error: periodontalChartError,
+            error: null,
           });
         }
-      }
 
-      logStep(
-        "Prepared periodontal chart attachment",
-        perioStartedAt,
-      );
-    } else {
-      await updatePerioStatus({
-        draftId,
-        attachedAt: null,
-        attachmentName: null,
-        error: null,
-      });
-    }
 
-    const jobStartedAt = nowMs();
-
-    const job =
-      await createSendMedirefLetterJob({
-        request: {
+        signal.throwIfAborted();
+        return { request: {
           action: "send_letter",
           draftId,
           patient: {
@@ -704,58 +738,51 @@ export async function POST(req: Request) {
             `Specialist correspondence for ${
               patientName || "patient"
             }.`,
-        },
-        priority: 20,
-      });
-
-    medirefJobCreated = true;
-
-    logStep(
-      "Created MediRef helper job",
-      jobStartedAt,
-    );
-
+        } satisfies MedirefHelperRequest,
+          letterAttachment, usedExistingStagedPdf, attachments, periodontalChartAttached,
+          periodontalChartAttachmentName, periodontalChartError };
+      },
+      insert: async (request) => {
+        const jobStartedAt = nowMs();
+        insertionAttempted = true;
+        const job = await createSendMedirefLetterJob({ request, priority: 20 });
+        medirefJobCreated = true;
+        logStep("Created MediRef helper job", jobStartedAt);
+        return job;
+      },
+      running: async (job) => {
+        // The worker may already have completed/failed. Never overwrite its terminal status.
+        const active = await activeJob();
+        if (!active || active.id !== job.id) return;
+        const { error } = await supabase.from("report_drafts").update({
+          emailed_to_referrer_at: null, emailed_to_referrer_email: referrerEmail || finalReferrerName || null,
+          emailed_to_referrer_resend_id: `mediref:${job.id}`,
+          emailed_by_initials: actor.actorInitials, emailed_by_name: actor.actorFullName,
+          workflow_mediref_status: "running", workflow_completed_at: null, workflow_error: null,
+          workflow_last_message: "MediRef helper job queued. Waiting for the helper.", updated_at: new Date().toISOString(),
+        }).eq("id", draftId).eq("emailed_to_referrer_resend_id", claimId)
+          .eq("workflow_status", "running").eq("workflow_mediref_status", "pending")
+          .abortSignal(AbortSignal.timeout(10000));
+        if (error) throw new Error(enqueueFailure);
+      },
+      failed: async (attempted) => {
+        const active = await activeJob();
+        if (active) return; // An insert may have committed despite a lost HTTP response.
+        const { error } = await supabase.from("report_drafts").update({
+          workflow_status: "failed", workflow_mediref_status: "failed", workflow_error: enqueueFailure,
+          workflow_last_message: "MediRef preparation or queueing failed.", updated_at: new Date().toISOString(),
+          // Retain an uncertain insert claim to prevent duplicate jobs after a lost response.
+          ...(!attempted ? { emailed_to_referrer_resend_id: draft.emailed_to_referrer_resend_id || null } : {}),
+        }).eq("id", draftId).eq("emailed_to_referrer_resend_id", claimId)
+          .eq("workflow_mediref_status", "pending").abortSignal(AbortSignal.timeout(10000));
+        if (error) throw new Error(enqueueFailure);
+      },
+    });
+    const { job } = transition;
+    if (!transition.prepared) return NextResponse.json({ success: true, jobId: job.id, reused: true, message: "MediRef helper job is already queued or processing." });
+    const { letterAttachment, usedExistingStagedPdf, attachments, periodontalChartAttached,
+      periodontalChartAttachmentName, periodontalChartError } = transition.prepared;
     const updateStartedAt = nowMs();
-    const now = new Date().toISOString();
-
-    /*
-     * The helper job has only been queued at this point.
-     *
-     * Keep the letter visible in the Approved queue and mark the workflow as
-     * running. The MediRef browser worker will set emailed_to_referrer_at and
-     * complete or fail the workflow after it has actually processed the job.
-     */
-    const { error: updateDraftError } =
-      await supabase
-        .from("report_drafts")
-        .update({
-          emailed_to_referrer_at: null,
-          emailed_to_referrer_email:
-            referrerEmail ||
-            finalReferrerName ||
-            null,
-          emailed_to_referrer_resend_id:
-            `mediref:${job.id}`,
-          emailed_by_initials:
-            actor.actorInitials,
-          emailed_by_name:
-            actor.actorFullName,
-          workflow_status: "running",
-          workflow_mediref_status: "pending",
-          workflow_completed_at: null,
-          workflow_error: null,
-          workflow_last_message:
-            "MediRef send queued. Waiting for the helper.",
-          updated_at: now,
-        })
-        .eq("id", draftId);
-
-    if (updateDraftError) {
-      console.error(
-        "[send-via-mediref] MediRef job was created, but report_drafts could not be updated:",
-        updateDraftError,
-      );
-    }
 
     await createReportAuditEvent({
       reportDraftId: draft.id,
@@ -827,7 +854,7 @@ export async function POST(req: Request) {
      * Once a helper job exists, the worker still needs these PDFs.
      */
     if (
-      !medirefJobCreated &&
+      !medirefJobCreated && !insertionAttempted &&
       stagedPaths.length > 0
     ) {
       const { error: cleanupError } =
@@ -846,13 +873,10 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to queue MediRef send.",
+        error: error instanceof EnqueueBusy ? error.message : enqueueFailure,
       },
       {
-        status: 500,
+        status: error instanceof EnqueueBusy ? 409 : 500,
       },
     );
   }

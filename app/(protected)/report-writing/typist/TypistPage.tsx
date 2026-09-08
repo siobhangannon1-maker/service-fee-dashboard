@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
+import { requestMedirefEnqueue } from "@/lib/mediref/enqueue-transition";
 import { runCompleteWorkflowIconStep } from "@/lib/report-writing/complete-workflow";
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
 import DraftImagePanel from "@/components/report-writing/DraftImagePanel";
@@ -2650,54 +2651,15 @@ export default function TypistPage() {
         });
       }
 
-      await updateWorkflowStatus(params.draft.id, {
-        medirefStatus: "running",
-        periodontalChartStatus: params.payload.attachPeriodontalChart
-          ? "running"
-          : "not_requested",
-        message: params.payload.attachPeriodontalChart
-          ? "Preparing periodontal chart and queuing MediRef send."
-          : "Queuing MediRef send.",
-      });
-
-      const response = await fetch("/api/report-writing/send-via-mediref", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          ...params.payload,
-        }),
-      });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok || !data.success) {
+      const data = await requestMedirefEnqueue(params.draft.id, params.payload);
+      // Enqueue/worker owns MediRef status; avoid resetting a fast worker's terminal result.
+      if (!data.reused) {
         await updateWorkflowStatus(params.draft.id, {
-          workflowStatus: "failed",
-          medirefStatus: "failed",
           periodontalChartStatus: params.payload.attachPeriodontalChart
-            ? data.periodontalChartAttached
-              ? "completed"
-              : "failed"
+            ? data.periodontalChartAttached ? "completed" : "skipped"
             : "not_requested",
-          message: "MediRef queue failed.",
-          workflowError: data.error || "Failed to queue MediRef send.",
         });
-
-        throw new Error(data.error || "Failed to queue MediRef send.");
       }
-
-      await updateWorkflowStatus(params.draft.id, {
-        workflowStatus: "running",
-        medirefStatus: "pending",
-        periodontalChartStatus: params.payload.attachPeriodontalChart
-          ? data.periodontalChartAttached
-            ? "completed"
-            : "skipped"
-          : "not_requested",
-        message: "MediRef send queued. Waiting for the helper.",
-      });
 
       console.log("Background workflow queued:", data);
 
