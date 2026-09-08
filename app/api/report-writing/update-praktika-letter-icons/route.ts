@@ -4,7 +4,8 @@ import {
   getCurrentUserPraktikaSessionMode,
   type PraktikaSessionMode,
 } from "@/lib/praktika/hybrid-session-store";
-import { praktikaHelperPost } from "@/lib/praktika/helper-job-client";
+import { createPraktikaHelperJob, waitForPraktikaHelperJob } from "@/lib/praktika/helper-jobs";
+import { performQueuedIconAction } from "@/lib/report-writing/complete-workflow";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -162,31 +163,33 @@ async function updatePraktikaAppointmentIcons({
   practiceId,
   appointmentId,
   iconIds,
+  draftId,
 }: {
+  draftId: string;
   mode: PraktikaSessionMode;
   practiceId: number;
   appointmentId: string;
   iconIds: number[];
 }) {
-  return await praktikaHelperPost<any>({
-    mode,
-    jobType: "update_praktika_letter_icons",
-    path: "/php/forms/db_commitFormData.php",
-    contentType: "json",
-    referer: "https://praktika.praktika.net.au/v2/scheduler",
-    priority: 80,
-    timeoutMs: 15_000,
-    body: [
-      {
-        request_id: buildRequestId(),
-        practice_id: practiceId,
-        appointment_id: Number(appointmentId),
-        appointment_icon1id: iconIds[0],
-        appointment_icon2id: iconIds[1],
-        appointment_icon3id: iconIds[2],
-        appointment_icon4id: iconIds[3],
+  return await performQueuedIconAction({
+    enqueue: () => createPraktikaHelperJob({
+      appUserId: mode.scope === "user" ? mode.appUserId : null,
+      jobType: "update_praktika_letter_icons",
+      priority: 80,
+      request: {
+        method: "POST",
+        path: "/php/forms/db_commitFormData.php",
+        contentType: "json",
+        referer: "https://praktika.praktika.net.au/v2/scheduler",
+        body: [{
+          request_id: buildRequestId(), practice_id: practiceId, appointment_id: Number(appointmentId),
+          appointment_icon1id: iconIds[0], appointment_icon2id: iconIds[1],
+          appointment_icon3id: iconIds[2], appointment_icon4id: iconIds[3],
+        }],
       },
-    ],
+    }),
+    markRunning: () => saveIconStatus(draftId, "running"),
+    wait: async (jobId) => (await waitForPraktikaHelperJob(jobId, { timeoutMs: 15000, intervalMs: 2000 })).response,
   });
 }
 
@@ -275,13 +278,36 @@ async function logIconAttempt(params: {
   });
 }
 
+async function saveIconStatus(draftId: string, status: "running" | "completed" | "skipped" | "failed") {
+  if (!draftId) return;
+  const values: Record<string, unknown> = {
+    workflow_icon_update_status: status, updated_at: new Date().toISOString(),
+    workflow_last_message: status === "running" ? "Appointment icon job queued. Waiting for the helper." :
+      status === "skipped" ? "No eligible appointment icon found. Continuing workflow." :
+      status === "completed" ? "Praktika icon updated. Continuing workflow." : "Appointment icon step failed.",
+  };
+  if (status === "failed") {
+    values.workflow_status = "failed";
+    values.workflow_error = "Appointment icon update could not be completed. Check the helper queue before retrying.";
+  }
+  let query = supabase.from("report_drafts").update(values).eq("id", draftId).eq("workflow_status", "running");
+  // A late icon request must not overwrite a timeout/failure recorded by the client.
+  if (status !== "failed") query = query.in("workflow_icon_update_status", ["pending", "running"]);
+  const { error } = await query;
+  if (error) throw new Error("Could not save appointment icon status.");
+}
+
 export async function POST(req: Request) {
+  let draftId = "";
+  async function respond(payload: { success: boolean; iconUpdated: boolean; skipped?: boolean; [key: string]: unknown }) {
+    await saveIconStatus(draftId, !payload.success ? "failed" : payload.skipped || !payload.iconUpdated ? "skipped" : "completed");
+    return NextResponse.json(payload, { status: payload.success ? 200 : 502 });
+  }
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
     const body = await req.json().catch(() => ({}));
-
     const queueId = clean(body.queueId);
-    const draftId = clean(body.draftId);
+    draftId = clean(body.draftId);
     const bodyPraktikaPatientId = clean(
       body.praktikaPatientId || body.praktika_patient_id || body.patientId,
     );
@@ -290,7 +316,7 @@ export async function POST(req: Request) {
     const practiceId = Number(practiceIdString);
 
     if (!Number.isFinite(practiceId) || practiceId <= 0) {
-      return NextResponse.json({
+      return await respond({
         success: true,
         iconUpdated: false,
         skipped: true,
@@ -325,7 +351,7 @@ export async function POST(req: Request) {
             newIconIds: oldIconIds,
           });
 
-          return NextResponse.json({
+          return await respond({
             success: true,
             iconUpdated: false,
             skipped: true,
@@ -340,6 +366,7 @@ export async function POST(req: Request) {
         }
 
         const response = await updatePraktikaAppointmentIcons({
+          draftId,
           mode,
           practiceId,
           appointmentId,
@@ -398,7 +425,7 @@ export async function POST(req: Request) {
           responsePreview,
         });
 
-        return NextResponse.json({
+        return await respond({
           success: true,
           iconUpdated: true,
           mode: "linked_queue_appointment",
@@ -427,7 +454,7 @@ export async function POST(req: Request) {
         reason: "No Praktika patient ID available for local icon index lookup.",
       });
 
-      return NextResponse.json({
+      return await respond({
         success: true,
         iconUpdated: false,
         skipped: true,
@@ -451,7 +478,7 @@ export async function POST(req: Request) {
           "No typist or clinician letter icon found for this patient. Nothing needed to be updated.",
       });
 
-      return NextResponse.json({
+      return await respond({
         success: true,
         iconUpdated: false,
         skipped: true,
@@ -484,7 +511,7 @@ export async function POST(req: Request) {
         newIconIds: oldIconIds,
       });
 
-      return NextResponse.json({
+      return await respond({
         success: true,
         iconUpdated: false,
         skipped: true,
@@ -500,6 +527,7 @@ export async function POST(req: Request) {
     }
 
     const response = await updatePraktikaAppointmentIcons({
+      draftId,
       mode,
       practiceId,
       appointmentId,
@@ -536,7 +564,7 @@ export async function POST(req: Request) {
       responsePreview,
     });
 
-    return NextResponse.json({
+    return await respond({
       success: true,
       iconUpdated: true,
       mode: "local_icon_index",
@@ -546,19 +574,12 @@ export async function POST(req: Request) {
       oldIconIds,
       newIconIds: updatedIconIds,
     });
-  } catch (error) {
-    console.error("Update Praktika letter icons failed:", error);
-
-    return NextResponse.json({
-      success: true,
+  } catch {
+    return await respond({
+      success: false,
       iconUpdated: false,
-      skipped: true,
-      error:
-        error instanceof Error
-          ? error.message
-          : "Failed to update Praktika letter icon.",
-      reason:
-        "Icon update failed, but the letter workflow should continue. The icon can be retried after the next Praktika queue sync.",
-    });
+      error: "Appointment icon update failed. Check the helper queue before retrying.",
+    }).catch(() => NextResponse.json({ success: false, iconUpdated: false,
+      error: "Appointment icon update failed and workflow status could not be saved." }, { status: 500 }));
   }
 }

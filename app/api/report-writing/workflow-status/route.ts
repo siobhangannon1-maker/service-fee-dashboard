@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
+import { claimWorkflowStart } from "@/lib/report-writing/complete-workflow";
+import { getAuditActor } from "@/lib/report-writing/audit";
+import { getUserStatus } from "@/lib/getUserStatus";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -119,6 +123,18 @@ export async function POST(req: Request) {
 
     if (typeof body.workflowError === "string") {
       updatePayload.workflow_error = clean(body.workflowError) || null;
+    }
+
+    if (body.startWorkflow === true) {
+      const actor = await getAuditActor();
+      if (!actor.actorUserId || !await getUserStatus(actor.actorUserId)) {
+        return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
+      }
+      if (workflowStatus !== "running") return NextResponse.json({ success: false, error: "Invalid workflow start." }, { status: 400 });
+      const { data, error } = await claimWorkflowStart(supabase, draftId, updatePayload);
+      if (error) return NextResponse.json({ success: false, error: "Could not start workflow." }, { status: 500 });
+      if (!data) return NextResponse.json({ success: false, error: "Workflow is already running or this report is not eligible." }, { status: 409 });
+      return NextResponse.json({ success: true, draft: data });
     }
 
     const { data, error } = await supabase

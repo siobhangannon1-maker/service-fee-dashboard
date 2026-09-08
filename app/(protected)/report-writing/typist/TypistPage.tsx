@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
+import { runCompleteWorkflowIconStep } from "@/lib/report-writing/complete-workflow";
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
 import DraftImagePanel from "@/components/report-writing/DraftImagePanel";
 import TypistProviderSmsBox from "@/components/report-writing/TypistProviderSmsBox";
@@ -1137,6 +1138,8 @@ function getInclusiveDateRangeDays(fromDate: string, toDate: string) {
 }
 
 export default function TypistPage() {
+  const workflowStartInFlight = useRef(false);
+  const [workflowStartPending, setWorkflowStartPending] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState("");
   const [reportTypes, setReportTypes] = useState<ReportTypeOption[]>([
@@ -2407,6 +2410,7 @@ export default function TypistPage() {
   async function updateWorkflowStatus(
     draftId: string,
     values: {
+      startWorkflow?: boolean;
       workflowStatus?: "running" | "completed" | "failed";
       praktikaUploadStatus?:
         | "not_requested"
@@ -2442,6 +2446,7 @@ export default function TypistPage() {
   ) {
     const response = await fetch("/api/report-writing/workflow-status", {
       method: "POST",
+      signal: AbortSignal.timeout(15000),
       headers: {
         "Content-Type": "application/json",
       },
@@ -2454,6 +2459,7 @@ export default function TypistPage() {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok || !data.success) {
+      if (values.startWorkflow) throw new Error(data.error || "Could not start workflow.");
       console.warn("Workflow status update failed:", data);
       return null;
     }
@@ -2462,7 +2468,11 @@ export default function TypistPage() {
   }
 
   async function sendViaMedirefFromModal() {
-    if (!selectedDraft) return;
+    if (!selectedDraft || workflowStartInFlight.current) return;
+    if (selectedDraft.workflow_status === "running") {
+      alert("This workflow is already running.");
+      return;
+    }
 
     if (medirefPatientEmail.trim() && hasInvalidEmail(medirefPatientEmail)) {
       alert("Please check the patient email address.");
@@ -2474,6 +2484,9 @@ export default function TypistPage() {
       return;
     }
 
+    workflowStartInFlight.current = true;
+    setWorkflowStartPending(true);
+    try {
     const draftSnapshot = selectedDraft;
     const providerIdSnapshot = selectedProviderId;
     const queueStatusSnapshot = queueStatusTab;
@@ -2517,6 +2530,7 @@ export default function TypistPage() {
     }
 
     const runningDraft = await updateWorkflowStatus(draftSnapshot.id, {
+      startWorkflow: true,
       workflowStatus: "running",
       praktikaUploadStatus: completeWorkflow ? "pending" : "not_requested",
       iconUpdateStatus: completeWorkflow ? "pending" : "not_requested",
@@ -2529,23 +2543,8 @@ export default function TypistPage() {
         : "MediRef send queued.",
     });
 
-    const nextDraft: Draft = runningDraft || {
-      ...draftSnapshot,
-      workflow_status: "running",
-      workflow_praktika_upload_status: completeWorkflow
-        ? "pending"
-        : "not_requested",
-      workflow_icon_update_status: completeWorkflow
-        ? "pending"
-        : "not_requested",
-      workflow_mediref_status: "pending",
-      workflow_periodontal_chart_status: attachPeriodontalChartSnapshot
-        ? "pending"
-        : "not_requested",
-      workflow_last_message: completeWorkflow
-        ? "Workflow queued. Completing in background."
-        : "MediRef send queued.",
-    };
+    if (!runningDraft) throw new Error("Workflow start could not be confirmed. No upload was queued.");
+    const nextDraft: Draft = runningDraft;
 
     setSelectedDraft(nextDraft);
     setDrafts((current) =>
@@ -2574,6 +2573,12 @@ export default function TypistPage() {
       providerId: providerIdSnapshot,
       queueStatus: queueStatusSnapshot,
     });
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not start workflow.");
+    } finally {
+      workflowStartInFlight.current = false;
+      setWorkflowStartPending(false);
+    }
   }
 
   async function runMedirefWorkflowInBackground(params: {
@@ -2639,65 +2644,10 @@ export default function TypistPage() {
         }
 
 
-        await updateWorkflowStatus(params.draft.id, {
-          praktikaUploadStatus: "completed",
-          iconUpdateStatus: "running",
-          message: "PDF uploaded to Praktika. Updating appointment icon.",
+        await runCompleteWorkflowIconStep(params.draft.id, {
+          queueId: params.activeQueueItemId,
+          praktikaPatientId: finalPraktikaPatientId,
         });
-
-        try {
-          const iconResponse = await fetch(
-            "/api/report-writing/update-praktika-letter-icons",
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                queueId: params.activeQueueItemId,
-                draftId: params.draft.id,
-                praktikaPatientId: finalPraktikaPatientId,
-              }),
-            },
-          );
-
-          const iconData = await iconResponse.json().catch(() => ({}));
-
-          if (!iconResponse.ok || !iconData.success) {
-            await updateWorkflowStatus(params.draft.id, {
-              iconUpdateStatus: "failed",
-              message:
-                "PDF uploaded to Praktika, but appointment icon update failed.",
-              workflowError:
-                iconData.error ||
-                "PDF uploaded to Praktika, but appointment icon update failed.",
-            });
-          } else if (iconData.iconUpdated === false || iconData.skipped) {
-            await updateWorkflowStatus(params.draft.id, {
-              iconUpdateStatus: "skipped",
-              message:
-                iconData.reason ||
-                "PDF uploaded to Praktika. No pending appointment icon needed updating.",
-            });
-          } else {
-            await updateWorkflowStatus(params.draft.id, {
-              iconUpdateStatus: "completed",
-              message: "Praktika icon updated. Queuing MediRef send.",
-            });
-          }
-        } catch (iconError) {
-          console.warn("Praktika icon update request failed:", iconError);
-
-          await updateWorkflowStatus(params.draft.id, {
-            iconUpdateStatus: "failed",
-            message:
-              "PDF uploaded to Praktika, but appointment icon update request failed.",
-            workflowError:
-              iconError instanceof Error
-                ? iconError.message
-                : "Appointment icon update request failed.",
-          });
-        }
       }
 
       await updateWorkflowStatus(params.draft.id, {
@@ -5711,7 +5661,7 @@ export default function TypistPage() {
                   <>
                     <button
                       onClick={() => openMedirefModal({ completeWorkflow: true })}
-                      disabled={
+                      disabled={workflowStartPending || selectedDraft?.workflow_status === "running" ||
                         loading ||
                         !selectedDraftCanComplete ||
                         !selectedDraftHasPraktikaPatient
@@ -6165,7 +6115,7 @@ export default function TypistPage() {
               <button
                 type="button"
                 onClick={sendViaMedirefFromModal}
-                disabled={loading || !medirefConfirmed}
+                disabled={loading || workflowStartPending || selectedDraft?.workflow_status === "running" || !medirefConfirmed}
                 className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
               >
                 {loading
