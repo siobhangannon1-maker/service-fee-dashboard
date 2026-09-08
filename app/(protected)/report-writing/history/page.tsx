@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { RetryMedirefButton } from "./RetryMedirefButton"
+import { MedirefToolsButton } from "./MedirefToolsButton"
 
 type Provider = {
   id: string
@@ -662,6 +663,7 @@ export default function ReportWritingHistoryPage() {
           </div>
 
           <div className="flex gap-3">
+            <MedirefToolsButton />
             <button
               type="button"
               onClick={() => {

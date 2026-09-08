@@ -128,6 +128,53 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         wasEmpty: el.hasAttribute("data-was-empty"), hasValue: "value" in el,
       }))), ["6", "1990", "9"].map((value) => ({ value, selected: "true", wasEmpty: false, hasValue: false })));
     });
+    for (const revert of [false, true]) {
+      await t.test(`custom segments commit on blur and ${revert ? "reject re-rendered reversion" : "persist after re-render"}`, async () => {
+        await page.setContent(`<div data-date-field-input>
+          <span role="spinbutton" contenteditable="true" data-segment="month" aria-valuenow="12">12</span>
+          <span role="spinbutton" contenteditable="true" data-segment="year" aria-valuenow="2001">2001</span>
+          <span role="spinbutton" contenteditable="true" data-segment="day" aria-valuenow="31">31</span>
+        </div><button>Next</button>`);
+        await page.locator('[data-date-field-input]').evaluate((group, shouldRevert) => {
+          for (const element of group.querySelectorAll('[data-segment]')) {
+            element.addEventListener("blur", () => {
+              const value = element.textContent || "";
+              setTimeout(() => element.setAttribute("aria-valuenow", String(Number(value))), 20);
+            });
+          }
+          group.addEventListener("focusout", () => {
+            const fields = Array.from(group.querySelectorAll('[data-segment]'));
+            if (fields.map((field) => field.textContent).join(",") !== "05,1958,09") return;
+            setTimeout(() => {
+              const replacement = group.cloneNode(true) as HTMLElement;
+              if (shouldRevert) {
+                const day = replacement.querySelector('[data-segment="day"]')!;
+                day.setAttribute("aria-valuenow", "31"); day.textContent = "31";
+              }
+              group.replaceWith(replacement);
+            }, 100);
+          });
+        }, revert);
+        const enterDate = () => enterPatientDob(page, "1958-05-09", "09/05/1958");
+        if (revert) await assert.rejects(enterDate, { message: "Unable to enter patient DOB in MediRef date control" });
+        else {
+          assert.equal(await enterDate(), true);
+          assert.equal(await page.locator('[data-segment="month"]').getAttribute("aria-valuenow"), "5");
+        }
+      });
+    }
+    await t.test("numeric aria-valuetext is supported but conflicting numeric state is rejected", async () => {
+      await page.setContent(`<div data-date-field-input>
+        <span role="spinbutton" contenteditable="true" data-segment="day" aria-valuetext="31">31</span>
+        <input aria-label="Month"><input aria-label="Year">
+      </div>`);
+      await page.locator('[data-segment="day"]').evaluate((field) => {
+        field.addEventListener("blur", () => field.setAttribute("aria-valuetext", field.textContent || ""));
+      });
+      assert.equal(await enter(), true);
+      await page.locator('[data-segment="day"]').evaluate((field) => field.setAttribute("aria-valuenow", "31"));
+      await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
+    });
     await t.test("plain contenteditable segments verify textContent without a value property", async () => {
       await page.setContent(`<div data-date-field-input>
         <span contenteditable="true" data-type="day">31</span>

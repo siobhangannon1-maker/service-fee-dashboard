@@ -32,7 +32,11 @@ async function segmentStructure(field: Locator, part: string) {
       dataType: dataType === null ? null : ["day", "month", "year"].includes(dataType) ? dataType : "other",
       dataSegment: dataSegment === null ? null : ["day", "month", "year"].includes(dataSegment) ? dataSegment : "other",
       hasValueProperty: "value" in element,
-      stateSource: native ? "value" : element.hasAttribute("aria-valuenow") ? "aria-valuenow" : "textContent",
+      hasAriaValueNow: element.hasAttribute("aria-valuenow"),
+      hasAriaValueText: element.hasAttribute("aria-valuetext"),
+      hasTextContent: Boolean(element.textContent?.trim()),
+      stateSource: native ? "value" : element.hasAttribute("aria-valuenow") ? "aria-valuenow" :
+        element.hasAttribute("aria-valuetext") ? "aria-valuetext" : "textContent",
       placeholder: element.getAttribute("data-placeholder") === "true",
       readOnly: element.getAttribute("aria-readonly") === "true" || (native && element.readOnly),
       native,
@@ -48,11 +52,41 @@ function numericSegment(value: string) {
   return /^\d+$/.test(clean) ? Number(clean) : null;
 }
 
+async function segmentMatches(field: Locator, expected: string) {
+  const sources = await field.evaluate((element) => {
+    if (element.getAttribute("data-placeholder") === "true") return [];
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) return [element.value];
+    return [element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent];
+  });
+  // Only whole numeric parts are meaningful here; never extract a number from descriptive text.
+  // Conflicting numeric sources must not pass merely because the editable DOM looks correct.
+  const numeric = sources.filter((value): value is string => value !== null).map(numericSegment)
+    .filter((value): value is number => value !== null);
+  return numeric.length > 0 && numeric.every((value) => value === Number(expected));
+}
+
 async function waitForSegment(field: Locator, expected: string) {
   const deadline = Date.now() + timeout;
   do {
-    if (numericSegment(await readValue(field)) === Number(expected)) return;
+    if (await segmentMatches(field, expected)) return;
     await field.page().waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error(failure);
+}
+
+async function waitForPersistedDate(group: Locator, values: Record<string, string>) {
+  const deadline = Date.now() + timeout;
+  let matchingSince: number | null = null;
+  do {
+    let matches = true;
+    for (const part of ["day", "month", "year"]) {
+      // Locators resolve the current DOM on every read, including replacement segments after blur.
+      const field = segment(group, part);
+      if (await field.count() !== 1 || !await field.isVisible() || !await segmentMatches(field, values[part])) matches = false;
+    }
+    matchingSince = matches ? matchingSince ?? Date.now() : null;
+    if (matchingSince !== null && Date.now() - matchingSince >= 250) return;
+    await group.page().waitForTimeout(50);
   } while (Date.now() < deadline);
   throw new Error(failure);
 }
@@ -184,6 +218,10 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           }
           operation = "write";
           await field.pressSequentially(values[part], { timeout });
+          if (structure.isContentEditable) {
+            operation = "commit";
+            await field.blur({ timeout });
+          }
         }
         operation = "verify";
         await waitForSegment(field, values[part]);
@@ -197,10 +235,8 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
         const active = document.activeElement;
         if (active instanceof HTMLElement && element.contains(active)) active.blur();
       });
-      for (const part of ["day", "month", "year"] as const) {
-        operation = `verify ${part}`;
-        await waitForSegment(fields[part]!, values[part]);
-      }
+      operation = "verify persistence";
+      await waitForPersistedDate(group, values);
       console.log("[MediRef] DOB final verification completed");
       return true;
     }
