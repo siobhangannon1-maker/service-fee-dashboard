@@ -11,7 +11,7 @@ const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPAB
 const bucket = process.env.MEDIREF_HELPER_UPLOAD_BUCKET || "report-assets";
 const store: RetryStore = {
   async draft(id) {
-    const { data, error } = await db.from("report_drafts").select("id,status,deleted_at,updated_at,patient_name,patient_dob,workflow_status,workflow_mediref_status,emailed_to_referrer_at").eq("id", id).maybeSingle();
+    const { data, error } = await db.from("report_drafts").select("id,status,deleted_at,updated_at,patient_name,patient_dob,workflow_status,workflow_mediref_status,emailed_to_referrer_at,periodontal_chart_attachment_name,periodontal_chart_attachment_error,periodontal_chart_attached_at,workflow_periodontal_chart_status").eq("id", id).maybeSingle();
     if (error) throw error;
     return data;
   },
@@ -38,6 +38,14 @@ const store: RetryStore = {
       .is("emailed_to_referrer_at", null).select("id");
     if (error) throw error;
     return data?.length === 1;
+  },
+  async markQueued(id) {
+    // A worker may already have completed; never overwrite its terminal state.
+    const { error } = await db.from("report_drafts").update({
+      workflow_mediref_status: "running", workflow_last_message: "MediRef helper queued. Preparing MediRef draft.",
+      updated_at: new Date().toISOString(),
+    }).eq("id", id).eq("workflow_mediref_status", "pending");
+    if (error) throw error;
   },
   enqueue: (request) => createSendMedirefLetterJob({ request, priority: 20 }),
 };

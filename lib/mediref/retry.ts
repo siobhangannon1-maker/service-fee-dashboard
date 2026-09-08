@@ -5,6 +5,10 @@ export type RetryDraft = {
   patient_name: string | null; patient_dob: string | null;
   workflow_status: string | null; workflow_mediref_status: string | null;
   emailed_to_referrer_at: string | null;
+  periodontal_chart_attachment_name?: string | null;
+  periodontal_chart_attachment_error?: string | null;
+  periodontal_chart_attached_at?: string | null;
+  workflow_periodontal_chart_status?: string | null;
 };
 export type RetryJob = { status: string; payload: unknown };
 export class RetryError extends Error {
@@ -42,6 +46,17 @@ export function buildRetryRequest(draft: RetryDraft, job: RetryJob | null, bucke
     }
     return { bucket, storagePath: a.storagePath, fileName: a.fileName, contentType: "application/pdf" as const };
   });
+  const chartName = draft.periodontal_chart_attachment_name;
+  const chartRequired = Boolean(chartName || draft.periodontal_chart_attachment_error ||
+    draft.periodontal_chart_attached_at ||
+    ["pending", "running", "completed", "failed"].includes(draft.workflow_periodontal_chart_status || ""));
+  if (new Set(attachments.map(a => a.storagePath)).size !== attachments.length) {
+    throw new RetryError("Unable to retry MediRef: duplicate stored PDF references.");
+  }
+  if (chartRequired && (!chartName || attachments.length < 2 ||
+    attachments.filter(a => a.fileName === chartName).length !== 1)) {
+    throw new RetryError("Unable to retry MediRef: the required periodontal chart is missing from the saved attachment package. Prepare the complete package before retrying.");
+  }
   return {
     action: "send_letter", draftId: draft.id,
     patient: { firstName: names[0], lastName: names.slice(1).join(" "), dob },
@@ -62,6 +77,7 @@ export interface RetryStore {
   attachmentExists(attachment: MedirefHelperRequest["attachments"][number]): Promise<boolean>;
   claim(draft: RetryDraft, update: ReturnType<typeof retryDraftUpdate>): Promise<boolean>;
   enqueue(request: MedirefHelperRequest): Promise<{ id: string }>;
+  markQueued(id: string): Promise<void>;
 }
 export async function prepareRetry(store: RetryStore, id: string, bucket: string) {
   const draft = await store.draft(id);
@@ -71,6 +87,11 @@ export async function prepareRetry(store: RetryStore, id: string, bucket: string
   for (const attachment of request.attachments) {
     if (!await store.attachmentExists(attachment)) throw new RetryError("Unable to retry MediRef: no stored PDF attachment was found.");
   }
+  console.log("[MediRef retry] attachment_set_resolved", {
+    attachmentCount: request.attachments.length,
+    includesPeriodontalChart: Boolean(draft.periodontal_chart_attachment_name &&
+      request.attachments.some(a => a.fileName === draft.periodontal_chart_attachment_name)),
+  });
   return { draft, request };
 }
 export async function queueRetry(store: RetryStore, id: string, bucket: string) {
@@ -82,6 +103,8 @@ export async function queueRetry(store: RetryStore, id: string, bucket: string) 
   try {
     if (await store.active(id)) throw new RetryError(activeRetryMessage);
     const job = await store.enqueue(request);
+    await store.markQueued(id);
+    console.log("[MediRef retry] helper_job_created", { attachmentCount: request.attachments.length });
     return { ok: true, message: "MediRef retry queued.", jobId: job.id };
   } catch {
     throw new RetryError("MediRef retry could not be confirmed. Check the queue before trying again; further retries are blocked to prevent duplicates.", 503);
