@@ -35,7 +35,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         const has = (phase: string) => logs.some(row => row[0] === `[MediRef] DOB ${phase}`);
         assert.ok(has("day_selection_started"));
         assert.equal(has("day_selectText_completed"), mode !== "selectText-timeout");
-        assert.equal(has("day_single_insert_started"), false);
+        assert.equal(has("day_single_insert_started"), mode === "lost-focus");
         if (mode !== "selectText-timeout") {
           const diagnostic = logs.find(row => row[0] === "[MediRef] DOB day_selection_inspection")![1] as Record<string, unknown>;
           assert.deepEqual(Object.keys(diagnostic).sort(), ["activeElementIsDay", "selectionExists", "rangeCount", "anchorInsideDay", "focusInsideDay", "rangeInsideDay", "nodeDetached", "nodeChanged", "insideDobGroup"].sort());
@@ -47,6 +47,82 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         }
         // Restore browser globals for the remaining fixtures.
         await page.evaluate(() => { delete (document as unknown as Record<string, unknown>).getSelection; });
+      });
+    }
+    for (const mode of ["accepted", "no-effect", "partial-range", "anchor-outside", "focus-outside", "replaced", "detached", "conflict", "commit-only", "already-correct", "other-part", "readonly"]) {
+      await t.test(`contained custom selection with unrelated active button: ${mode}`, async () => {
+        await page.setContent(`<div data-date-field-input>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="day" aria-valuenow="31">31</span>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="month" aria-valuenow="12">12</span>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="year" aria-valuenow="2001">2001</span>
+        </div><button>Outside</button>`);
+        await page.evaluate(mode => {
+          const day = document.querySelector<HTMLElement>('[data-segment="day"]')!;
+          const month = document.querySelector<HTMLElement>('[data-segment="month"]')!;
+          const year = document.querySelector<HTMLElement>('[data-segment="year"]')!;
+          const button = document.querySelector("button")!;
+          if (mode === "already-correct") { day.textContent = "09"; day.setAttribute("aria-valuenow", "9"); }
+          // With unrelated active focus, Chromium targets beforeinput at the button.
+          // Cancel the real event at document level; do not stub insertText.
+          if (mode === "no-effect") document.addEventListener("beforeinput", event => event.preventDefault(), { capture: true, once: true });
+          for (const field of [day, month]) field.addEventListener("focus", () => button.focus());
+          if (mode === "replaced" || mode === "detached") day.addEventListener("focus", () => {
+            if (mode === "replaced") day.replaceWith(day.cloneNode(true));
+            else day.remove();
+          }, { once: true });
+          for (const field of [day, month, year]) {
+            field.addEventListener("input", () => {
+              field.setAttribute("aria-valuenow", ["conflict", "commit-only"].includes(mode) && field === day ? "31" : String(Number(field.textContent)));
+              if (mode === "other-part" && field === day) month.textContent = "11";
+              // The fixture component advances to year after committing month.
+              // No fake insertion or activeElement override: Chromium performs the edit.
+              if (field === month) year.focus();
+            });
+          }
+          if (mode === "commit-only") day.addEventListener("blur", () => day.setAttribute("aria-valuenow", String(Number(day.textContent))));
+          const getSelection = document.getSelection.bind(document);
+          document.getSelection = () => {
+            const selection = getSelection()!;
+            if (mode === "readonly") day.setAttribute("aria-readonly", "true");
+            if (["partial-range", "anchor-outside", "focus-outside"].includes(mode)) {
+              const range = document.createRange();
+              if (mode === "partial-range") {
+                range.setStart(day.parentElement!, 0); range.setEnd(day.firstChild!, 2);
+                selection.removeAllRanges(); selection.addRange(range);
+              } else if (mode === "anchor-outside") selection.setBaseAndExtent(month.firstChild!, 1, day.firstChild!, 0);
+              else selection.setBaseAndExtent(day.firstChild!, 0, month.firstChild!, 1);
+            }
+            return selection;
+          };
+        }, mode);
+        const logs: unknown[][] = [];
+        const originalLog = console.log; const originalWarn = console.warn;
+        console.log = (...args: unknown[]) => { logs.push(args); };
+        console.warn = (...args: unknown[]) => { logs.push(args); };
+        try {
+          if (mode === "accepted") assert.equal(await enter(), true);
+          else await assert.rejects(enter, /Unable to enter patient DOB in MediRef date control/);
+        } finally {
+          console.log = originalLog; console.warn = originalWarn;
+          await page.evaluate(() => { delete (document as unknown as Record<string, unknown>).getSelection; });
+        }
+        const inserted = logs.some(row => row[0] === "[MediRef] DOB day_single_insert_started");
+        assert.equal(inserted, ["accepted", "no-effect", "conflict", "commit-only", "already-correct", "other-part"].includes(mode));
+        if (mode === "accepted") {
+          for (const part of ["day", "month"]) {
+            const selection = logs.find(row => row[0] === `[MediRef] DOB ${part}_selection_safety`)![1];
+            assert.deepEqual(selection, { activeElementIsPart: false, selectionInsidePart: true });
+            const state = logs.find(row => row[0] === `[MediRef] DOB ${part}_single_insert_completed`)![1] as Record<string, boolean>;
+            assert.equal(state.stateChangedAfterInsert, true);
+            assert.equal(state.expectedStateObserved, true);
+          }
+          assert.deepEqual(await page.locator('[data-segment]').allTextContents(), ["09", "06", "1990"]);
+        }
+        if (["no-effect", "conflict", "commit-only"].includes(mode)) {
+          const state = logs.find(row => row[0] === "[MediRef] DOB day_single_insert_completed")![1] as Record<string, boolean>;
+          assert.equal(state.expectedStateObserved, false);
+        }
+        assert.ok(!JSON.stringify(logs).includes("1990"));
       });
     }
     for (const type of ["text", "date"]) {
@@ -177,6 +253,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         </div><button>Next</button>`);
         await page.locator('[data-date-field-input]').evaluate((group, shouldRevert) => {
           for (const element of group.querySelectorAll('[data-segment]')) {
+            element.addEventListener("input", () => element.setAttribute("aria-valuenow", String(Number(element.textContent))));
             element.addEventListener("blur", () => {
               const value = element.textContent || "";
               setTimeout(() => element.setAttribute("aria-valuenow", String(Number(value))), 20);
@@ -209,7 +286,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         <input aria-label="Month"><input aria-label="Year">
       </div>`);
       await page.locator('[data-segment="day"]').evaluate((field) => {
-        field.addEventListener("blur", () => field.setAttribute("aria-valuetext", field.textContent || ""));
+        field.addEventListener("input", () => field.setAttribute("aria-valuetext", field.textContent || ""));
       });
       assert.equal(await enter(), true);
       await page.locator('[data-segment="day"]').evaluate((field) => field.setAttribute("aria-valuenow", "31"));
@@ -390,8 +467,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
               if (month.textContent?.length === 2) document.querySelector("button")!.focus();
             });
           }
-          // Publish month semantic state only when navigation commits it.
-          if (mode !== "auto") month.addEventListener("input", () => month.setAttribute("aria-valuenow", "12"));
+          // Provisional numeric state agrees after insertion; blur may still reject it.
           month.addEventListener("blur", () => month.setAttribute("aria-valuenow", mode === "bad-month-commit" ? "12" : String(Number(month.textContent))));
           month.addEventListener("keydown", event => {
             const key = event as KeyboardEvent;
@@ -458,7 +534,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
           }
         }
         if (mode === "focus-lost-after-write") {
-          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "month_after_insert_focus");
+          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "month_pre_navigation_focus");
           assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB year_navigation_tab_started"));
           const active = logs.find(entry => entry[0] === "[MediRef] DOB month_after_insert_focus")?.[1] as { tagName: string; matchesMonth: boolean };
           assert.equal(active.matchesMonth, false);

@@ -167,6 +167,11 @@ async function insertCustomPart(group: Locator, part: "day" | "month", expected:
   };
   selectionStep("selection_resolve_started");
   const original = await field.elementHandle({ timeout });
+  const parts = ["day", "month", "year"] as const;
+  const snapshot = () => Promise.all(parts.map(name => segment(group, name).evaluate(element => [
+    element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent,
+  ])));
+  let before: Array<Array<string | null>>;
   try {
     selectionStep("selection_focus_started");
     await field.focus({ timeout });
@@ -174,6 +179,10 @@ async function insertCustomPart(group: Locator, part: "day" | "month", expected:
     await field.selectText({ timeout });
     selectionStep("selectText_completed");
     selectionStep("selection_inspection_started");
+    const visible = await field.isVisible();
+    const editable = await field.isEditable();
+    const enabled = await field.isEnabled();
+    before = await snapshot();
     const inspection = await field.evaluate((element, { original, groupSelector }) => {
       const selection = document.getSelection();
       const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null;
@@ -185,7 +194,10 @@ async function insertCustomPart(group: Locator, part: "day" | "month", expected:
         focusInside: Boolean(selection?.focusNode && element.contains(selection.focusNode)), rangeInside,
         nodeDetached: !original?.isConnected, nodeChanged: original !== element,
         insideDobGroup: Boolean(element.closest(groupSelector)?.contains(document.activeElement)),
-        // Preserve the existing containment/full-selection predicate exactly.
+        editable: element instanceof HTMLElement && element.isContentEditable &&
+          element.getAttribute("role") === "spinbutton" && element.getAttribute("aria-readonly") !== "true" &&
+          element.getAttribute("aria-disabled") !== "true",
+        // Keep a single fully contained range; do not accept parent-boundary selections.
         fullSelection: Boolean(rangeInside && !selection!.isCollapsed && selection!.toString() === element.textContent),
       };
     }, { original, groupSelector });
@@ -198,35 +210,45 @@ async function insertCustomPart(group: Locator, part: "day" | "month", expected:
       [`rangeInside${name}`]: inspection.rangeInside,
       nodeDetached: inspection.nodeDetached, nodeChanged: inspection.nodeChanged, insideDobGroup: inspection.insideDobGroup,
     });
-    if (!inspection.active || !inspection.rangeInside || !inspection.fullSelection) {
-      step(`${part}_selection_${!inspection.active ? "focus" : !inspection.rangeInside ? "range" : "full_content"}_validation`);
+    const selectionInsidePart = inspection.selectionExists && inspection.rangeCount === 1 &&
+      inspection.anchorInside && inspection.focusInside && inspection.rangeInside && inspection.fullSelection;
+    console.log(`[MediRef] DOB ${part}_selection_safety`, { activeElementIsPart: inspection.active, selectionInsidePart });
+    if (!selectionInsidePart || inspection.nodeDetached || inspection.nodeChanged || !visible || !editable || !enabled || !inspection.editable) {
+      step(`${part}_selection_safety_validation`);
       throw new Error(failure);
     }
+    step(`${part}_single_insert_started`);
+    console.log(`[MediRef] DOB ${part}_single_insert_started`);
+    await field.page().keyboard.insertText(expected);
   } finally { await original?.dispose(); }
-  step(`${part}_single_insert_snapshot`);
-  const snapshot = () => field.evaluate(element => [element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent]);
-  const before = await snapshot();
-  step(`${part}_single_insert_started`);
-  console.log(`[MediRef] DOB ${part}_single_insert_started`);
-  await field.page().keyboard.insertText(expected);
   step(`${part}_single_insert_completed`);
-  const after = await snapshot();
-  console.log(`[MediRef] DOB ${part}_single_insert_completed`, {
-    numericStateChanged: after.some((value, index) => numericSegment(value ?? "") !== numericSegment(before[index] ?? "")),
-  });
+  // Re-resolve every segment after insertion. Never infer acceptance from browser focus.
+  const index = parts.indexOf(part);
+  const otherPartsUnchanged = (states: Array<Array<string | null>>) => states.every((sources, i) =>
+    i === index || sources.every((value, j) => value === before[i][j]));
+  let after = await snapshot();
+  if (!otherPartsUnchanged(after)) {
+    step(`${part}_other_segment_verification`);
+    throw new Error(failure);
+  }
+  step(`${part}_insert_state_verification`);
+  try {
+    // Read immediately, allowing only the existing bounded wait for asynchronously
+    // published semantic state. A conflict must resolve before commit/navigation.
+    await waitForSegment(segment(group, part), expected);
+  } finally {
+    after = await snapshot();
+    console.log(`[MediRef] DOB ${part}_single_insert_completed`, {
+      activeElementIsPart: await segment(group, part).evaluate(element => document.activeElement === element),
+      stateChangedAfterInsert: after[index].some((value, j) => numericSegment(value ?? "") !== numericSegment(before[index][j] ?? "")),
+      expectedStateObserved: await segmentMatches(segment(group, part), expected),
+    });
+  }
+  const stateChanged = after[index].some((value, j) => numericSegment(value ?? "") !== numericSegment(before[index][j] ?? ""));
+  if (!otherPartsUnchanged(after) || !stateChanged || !await segmentMatches(segment(group, part), expected)) throw new Error(failure);
   step(`${part}_after_insert_focus`);
   await logActiveSegment(group, `${part}_after_insert_focus`, true);
-  const focusIsSafe = async () => await field.evaluate(element => document.activeElement === element) ||
-    await segment(group, part === "day" ? "month" : "year").evaluate(element => document.activeElement === element);
-  if (!await focusIsSafe()) throw new Error(failure);
-  // Display acceptance is provisional; post-blur/Tab verification still requires
-  // committed aria/text agreement before the next part is entered.
-  const deadline = Date.now() + timeout;
-  while (numericSegment(await field.textContent() ?? "") !== Number(expected)) {
-    if (Date.now() >= deadline) throw new Error(failure);
-    await field.page().waitForTimeout(50);
-  }
-  if (!await focusIsSafe()) throw new Error(failure);
+
 }
 
 async function usableStandard(field: Locator) {
