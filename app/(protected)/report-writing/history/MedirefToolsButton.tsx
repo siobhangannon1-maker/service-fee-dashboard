@@ -31,6 +31,8 @@ export function MedirefToolsButton() {
     finally { setBusy(false); }
   }
   const connection = status?.session.status === "connected" ? "Connected" : status?.session.status === "error" ? "Error" :
+    status?.session.status === "ready" ? "Ready — authentication unverified" : status?.session.status === "sleeping" ? "Sleeping" :
+    ["refreshing", "refresh_requested"].includes(status?.session.status || "") ? "Reconnecting" :
     ["expired", "waiting_for_credentials", "waiting_for_mfa", "not_started"].includes(status?.session.status || "") ? "Needs reconnect" : "Unknown";
   return <>
     <button type="button" className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold" onClick={() => { dialog.current?.showModal(); void refresh(); }}>MediRef Tools</button>

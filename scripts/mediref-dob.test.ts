@@ -9,6 +9,46 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
   await page.route("**/*", (route) => route.abort());
   const enter = () => enterPatientDob(page, "1990-06-09", "09/06/1990");
   try {
+    for (const mode of ["missing-selection", "lost-focus", "replaced-node", "selectText-timeout"]) {
+      await t.test(`custom day selection diagnostics: ${mode}`, async () => {
+        await page.setContent(`<div data-date-field-input>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="day">31</span>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="month">12</span>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="year">2001</span>
+        </div><button>Next</button>`);
+        await page.evaluate(mode => {
+          const day = document.querySelector<HTMLElement>('[data-segment="day"]')!;
+          if (mode === "selectText-timeout") day.addEventListener("focus", () => { day.style.display = "none"; });
+          if (mode === "replaced-node") day.addEventListener("focus", () => day.replaceWith(day.cloneNode(true)), { once: true });
+          const getSelection = document.getSelection.bind(document);
+          document.getSelection = () => {
+            if (mode === "lost-focus") document.querySelector("button")!.focus();
+            return mode === "lost-focus" ? getSelection() : null;
+          };
+        }, mode);
+        const logs: unknown[][] = [];
+        const originalLog = console.log; const originalWarn = console.warn;
+        console.log = (...args: unknown[]) => { logs.push(args); };
+        console.warn = (...args: unknown[]) => { logs.push(args); };
+        try { await assert.rejects(enter, /Unable to enter patient DOB in MediRef date control/); }
+        finally { console.log = originalLog; console.warn = originalWarn; }
+        const has = (phase: string) => logs.some(row => row[0] === `[MediRef] DOB ${phase}`);
+        assert.ok(has("day_selection_started"));
+        assert.equal(has("day_selectText_completed"), mode !== "selectText-timeout");
+        assert.equal(has("day_single_insert_started"), false);
+        if (mode !== "selectText-timeout") {
+          const diagnostic = logs.find(row => row[0] === "[MediRef] DOB day_selection_inspection")![1] as Record<string, unknown>;
+          assert.deepEqual(Object.keys(diagnostic).sort(), ["activeElementIsDay", "selectionExists", "rangeCount", "anchorInsideDay", "focusInsideDay", "rangeInsideDay", "nodeDetached", "nodeChanged", "insideDobGroup"].sort());
+          assert.ok(Object.values(diagnostic).every(value => typeof value === "boolean" || typeof value === "number"));
+          assert.equal(diagnostic.nodeChanged, mode === "replaced-node");
+          assert.equal(diagnostic.nodeDetached, mode === "replaced-node");
+          if (mode === "lost-focus") assert.equal(diagnostic.activeElementIsDay, false);
+          else assert.equal(diagnostic.selectionExists, false);
+        }
+        // Restore browser globals for the remaining fixtures.
+        await page.evaluate(() => { delete (document as unknown as Record<string, unknown>).getSelection; });
+      });
+    }
     for (const type of ["text", "date"]) {
       await t.test(`legacy ${type} input`, async () => {
         await page.setContent(`<label for="birth">Date of birth</label><input id="birth" type="${type}">`);

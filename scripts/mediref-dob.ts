@@ -161,16 +161,49 @@ async function logActiveSegment(group: Locator, phase: string, navigation = fals
 
 async function insertCustomPart(group: Locator, part: "day" | "month", expected: string, step: (operation: string) => void) {
   const field = segment(group, part);
-  step(`${part}_single_insert_selection`);
-  await field.focus({ timeout });
-  await field.selectText({ timeout });
-  const scoped = await field.evaluate(element => {
-    const selection = document.getSelection();
-    const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null;
-    return document.activeElement === element && Boolean(range && element.contains(range.startContainer) &&
-      element.contains(range.endContainer) && !selection!.isCollapsed && selection!.toString() === element.textContent);
-  });
-  if (!scoped) throw new Error(failure);
+  const selectionStep = (operation: string) => {
+    step(`${part}_${operation}`);
+    console.log(`[MediRef] DOB ${part}_${operation}`);
+  };
+  selectionStep("selection_resolve_started");
+  const original = await field.elementHandle({ timeout });
+  try {
+    selectionStep("selection_focus_started");
+    await field.focus({ timeout });
+    selectionStep("selection_started");
+    await field.selectText({ timeout });
+    selectionStep("selectText_completed");
+    selectionStep("selection_inspection_started");
+    const inspection = await field.evaluate((element, { original, groupSelector }) => {
+      const selection = document.getSelection();
+      const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null;
+      const rangeInside = Boolean(range && element.contains(range.startContainer) && element.contains(range.endContainer));
+      const active = document.activeElement === element;
+      return {
+        active, selectionExists: Boolean(selection), rangeCount: selection?.rangeCount ?? 0,
+        anchorInside: Boolean(selection?.anchorNode && element.contains(selection.anchorNode)),
+        focusInside: Boolean(selection?.focusNode && element.contains(selection.focusNode)), rangeInside,
+        nodeDetached: !original?.isConnected, nodeChanged: original !== element,
+        insideDobGroup: Boolean(element.closest(groupSelector)?.contains(document.activeElement)),
+        // Preserve the existing containment/full-selection predicate exactly.
+        fullSelection: Boolean(rangeInside && !selection!.isCollapsed && selection!.toString() === element.textContent),
+      };
+    }, { original, groupSelector });
+    step(`${part}_selection_inspection`);
+    const name = part === "day" ? "Day" : "Month";
+    console.log(`[MediRef] DOB ${part}_selection_inspection`, {
+      [`activeElementIs${name}`]: inspection.active,
+      selectionExists: inspection.selectionExists, rangeCount: inspection.rangeCount,
+      [`anchorInside${name}`]: inspection.anchorInside, [`focusInside${name}`]: inspection.focusInside,
+      [`rangeInside${name}`]: inspection.rangeInside,
+      nodeDetached: inspection.nodeDetached, nodeChanged: inspection.nodeChanged, insideDobGroup: inspection.insideDobGroup,
+    });
+    if (!inspection.active || !inspection.rangeInside || !inspection.fullSelection) {
+      step(`${part}_selection_${!inspection.active ? "focus" : !inspection.rangeInside ? "range" : "full_content"}_validation`);
+      throw new Error(failure);
+    }
+  } finally { await original?.dispose(); }
+  step(`${part}_single_insert_snapshot`);
   const snapshot = () => field.evaluate(element => [element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent]);
   const before = await snapshot();
   step(`${part}_single_insert_started`);

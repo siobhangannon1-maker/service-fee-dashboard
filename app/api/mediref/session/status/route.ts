@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import {
   getCurrentUserMedirefSessionMode,
   getMedirefSession,
-  updateMedirefSession,
 } from "@/lib/mediref/hybrid-session-store";
+
+import { safeToolsStatus } from "@/lib/mediref/tools-status";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,23 +23,8 @@ export async function GET(request: Request) {
 
     const hasCookie = Boolean(session.cookie);
 
-    let status = session.status;
-    let message = session.message;
-    let currentUrl = session.current_url;
-
-    if (status === "refreshing" && hasCookie) {
-      status = "connected";
-      message = "MediRef cloud helper is connected. Helper jobs can be attempted.";
-      currentUrl = null;
-
-      await updateMedirefSession(mode, {
-        status: "connected",
-        message,
-        current_url: null,
-        last_used_at: new Date().toISOString(),
-        refresh_requested_at: null,
-      });
-    }
+    const { status, message } = safeToolsStatus(session, null).session;
+    const currentUrl = session.current_url;
 
     return NextResponse.json(
       {

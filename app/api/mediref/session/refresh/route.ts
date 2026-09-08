@@ -5,10 +5,10 @@ import {
   markMedirefRefreshRequested,
 } from "@/lib/mediref/hybrid-session-store";
 
+import { hasRecentMedirefAuthentication } from "@/lib/mediref/tools-status";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const RECENT_CONNECTION_WINDOW_MS = 5 * 60 * 1000;
 
 export async function POST(request: Request) {
   try {
@@ -23,15 +23,7 @@ export async function POST(request: Request) {
 
     const session = await getMedirefSession(mode);
 
-    const lastActivity =
-      session.last_used_at || session.refreshed_at || session.updated_at;
-
-    const recentlyConnected =
-      !force &&
-      session.status === "connected" &&
-      lastActivity &&
-      Date.now() - new Date(lastActivity).getTime() <
-        RECENT_CONNECTION_WINDOW_MS;
+    const recentlyConnected = !force && hasRecentMedirefAuthentication(session);
 
     if (recentlyConnected) {
       return NextResponse.json({
