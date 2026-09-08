@@ -175,7 +175,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
       await page.locator('[data-segment="day"]').evaluate((field) => field.setAttribute("aria-valuenow", "31"));
       await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
     });
-    for (const mode of ["success", "ignored", "revert", "unsafe-selection"] as const) {
+    for (const mode of ["success", "ignored", "revert", "unsafe-selection", "replace-on-click"] as const) {
       await t.test(`keyboard-only year replacement: ${mode}`, async () => {
         await page.setContent(`<p>Outside selection sentinel</p><div data-date-field-input>
           <span role="spinbutton" contenteditable="true" data-segment="day" aria-valuenow="31">31</span>
@@ -188,6 +188,9 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
             if (element.getAttribute("data-segment") !== "year") {
               element.addEventListener("input", () => element.setAttribute("aria-valuenow", String(Number(element.textContent))));
               continue;
+            }
+            if (mode === "replace-on-click") {
+              element.addEventListener("click", () => element.replaceWith(element.cloneNode(true)), { once: true });
             }
             let selectedByKeyboard = false;
             let digits = "";
@@ -241,7 +244,29 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
           assert.equal(await year.getAttribute("data-digit-keys"), "4");
           assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB final verification completed"));
         }
+        if (mode === "success") {
+          const phases = logs.map(entry => entry[0]);
+          let previous = -1;
+          for (const phase of ["year_resolve_started", "year_resolved", "year_click_started", "year_clicked",
+            "year_focus_verified", "year_select_all_started", "year_select_all_sent",
+            "year_selection_inspection_started", "year_selection_verified", "year_write_started", "year_write_completed",
+            "year_verify", "year_post_blur_verify"]) {
+            const index = phases.indexOf(`[MediRef] DOB ${phase}`);
+            assert.ok(index > previous, phase); previous = index;
+          }
+        }
+        if (mode === "replace-on-click") {
+          assert.deepEqual(logs.find(entry => entry[0] === "[MediRef] DOB year_focus")?.[1], {
+            activeElementIsYear: false, nodeChangedAfterClick: true,
+          });
+          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "year_focus_inspection");
+        }
         if (mode === "unsafe-selection") {
+          const selection = logs.find(entry => entry[0] === "[MediRef] DOB year_selection")?.[1] as Record<string, unknown>;
+          assert.equal(selection.rangeInsideYear, false);
+          assert.equal(selection.selectionExists, true);
+          assert.equal(selection.rangeCount, 1);
+          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "year_selection_inspection_started");
           assert.equal(await year.getAttribute("data-digit-keys"), null);
           assert.equal(await page.locator("p").textContent(), "Outside selection sentinel");
         }

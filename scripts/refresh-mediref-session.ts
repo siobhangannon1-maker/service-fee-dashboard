@@ -2,9 +2,11 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import dotenv from "dotenv";
-import { enterPatientDob } from "./mediref-dob";
+import { enterPatientDob, MEDIREF_DOB_IMPLEMENTATION_VERSION } from "./mediref-dob";
 import { chromium, type BrowserContext, type Locator, type Page } from "playwright";
 import { createClient } from "@supabase/supabase-js";
+
+console.log(`[MediRef] DOB implementation version: ${MEDIREF_DOB_IMPLEMENTATION_VERSION}`);
 
 dotenv.config({ path: ".env.local" });
 

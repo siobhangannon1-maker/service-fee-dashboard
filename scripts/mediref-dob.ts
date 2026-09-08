@@ -1,5 +1,7 @@
 import type { Locator, Page } from "playwright";
 
+export const MEDIREF_DOB_IMPLEMENTATION_VERSION = "dob-v2026-09-08-diagnostics-1";
+
 const failure = "Unable to enter patient DOB in MediRef date control";
 const groupSelector = '[data-testid="patient-dob-input"], [data-date-field-input], #dob[role="group"]';
 const timeout = 3000;
@@ -145,6 +147,7 @@ async function usableStandard(field: Locator) {
 
 // Kept separate from the worker so local browser tests cannot start jobs or load credentials.
 export async function enterPatientDob(page: Page, iso: string, human: string) {
+  console.log(`[MediRef] enterPatientDob implementation: ${MEDIREF_DOB_IMPLEMENTATION_VERSION}`);
   const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) throw new Error(failure);
   const values = { day: match[3], month: match[2], year: match[1] };
@@ -224,30 +227,64 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
         if (structure.disabled || structure.readOnly) throw new Error(failure);
         const customYear = part === "year" && structure.isContentEditable && structure.role === "spinbutton";
         if (customYear) {
+          const yearStep = (name: string) => {
+            operation = name;
+            console.log(`[MediRef] DOB ${name}`);
+          };
+          yearStep("year_resolve_started");
           const year = segment(group, "year");
-          let yearState = await observeYear(year, "before write");
-          operation = "year_focus";
-          await year.click({ timeout });
-          const focused = await year.evaluate((element) => document.activeElement === element);
-          console.log("[MediRef] DOB year_focus", { focused });
-          if (!focused) throw new Error(failure);
-          operation = "year_selection";
+          const originalYear = await year.elementHandle({ timeout });
+          if (!originalYear) throw new Error(failure);
+          let yearState: Array<string | null>;
+          try {
+            yearStep("year_resolved");
+            operation = "year_read_before_write";
+            yearState = await observeYear(year, "before write");
+            yearStep("year_click_started");
+            await year.click({ timeout });
+            yearStep("year_clicked");
+            operation = "year_focus_inspection";
+            const focus = await year.evaluate((element, original) => ({
+              activeElementIsYear: document.activeElement === element,
+              nodeChangedAfterClick: element !== original,
+            }), originalYear);
+            console.log("[MediRef] DOB year_focus", focus);
+            if (!focus.activeElementIsYear) throw new Error(failure);
+            yearStep("year_focus_verified");
+          } finally {
+            await originalYear.dispose();
+          }
+          yearStep("year_select_all_started");
           await year.press("ControlOrMeta+A", { timeout });
-          const scoped = await year.evaluate((element) => {
+          yearStep("year_select_all_sent");
+          yearStep("year_selection_inspection_started");
+          const selectionState = await year.evaluate((element) => {
             const selection = document.getSelection();
-            if (document.activeElement !== element || !selection || selection.rangeCount !== 1) return false;
-            const range = selection.getRangeAt(0);
-            return element.contains(range.startContainer) && element.contains(range.endContainer) &&
-              selection.toString() === element.textContent && !selection.isCollapsed;
+            const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null;
+            return {
+              selectionExists: Boolean(selection),
+              rangeCount: selection?.rangeCount ?? 0,
+              anchorInsideYear: Boolean(selection?.anchorNode && element.contains(selection.anchorNode)),
+              focusInsideYear: Boolean(selection?.focusNode && element.contains(selection.focusNode)),
+              rangeInsideYear: Boolean(range && element.contains(range.startContainer) && element.contains(range.endContainer)),
+              activeElementIsYear: document.activeElement === element,
+              coversYearText: Boolean(selection && selection.toString() === element.textContent),
+              collapsed: selection?.isCollapsed ?? true,
+            };
           });
-          console.log("[MediRef] DOB year_selection", { scoped });
+          console.log("[MediRef] DOB year_selection", selectionState);
+          const scoped = selectionState.activeElementIsYear && selectionState.selectionExists &&
+            selectionState.rangeCount === 1 && selectionState.rangeInsideYear &&
+            selectionState.coversYearText && !selectionState.collapsed;
           if (!scoped) {
             // Never type over a page-wide or unconfirmed selection.
             await year.evaluate(() => document.getSelection()?.removeAllRanges());
             throw new Error(failure);
           }
-          operation = "year_write";
+          yearStep("year_selection_verified");
+          yearStep("year_write_started");
           await year.pressSequentially(values.year, { timeout });
+          yearStep("year_write_completed");
           yearState = await observeYear(year, "year_write", yearState);
           operation = "year_verify";
           // Some controls publish semantic state only on blur. Record acceptance now,
