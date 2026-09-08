@@ -138,7 +138,7 @@ function segment(group: Locator, part: string) {
     .or(group.locator(`[data-type="${part}"], [data-segment="${part}"]`));
 }
 
-async function logActiveSegment(group: Locator, phase: string) {
+async function logActiveSegment(group: Locator, phase: string, navigation = false) {
   const matches: Record<string, boolean> = {};
   for (const part of ["day", "month", "year"]) {
     const field = segment(group, part);
@@ -156,7 +156,7 @@ async function logActiveSegment(group: Locator, phase: string) {
       insideDobGroup: Boolean(active && element.contains(active)),
     };
   });
-  console.log(`[MediRef] DOB ${phase}`, { ...structure, matches });
+  console.log(`[MediRef] DOB ${phase}`, { ...structure, ...(navigation ? { matchesDay: matches.day, matchesMonth: matches.month, matchesYear: matches.year } : { matches }) });
 }
 
 async function usableStandard(field: Locator) {
@@ -238,6 +238,7 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
       }
       if (!fields.day || !fields.month || !fields.year) continue;
 
+      const keyboardYear = await fields.year.evaluate(element => element instanceof HTMLElement && element.isContentEditable && element.getAttribute("role") === "spinbutton");
       let usedCustomYear = false;
       console.log("[MediRef] Entering DOB using segmented date control");
       for (const part of ["day", "month", "year"] as const) {
@@ -257,45 +258,12 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           };
           yearStep("year_resolve_started");
           const year = segment(group, "year");
-          const originalYear = await year.elementHandle({ timeout });
-          if (!originalYear) throw new Error(failure);
-          const previousActive = await page.evaluateHandle(() => document.activeElement);
-          let yearState: Array<string | null>;
-          try {
-            yearStep("year_resolved");
-            operation = "year_read_before_write";
-            yearState = await observeYear(year, "before write");
-            if (await year.evaluate(element => element === document.activeElement)) {
-              yearStep("year_existing_focus_reused");
-            } else {
-              yearStep("year_focus_attempt_started");
-              try {
-                await year.focus({ timeout });
-              } catch (error) {
-                const message = error instanceof Error ? error.message : "";
-                console.log("[MediRef] DOB year_focus_attempt_failed", {
-                  detached: await originalYear.evaluate(element => !element.isConnected).catch(() => null),
-                  timeout: error instanceof Error && error.name === "TimeoutError",
-                  pointerInterceptionReported: /intercepts pointer events/i.test(message),
-                });
-                throw new Error(failure);
-              }
-              yearStep("year_focus_attempt_completed");
-            }
-            operation = "year_focus_inspection";
-            const focus = await year.evaluate((element, { original, previous }) => ({
-              activeElementIsYear: document.activeElement === element,
-              nodeChangedAfterFocus: element !== original,
-              originalNodeDetached: !original.isConnected,
-              activeElementChanged: document.activeElement !== previous,
-            }), { original: originalYear, previous: previousActive });
-            console.log("[MediRef] DOB year_focus", focus);
-            if (!focus.activeElementIsYear) throw new Error(failure);
-            yearStep("year_active_element_verified");
-          } finally {
-            await previousActive.dispose();
-            await originalYear.dispose();
-          }
+          yearStep("year_resolved");
+          operation = "year_read_before_write";
+          let yearState = await observeYear(year, "before write");
+          operation = "year_navigation_inspection";
+          if (!await year.evaluate(element => document.activeElement === element)) throw new Error(failure);
+          yearStep("year_active_element_verified");
           yearStep("year_select_all_started");
           await page.keyboard.press("ControlOrMeta+A");
           yearStep("year_select_all_sent");
@@ -369,7 +337,31 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           if (part !== "year") await logActiveSegment(group, `after_${part}_entry`);
           if (structure.isContentEditable) {
             operation = "commit";
-            await field.blur({ timeout });
+            if (part === "month" && keyboardYear) {
+              operation = "month_pre_navigation_focus";
+              await logActiveSegment(group, operation, true);
+              if (!await segment(group, "year").evaluate(element => document.activeElement === element)) {
+                if (!await field.evaluate(element => document.activeElement === element)) throw new Error(failure);
+                operation = "year_navigation_tab_started";
+                console.log(`[MediRef] DOB ${operation}`);
+                await page.keyboard.press("Tab");
+                operation = "year_navigation_tab_completed";
+                console.log(`[MediRef] DOB ${operation}`);
+                operation = "year_navigation_after_tab";
+                await logActiveSegment(group, operation, true);
+              } else {
+                console.log("[MediRef] DOB year_existing_focus_reused");
+              }
+              // Tab commits month without losing our position in the composite.
+              // Resolve both locators again in case the component rendered new nodes.
+              if (!await segment(group, "year").evaluate(element => document.activeElement === element)) throw new Error(failure);
+              operation = "month_commit_verification";
+              await waitForSegment(segment(group, "month"), values.month);
+              if (!await segment(group, "year").evaluate(element => document.activeElement === element)) throw new Error(failure);
+              console.log("[MediRef] DOB year_navigation_verified");
+            } else {
+              await field.blur({ timeout });
+            }
           }
         }
         operation = "verify";

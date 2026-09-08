@@ -263,22 +263,15 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         if ((mode === "success" || mode === "blocked-click")) {
           const phases = logs.map(entry => entry[0]);
           let previous = -1;
-          for (const phase of ["year_resolve_started", "year_resolved", "year_focus_attempt_started", "year_focus_attempt_completed",
-            "year_active_element_verified", "year_select_all_started", "year_select_all_sent",
+          for (const phase of ["year_resolve_started", "year_resolved", "year_active_element_verified", "year_select_all_started", "year_select_all_sent",
             "year_selection_inspection_started", "year_selection_verified", "year_write_started", "year_write_completed",
             "year_verify", "year_post_blur_verify"]) {
             const index = phases.indexOf(`[MediRef] DOB ${phase}`);
             assert.ok(index > previous, phase); previous = index;
           }
         }
-        if (mode === "replace-on-focus") {
-          assert.deepEqual(logs.find(entry => entry[0] === "[MediRef] DOB year_focus")?.[1], {
-            activeElementIsYear: false, nodeChangedAfterFocus: true, originalNodeDetached: true, activeElementChanged: false,
-          });
-          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "year_focus_inspection");
-        }
-        if (mode === "unsafe-focus") {
-          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "year_focus_inspection");
+        if (mode === "replace-on-focus" || mode === "unsafe-focus") {
+          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "year_navigation_after_tab");
           assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB year_select_all_started"));
         }
         if (mode === "unsafe-selection") {
@@ -291,11 +284,12 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
           assert.equal(await page.locator("p").textContent(), "Outside selection sentinel");
         }
         assert.ok(!JSON.stringify(logs).includes("1958"));
-        assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB year_focus"));
+        assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB month_pre_navigation_focus"));
       });
     }
-    for (const advance of [true, false]) {
-      await t.test(`natural year focus with ineffective programmatic focus: ${advance}`, async () => {
+    for (const mode of ["auto", "tab", "wrong-target", "unavailable", "bad-month-commit"]) {
+      const advance = mode === "auto";
+      await t.test(`keyboard navigation with ineffective year focus: ${mode}`, async () => {
         await page.setContent(`<div data-date-field-input>
           <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="day" aria-valuenow="31">31</span>
           <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="month" aria-valuenow="12">12</span>
@@ -341,20 +335,41 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         await page.keyboard.press("Shift+Tab");
         assert.equal(await page.locator('[data-segment="month"]').evaluate(element => document.activeElement === element), true);
         await page.locator("button").focus();
+        if (mode === "tab") {
+          await year.evaluate(element => {
+            const overlay = document.createElement("div"); const bounds = element.getBoundingClientRect();
+            Object.assign(overlay.style, { position: "fixed", left: `${bounds.left}px`, top: `${bounds.top}px`,
+              width: `${bounds.width}px`, height: `${bounds.height}px`, zIndex: "9999" });
+            document.body.append(overlay);
+          });
+          await assert.rejects(year.click({ timeout: 300 }), /intercepts pointer events/);
+        }
+        await page.locator('[data-segment="month"]').evaluate((month, mode) => {
+          // Publish month semantic state only when navigation commits it.
+          if (mode !== "auto") month.addEventListener("input", () => month.setAttribute("aria-valuenow", "12"));
+          month.addEventListener("blur", () => month.setAttribute("aria-valuenow", mode === "bad-month-commit" ? "12" : String(Number(month.textContent))));
+          month.addEventListener("keydown", event => {
+            const key = event as KeyboardEvent;
+            if (key.key === "Tab" && (mode === "wrong-target" || mode === "unavailable")) {
+              key.preventDefault();
+              if (mode === "wrong-target") document.querySelector("button")!.focus();
+            }
+          });
+        }, mode);
         const attempts = await year.getAttribute("data-focus-attempts");
         const logs: unknown[][] = [];
         const originalLog = console.log; const originalWarn = console.warn;
         console.log = (...args: unknown[]) => { logs.push(args); };
         console.warn = (...args: unknown[]) => { logs.push(args); };
         try {
-          if (advance) assert.equal(await enter(), true);
+          if (mode === "auto" || mode === "tab") assert.equal(await enter(), true);
           else await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
         } finally { console.log = originalLog; console.warn = originalWarn; }
-        if (advance) {
+        if (mode === "auto" || mode === "tab") {
           assert.equal(await year.getAttribute("data-focus-attempts"), attempts);
           assert.equal(await year.getAttribute("aria-valuenow"), "1990");
-          assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB year_existing_focus_reused"));
-          for (const phase of ["after_month_entry", "after_month_verify", "before_year_entry"]) {
+          assert.ok(logs.some(entry => entry[0] === `[MediRef] DOB ${advance ? "year_existing_focus_reused" : "year_navigation_verified"}`));
+          for (const phase of ["after_month_verify", "before_year_entry"]) {
             const info = logs.find(entry => entry[0] === `[MediRef] DOB ${phase}`)?.[1] as { matches: { year: boolean } };
             assert.equal(info.matches.year, true);
           }
