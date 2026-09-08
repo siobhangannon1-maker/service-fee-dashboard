@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { RetryMedirefButton } from "./RetryMedirefButton"
 import { MedirefToolsButton } from "./MedirefToolsButton"
 
@@ -423,6 +423,8 @@ export default function ReportWritingHistoryPage() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [drafts, setDrafts] = useState<Draft[]>([])
   const [loading, setLoading] = useState(false)
+  const historyRequestInFlight = useRef(false)
+  const [historyRefreshError, setHistoryRefreshError] = useState("")
   const [loadingPdfId, setLoadingPdfId] = useState<string | null>(null)
 
   const [providerId, setProviderId] = useState("all")
@@ -558,17 +560,16 @@ export default function ReportWritingHistoryPage() {
     }
   }, [drafts])
 
-  async function loadProvidersAndDrafts() {
-    setLoading(true)
+  async function loadProvidersAndDrafts(silent = false) {
+    if (historyRequestInFlight.current) return
+    historyRequestInFlight.current = true
+    if (!silent) setLoading(true)
 
     try {
-      const providerResponse = await fetch("/api/report-writing/get-providers")
+      const providerResponse = await fetch("/api/report-writing/get-providers", { cache: "no-store" })
       const providerData = await providerResponse.json()
 
-      if (!providerData.success) {
-        alert(providerData.error || "Failed to load providers.")
-        return
-      }
+      if (!providerResponse.ok || !providerData.success) throw new Error("History unavailable")
 
       const loadedProviders: Provider[] = providerData.providers || []
       setProviders(loadedProviders)
@@ -577,13 +578,10 @@ export default function ReportWritingHistoryPage() {
         loadedProviders.map((provider) => [provider.id, provider.name])
       )
 
-      const draftsResponse = await fetch("/api/report-writing/get-drafts")
+      const draftsResponse = await fetch("/api/report-writing/get-drafts", { cache: "no-store" })
       const draftsData = await draftsResponse.json()
 
-      if (!draftsData.success) {
-        alert(draftsData.error || "Failed to load letters.")
-        return
-      }
+      if (!draftsResponse.ok || !draftsData.success) throw new Error("History unavailable")
 
       const loadedDrafts: Draft[] = (draftsData.drafts || []).map(
         (draft: Draft) => ({
@@ -596,13 +594,28 @@ export default function ReportWritingHistoryPage() {
       )
 
       setDrafts(loadedDrafts)
+      setHistoryRefreshError("")
+    } catch {
+      setHistoryRefreshError("Unable to refresh History. Displayed workflow statuses may be out of date.")
     } finally {
-      setLoading(false)
+      historyRequestInFlight.current = false
+      if (!silent) setLoading(false)
     }
   }
 
   useEffect(() => {
-    loadProvidersAndDrafts()
+    void loadProvidersAndDrafts()
+    const refreshVisibleHistory = () => {
+      if (!document.hidden) void loadProvidersAndDrafts(true)
+    }
+    const timer = window.setInterval(refreshVisibleHistory, 10000)
+    window.addEventListener("focus", refreshVisibleHistory)
+    document.addEventListener("visibilitychange", refreshVisibleHistory)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener("focus", refreshVisibleHistory)
+      document.removeEventListener("visibilitychange", refreshVisibleHistory)
+    }
   }, [])
 
   async function downloadPdf(draft: Draft) {
@@ -676,7 +689,7 @@ export default function ReportWritingHistoryPage() {
 
             <button
               type="button"
-              onClick={loadProvidersAndDrafts}
+              onClick={() => void loadProvidersAndDrafts()}
               disabled={loading}
               className="rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
             >
@@ -849,6 +862,7 @@ export default function ReportWritingHistoryPage() {
           </div>
         </section>
 
+        {historyRefreshError && <p role="status" className="text-sm text-amber-700">{historyRefreshError}</p>}
         <section className="rounded-2xl border bg-white">
           <div className="border-b p-4">
             <h2 className="text-lg font-bold">Letters</h2>

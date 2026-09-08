@@ -175,6 +175,65 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
       await page.locator('[data-segment="day"]').evaluate((field) => field.setAttribute("aria-valuenow", "31"));
       await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
     });
+    for (const revert of [false, true]) {
+      await t.test(`four-digit year uses one insertion after per-digit clamping${revert ? " but rejects blur reversion" : " and persists"}`, async () => {
+        await page.setContent(`<div data-date-field-input>
+          <span role="spinbutton" contenteditable="true" data-segment="day" aria-valuenow="31">31</span>
+          <span role="spinbutton" contenteditable="true" data-segment="month" aria-valuenow="12">12</span>
+          <span role="spinbutton" contenteditable="true" data-segment="year" aria-valuenow="2001" aria-valuetext="2001">2001</span>
+        </div><button>Next</button>`);
+        await page.locator('[data-segment]').evaluateAll((elements, shouldRevert) => {
+          for (const element of elements) {
+            const year = element.getAttribute("data-segment") === "year";
+            element.addEventListener("keydown", (event) => {
+              if (/^\d$/.test((event as KeyboardEvent).key)) {
+                element.setAttribute("data-digit-keys", String(Number(element.getAttribute("data-digit-keys") || "0") + 1));
+              }
+            });
+            if (!year) {
+              element.addEventListener("input", () => element.setAttribute("aria-valuenow", String(Number(element.textContent))));
+              continue;
+            }
+            element.addEventListener("beforeinput", (event) => {
+              event.preventDefault();
+              const data = (event as InputEvent).data || "";
+              if (!/^\d+$/.test(data)) return;
+              // Simulate a controlled year that clamps partial input instead of buffering four keys.
+              const value = Math.max(1900, Number(data));
+              if (data.length === 4) element.setAttribute("data-full-insertion", "true");
+              setTimeout(() => {
+                element.setAttribute("aria-valuenow", String(value));
+                element.setAttribute("aria-valuetext", String(value));
+                element.textContent = String(value);
+              }, 20);
+            });
+            element.addEventListener("blur", () => {
+              if (shouldRevert && element.hasAttribute("data-full-insertion")) {
+                setTimeout(() => {
+                  element.setAttribute("aria-valuenow", "2001");
+                  element.setAttribute("aria-valuetext", "2001");
+                  element.textContent = "2001";
+                }, 100);
+              }
+            });
+          }
+        }, revert);
+        const logs: unknown[][] = [];
+        const originalLog = console.log;
+        console.log = (...args: unknown[]) => { logs.push(args); };
+        try {
+          const enterYear = () => enterPatientDob(page, "1958-05-09", "09/05/1958");
+          if (revert) await assert.rejects(enterYear, { message: "Unable to enter patient DOB in MediRef date control" });
+          else assert.equal(await enterYear(), true);
+        } finally { console.log = originalLog; }
+        const year = page.locator('[data-segment="year"]');
+        assert.equal(await year.getAttribute("data-full-insertion"), "true");
+        assert.deepEqual(await page.locator('[data-segment]').evaluateAll((elements) => elements.map((el) => el.getAttribute("data-digit-keys"))), ["2", "2", "4"]);
+        if (!revert) assert.equal(await year.getAttribute("aria-valuenow"), "1958");
+        assert.ok(!JSON.stringify(logs).includes("1958"));
+        assert.ok(logs.some((entry) => entry[0] === "[MediRef] DOB year state"));
+      });
+    }
     await t.test("plain contenteditable segments verify textContent without a value property", async () => {
       await page.setContent(`<div data-date-field-input>
         <span contenteditable="true" data-type="day">31</span>

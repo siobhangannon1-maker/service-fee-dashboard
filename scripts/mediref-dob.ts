@@ -65,6 +65,21 @@ async function segmentMatches(field: Locator, expected: string) {
   return numeric.length > 0 && numeric.every((value) => value === Number(expected));
 }
 
+async function observeYear(field: Locator, phase: string, previous?: Array<string | null>) {
+  const state = await field.evaluate((element) => [
+    element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent,
+  ]);
+  const numeric = state.filter((value): value is string => value !== null).map(numericSegment)
+    .filter((value): value is number => value !== null);
+  console.log("[MediRef] DOB year state", {
+    part: "year", phase,
+    hasAriaValueNow: state[0] !== null, hasAriaValueText: state[1] !== null, hasTextContent: Boolean(state[2]?.trim()),
+    numericSourcesAgree: numeric.length > 1 ? new Set(numeric).size === 1 : null,
+    changedSincePrevious: previous ? state.some((value, index) => value !== previous[index]) : null,
+  });
+  return state;
+}
+
 async function waitForSegment(field: Locator, expected: string) {
   const deadline = Date.now() + timeout;
   do {
@@ -201,6 +216,8 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
         const structure = await segmentStructure(field, part);
         console.log("[MediRef] DOB segment structure", structure);
         if (structure.disabled || structure.readOnly) throw new Error(failure);
+        const customYear = part === "year" && structure.isContentEditable && structure.role === "spinbutton";
+        let yearState = customYear ? await observeYear(field, "before write") : undefined;
         operation = "write";
         if (structure.native) {
           await field.fill(values[part], { timeout });
@@ -218,13 +235,37 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           }
           operation = "write";
           await field.pressSequentially(values[part], { timeout });
+          if (customYear) yearState = await observeYear(field, "after sequential write", yearState);
           if (structure.isContentEditable) {
             operation = "commit";
             await field.blur({ timeout });
+            if (customYear) yearState = await observeYear(field, "after blur", yearState);
           }
         }
         operation = "verify";
-        await waitForSegment(field, values[part]);
+        try {
+          await waitForSegment(field, values[part]);
+        } catch {
+          if (!customYear) throw new Error(failure);
+          yearState = await observeYear(field, "sequential verification failed", yearState);
+          // Some year segments normalise each keystroke. Retry only the year as one browser insertion.
+          operation = "select full year";
+          await field.focus({ timeout });
+          await field.selectText({ timeout });
+          if (!await field.evaluate((element) => element === document.activeElement)) throw new Error(failure);
+          operation = "write full year";
+          await page.keyboard.insertText(values.year);
+          yearState = await observeYear(field, "after full year insertion", yearState);
+          operation = "commit full year";
+          await field.blur({ timeout });
+          yearState = await observeYear(field, "after full year blur", yearState);
+          operation = "verify full year";
+          try {
+            await waitForSegment(field, values.year);
+          } finally {
+            await observeYear(field, "full year verification finished", yearState);
+          }
+        }
         console.log("[MediRef] DOB segment verified", { part });
       }
       stage = "final verification";
