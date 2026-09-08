@@ -378,6 +378,87 @@ async function commitAndVerifyYear(group: Locator, values: Record<string, string
   }
 }
 
+// Keyboard-only path for the three custom segments observed in the manual trace.
+async function enterKeyboardDate(group: Locator, values: Record<string, string>, step: (operation: string) => void) {
+  const parts = ["day", "month", "year"] as const;
+  const state = async (part: string) => {
+    const field = segment(group, part);
+    if (await field.count() !== 1 || !await field.isVisible() || !await field.isEnabled() || !await field.isEditable()) throw new Error(failure);
+    return field.evaluate(element => ({
+      aria: element.getAttribute("aria-valuenow"),
+      text: element.textContent ?? "",
+      active: element === document.activeElement,
+      valid: element.isConnected && element instanceof HTMLElement && element.isContentEditable &&
+        element.getAttribute("role") === "spinbutton" && element.getAttribute("aria-readonly") !== "true" &&
+        element.getAttribute("aria-invalid") !== "true" && element.getAttribute("data-placeholder") !== "true",
+    }));
+  };
+  const matches = async (part: string) => {
+    const current = await state(part);
+    return current.valid && numericSegment(current.aria ?? "") === Number(values[part]) &&
+      numericSegment(current.text) === Number(values[part]) &&
+      (part !== "year" || current.text.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").trim().length === 4);
+  };
+  const activePart = async () => {
+    for (const part of parts) if ((await state(part)).active) return part;
+    const button = group.locator('button, [role="button"]');
+    for (const candidate of await button.all()) {
+      if (await candidate.isVisible() && await candidate.isEnabled() && await candidate.evaluate(e => e === document.activeElement)) return "button";
+    }
+    return "other";
+  };
+  const groupValid = () => group.evaluate(e => e.getAttribute("aria-invalid") !== "true" &&
+    (!e.hasAttribute("data-invalid") || e.getAttribute("data-invalid") === "false"));
+  step("keyboard_day_start");
+  // One normal semantic click establishes the starting position; later focus belongs to the component.
+  await segment(group, "day").click({ timeout });
+  if (await activePart() !== "day") throw new Error(failure);
+  for (const [index, part] of parts.entries()) {
+    const next = parts[index + 1] ?? "button";
+    step(`keyboard_${part}_entry`);
+    if (await activePart() !== part) throw new Error(failure);
+    const baseline = (await state(part)).aria;
+    let ariaChanged = false;
+    let advanced = false;
+    for (const digit of values[part]) {
+      if (await activePart() !== part) throw new Error(failure);
+      const before = (await state(part)).aria;
+      await group.page().keyboard.press(digit);
+      // Re-resolve after every key, including React replacement nodes. Never refocus
+      // the old locator or send remaining digits into a naturally advanced segment.
+      const deadline = Date.now() + timeout;
+      let current = await state(part);
+      let active = await activePart();
+      while (current.aria === before && active === part && Date.now() < deadline) {
+        await group.page().waitForTimeout(50);
+        current = await state(part); active = await activePart();
+      }
+      ariaChanged ||= current.aria !== baseline;
+      console.log("[MediRef] DOB keyboard segment observation", {
+        part, activePart: active, ariaStateChanged: current.aria !== before,
+        expectedStateObserved: await matches(part), advancedToExpectedSegment: active === next,
+      });
+      for (const previous of parts.slice(0, index)) if (!await matches(previous)) throw new Error(failure);
+      if (active !== part) {
+        if (active !== next || !await matches(part) || !await groupValid()) throw new Error(failure);
+        advanced = true;
+        break;
+      }
+    }
+    step(`keyboard_${part}_progression`);
+    if (!advanced || !await matches(part) || (part === "year" && !ariaChanged)) throw new Error(failure);
+    console.log("[MediRef] DOB keyboard segment verified", { part });
+  }
+  step("keyboard_final_persistence");
+  await waitForPersistedDate(group, values, async () => {
+    if (!await groupValid() || await activePart() !== "button") return false;
+    for (const part of parts) if (!await matches(part)) return false;
+    return true;
+  });
+  console.log("[MediRef] DOB final verification completed");
+  return true;
+}
+
 async function usableStandard(field: Locator) {
   return await field.evaluate((element, selector) =>
     (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
@@ -387,6 +468,16 @@ async function usableStandard(field: Locator) {
 
 // Kept separate from the worker so local browser tests cannot start jobs or load credentials.
 export async function enterPatientDob(page: Page, iso: string, human: string) {
+  return enterDate(page, iso, human, true);
+}
+
+// Retained only as a regression reference for the superseded atomic fixtures.
+// The live worker imports enterPatientDob and cannot fall back here on failure.
+export async function enterPatientDobAtomicReference(page: Page, iso: string, human: string) {
+  return enterDate(page, iso, human, false);
+}
+
+async function enterDate(page: Page, iso: string, human: string, useKeyboard: boolean) {
   console.log(`[MediRef] enterPatientDob implementation: ${MEDIREF_DOB_IMPLEMENTATION_VERSION}`);
   const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) throw new Error(failure);
@@ -457,6 +548,16 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
       }
       if (!fields.day || !fields.month || !fields.year) continue;
 
+      if (useKeyboard) {
+        const custom = await Promise.all([fields.day, fields.month, fields.year].map(field =>
+          field.evaluate(e => e instanceof HTMLElement && !(e instanceof HTMLInputElement) &&
+            !(e instanceof HTMLTextAreaElement) && e.isContentEditable && e.getAttribute("role") === "spinbutton")));
+        if (custom.every(Boolean)) {
+          stage = "custom keyboard entry";
+          console.log("[MediRef] Entering DOB using keyboard-driven segmented date control");
+          return await enterKeyboardDate(group, values, value => { operation = value; });
+        }
+      }
       const keyboardYear = await fields.year.evaluate(element => element instanceof HTMLElement && element.isContentEditable && element.getAttribute("role") === "spinbutton");
       let usedCustomYear = false;
       console.log("[MediRef] Entering DOB using segmented date control");

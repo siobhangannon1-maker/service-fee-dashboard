@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
-import { enterPatientDob, classifyYearState } from "./mediref-dob";
+import { enterPatientDob as enterLivePatientDob, enterPatientDobAtomicReference as enterPatientDob, classifyYearState } from "./mediref-dob";
 
 for (const [name, sources, allExpected, anyExpected, agree] of [
   ["correct four digits", ["1990", "1990", "1990"], true, true, true],
@@ -44,7 +44,7 @@ test("year bounds are diagnostic only and unknown bounds remain null", () => {
   assert.equal(classifyYearState({ ...state, placeholder: true }, "1990").allExpected, false);
 });
 
-test("MediRef DOB entry in an isolated local browser", async (t) => {
+test("Atomic reference and legacy fixtures in an isolated local browser", async (t) => {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   await page.route("**/*", (route) => route.abort());
@@ -754,4 +754,77 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
   } finally {
     await browser.close();
   }
+});
+
+test("production custom keyboard path follows the captured manual event sequence", async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (const mode of ["accepted", "early-advance", "text-only", "wrong-destination", "no-aria-update", "year-no-commit", "blur-revert"]) {
+      await t.test(mode, async () => {
+        const page = await browser.newPage();
+        await page.route("**/*", route => route.abort());
+        await page.setContent(`<div data-date-field-input role="group">
+          ${["day", "month", "year"].map(part => `<span tabindex="0" contenteditable="true" role="spinbutton" data-segment="${part}" aria-valuenow="${part === "year" ? "2001" : "1"}">${part === "year" ? "2001" : "01"}</span>`).join("")}
+          <button type="button">Calendar</button></div><button id="outside">Outside</button>`);
+        await page.evaluate(mode => {
+          const parts = ["day", "month", "year"];
+          const group = document.querySelector('[data-date-field-input]')!;
+          const events: Array<{ type: string; part: string }> = [];
+          (window as unknown as { fixtureEvents: typeof events }).fixtureEvents = events;
+          for (const type of ["keydown", "keyup", "blur", "focusout", "input", "change"]) {
+            group.addEventListener(type, event => {
+              const target = event.target as HTMLElement;
+              events.push({ type, part: target.dataset.segment ?? "button" });
+            }, true);
+          }
+          for (const [index, part] of parts.entries()) {
+            const field = group.querySelector<HTMLElement>(`[data-segment="${part}"]`)!;
+            let digits = "";
+            field.addEventListener("focus", () => { digits = ""; });
+            field.addEventListener("keydown", event => {
+              event.preventDefault();
+              if (!/^\d$/.test(event.key)) return;
+              digits += event.key;
+              const expected = part === "day" ? "09" : part === "month" ? "06" : "1990";
+              const visible = mode === "early-advance" && part !== "year" ? expected : digits;
+              field.textContent = visible;
+              if (mode !== "text-only" && !(mode === "no-aria-update" && part === "year")) {
+                field.setAttribute("aria-valuenow", String(Number(visible)));
+                field.setAttribute("aria-valuetext", "descriptive state");
+              }
+              if (visible.length === expected.length && !(mode === "year-no-commit" && part === "year")) {
+                const next = mode === "wrong-destination" ? document.querySelector<HTMLElement>("#outside")! :
+                  index < 2 ? group.querySelector<HTMLElement>(`[data-segment="${parts[index + 1]}"]`)! : group.querySelector("button")!;
+                next.focus();
+              }
+            });
+            if (part === "year" && mode === "blur-revert") field.addEventListener("blur", () => {
+              field.setAttribute("aria-valuenow", "2001"); field.textContent = "2001";
+            });
+          }
+        }, mode);
+        try {
+          if (["accepted", "early-advance"].includes(mode)) assert.equal(await enterLivePatientDob(page, "1990-06-09", "09/06/1990"), true);
+          else await assert.rejects(() => enterLivePatientDob(page, "1990-06-09", "09/06/1990"), /Unable to enter patient DOB in MediRef date control/);
+          const events = await page.evaluate(() => (window as unknown as { fixtureEvents: Array<{ type: string; part: string }> }).fixtureEvents);
+          assert.ok(!events.some(event => ["input", "change"].includes(event.type)));
+          if (mode === "accepted") {
+            assert.deepEqual(events.filter(event => event.type === "keydown").map(event => event.part), ["day", "day", "month", "month", "year", "year", "year", "year"]);
+            assert.deepEqual(events.filter(event => event.type === "keyup").map(event => event.part), ["day", "month", "month", "year", "year", "year", "year", "button"]);
+            assert.deepEqual(events.filter(event => event.type === "focusout").map(event => event.part), ["day", "month", "year"]);
+          }
+        } finally { await page.close(); }
+      });
+    }
+    for (const type of ["text", "date"]) {
+      await t.test(`production legacy ${type} unchanged`, async () => {
+        const page = await browser.newPage();
+        await page.route("**/*", route => route.abort());
+        await page.setContent(`<input aria-label="DOB" type="${type}"><button>Next</button>`);
+        assert.equal(await enterLivePatientDob(page, "1990-06-09", "09/06/1990"), true);
+        assert.equal(await page.locator("input").inputValue(), type === "date" ? "1990-06-09" : "09/06/1990");
+        await page.close();
+      });
+    }
+  } finally { await browser.close(); }
 });
