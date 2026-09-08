@@ -75,12 +75,59 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
             });
           });
         });
+        if (tag === "span") {
+          await page.locator('[role="spinbutton"]').evaluateAll((elements) => {
+            for (const element of elements) {
+              element.setAttribute("data-placeholder", "true");
+              element.setAttribute("aria-valuenow", "1");
+              element.textContent = element.getAttribute("data-type");
+            }
+          });
+        }
         assert.equal(await enter(), true);
         assert.deepEqual(await page.locator('[role="spinbutton"]').evaluateAll((els) =>
           els.map((el) => ({ value: el.getAttribute("aria-valuenow"), hasValue: "value" in el }))),
           [{ value: "6", hasValue: false }, { value: "1990", hasValue: false }, { value: "9", hasValue: false }]);
       });
     }
+    await t.test("live-style spans replace a wrong DOB without permitting an empty state", async () => {
+      await page.setContent(`<div role="group" data-testid="patient-dob-input">
+        <span role="spinbutton" contenteditable="true" data-segment="month" aria-valuenow="12">12</span>
+        <span role="spinbutton" contenteditable="true" data-segment="year" aria-valuenow="2001">2001</span>
+        <span role="spinbutton" contenteditable="true" data-segment="day" aria-valuenow="31">31</span>
+      </div><button>Next</button>`);
+      await page.locator('[data-segment]').evaluateAll((elements) => {
+        for (const element of elements) {
+          element.addEventListener("beforeinput", (event) => {
+            const input = event as InputEvent;
+            if (input.inputType.startsWith("delete")) {
+              event.preventDefault();
+              return;
+            }
+            // Record that the first digit replaces the whole segment via an actual selection.
+            if (!element.hasAttribute("data-selection-checked")) {
+              element.setAttribute("data-selection-checked", String(
+                document.getSelection()?.toString() === element.textContent));
+            }
+          });
+          element.addEventListener("input", () => {
+            // Browser editing supplies the text; the component publishes its numeric state later.
+            const value = element.textContent || "";
+            if (!value) element.setAttribute("data-was-empty", "true");
+            setTimeout(() => element.setAttribute("aria-valuenow", String(Number(value))), 20);
+          });
+        }
+      });
+      const day = page.locator('[data-segment="day"]');
+      await day.selectText();
+      await day.press("Backspace");
+      assert.equal(await day.textContent(), "31");
+      assert.equal(await enter(), true);
+      assert.deepEqual(await page.locator('[data-segment]').evaluateAll((elements) => elements.map((el) => ({
+        value: el.getAttribute("aria-valuenow"), selected: el.getAttribute("data-selection-checked"),
+        wasEmpty: el.hasAttribute("data-was-empty"), hasValue: "value" in el,
+      }))), ["6", "1990", "9"].map((value) => ({ value, selected: "true", wasEmpty: false, hasValue: false })));
+    });
     await t.test("plain contenteditable segments verify textContent without a value property", async () => {
       await page.setContent(`<div data-date-field-input>
         <span contenteditable="true" data-type="day">31</span>

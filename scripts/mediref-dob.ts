@@ -172,10 +172,17 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           await field.fill(values[part], { timeout });
         } else {
           if (!structure.isContentEditable && structure.role !== "spinbutton") throw new Error(failure);
-          operation = "clear";
-          await replaceCustomSegment(field, structure.isContentEditable);
+          if (structure.isContentEditable) {
+            operation = "select";
+            await field.focus({ timeout });
+            // Replace selected content through keyboard events; custom segments may never be blank.
+            await field.selectText({ timeout });
+          } else {
+            operation = "clear";
+            await replaceCustomSegment(field, false);
+            await field.focus({ timeout });
+          }
           operation = "write";
-          await field.focus({ timeout });
           await field.pressSequentially(values[part], { timeout });
         }
         operation = "verify";
