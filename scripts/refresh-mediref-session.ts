@@ -1,3 +1,4 @@
+import { prepareRemoteDraftWithBrowser } from "../lib/mediref/remote-draft-adapter";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
@@ -28,6 +29,8 @@ const KEEP_ALIVE_INTERVAL_MS = Number(
 const LOGIN_TIMEOUT_MS = Number(
   process.env.MEDIREF_LOGIN_TIMEOUT_MS || 10 * 60 * 1000,
 );
+
+const USE_REMOTE_DRAFT_API = process.env.MEDIREF_USE_REMOTE_DRAFT_API?.toLowerCase() === "true";
 
 const AUTO_SEND =
   String(process.env.MEDIREF_AUTO_SEND ?? "false").toLowerCase() === "true";
@@ -2011,6 +2014,10 @@ async function sendMedirefLetterWithBrowser(
   localPdfPaths: string[],
 ) {
   const request = job.payload;
+
+  if (USE_REMOTE_DRAFT_API) {
+    return prepareRemoteDraftWithBrowser(page, request.patient || {}, localPdfPaths, () => openComposePage(page));
+  }
 
   await openComposePage(page);
 
