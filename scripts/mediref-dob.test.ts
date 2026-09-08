@@ -49,7 +49,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
             element.addEventListener("focus", () => { digits = ""; });
             element.addEventListener("keydown", (event) => {
               const key = event as KeyboardEvent;
-              if ((key.ctrlKey || key.metaKey) && key.key === "a") key.preventDefault();
+              if (part !== "year" && (key.ctrlKey || key.metaKey) && key.key === "a") key.preventDefault();
               if (key.key === "Backspace") {
                 key.preventDefault();
                 if (element.getAttribute("data-placeholder") === "true") {
@@ -175,63 +175,78 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
       await page.locator('[data-segment="day"]').evaluate((field) => field.setAttribute("aria-valuenow", "31"));
       await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
     });
-    for (const revert of [false, true]) {
-      await t.test(`four-digit year uses one insertion after per-digit clamping${revert ? " but rejects blur reversion" : " and persists"}`, async () => {
-        await page.setContent(`<div data-date-field-input>
+    for (const mode of ["success", "ignored", "revert", "unsafe-selection"] as const) {
+      await t.test(`keyboard-only year replacement: ${mode}`, async () => {
+        await page.setContent(`<p>Outside selection sentinel</p><div data-date-field-input>
           <span role="spinbutton" contenteditable="true" data-segment="day" aria-valuenow="31">31</span>
           <span role="spinbutton" contenteditable="true" data-segment="month" aria-valuenow="12">12</span>
-          <span role="spinbutton" contenteditable="true" data-segment="year" aria-valuenow="2001" aria-valuetext="2001">2001</span>
+          <span role="spinbutton" contenteditable="true" data-segment="year" tabindex="0" inputmode="numeric"
+            aria-valuemin="1" aria-valuemax="9999" aria-valuenow="2001" aria-valuetext="2001">2001</span>
         </div><button>Next</button>`);
-        await page.locator('[data-segment]').evaluateAll((elements, shouldRevert) => {
+        await page.locator('[data-segment]').evaluateAll((elements, mode) => {
           for (const element of elements) {
-            const year = element.getAttribute("data-segment") === "year";
-            element.addEventListener("keydown", (event) => {
-              if (/^\d$/.test((event as KeyboardEvent).key)) {
-                element.setAttribute("data-digit-keys", String(Number(element.getAttribute("data-digit-keys") || "0") + 1));
-              }
-            });
-            if (!year) {
+            if (element.getAttribute("data-segment") !== "year") {
               element.addEventListener("input", () => element.setAttribute("aria-valuenow", String(Number(element.textContent))));
               continue;
             }
-            element.addEventListener("beforeinput", (event) => {
-              event.preventDefault();
-              const data = (event as InputEvent).data || "";
-              if (!/^\d+$/.test(data)) return;
-              // Simulate a controlled year that clamps partial input instead of buffering four keys.
-              const value = Math.max(1900, Number(data));
-              if (data.length === 4) element.setAttribute("data-full-insertion", "true");
-              setTimeout(() => {
-                element.setAttribute("aria-valuenow", String(value));
-                element.setAttribute("aria-valuetext", String(value));
-                element.textContent = String(value);
-              }, 20);
+            let selectedByKeyboard = false;
+            let digits = "";
+            element.addEventListener("beforeinput", event => event.preventDefault());
+            element.addEventListener("keydown", event => {
+              const key = event as KeyboardEvent;
+              if ((key.ctrlKey || key.metaKey) && key.key.toLowerCase() === "a") {
+                selectedByKeyboard = true;
+                if (mode === "unsafe-selection") {
+                  key.preventDefault();
+                  const range = document.createRange(); range.selectNodeContents(document.body);
+                  document.getSelection()?.removeAllRanges(); document.getSelection()?.addRange(range);
+                }
+              }
+              if (!/^\d$/.test(key.key)) return;
+              key.preventDefault();
+              if (!selectedByKeyboard || mode === "ignored") return;
+              if (!digits && document.getSelection()?.toString() !== element.textContent) return;
+              digits += key.key;
+              element.setAttribute("data-digit-keys", String(digits.length));
+              element.textContent = digits;
+              element.setAttribute("aria-valuenow", String(Number(digits)));
+              element.setAttribute("aria-valuetext", String(Number(digits)));
             });
             element.addEventListener("blur", () => {
-              if (shouldRevert && element.hasAttribute("data-full-insertion")) {
-                setTimeout(() => {
-                  element.setAttribute("aria-valuenow", "2001");
-                  element.setAttribute("aria-valuetext", "2001");
-                  element.textContent = "2001";
-                }, 100);
-              }
+              if (mode === "revert") setTimeout(() => {
+                element.textContent = "2001";
+                element.setAttribute("aria-valuenow", "2001");
+                element.setAttribute("aria-valuetext", "2001");
+              }, 100);
             });
           }
-        }, revert);
+        }, mode);
+        const year = page.locator('[data-segment="year"]');
+        // DOM selection alone does not activate this fixture's keyboard replacement mode.
+        await year.selectText();
+        await year.pressSequentially("1958");
+        assert.equal(await year.getAttribute("aria-valuenow"), "2001");
         const logs: unknown[][] = [];
         const originalLog = console.log;
+        const originalWarn = console.warn;
         console.log = (...args: unknown[]) => { logs.push(args); };
+        console.warn = (...args: unknown[]) => { logs.push(args); };
         try {
           const enterYear = () => enterPatientDob(page, "1958-05-09", "09/05/1958");
-          if (revert) await assert.rejects(enterYear, { message: "Unable to enter patient DOB in MediRef date control" });
-          else assert.equal(await enterYear(), true);
-        } finally { console.log = originalLog; }
-        const year = page.locator('[data-segment="year"]');
-        assert.equal(await year.getAttribute("data-full-insertion"), "true");
-        assert.deepEqual(await page.locator('[data-segment]').evaluateAll((elements) => elements.map((el) => el.getAttribute("data-digit-keys"))), ["2", "2", "4"]);
-        if (!revert) assert.equal(await year.getAttribute("aria-valuenow"), "1958");
+          if (mode === "success") assert.equal(await enterYear(), true);
+          else await assert.rejects(enterYear, { message: "Unable to enter patient DOB in MediRef date control" });
+        } finally { console.log = originalLog; console.warn = originalWarn; }
+        if (mode === "success") {
+          assert.equal(await year.getAttribute("aria-valuenow"), "1958");
+          assert.equal(await year.getAttribute("data-digit-keys"), "4");
+          assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB final verification completed"));
+        }
+        if (mode === "unsafe-selection") {
+          assert.equal(await year.getAttribute("data-digit-keys"), null);
+          assert.equal(await page.locator("p").textContent(), "Outside selection sentinel");
+        }
         assert.ok(!JSON.stringify(logs).includes("1958"));
-        assert.ok(logs.some((entry) => entry[0] === "[MediRef] DOB year state"));
+        assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB year_focus"));
       });
     }
     await t.test("plain contenteditable segments verify textContent without a value property", async () => {
