@@ -607,7 +607,7 @@ export async function POST(req: Request) {
           letterAttachment,
         ];
 
-        let periodontalChartAttached = false;
+        let periodontalChartStaged = false;
 
         let periodontalChartAttachmentName:
           | string
@@ -661,15 +661,15 @@ export async function POST(req: Request) {
 
                 attachments.push(perioAttachment);
 
-                periodontalChartAttached = true;
+                periodontalChartStaged = true;
 
                 periodontalChartAttachmentName =
                   perioChart.fileName;
 
                 await updatePerioStatus({
                   draftId,
-                  attachedAt:
-                    new Date().toISOString(),
+                  // Staging is not confirmation that MediRef saved the chart.
+                  attachedAt: null,
                   attachmentName:
                     perioChart.fileName,
                   error: null,
@@ -739,7 +739,7 @@ export async function POST(req: Request) {
               patientName || "patient"
             }.`,
         } satisfies MedirefHelperRequest,
-          letterAttachment, usedExistingStagedPdf, attachments, periodontalChartAttached,
+          letterAttachment, usedExistingStagedPdf, attachments, periodontalChartStaged,
           periodontalChartAttachmentName, periodontalChartError };
       },
       insert: async (request) => {
@@ -780,7 +780,7 @@ export async function POST(req: Request) {
     });
     const { job } = transition;
     if (!transition.prepared) return NextResponse.json({ success: true, jobId: job.id, reused: true, message: "MediRef helper job is already queued or processing." });
-    const { letterAttachment, usedExistingStagedPdf, attachments, periodontalChartAttached,
+    const { letterAttachment, usedExistingStagedPdf, attachments, periodontalChartStaged,
       periodontalChartAttachmentName, periodontalChartError } = transition.prepared;
     const updateStartedAt = nowMs();
 
@@ -805,7 +805,8 @@ export async function POST(req: Request) {
             storagePath: item.storagePath,
           }),
         ),
-        periodontalChartAttached,
+        periodontalChartAttached: false,
+        periodontalChartStaged,
         periodontalChartAttachmentName,
         periodontalChartError,
         actorInitials:
@@ -827,7 +828,8 @@ export async function POST(req: Request) {
       jobId: job.id,
       recipient:
         referrerEmail || finalReferrerName,
-      periodontalChartAttached,
+      periodontalChartAttached: false,
+      periodontalChartStaged,
       periodontalChartAttachmentName,
       periodontalChartError,
       usedExistingStagedPdf,

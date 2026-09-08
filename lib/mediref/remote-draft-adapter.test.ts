@@ -30,17 +30,17 @@ function fixture(failure?: string) {
       const params = url.endsWith("getUploadParameters");
       if (failure === "patientSave" && calls.length === 1) return response({}, 500);
       if (failure === "parameters" && params) return response({}, 200);
-      if (failure === "finalSave" && calls.length === 4) return response({ success: false });
+      if (failure === "finalSave" && !params && calls.length > 1) return response({ success: false });
       return response(params ? signed : { success: true });
     },
     put: async (url: string, options: { data: Buffer; headers: Record<string, string> }) => {
       assert.equal(options.headers["content-type"], "application/pdf");
       assert.ok(Buffer.isBuffer(options.data));
       calls.push({ method: "PUT", url, data: null });
-      return response(null, failure === "put" ? 403 : 204);
+      return response(null, failure === "put" || (failure === "secondPut" && calls.length === 5) ? 403 : 204);
     },
   } as unknown as Pick<APIRequestContext, "post" | "put">;
-  const run = (overrides = {}) => prepareRemoteDraft({ request, s3uuid: draftId, patient, filename: "private-fixture.pdf", pdf: Buffer.from("%PDF-1.4\nfixture"), log: (...args) => logs.push(args), ...overrides });
+  const run = (overrides = {}) => prepareRemoteDraft({ request, s3uuid: draftId, patient, attachments: [{ filename: "private-fixture.pdf", pdf: Buffer.from("%PDF-1.4\nfixture") }], log: (...args) => logs.push(args), ...overrides });
   return { calls, logs, run };
 }
 
@@ -109,7 +109,7 @@ for (const [failure, count, stage] of [["patientSave", 1, "patient_save_started"
 }
 
 test("invalid patient or PDF fails before any requests", async () => {
-  const f = fixture(); await assert.rejects(f.run({ pdf: Buffer.from("not-pdf") }));
+  const f = fixture(); await assert.rejects(f.run({ attachments: [{ filename: "fixture.pdf", pdf: Buffer.from("not-pdf") }] }));
   await assert.rejects(f.run({ patient: { ...patient, dob: "bad" } })); assert.equal(f.calls.length, 0);
   assert.deepEqual(buildFileMetadata("key", "id", "fixture.pdf", 42, 100).progress, { uploadStarted: 100, bytesUploaded: 42, bytesTotal: 42, percentage: 100 });
 });
@@ -136,7 +136,7 @@ test("worker flag selects endpoint exclusively, preserves DOM rollback and never
 });
 
 
-test("browser adapter reuses authenticated context and preserves Compose identity; missing ID or multiple PDFs fails safely", async () => {
+test("browser adapter reuses authenticated context and preserves Compose identity; missing ID or empty attachments fails safely", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "mediref-remote-test-"));
   try {
     const filename = path.join(directory, "fixture.pdf"); await writeFile(filename, "%PDF-1.4 fixture");
@@ -151,12 +151,89 @@ test("browser adapter reuses authenticated context and preserves Compose identit
       context: () => ({ request }),
     } as unknown as Page;
     const open = async () => { opens++; };
-    await assert.rejects(prepareRemoteDraftWithBrowser(page, patient, [filename, filename], open));
+    await assert.rejects(prepareRemoteDraftWithBrowser(page, patient, [], open));
     assert.equal(opens, 0); assert.equal(posts, 0);
     const result = await prepareRemoteDraftWithBrowser(page, patient, [filename], open);
     assert.equal(result.prepared, true); assert.equal(opens, 1); assert.equal(posts, 3);
+    const chart = path.join(directory, "chart.pdf"); await writeFile(chart, "%PDF-1.4 chart");
+    const multiple = await prepareRemoteDraftWithBrowser(page, patient, [filename, chart], open);
+    assert.equal(multiple.attachmentCount, 2); assert.equal(opens, 2); assert.equal(posts, 7);
     page.waitForURL = async () => { throw new Error("PRIVATE URL timeout"); };
     await assert.rejects(prepareRemoteDraftWithBrowser(page, patient, [filename], open), (error: unknown) => error instanceof MedirefRemoteDraftError && error.stage === "compose_identity" && !error.message.includes("PRIVATE"));
-    assert.equal(posts, 3);
+    assert.equal(posts, 7);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+
+const twoPdfs = [
+  { filename: "private-report.pdf", pdf: Buffer.from("%PDF-1.4 report") },
+  { filename: "private-chart.pdf", pdf: Buffer.from("%PDF-1.4 chart") },
+];
+test("two PDFs share the patient draft, have independent keys, and save together exactly once", async () => {
+  const f = fixture(); const result = await f.run({ attachments: twoPdfs });
+  assert.equal(result.attachmentCount, 2); assert.equal(result.remoteDraftSaved, true);
+  assert.deepEqual(f.calls.map(call => call.method), ["POST", "POST", "PUT", "POST", "PUT", "POST"]);
+  const saves = f.calls.filter(call => call.url.endsWith("saveDraft"));
+  assert.equal(saves.length, 2);
+  const first = saves[0].data as ReturnType<typeof buildPatientDraft>;
+  const last = saves[1].data as ReturnType<typeof buildPatientDraft>;
+  assert.equal(first.s3uuid, draftId); assert.equal(last.s3uuid, draftId);
+  assert.deepEqual(last.patient, first.patient); assert.deepEqual(last.recipients, []);
+  const files = last.files as Array<Record<string, unknown>>;
+  assert.equal(files.length, 2);
+  const keys = files.map(file => String(file.key));
+  assert.ok(keys[0] !== keys[1]);
+  assert.equal(new Set(files.map(file => file.uploadId)).size, 2);
+  files.forEach((file, index) => {
+    assert.match(String(file.uploadId), /^[a-z0-9]{24}$/);
+    assert.equal(String(file.key).split("/")[1], draftId);
+    assert.equal(file.originalName, twoPdfs[index].filename);
+    assert.equal(file.size, twoPdfs[index].pdf.length);
+  });
+  const logs = JSON.stringify(f.logs);
+  for (const secret of [patient.firstName, patient.lastName, patient.dob, signed, ...twoPdfs.map(f => f.filename), ...keys, ...files.map(file => String(file.uploadId))]) assert.ok(!logs.includes(secret));
+  const uploads = f.logs.filter(log => (log as unknown[])[0] === "[MediRef remote] pdf_upload_completed") as Array<[string, { attachmentIndex: number; attachmentCount: number }]>;
+  assert.deepEqual(uploads.map(([, fields]) => fields.attachmentIndex), [0, 1]);
+  assert.ok(uploads.every(([, fields]) => fields.attachmentCount === 2));
+});
+
+for (const failure of ["secondPut", "finalSave"]) test(`two PDFs: ${failure} cannot report preparation or partial attachment success`, async () => {
+  const f = fixture(failure);
+  await assert.rejects(f.run({ attachments: twoPdfs }), (error: unknown) => error instanceof MedirefRemoteDraftError && error.stage === (failure === "secondPut" ? "pdf_upload_started" : "attachment_save_started"));
+  assert.equal(f.calls.length, failure === "secondPut" ? 5 : 6);
+  assert.equal(f.calls.filter(call => call.url.endsWith("saveDraft")).length, failure === "secondPut" ? 1 : 2);
+  assert.ok(!JSON.stringify(f.logs).includes("draft_prepared"));
+  if (failure === "secondPut") assert.deepEqual(f.logs.at(-1), ["[MediRef remote] attachment_upload_failed", { attachmentIndex: 1, attachmentCount: 2 }]);
+});
+
+test("invalid second PDF is rejected before saving patient or uploading the first", async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ attachments: [twoPdfs[0], { filename: "bad.pdf", pdf: Buffer.from("not PDF") }] }));
+  assert.equal(f.calls.length, 0);
+  assert.deepEqual(f.logs.at(-1), ["[MediRef remote] attachment_upload_failed", { attachmentIndex: 1, attachmentCount: 2 }]);
+});
+
+test("periodontal completion requires saved remote files matching the staged chart name", async () => {
+  const source = await readFile(new URL("../../scripts/refresh-mediref-session.ts", import.meta.url), "utf8");
+  const body = source.slice(source.indexOf("async function updateDraftAfterMedirefSuccess("), source.indexOf("async function updateDraftAfterMedirefFailure("));
+  const compiled = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  for (const [remoteSaved, count, storedName, expected] of [[true, 2, "chart.pdf", "completed-at"], [false, 2, "chart.pdf", null], [true, 1, "chart.pdf", null], [true, 2, "unrelated.pdf", null]] as const) {
+    let attachedAt: unknown = null;
+    const supabase = { from: () => ({ update: (values: Record<string, unknown>) => {
+      let matched = true;
+      const query = { eq: () => query, in: (_field: string, names: string[]) => { matched = names.includes(storedName); return query; }, then: (resolve: (value: unknown) => void) => {
+        if (matched && "periodontal_chart_attached_at" in values) attachedAt = values.periodontal_chart_attached_at;
+        resolve({ error: null });
+      } };
+      return query;
+    } }) };
+    const run = runInNewContext(`${compiled}\nupdateDraftAfterMedirefSuccess`, { supabase, nowIso: () => "completed-at", console: { warn() {} } });
+    await run({ id: "job", payload: { draftId: "draft", attachments: [{ fileName: "report.pdf" }, { fileName: "chart.pdf" }] } }, { remoteDraftSaved: remoteSaved, attachmentCount: count });
+    assert.equal(attachedAt, expected);
+  }
+  const route = await readFile(new URL("../../app/api/report-writing/send-via-mediref/route.ts", import.meta.url), "utf8");
+  const staged = route.slice(route.indexOf("periodontalChartStaged = true"), route.indexOf("} else {", route.indexOf("periodontalChartStaged = true")));
+  assert.match(staged, /attachedAt: null/);
+  assert.doesNotMatch(staged, /new Date/);
+  assert.match(route, /periodontalChartAttached: false/);
 });

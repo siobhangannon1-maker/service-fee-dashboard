@@ -13,9 +13,10 @@ const timeout = 30_000;
 const ACCOUNT_UPLOAD_PREFIX = "ayjWHBhgAZyCsJ4fG";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+type PdfAttachment = { filename: string; pdf: Buffer };
 type Patient = { firstName?: unknown; lastName?: unknown; dob?: unknown };
 type Stage = "draft_ready" | "patient_save_started" | "patient_saved" | "upload_parameters_requested" | "upload_parameters_received" | "pdf_upload_started" | "pdf_upload_completed" | "attachment_save_started" | "attachment_saved" | "draft_prepared";
-type Logger = (message: string, fields: { attachmentCount: number; httpStatus?: number; structuralSuccess?: boolean }) => void;
+type Logger = (message: string, fields: { attachmentCount: number; attachmentIndex?: number; httpStatus?: number; structuralSuccess?: boolean }) => void;
 
 export class MedirefRemoteDraftError extends Error {
   constructor(public readonly stage: string) { super(`Unable to prepare MediRef remote draft (stage: ${stage}).`); }
@@ -104,19 +105,30 @@ async function readRemoteResponse(response: APIResponse) {
   if (!response.ok() || !response.headers()["content-type"]?.toLowerCase().includes("application/json")) throw new Error("Remote request failed.");
   return decodeRemoteResult(await response.text());
 }
+function validatePdfAttachment(attachment: PdfAttachment) {
+  if (!attachment.filename || path.basename(attachment.filename) !== attachment.filename || !/\.pdf$/i.test(attachment.filename) || !Buffer.isBuffer(attachment.pdf) || attachment.pdf.subarray(0, 5).toString() !== "%PDF-") throw new Error("Invalid PDF.");
+}
+
 export async function prepareRemoteDraft(options: {
   request: Pick<APIRequestContext, "post" | "put">;
-  s3uuid: string; patient: Patient; filename: string; pdf: Buffer; log?: Logger;
+  s3uuid: string; patient: Patient; attachments: PdfAttachment[]; log?: Logger;
 }) {
   const log = options.log ?? console.log;
   let stage = "validate_input";
+  let attachmentIndex: number | undefined;
+  const attachmentCount = options.attachments.length;
   const emit = (next: Stage, httpStatus?: number) => {
     stage = next;
-    log(`[MediRef remote] ${next}`, { attachmentCount: 1, ...(httpStatus === undefined ? {} : { httpStatus, structuralSuccess: true }) });
+    log(`[MediRef remote] ${next}`, { attachmentCount, ...(attachmentIndex === undefined ? {} : { attachmentIndex }), ...(httpStatus === undefined ? {} : { httpStatus, structuralSuccess: true }) });
   };
   try {
     const draft = buildPatientDraft(options.s3uuid, options.patient);
-    if (!options.filename || path.basename(options.filename) !== options.filename || !/\.pdf$/i.test(options.filename) || options.pdf.length === 0 || options.pdf.subarray(0, 5).toString() !== "%PDF-") throw new Error("Invalid PDF.");
+    if (attachmentCount === 0) throw new Error("At least one PDF is required.");
+    for (const [index, attachment] of options.attachments.entries()) {
+      attachmentIndex = index;
+      validatePdfAttachment(attachment);
+    }
+    attachmentIndex = undefined;
     const post = async (route: typeof saveRoute | typeof uploadRoute, payload: Json) => {
       const response = await options.request.post(`${origin}${route}`, {
         headers: { origin, referer: `${origin}/compose/${options.s3uuid}`, "x-sveltekit-pathname": `/compose/${options.s3uuid}`, "x-sveltekit-search": "" },
@@ -127,24 +139,32 @@ export async function prepareRemoteDraft(options: {
     };
     emit("draft_ready"); emit("patient_save_started");
     const patientSave = await post(saveRoute, draft); emit("patient_saved", patientSave.status);
-    const { key, uploadId } = makeUploadIdentity(options.s3uuid);
-    emit("upload_parameters_requested");
-    const parameters = await post(uploadRoute, { key, type: "application/pdf", filename: options.filename });
-    if (typeof parameters.value !== "string") throw new Error("Invalid upload destination.");
-    const destination = new URL(parameters.value);
-    if (destination.protocol !== "https:" || destination.username || destination.password || destination.hash || destination.origin === origin) throw new Error("Invalid upload destination.");
-    emit("upload_parameters_received", parameters.status);
-    emit("pdf_upload_started"); const uploadStarted = Date.now();
-    const uploaded = await options.request.put(destination.href, { headers: { "content-type": "application/pdf" }, data: options.pdf, timeout, maxRedirects: 0 });
-    try { if (!uploaded.ok()) throw new Error("PDF upload failed."); emit("pdf_upload_completed", uploaded.status()); }
-    finally { await uploaded.dispose(); }
-    draft.files = [buildFileMetadata(key, uploadId, options.filename, options.pdf.length, uploadStarted)];
+    const usedUploadIds = new Set<string>();
+    for (const [index, attachment] of options.attachments.entries()) {
+      attachmentIndex = index;
+      const { key, uploadId } = makeUploadIdentity(options.s3uuid);
+      if (usedUploadIds.has(uploadId)) throw new Error("Duplicate upload identity.");
+      usedUploadIds.add(uploadId);
+      emit("upload_parameters_requested");
+      const parameters = await post(uploadRoute, { key, type: "application/pdf", filename: attachment.filename });
+      if (typeof parameters.value !== "string") throw new Error("Invalid upload destination.");
+      const destination = new URL(parameters.value);
+      if (destination.protocol !== "https:" || destination.username || destination.password || destination.hash || destination.origin === origin) throw new Error("Invalid upload destination.");
+      emit("upload_parameters_received", parameters.status);
+      emit("pdf_upload_started"); const uploadStarted = Date.now();
+      const uploaded = await options.request.put(destination.href, { headers: { "content-type": "application/pdf" }, data: attachment.pdf, timeout, maxRedirects: 0 });
+      try { if (!uploaded.ok()) throw new Error("PDF upload failed."); emit("pdf_upload_completed", uploaded.status()); }
+      finally { await uploaded.dispose(); }
+      draft.files.push(buildFileMetadata(key, uploadId, attachment.filename, attachment.pdf.length, uploadStarted));
+    }
+    attachmentIndex = undefined;
     emit("attachment_save_started");
     const attachmentSave = await post(saveRoute, draft); emit("attachment_saved", attachmentSave.status);
     emit("draft_prepared");
-    return { prepared: true, sent: false, autoSend: false, recipientMatchingSkipped: true, attachmentCount: 1, message: "MediRef draft prepared with patient details and PDF attachment. Recipient matching and final Send were skipped." };
+    return { prepared: true, sent: false, autoSend: false, recipientMatchingSkipped: true, attachmentCount, remoteDraftSaved: true, message: "MediRef draft prepared with patient details and PDF attachment. Recipient matching and final Send were skipped." };
   } catch {
     // Discard raw Playwright/HTTP errors: they can contain patient payloads and signed URLs.
+    if (attachmentIndex !== undefined) log("[MediRef remote] attachment_upload_failed", { attachmentIndex, attachmentCount });
     throw new MedirefRemoteDraftError(stage);
   }
 }
@@ -152,18 +172,26 @@ export async function prepareRemoteDraft(options: {
 export async function prepareRemoteDraftWithBrowser(page: Page, patient: Patient, localPdfPaths: string[], openCompose: () => Promise<void>) {
   let stage = "validate_attachment";
   try {
-    if (localPdfPaths.length !== 1) throw new Error("Phase 1 requires exactly one PDF.");
-    const pdf = await readFile(localPdfPaths[0]);
-    const filename = path.basename(localPdfPaths[0]);
-    // Validate before opening or saving anything in MediRef.
+    if (localPdfPaths.length === 0) throw new Error("At least one PDF is required.");
+    const attachments: PdfAttachment[] = [];
+    for (const [attachmentIndex, localPath] of localPdfPaths.entries()) {
+      try {
+        const attachment = { filename: path.basename(localPath), pdf: await readFile(localPath) };
+        validatePdfAttachment(attachment);
+        attachments.push(attachment);
+      } catch {
+        console.log("[MediRef remote] attachment_upload_failed", { attachmentIndex, attachmentCount: localPdfPaths.length });
+        throw new Error("Invalid PDF attachment.");
+      }
+    }
+    // Validate every file before opening or saving anything in MediRef.
     buildPatientDraft("validation", patient);
-    if (!/\.pdf$/i.test(filename) || pdf.subarray(0, 5).toString() !== "%PDF-") throw new Error("Invalid PDF.");
     stage = "compose_identity";
     await openCompose();
     await page.waitForURL(url => draftIdFromComposeUrl(url.href) !== null, { timeout: 15_000, waitUntil: "domcontentloaded" });
     const s3uuid = draftIdFromComposeUrl(page.url());
     if (!s3uuid) throw new Error("Draft identity unavailable.");
-    return await prepareRemoteDraft({ request: page.context().request, s3uuid, patient, filename, pdf });
+    return await prepareRemoteDraft({ request: page.context().request, s3uuid, patient, attachments });
   } catch (error) {
     throw error instanceof MedirefRemoteDraftError ? error : new MedirefRemoteDraftError(stage);
   }

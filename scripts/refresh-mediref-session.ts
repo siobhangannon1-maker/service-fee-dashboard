@@ -846,6 +846,21 @@ async function updateDraftAfterMedirefSuccess(
     updated_at: completedAt,
   };
 
+  // Only the remote adapter confirms the complete files array was saved.
+  // The staged chart name identifies it without assuming an attachment position.
+  const attachments = Array.isArray(job.payload?.attachments) ? job.payload.attachments : [];
+  if (result.remoteDraftSaved === true && result.attachmentCount === attachments.length && attachments.length > 0) {
+    const names = attachments.map((attachment: { fileName?: unknown }) => attachment.fileName)
+      .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+    if (names.length > 0) {
+      const { error: chartError } = await supabase.from("report_drafts")
+        .update({ periodontal_chart_attached_at: completedAt, periodontal_chart_attachment_error: null })
+        .eq("id", draftId)
+        .in("periodontal_chart_attachment_name", names);
+      if (chartError) throw new Error("MediRef draft saved, but periodontal attachment status could not be updated.");
+    }
+  }
+
   const { error } = await supabase
     .from("report_drafts")
     .update(values)
