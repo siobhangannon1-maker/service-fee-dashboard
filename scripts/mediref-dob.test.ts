@@ -287,7 +287,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB month_pre_navigation_focus"));
       });
     }
-    for (const mode of ["auto", "tab", "focus-lost-after-write", "wrong-target", "unavailable", "committed-wrong-target", "bad-month-commit"]) {
+    for (const mode of ["auto", "tab", "focus-lost-after-write", "wrong-target", "unavailable", "committed-wrong-target", "bad-month-commit", "single-insert", "ignored-day-insert", "ignored-month-insert", "conflicting-day"]) {
       const advance = mode === "auto";
       await t.test(`keyboard navigation with ineffective year focus: ${mode}`, async () => {
         await page.setContent(`<div data-date-field-input>
@@ -318,7 +318,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
             field.addEventListener("input", () => {
               field.setAttribute("aria-valuenow", String(Number(field.textContent)));
               digits++;
-              if (advance && digits === 2 && field !== year) {
+              if (advance && field.textContent?.length === 2 && field !== year) {
                 if (field === month) navigationAllowed = true;
                 nativeFocus.call(field === day ? month : year);
               }
@@ -362,16 +362,42 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
             }
           });
         }, mode);
+        await page.locator('[data-segment="day"], [data-segment="month"]').evaluateAll((fields, mode) => {
+          for (const field of fields) {
+            field.addEventListener("keydown", event => {
+              if (/^\d$/.test((event as KeyboardEvent).key)) {
+                field.setAttribute("data-digit-keys", String(Number(field.getAttribute("data-digit-keys") || 0) + 1));
+                if (mode === "single-insert") {
+                  event.preventDefault(); document.querySelector("button")!.focus();
+                }
+              }
+            });
+            field.addEventListener("beforeinput", event => {
+              const input = event as InputEvent;
+              field.setAttribute("data-insertion-length", String(input.data?.length || 0));
+              if (mode === `ignored-${field.getAttribute("data-segment")}-insert`) event.preventDefault();
+            });
+            if (mode === "conflicting-day" && field.getAttribute("data-segment") === "day") {
+              field.addEventListener("input", () => field.setAttribute("aria-valuenow", "31"));
+            }
+          }
+        }, mode);
+        if (mode === "single-insert") {
+          const month = page.locator('[data-segment="month"]');
+          await month.selectText(); await month.pressSequentially("06");
+          assert.equal(await page.locator("button").evaluate(element => document.activeElement === element), true);
+          await month.evaluate(element => element.removeAttribute("data-digit-keys"));
+        }
         const attempts = await year.getAttribute("data-focus-attempts");
         const logs: unknown[][] = [];
         const originalLog = console.log; const originalWarn = console.warn;
         console.log = (...args: unknown[]) => { logs.push(args); };
         console.warn = (...args: unknown[]) => { logs.push(args); };
         try {
-          if (mode === "tab") assert.equal(await enter(), true);
+          if (["tab", "auto", "single-insert"].includes(mode)) assert.equal(await enter(), true);
           else await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
         } finally { console.log = originalLog; console.warn = originalWarn; }
-        if (mode === "tab") {
+        if (["tab", "auto", "single-insert"].includes(mode)) {
           assert.equal(await year.getAttribute("data-focus-attempts"), attempts);
           assert.equal(await year.getAttribute("aria-valuenow"), "1990");
           assert.ok(logs.some(entry => entry[0] === `[MediRef] DOB ${advance ? "year_existing_focus_reused" : "year_navigation_verified"}`));
@@ -383,10 +409,18 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
           assert.equal(await year.getAttribute("aria-valuenow"), "2001");
           assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB year_write_started"));
         }
-        if (mode === "focus-lost-after-write" || mode === "auto") {
-          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "month_after_write_focus");
+        if (mode === "single-insert") {
+          for (const part of ["day", "month"]) {
+            const field = page.locator(`[data-segment="${part}"]`);
+            assert.equal(await field.getAttribute("data-insertion-length"), "2");
+            assert.equal(await field.getAttribute("data-digit-keys"), null);
+            assert.ok(logs.some(entry => entry[0] === `[MediRef] DOB ${part}_single_insert_completed`));
+          }
+        }
+        if (mode === "focus-lost-after-write") {
+          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "month_after_insert_focus");
           assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB year_navigation_tab_started"));
-          const active = logs.find(entry => entry[0] === "[MediRef] DOB month_after_write_focus")?.[1] as { tagName: string; matchesMonth: boolean };
+          const active = logs.find(entry => entry[0] === "[MediRef] DOB month_after_insert_focus")?.[1] as { tagName: string; matchesMonth: boolean };
           assert.equal(active.matchesMonth, false);
           if (mode === "focus-lost-after-write") assert.equal(active.tagName, "BUTTON");
         }

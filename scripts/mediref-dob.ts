@@ -159,6 +159,43 @@ async function logActiveSegment(group: Locator, phase: string, navigation = fals
   console.log(`[MediRef] DOB ${phase}`, { ...structure, ...(navigation ? { matchesDay: matches.day, matchesMonth: matches.month, matchesYear: matches.year } : { matches }) });
 }
 
+async function insertCustomPart(group: Locator, part: "day" | "month", expected: string, step: (operation: string) => void) {
+  const field = segment(group, part);
+  step(`${part}_single_insert_selection`);
+  await field.focus({ timeout });
+  await field.selectText({ timeout });
+  const scoped = await field.evaluate(element => {
+    const selection = document.getSelection();
+    const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null;
+    return document.activeElement === element && Boolean(range && element.contains(range.startContainer) &&
+      element.contains(range.endContainer) && !selection!.isCollapsed && selection!.toString() === element.textContent);
+  });
+  if (!scoped) throw new Error(failure);
+  const snapshot = () => field.evaluate(element => [element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent]);
+  const before = await snapshot();
+  step(`${part}_single_insert_started`);
+  console.log(`[MediRef] DOB ${part}_single_insert_started`);
+  await field.page().keyboard.insertText(expected);
+  step(`${part}_single_insert_completed`);
+  const after = await snapshot();
+  console.log(`[MediRef] DOB ${part}_single_insert_completed`, {
+    numericStateChanged: after.some((value, index) => numericSegment(value ?? "") !== numericSegment(before[index] ?? "")),
+  });
+  step(`${part}_after_insert_focus`);
+  await logActiveSegment(group, `${part}_after_insert_focus`, true);
+  const focusIsSafe = async () => await field.evaluate(element => document.activeElement === element) ||
+    await segment(group, part === "day" ? "month" : "year").evaluate(element => document.activeElement === element);
+  if (!await focusIsSafe()) throw new Error(failure);
+  // Display acceptance is provisional; post-blur/Tab verification still requires
+  // committed aria/text agreement before the next part is entered.
+  const deadline = Date.now() + timeout;
+  while (numericSegment(await field.textContent() ?? "") !== Number(expected)) {
+    if (Date.now() >= deadline) throw new Error(failure);
+    await field.page().waitForTimeout(50);
+  }
+  if (!await focusIsSafe()) throw new Error(failure);
+}
+
 async function usableStandard(field: Locator) {
   return await field.evaluate((element, selector) =>
     (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
@@ -322,22 +359,21 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           if (part !== "year") await logActiveSegment(group, `after_${part}_entry`);
         } else {
           if (!structure.isContentEditable && structure.role !== "spinbutton") throw new Error(failure);
-          if (structure.isContentEditable) {
-            operation = "select";
-            await field.focus({ timeout });
-            // Replace selected content through keyboard events; custom segments may never be blank.
-            await field.selectText({ timeout });
+          if (part !== "year" && structure.isContentEditable && structure.role === "spinbutton") {
+            await insertCustomPart(group, part, values[part], value => { operation = value; });
           } else {
-            operation = "clear";
-            await replaceCustomSegment(field, false);
-            await field.focus({ timeout });
-          }
-          operation = "write";
-          await field.pressSequentially(values[part], { timeout });
-          if (part === "month" && structure.isContentEditable && keyboardYear) {
-            operation = "month_after_write_focus";
-            await logActiveSegment(group, operation, true);
-            if (!await segment(group, "month").evaluate(element => document.activeElement === element)) throw new Error(failure);
+            if (structure.isContentEditable) {
+              operation = "select";
+              await field.focus({ timeout });
+              // Replace selected content through keyboard events; custom segments may never be blank.
+              await field.selectText({ timeout });
+            } else {
+              operation = "clear";
+              await replaceCustomSegment(field, false);
+              await field.focus({ timeout });
+            }
+            operation = "write";
+            await field.pressSequentially(values[part], { timeout });
           }
           if (part !== "year") await logActiveSegment(group, `after_${part}_entry`);
           if (structure.isContentEditable) {
@@ -345,14 +381,18 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
             if (part === "month" && keyboardYear) {
               operation = "month_pre_navigation_focus";
               await logActiveSegment(group, operation, true);
-              if (!await segment(group, "month").evaluate(element => document.activeElement === element)) throw new Error(failure);
-              operation = "year_navigation_tab_started";
-              console.log(`[MediRef] DOB ${operation}`);
-              await page.keyboard.press("Tab");
-              operation = "year_navigation_tab_completed";
-              console.log(`[MediRef] DOB ${operation}`);
-              operation = "year_navigation_after_tab";
-              await logActiveSegment(group, operation, true);
+              if (await segment(group, "year").evaluate(element => document.activeElement === element)) {
+                console.log("[MediRef] DOB year_existing_focus_reused");
+              } else {
+                if (!await segment(group, "month").evaluate(element => document.activeElement === element)) throw new Error(failure);
+                operation = "year_navigation_tab_started";
+                console.log(`[MediRef] DOB ${operation}`);
+                await page.keyboard.press("Tab");
+                operation = "year_navigation_tab_completed";
+                console.log(`[MediRef] DOB ${operation}`);
+                operation = "year_navigation_after_tab";
+                await logActiveSegment(group, operation, true);
+              }
               // Tab commits month without losing our position in the composite.
               // Resolve both locators again in case the component rendered new nodes.
               if (!await segment(group, "year").evaluate(element => document.activeElement === element)) throw new Error(failure);
