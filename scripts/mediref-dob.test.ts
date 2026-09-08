@@ -1,7 +1,48 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
-import { enterPatientDob } from "./mediref-dob";
+import { enterPatientDob, classifyYearState } from "./mediref-dob";
+
+for (const [name, sources, allExpected, anyExpected, agree] of [
+  ["correct four digits", ["1990", "1990", "1990"], true, true, true],
+  ["two digits", ["42", "42", "42"], false, false, true],
+  ["first two digits", ["19", "19", "19"], false, false, true],
+  ["last two digits", ["90", "90", "90"], false, false, true],
+  ["stale aria-valuenow", ["2001", "1990", "1990"], false, true, false],
+  ["stale text", ["1990", "1990", "2001"], false, true, false],
+  ["all wrong", ["2001", "2001", "2001"], false, false, true],
+  ["descriptive and missing sources", [null, "private descriptive label", "1990"], true, true, null],
+  ["bidi normalization", ["\u200e1990", "1990", " 1990 "], true, true, true],
+  ["too many digits", ["19900", "19900", "19900"], false, false, true],
+] as const) {
+  test(`safe year classification: ${name}`, () => {
+    const result = classifyYearState({ sources: [...sources], min: "1", max: "9999", placeholder: false }, "1990");
+    assert.equal(result.allExpected, allExpected);
+    assert.equal(result.anyExpected, anyExpected);
+    assert.equal(result.numericSourcesAgree, agree);
+    assert.equal(result.ariaValueNow.matchesExpectedFirst2Digits, name === "first two digits");
+    assert.equal(result.ariaValueNow.matchesExpectedLast2Digits, name === "last two digits");
+    assert.equal(result.textContent.digitCount, name === "too many digits" ? ">4" : ["two digits", "first two digits", "last two digits"].includes(name) ? 2 : 4);
+    assert.equal(result.textContent.withinAriaMinMax, name !== "too many digits");
+    for (const source of [result.ariaValueNow, result.ariaValueText, result.textContent]) {
+      assert.deepEqual(Object.keys(source).sort(), ["sourcePresent", "numericParseable", "digitCount", "matchesExpected", "matchesExpectedLast2Digits", "matchesExpectedFirst2Digits", "withinAriaMinMax"].sort());
+    }
+    if (name === "descriptive and missing sources") {
+      assert.equal(result.ariaValueNow.sourcePresent, false);
+      assert.equal(result.ariaValueText.numericParseable, false);
+      assert.equal(result.ariaValueText.digitCount, 0);
+      assert.equal(result.ariaValueText.withinAriaMinMax, null);
+    }
+    for (const privateValue of ["1990", "2001", "19900", "9999", "private descriptive label"]) assert.ok(!JSON.stringify(result).includes(privateValue));
+  });
+}
+test("year bounds are diagnostic only and unknown bounds remain null", () => {
+  const state = { sources: ["1990", "1990", "1990"], min: "2000", max: "2099", placeholder: false };
+  assert.equal(classifyYearState(state, "1990").allExpected, true);
+  assert.equal(classifyYearState(state, "1990").textContent.withinAriaMinMax, false);
+  assert.equal(classifyYearState({ ...state, min: null }, "1990").textContent.withinAriaMinMax, null);
+  assert.equal(classifyYearState({ ...state, placeholder: true }, "1990").allExpected, false);
+});
 
 test("MediRef DOB entry in an isolated local browser", async (t) => {
   const browser = await chromium.launch({ headless: true });
@@ -9,6 +50,50 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
   await page.route("**/*", (route) => route.abort());
   const enter = () => enterPatientDob(page, "1990-06-09", "09/06/1990");
   try {
+    for (const mode of ["later-correct", "later-convergence", "later-divergence-and-convergence", "wrong-through-deadline"]) {
+      await t.test(`year verification diagnostics: ${mode}`, async () => {
+        await page.setContent(`<div data-date-field-input>
+          <span role="spinbutton" contenteditable="true" data-segment="day" aria-valuenow="31">31</span>
+          <span role="spinbutton" contenteditable="true" data-segment="month" aria-valuenow="12">12</span>
+          <span role="spinbutton" contenteditable="true" data-segment="year" aria-valuemin="1" aria-valuemax="9999" aria-valuenow="2001">2001</span>
+        </div><button>Outside</button>`);
+        await page.evaluate(mode => {
+          for (const field of document.querySelectorAll<HTMLElement>('[data-segment]')) {
+            field.addEventListener("input", () => {
+              if (field.dataset.segment !== "year") { field.setAttribute("aria-valuenow", String(Number(field.textContent))); return; }
+              const entered = field.textContent!;
+              field.setAttribute("aria-valuenow", "2001");
+              if (mode !== "later-convergence") field.textContent = "2001";
+              if (mode === "later-divergence-and-convergence") setTimeout(() => { field.textContent = entered; }, 150);
+              if (mode !== "wrong-through-deadline") setTimeout(() => {
+                const replacement = field.cloneNode(true) as HTMLElement;
+                replacement.textContent = entered; replacement.setAttribute("aria-valuenow", String(Number(entered)));
+                field.replaceWith(replacement);
+              }, mode === "later-divergence-and-convergence" ? 350 : 150);
+            });
+          }
+        }, mode);
+        const logs: unknown[][] = [];
+        const originalLog = console.log; const originalWarn = console.warn;
+        console.log = (...args: unknown[]) => { logs.push(args); };
+        console.warn = (...args: unknown[]) => { logs.push(args); };
+        try {
+          if (mode === "wrong-through-deadline") await assert.rejects(enter, /Unable to enter patient DOB in MediRef date control/);
+          else assert.equal(await enter(), true);
+        } finally { console.log = originalLog; console.warn = originalWarn; }
+        const samples = logs.filter(row => row[0] === "[MediRef] DOB year_state_sample").map(row => row[1] as ReturnType<typeof classifyYearState>);
+        assert.equal(samples[0].allExpected, false);
+        const summary = logs.find(row => row[0] === "[MediRef] DOB year_state_verification")![1] as Record<string, boolean | number>;
+        assert.ok(Number(summary.samples) > 1);
+        assert.equal(summary.expectedStateAppearedLater, mode !== "wrong-through-deadline");
+        assert.equal(summary.stateChangedAfterInitialSample, mode !== "wrong-through-deadline");
+        assert.equal(summary.sourcesConverged, ["later-convergence", "later-divergence-and-convergence"].includes(mode));
+        assert.equal(summary.remainedNonmatching, mode === "wrong-through-deadline");
+        assert.equal(samples.at(-1)!.allExpected, mode !== "wrong-through-deadline");
+        assert.equal(samples[0].anyExpected, mode === "later-convergence");
+        for (const value of ["1990", "2001", "9999"]) assert.ok(!JSON.stringify(logs).includes(value));
+      });
+    }
     for (const mode of ["missing-selection", "lost-focus", "replaced-node", "selectText-timeout"]) {
       await t.test(`custom day selection diagnostics: ${mode}`, async () => {
         await page.setContent(`<div data-date-field-input>

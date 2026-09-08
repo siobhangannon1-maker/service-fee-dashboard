@@ -60,12 +60,76 @@ function numericSegment(value: string) {
   return /^\d+$/.test(clean) ? Number(clean) : null;
 }
 
-async function segmentMatches(field: Locator, expected: string) {
-  const sources = await field.evaluate((element) => {
-    if (element.getAttribute("data-placeholder") === "true") return [];
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) return [element.value];
-    return [element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent];
-  });
+type YearState = { sources: Array<string | null>; min: string | null; max: string | null; placeholder: boolean };
+
+// Only classifications leave this function; raw state stays private to verification.
+export function classifyYearState(state: YearState, expected: string) {
+  const minimum = numericSegment(state.min ?? "");
+  const maximum = numericSegment(state.max ?? "");
+  const classify = (value: string | null) => {
+    const number = numericSegment(value ?? "");
+    const clean = (value ?? "").replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").trim();
+    const digits = number === null ? 0 : clean.length;
+    return {
+      sourcePresent: value !== null, numericParseable: number !== null,
+      digitCount: digits > 4 ? ">4" : digits,
+      matchesExpected: number !== null && number === Number(expected),
+      matchesExpectedLast2Digits: number !== null && number === Number(expected.slice(-2)),
+      matchesExpectedFirst2Digits: number !== null && number === Number(expected.slice(0, 2)),
+      withinAriaMinMax: number === null || minimum === null || maximum === null || minimum > maximum ? null : number >= minimum && number <= maximum,
+    };
+  };
+  const numeric = state.sources.map(value => numericSegment(value ?? "")).filter((value): value is number => value !== null);
+  return {
+    ariaValueNow: classify(state.sources[0] ?? null), ariaValueText: classify(state.sources[1] ?? null),
+    textContent: classify(state.sources[2] ?? null),
+    numericSourcesAgree: numeric.length < 2 ? null : numeric.every(value => value === numeric[0]),
+    allExpected: !state.placeholder && numeric.length > 0 && numeric.every(value => value === Number(expected)),
+    anyExpected: !state.placeholder && numeric.some(value => value === Number(expected)),
+  };
+}
+
+function yearStateDiagnostics(expected: string) {
+  let previous: YearState | undefined;
+  let initial: ReturnType<typeof classifyYearState> | undefined;
+  let samples = 0;
+  let stateChangedAfterInitialSample = false;
+  let expectedStateAppearedLater = false;
+  let sourcesConverged = false;
+  let observedDisagreement = false;
+  let everExpected = false;
+  return {
+    observe(state: YearState) {
+      const classification = classifyYearState(state, expected);
+      const changed = previous !== undefined && (state.placeholder !== previous.placeholder || state.sources.some((value, i) => value !== previous!.sources[i]));
+      samples++;
+      stateChangedAfterInitialSample ||= changed;
+      expectedStateAppearedLater ||= Boolean(initial && !initial.allExpected && classification.allExpected);
+      sourcesConverged ||= observedDisagreement && classification.numericSourcesAgree === true;
+      observedDisagreement ||= classification.numericSourcesAgree === false;
+      everExpected ||= classification.allExpected;
+      if (!previous || changed) console.log("[MediRef] DOB year_state_sample", { phase: previous ? "changed" : "initial", ...classification });
+      initial ??= classification;
+      previous = state;
+    },
+    finish() {
+      console.log("[MediRef] DOB year_state_verification", {
+        samples, stateChangedAfterInitialSample, expectedStateAppearedLater, sourcesConverged,
+        remainedNonmatching: samples > 0 && !everExpected,
+      });
+    },
+  };
+}
+
+async function segmentMatches(field: Locator, expected: string, observe?: (state: YearState) => void) {
+  const state = await field.evaluate((element, diagnostic) => {
+    const placeholder = element.getAttribute("data-placeholder") === "true";
+    const native = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
+    const sources = native ? [element.value] : [element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent];
+    return { sources, placeholder, min: diagnostic ? element.getAttribute("aria-valuemin") : null, max: diagnostic ? element.getAttribute("aria-valuemax") : null };
+  }, Boolean(observe));
+  observe?.(state);
+  const sources = state.placeholder ? [] : state.sources;
   // Only whole numeric parts are meaningful here; never extract a number from descriptive text.
   // Conflicting numeric sources must not pass merely because the editable DOM looks correct.
   const numeric = sources.filter((value): value is string => value !== null).map(numericSegment)
@@ -73,10 +137,10 @@ async function segmentMatches(field: Locator, expected: string) {
   return numeric.length > 0 && numeric.every((value) => value === Number(expected));
 }
 
-async function waitForSegment(field: Locator, expected: string) {
+async function waitForSegment(field: Locator, expected: string, observe?: (state: YearState) => void) {
   const deadline = Date.now() + timeout;
   do {
-    if (await segmentMatches(field, expected)) return;
+    if (await segmentMatches(field, expected, observe)) return;
     await field.page().waitForTimeout(50);
   } while (Date.now() < deadline);
   throw new Error(failure);
@@ -219,11 +283,13 @@ async function insertCustomPart(group: Locator, part: "day" | "month" | "year", 
     throw new Error(failure);
   }
   step(`${part}_insert_state_verification`);
+  const yearDiagnostics = part === "year" ? yearStateDiagnostics(expected) : undefined;
   try {
     // Read immediately, allowing only the existing bounded wait for asynchronously
     // published semantic state. A conflict must resolve before commit/navigation.
-    await waitForSegment(segment(group, part), expected);
+    await waitForSegment(segment(group, part), expected, yearDiagnostics?.observe);
   } finally {
+    yearDiagnostics?.finish();
     after = await snapshot();
     console.log(`[MediRef] DOB ${part}_single_insert_completed`, {
       activeElementIsPart: await segment(group, part).evaluate(element => document.activeElement === element),
