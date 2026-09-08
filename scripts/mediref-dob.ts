@@ -89,7 +89,7 @@ export function classifyYearState(state: YearState, expected: string) {
   };
 }
 
-function yearStateDiagnostics(expected: string) {
+function yearStateDiagnostics(expected: string, phase = "year") {
   let previous: YearState | undefined;
   let initial: ReturnType<typeof classifyYearState> | undefined;
   let samples = 0;
@@ -108,12 +108,12 @@ function yearStateDiagnostics(expected: string) {
       sourcesConverged ||= observedDisagreement && classification.numericSourcesAgree === true;
       observedDisagreement ||= classification.numericSourcesAgree === false;
       everExpected ||= classification.allExpected;
-      if (!previous || changed) console.log("[MediRef] DOB year_state_sample", { phase: previous ? "changed" : "initial", ...classification });
+      if (!previous || changed) console.log(`[MediRef] DOB ${phase}_state_sample`, { phase: previous ? "changed" : "initial", ...classification });
       initial ??= classification;
       previous = state;
     },
     finish() {
-      console.log("[MediRef] DOB year_state_verification", {
+      console.log(`[MediRef] DOB ${phase}_state_verification`, {
         samples, stateChangedAfterInitialSample, expectedStateAppearedLater, sourcesConverged,
         remainedNonmatching: samples > 0 && !everExpected,
       });
@@ -146,7 +146,7 @@ async function waitForSegment(field: Locator, expected: string, observe?: (state
   throw new Error(failure);
 }
 
-async function waitForPersistedDate(group: Locator, values: Record<string, string>) {
+async function waitForPersistedDate(group: Locator, values: Record<string, string>, inspectYear?: (year: Locator) => Promise<boolean>) {
   const deadline = Date.now() + timeout;
   let matchingSince: number | null = null;
   do {
@@ -154,7 +154,9 @@ async function waitForPersistedDate(group: Locator, values: Record<string, strin
     for (const part of ["day", "month", "year"]) {
       // Locators resolve the current DOM on every read, including replacement segments after blur.
       const field = segment(group, part);
-      if (await field.count() !== 1 || !await field.isVisible() || !await segmentMatches(field, values[part])) matches = false;
+      if (await field.count() !== 1 || !await field.isVisible()) { matches = false; continue; }
+      if (part === "year" && inspectYear && !await inspectYear(field)) matches = false;
+      if (!await segmentMatches(field, values[part])) matches = false;
     }
     matchingSince = matches ? matchingSince ?? Date.now() : null;
     if (matchingSince !== null && Date.now() - matchingSince >= 250) return;
@@ -208,7 +210,7 @@ async function logActiveSegment(group: Locator, phase: string, navigation = fals
   console.log(`[MediRef] DOB ${phase}`, { ...structure, ...(navigation ? { matchesDay: matches.day, matchesMonth: matches.month, matchesYear: matches.year } : { matches }) });
 }
 
-async function insertCustomPart(group: Locator, part: "day" | "month" | "year", expected: string, step: (operation: string) => void) {
+async function insertCustomPart(group: Locator, part: "day" | "month" | "year", expected: string, step: (operation: string) => void, dobValues?: Record<string, string>) {
   const field = segment(group, part);
   const selectionStep = (operation: string) => {
     step(`${part}_${operation}`);
@@ -216,12 +218,12 @@ async function insertCustomPart(group: Locator, part: "day" | "month" | "year", 
   };
   selectionStep("selection_resolve_started");
   const original = await field.elementHandle({ timeout });
-  const parts = ["day", "month", "year"] as const;
-  const snapshot = () => Promise.all(parts.map(name => segment(group, name).evaluate(element => [
-    element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent,
-  ])));
-  let before: Array<Array<string | null>>;
   try {
+    const parts = ["day", "month", "year"] as const;
+    const snapshot = () => Promise.all(parts.map(name => segment(group, name).evaluate(element => [
+      element.getAttribute("aria-valuenow"), element.getAttribute("aria-valuetext"), element.textContent,
+    ])));
+    let before: Array<Array<string | null>>;
     if (part !== "year") {
       selectionStep("selection_focus_started");
       await field.focus({ timeout });
@@ -271,37 +273,101 @@ async function insertCustomPart(group: Locator, part: "day" | "month" | "year", 
     step(`${part}_single_insert_started`);
     console.log(`[MediRef] DOB ${part}_single_insert_started`);
     await field.page().keyboard.insertText(expected);
+    step(`${part}_single_insert_completed`);
+    // Re-resolve every segment after insertion. Never infer acceptance from browser focus.
+    const index = parts.indexOf(part);
+    const otherPartsUnchanged = (states: Array<Array<string | null>>) => states.every((sources, i) =>
+      i === index || sources.every((value, j) => value === before[i][j]));
+    let after = await snapshot();
+    if (!otherPartsUnchanged(after)) {
+      step(`${part}_other_segment_verification`);
+      throw new Error(failure);
+    }
+    const provisionalMatch = async () => {
+      if (part !== "year" || !dobValues) return false;
+      const stableEditable = await field.evaluate((element, original) => element === original && element.isConnected &&
+        element instanceof HTMLElement && element.isContentEditable && element.getAttribute("role") === "spinbutton" &&
+        element.getAttribute("aria-readonly") !== "true" && element.getAttribute("aria-disabled") !== "true" &&
+        element.getAttribute("data-placeholder") !== "true", original);
+      const text = (await field.textContent() ?? "").replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").trim();
+      const state = await snapshot();
+      return stableEditable && /^\d{4}$/.test(text) && Number(text) === Number(expected) &&
+        await field.isVisible() && await field.isEditable() && await field.isEnabled() &&
+        state[index].some((value, j) => numericSegment(value ?? "") !== numericSegment(before[index][j] ?? "")) &&
+        otherPartsUnchanged(state) && await segmentMatches(segment(group, "day"), dobValues.day) &&
+        await segmentMatches(segment(group, "month"), dobValues.month);
+    };
+    let provisionalYearVisibleMatch = false;
+    step(`${part}_insert_state_verification`);
+    const yearDiagnostics = part === "year" ? yearStateDiagnostics(expected) : undefined;
+    try {
+      // Read immediately, allowing only the existing bounded wait for asynchronously
+      // published semantic state. Only a safely verified provisional year may
+      // carry an ARIA conflict forward to the explicit commit test.
+      await waitForSegment(segment(group, part), expected, yearDiagnostics?.observe);
+    } catch (error) {
+      provisionalYearVisibleMatch = await provisionalMatch();
+      if (!provisionalYearVisibleMatch) throw error;
+    } finally {
+      yearDiagnostics?.finish();
+      after = await snapshot();
+      console.log(`[MediRef] DOB ${part}_single_insert_completed`, {
+        activeElementIsPart: await segment(group, part).evaluate(element => document.activeElement === element),
+        stateChangedAfterInsert: after[index].some((value, j) => numericSegment(value ?? "") !== numericSegment(before[index][j] ?? "")),
+        expectedStateObserved: await segmentMatches(segment(group, part), expected),
+      });
+    }
+    const stateChanged = after[index].some((value, j) => numericSegment(value ?? "") !== numericSegment(before[index][j] ?? ""));
+    if (part === "year") {
+      const text = (after[index][2] ?? "").replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").trim();
+      if (!/^\d{4}$/.test(text) || Number(text) !== Number(expected)) throw new Error(failure);
+    }
+    if (provisionalYearVisibleMatch) {
+      provisionalYearVisibleMatch = await provisionalMatch();
+      console.log("[MediRef] DOB year_provisional_acceptance", { provisionalYearVisibleMatch });
+      if (!provisionalYearVisibleMatch) throw new Error(failure);
+    }
+    if (!otherPartsUnchanged(after) || !stateChanged || (!provisionalYearVisibleMatch && !await segmentMatches(segment(group, part), expected))) throw new Error(failure);
+    step(`${part}_after_insert_focus`);
+    await logActiveSegment(group, `${part}_after_insert_focus`, true);
   } finally { await original?.dispose(); }
-  step(`${part}_single_insert_completed`);
-  // Re-resolve every segment after insertion. Never infer acceptance from browser focus.
-  const index = parts.indexOf(part);
-  const otherPartsUnchanged = (states: Array<Array<string | null>>) => states.every((sources, i) =>
-    i === index || sources.every((value, j) => value === before[i][j]));
-  let after = await snapshot();
-  if (!otherPartsUnchanged(after)) {
-    step(`${part}_other_segment_verification`);
-    throw new Error(failure);
-  }
-  step(`${part}_insert_state_verification`);
-  const yearDiagnostics = part === "year" ? yearStateDiagnostics(expected) : undefined;
+}
+
+async function commitAndVerifyYear(group: Locator, values: Record<string, string>, step: (operation: string) => void) {
+  let before: YearState | undefined;
+  await segmentMatches(segment(group, "year"), values.year, state => { before = state; });
+  await segment(group, "year").blur({ timeout });
+  const diagnostics = yearStateDiagnostics(values.year, "year_post_blur");
+  let textPersisted = true;
+  let otherPartsStayedCorrect = true;
+  let last: ReturnType<typeof classifyYearState> | undefined;
+  let stateChanged = false;
   try {
-    // Read immediately, allowing only the existing bounded wait for asynchronously
-    // published semantic state. A conflict must resolve before commit/navigation.
-    await waitForSegment(segment(group, part), expected, yearDiagnostics?.observe);
+    await waitForPersistedDate(group, values, async year => {
+      let state: YearState | undefined;
+      await segmentMatches(year, values.year, observed => { state = observed; diagnostics.observe(observed); });
+      last = classifyYearState(state!, values.year);
+      textPersisted &&= last.textContent.matchesExpected && last.textContent.digitCount === 4;
+      stateChanged ||= state!.sources.some((value, i) => value !== before!.sources[i]);
+      otherPartsStayedCorrect &&= await segmentMatches(segment(group, "day"), values.day) && await segmentMatches(segment(group, "month"), values.month);
+      return textPersisted && otherPartsStayedCorrect && last.ariaValueNow.matchesExpected && last.allExpected;
+    });
+  } catch (error) {
+    if (textPersisted && otherPartsStayedCorrect && last?.textContent.matchesExpected && (!last.ariaValueNow.matchesExpected || !last.allExpected)) {
+      step("year_post_blur_state_conflict");
+      console.log("[MediRef] DOB year_post_blur_state_conflict", last);
+    }
+    throw error;
   } finally {
-    yearDiagnostics?.finish();
-    after = await snapshot();
-    console.log(`[MediRef] DOB ${part}_single_insert_completed`, {
-      activeElementIsPart: await segment(group, part).evaluate(element => document.activeElement === element),
-      stateChangedAfterInsert: after[index].some((value, j) => numericSegment(value ?? "") !== numericSegment(before[index][j] ?? "")),
-      expectedStateObserved: await segmentMatches(segment(group, part), expected),
+    diagnostics.finish();
+    console.log("[MediRef] DOB year_post_blur_classification", {
+      year_post_blur_text_matches_expected: last?.textContent.matchesExpected ?? false,
+      year_post_blur_aria_now_matches_expected: last?.ariaValueNow.matchesExpected ?? false,
+      year_post_blur_sources_agree: last?.numericSourcesAgree ?? null,
+      year_post_blur_visible_value_persisted: textPersisted && Boolean(last),
+      year_post_blur_state_changed: stateChanged,
     });
   }
-  const stateChanged = after[index].some((value, j) => numericSegment(value ?? "") !== numericSegment(before[index][j] ?? ""));
-  if (!otherPartsUnchanged(after) || !stateChanged || !await segmentMatches(segment(group, part), expected)) throw new Error(failure);
-  step(`${part}_after_insert_focus`);
-  await logActiveSegment(group, `${part}_after_insert_focus`, true);
-
 }
 
 async function usableStandard(field: Locator) {
@@ -397,13 +463,12 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
         const customYear = part === "year" && structure.isContentEditable && structure.role === "spinbutton";
         if (customYear) {
           usedCustomYear = true;
-          await insertCustomPart(group, part, values.year, value => { operation = value; });
+          await insertCustomPart(group, part, values.year, value => { operation = value; }, values);
           operation = "year_verify";
           console.log("[MediRef] DOB year_verify", { matches: await segmentMatches(segment(group, "year"), values.year) });
           operation = "year_post_blur_verify";
-          await segment(group, "year").blur({ timeout });
           try {
-            await waitForPersistedDate(group, values);
+            await commitAndVerifyYear(group, values, value => { operation = value; });
           } finally {
             console.log("[MediRef] DOB year_post_blur_verify", { matches: await segmentMatches(segment(group, "year"), values.year) });
           }
@@ -477,7 +542,12 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
         if (active instanceof HTMLElement && element.contains(active)) active.blur();
       });
       operation = "verify persistence";
-      await waitForPersistedDate(group, values);
+      await waitForPersistedDate(group, values, usedCustomYear ? async year => {
+        let classification: ReturnType<typeof classifyYearState> | undefined;
+        await segmentMatches(year, values.year, state => { classification = classifyYearState(state, values.year); });
+        return Boolean(classification?.textContent.matchesExpected && classification.textContent.digitCount === 4 &&
+          classification.ariaValueNow.matchesExpected && classification.allExpected);
+      } : undefined);
       console.log("[MediRef] DOB final verification completed");
       return true;
     }
