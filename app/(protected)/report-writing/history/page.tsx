@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { RetryMedirefButton } from "./RetryMedirefButton"
 
 type Provider = {
   id: string
@@ -160,7 +161,7 @@ function getWorkflowIssues(draft: Draft) {
     })
   }
 
-  if (draft.workflow_mediref_status === "error") {
+  if (["error", "failed"].includes(draft.workflow_mediref_status || "")) {
     issues.push({
       label: "MediRef send failed",
       tone: "red",
@@ -968,6 +969,11 @@ export default function ReportWritingHistoryPage() {
                         ) : null}
                       </div>
 
+                      {draft.workflow_mediref_status ? (
+                        <div className="mt-2 text-xs text-slate-600">
+                          MediRef: {({ failed: "Failed", error: "Failed", pending: "Queued", running: "In progress", completed: "Completed" } as Record<string, string>)[draft.workflow_mediref_status] || draft.workflow_mediref_status}
+                        </div>
+                      ) : null}
                       <WorkflowIssueBadges draft={draft} />
 
                       {draft.workflow_last_message ? (
@@ -1011,6 +1017,15 @@ export default function ReportWritingHistoryPage() {
                     </div>
 
                     <div className="flex shrink-0 flex-wrap gap-2">
+                      {draft.workflow_mediref_status === "failed" && draft.workflow_status !== "running" &&
+                        ["approved", "uploaded_to_praktika"].includes(draft.status) && !draft.emailed_to_referrer_at ? (
+                        <RetryMedirefButton draftId={draft.id} onQueued={() => {
+                          setDrafts((current) => current.map((row) => row.id === draft.id ? {
+                            ...row, workflow_status: "running", workflow_mediref_status: "pending",
+                            workflow_error: null, workflow_last_message: "MediRef retry queued.",
+                          } : row))
+                        }} />
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => downloadPdf(draft)}

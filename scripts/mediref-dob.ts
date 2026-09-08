@@ -6,11 +6,73 @@ const timeout = 3000;
 
 async function readValue(field: Locator) {
   return field.evaluate((element) => {
+    if (element.getAttribute("data-placeholder") === "true") return "";
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
       return element.value;
     }
     return element.getAttribute("aria-valuenow") ?? element.textContent ?? "";
   });
+}
+
+async function segmentStructure(field: Locator, part: string) {
+  const structure = await field.evaluate((element) => {
+    const native = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
+    const contentEditable = element.getAttribute("contenteditable");
+    const dataType = element.getAttribute("data-type");
+    const dataSegment = element.getAttribute("data-segment");
+    const role = element.getAttribute("role");
+    const type = element.getAttribute("type");
+    return {
+      tagName: element.tagName,
+      role: role === null ? null : ["spinbutton", "textbox"].includes(role) ? role : "other",
+      inputType: type === null ? null : ["text", "date", "number", "tel", "hidden"].includes(type) ? type : "other",
+      contentEditable: contentEditable === null ? null :
+        ["", "true", "false", "plaintext-only"].includes(contentEditable) ? contentEditable : "other",
+      isContentEditable: element instanceof HTMLElement && element.isContentEditable,
+      dataType: dataType === null ? null : ["day", "month", "year"].includes(dataType) ? dataType : "other",
+      dataSegment: dataSegment === null ? null : ["day", "month", "year"].includes(dataSegment) ? dataSegment : "other",
+      hasValueProperty: "value" in element,
+      stateSource: native ? "value" : element.hasAttribute("aria-valuenow") ? "aria-valuenow" : "textContent",
+      placeholder: element.getAttribute("data-placeholder") === "true",
+      readOnly: element.getAttribute("aria-readonly") === "true" || (native && element.readOnly),
+      native,
+    };
+  });
+  // Do not emit raw accessible labels: they can include patient information.
+  return { part, ...structure, visible: await field.isVisible(), disabled: !await field.isEnabled() };
+}
+
+function numericSegment(value: string) {
+  // Some date components include bidi formatting marks in their displayed text.
+  const clean = value.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").trim();
+  return /^\d+$/.test(clean) ? Number(clean) : null;
+}
+
+async function waitForSegment(field: Locator, expected: string) {
+  const deadline = Date.now() + timeout;
+  do {
+    if (numericSegment(await readValue(field)) === Number(expected)) return;
+    await field.page().waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error(failure);
+}
+
+async function replaceCustomSegment(field: Locator, contentEditable: boolean) {
+  await field.focus({ timeout });
+  // Date segments may delete one digit per Backspace and move focus when already empty.
+  // Check after each deletion and stop before pressing Backspace on a placeholder.
+  for (let count = 0; count < 4; count += 1) {
+    const before = await readValue(field);
+    if (numericSegment(before) === null) return;
+    if (contentEditable) await field.press("ControlOrMeta+A", { timeout });
+    await field.press("Backspace", { timeout });
+    const deadline = Date.now() + timeout;
+    while (await readValue(field) === before && Date.now() < deadline) {
+      await field.page().waitForTimeout(50);
+    }
+    if (await readValue(field) === before) throw new Error(failure);
+  }
+  if (numericSegment(await readValue(field)) !== null) throw new Error(failure);
 }
 
 function segment(group: Locator, part: string) {
@@ -32,6 +94,8 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
   if (!match) throw new Error(failure);
   const values = { day: match[3], month: match[2], year: match[1] };
 
+  let stage = "control discovery";
+  let operation = "discover";
   const diagnostics = { standardEditableInputs: 0, compositeGroups: 0, candidateSegments: 0, identifiedParts: [] as string[] };
   try {
     const standard = page.locator([
@@ -76,6 +140,7 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
     for (const field of await standard.all()) {
       if (!await usableStandard(field)) continue;
       const value = await field.getAttribute("type") === "date" ? iso : human;
+      stage = "standard entry";
       console.log("[MediRef] Entering DOB using standard input");
       await field.fill(value, { timeout });
       await field.press("Tab", { timeout });
@@ -96,21 +161,29 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
 
       console.log("[MediRef] Entering DOB using segmented date control");
       for (const part of ["day", "month", "year"] as const) {
+        stage = `${part} entry`;
+        operation = "inspect";
         const field = fields[part]!;
-        if (!await field.isEnabled() || await field.getAttribute("aria-readonly") === "true") {
-          throw new Error(failure);
-        }
-        const nativeInput = await field.evaluate((element) =>
-          element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement);
-        if (nativeInput) {
+        const structure = await segmentStructure(field, part);
+        console.log("[MediRef] DOB segment structure", structure);
+        if (structure.disabled || structure.readOnly) throw new Error(failure);
+        operation = "write";
+        if (structure.native) {
           await field.fill(values[part], { timeout });
         } else {
-          // Custom spinbuttons use keyboard events to update their component state.
+          if (!structure.isContentEditable && structure.role !== "spinbutton") throw new Error(failure);
+          operation = "clear";
+          await replaceCustomSegment(field, structure.isContentEditable);
+          operation = "write";
           await field.focus({ timeout });
-          await field.press("ArrowUp", { timeout });
           await field.pressSequentially(values[part], { timeout });
         }
+        operation = "verify";
+        await waitForSegment(field, values[part]);
+        console.log("[MediRef] DOB segment verified", { part });
       }
+      stage = "final verification";
+      operation = "leave control";
       await fields.year.press("Tab", { timeout });
       // Year need not be last in tab order. Commit on group exit before reading values.
       await group.evaluate((element) => {
@@ -118,18 +191,17 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
         if (active instanceof HTMLElement && element.contains(active)) active.blur();
       });
       for (const part of ["day", "month", "year"] as const) {
-        const actual = (await readValue(fields[part]!)).trim();
-        if (!/^\d+$/.test(actual) || Number(actual) !== Number(values[part])) {
-          throw new Error(failure);
-        }
+        operation = `verify ${part}`;
+        await waitForSegment(fields[part]!, values[part]);
       }
+      console.log("[MediRef] DOB final verification completed");
       return true;
     }
   } catch {
     // Playwright errors can include entered values and DOM text; keep patient data out of logs.
-    console.warn("[MediRef] DOB control entry failed", diagnostics);
+    console.warn("[MediRef] DOB control entry failed", { ...diagnostics, stage, operation });
     throw new Error(failure);
   }
-  console.warn("[MediRef] DOB control entry failed", diagnostics);
+  console.warn("[MediRef] DOB control entry failed", { ...diagnostics, stage, operation });
   throw new Error(failure);
 }

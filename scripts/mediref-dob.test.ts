@@ -23,28 +23,72 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
       assert.equal(await enter(), true);
       assert.deepEqual(await page.locator("input").evaluateAll((els) => els.map((el) => (el as HTMLInputElement).value)), ["06", "1990", "09"]);
     });
-    await t.test("keyboard-driven non-input spinbuttons", async () => {
-      // Synthetic keyboard fixture, not a captured MediRef DOM snapshot.
-      await page.setContent(`<div id="dob" role="group" data-date-field-input aria-label="DOB">
-        ${["month", "day", "year"].map((part) => `<span tabindex="0" role="spinbutton" aria-label="${part}" aria-valuenow="1">1</span>`).join("")}
-      </div>`);
-      await page.locator('[role="spinbutton"]').evaluateAll((elements) => {
-        for (const element of elements) {
-          let digits = "";
-          element.addEventListener("keydown", (event) => {
-            const key = (event as KeyboardEvent).key;
-            if (key === "ArrowUp") digits = "";
-            if (/^\d$/.test(key)) {
+    for (const tag of ["div", "span"]) {
+      await t.test(`contenteditable ${tag} segments with beforeinput, placeholders and auto-advance`, async () => {
+        // React Aria-style semantics, not a captured MediRef DOM or a claim about its library.
+        await page.setContent(`<div id="dob" role="group" data-date-field-input aria-label="DOB">
+          ${["month", "year", "day"].map((part) => `<${tag} tabindex="0" role="spinbutton"
+            contenteditable="true" data-type="${part}" aria-label="${part}, DOB"
+            aria-valuenow="${part === "year" ? "2001" : "12"}">${part === "year" ? "2001" : "12"}</${tag}>`).join("")}
+          </div><button>Next</button>`);
+        await page.locator('[role="spinbutton"]').evaluateAll((elements) => {
+          elements.forEach((element, index) => {
+            let digits = "";
+            let pending: ReturnType<typeof setTimeout>;
+            const part = element.getAttribute("data-type");
+            const max = part === "year" ? 9999 : part === "month" ? 12 : 31;
+            const state = { update(value: string) {
+              clearTimeout(pending);
+              pending = setTimeout(() => {
+                element.setAttribute("data-placeholder", String(!value));
+                // Aria-valuenow can remain populated while the display is a placeholder.
+                element.setAttribute("aria-valuenow", value ? String(Number(value)) : "1");
+                element.textContent = value || part;
+              }, 20);
+            } };
+            element.addEventListener("focus", () => { digits = ""; });
+            element.addEventListener("keydown", (event) => {
+              const key = event as KeyboardEvent;
+              if ((key.ctrlKey || key.metaKey) && key.key === "a") key.preventDefault();
+              if (key.key === "Backspace") {
+                key.preventDefault();
+                if (element.getAttribute("data-placeholder") === "true") {
+                  (elements[Math.max(0, index - 1)] as HTMLElement).focus();
+                } else {
+                  digits = (element.textContent || "").slice(0, -1);
+                  state.update(digits);
+                }
+              }
+              // Digits are handled only through beforeinput, never a fake keydown writer.
+            });
+            element.addEventListener("beforeinput", (event) => {
               event.preventDefault();
+              const key = (event as InputEvent).data;
+              if (!key || !/^\d+$/.test(key)) return;
               digits += key;
-              element.setAttribute("aria-valuenow", String(Number(digits)));
-              element.textContent = String(Number(digits));
-            }
+              if (Number(digits) > max) digits = key;
+              state.update(digits);
+              if (Number(digits + "0") > max || digits.length >= String(max).length) {
+                digits = "";
+                (elements[index + 1] as HTMLElement | undefined)?.focus();
+              }
+            });
           });
-        }
+        });
+        assert.equal(await enter(), true);
+        assert.deepEqual(await page.locator('[role="spinbutton"]').evaluateAll((els) =>
+          els.map((el) => ({ value: el.getAttribute("aria-valuenow"), hasValue: "value" in el }))),
+          [{ value: "6", hasValue: false }, { value: "1990", hasValue: false }, { value: "9", hasValue: false }]);
       });
+    }
+    await t.test("plain contenteditable segments verify textContent without a value property", async () => {
+      await page.setContent(`<div data-date-field-input>
+        <span contenteditable="true" data-type="day">31</span>
+        <span contenteditable="true" data-type="month">12</span>
+        <span contenteditable="true" data-type="year">2001</span>
+      </div><button>Next</button>`);
       assert.equal(await enter(), true);
-      assert.deepEqual(await page.locator('[role="spinbutton"]').evaluateAll((els) => els.map((el) => el.getAttribute("aria-valuenow"))), ["6", "9", "1990"]);
+      assert.deepEqual(await page.locator('[contenteditable]').allTextContents(), ["09", "06", "1990"]);
     });
     for (const composite of [false, true]) {
       await t.test(`waits for delayed ${composite ? "segments" : "standard input"}`, async () => {
@@ -86,10 +130,35 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         console.warn = originalWarn;
       }
       assert.deepEqual(warnings, [["[MediRef] DOB control entry failed", {
-        standardEditableInputs: 0, compositeGroups: 1, candidateSegments: 1, identifiedParts: ["day"],
+        standardEditableInputs: 0, compositeGroups: 1, candidateSegments: 1, identifiedParts: ["day"], stage: "control discovery", operation: "discover",
       }]]);
       assert.ok(!JSON.stringify(warnings).includes("private-patient-marker"));
       assert.ok(!JSON.stringify(warnings).includes("1990"));
+    });
+    await t.test("failure identifies month entry and never prints raw labels or DOB", async () => {
+      await page.setContent(`<div data-date-field-input>
+        <input aria-label="Day private-patient-marker">
+        <span role="spinbutton" tabindex="0" aria-label="Month private-patient-marker" aria-valuenow="12">12</span>
+        <input aria-label="Year private-patient-marker">
+      </div>`);
+      const logs: unknown[][] = [];
+      const originalLog = console.log;
+      const originalWarn = console.warn;
+      console.log = (...args: unknown[]) => { logs.push(args); };
+      console.warn = (...args: unknown[]) => { logs.push(args); };
+      try {
+        await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
+      } finally {
+        console.log = originalLog;
+        console.warn = originalWarn;
+      }
+      const diagnostic = logs.at(-1)?.[1] as { stage: string; operation: string };
+      assert.equal(diagnostic.stage, "month entry");
+      assert.equal(diagnostic.operation, "clear");
+      assert.ok(!JSON.stringify(logs).includes("private-patient-marker"));
+      assert.ok(!JSON.stringify(logs).includes("09/06/1990"));
+      assert.ok(!JSON.stringify(logs).includes("1990"));
+      assert.equal(await page.getByLabel(/Year/).inputValue(), "");
     });
     for (const [name, html] of [
       ["absent", "<input aria-label='Patient name'>"],
