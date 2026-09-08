@@ -334,24 +334,25 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           }
           operation = "write";
           await field.pressSequentially(values[part], { timeout });
+          if (part === "month" && structure.isContentEditable && keyboardYear) {
+            operation = "month_after_write_focus";
+            await logActiveSegment(group, operation, true);
+            if (!await segment(group, "month").evaluate(element => document.activeElement === element)) throw new Error(failure);
+          }
           if (part !== "year") await logActiveSegment(group, `after_${part}_entry`);
           if (structure.isContentEditable) {
             operation = "commit";
             if (part === "month" && keyboardYear) {
               operation = "month_pre_navigation_focus";
               await logActiveSegment(group, operation, true);
-              if (!await segment(group, "year").evaluate(element => document.activeElement === element)) {
-                if (!await field.evaluate(element => document.activeElement === element)) throw new Error(failure);
-                operation = "year_navigation_tab_started";
-                console.log(`[MediRef] DOB ${operation}`);
-                await page.keyboard.press("Tab");
-                operation = "year_navigation_tab_completed";
-                console.log(`[MediRef] DOB ${operation}`);
-                operation = "year_navigation_after_tab";
-                await logActiveSegment(group, operation, true);
-              } else {
-                console.log("[MediRef] DOB year_existing_focus_reused");
-              }
+              if (!await segment(group, "month").evaluate(element => document.activeElement === element)) throw new Error(failure);
+              operation = "year_navigation_tab_started";
+              console.log(`[MediRef] DOB ${operation}`);
+              await page.keyboard.press("Tab");
+              operation = "year_navigation_tab_completed";
+              console.log(`[MediRef] DOB ${operation}`);
+              operation = "year_navigation_after_tab";
+              await logActiveSegment(group, operation, true);
               // Tab commits month without losing our position in the composite.
               // Resolve both locators again in case the component rendered new nodes.
               if (!await segment(group, "year").evaluate(element => document.activeElement === element)) throw new Error(failure);
