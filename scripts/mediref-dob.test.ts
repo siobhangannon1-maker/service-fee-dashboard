@@ -50,7 +50,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
   await page.route("**/*", (route) => route.abort());
   const enter = () => enterPatientDob(page, "1990-06-09", "09/06/1990");
   try {
-    for (const mode of ["converges-on-blur", "reverts-on-blur", "persistent-conflict", "day-changes-on-blur", "month-changes-on-blur", "wrong-before-blur", "non-numeric-text", "consistent"]) {
+    for (const mode of ["converges-on-blur", "reverts-on-blur", "persistent-conflict", "day-changes-on-blur", "month-changes-on-blur", "wrong-before-blur", "non-numeric-text", "wrong-after-blur", "wrong-digit-count", "readonly-after-blur", "consistent"]) {
       await t.test(`provisional year commit: ${mode}`, async () => {
         await page.setContent(`<div data-date-field-input>
           <span role="spinbutton" contenteditable="true" data-segment="day" aria-valuenow="31">31</span>
@@ -70,6 +70,9 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
               setTimeout(() => {
                 if (mode === "reverts-on-blur") field.textContent = "2001";
                 field.setAttribute("aria-valuenow", String(Number(field.textContent)));
+                if (mode === "wrong-after-blur") field.textContent = "1980";
+                if (mode === "wrong-digit-count") field.textContent = "01990";
+                if (mode === "readonly-after-blur") field.setAttribute("aria-readonly", "true");
                 if (["day-changes-on-blur", "month-changes-on-blur"].includes(mode)) {
                   const changed = document.querySelector(mode === "day-changes-on-blur" ? '[data-segment="day"]' : '[data-segment="month"]')!;
                   changed.textContent = "08"; changed.setAttribute("aria-valuenow", "8");
@@ -83,16 +86,17 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         console.log = (...args: unknown[]) => { logs.push(args); };
         console.warn = (...args: unknown[]) => { logs.push(args); };
         try {
-          if (["converges-on-blur", "consistent"].includes(mode)) assert.equal(await enter(), true);
+          if (["converges-on-blur", "persistent-conflict", "consistent"].includes(mode)) assert.equal(await enter(), true);
           else await assert.rejects(enter, /Unable to enter patient DOB in MediRef date control/);
         } finally { console.log = originalLog; console.warn = originalWarn; }
         assert.equal(await page.locator("body").getAttribute("data-year-blurred"), ["wrong-before-blur", "non-numeric-text"].includes(mode) ? null : "true");
         if (!["wrong-before-blur", "non-numeric-text", "consistent"].includes(mode)) assert.deepEqual(logs.find(row => row[0] === "[MediRef] DOB year_provisional_acceptance")![1], { provisionalYearVisibleMatch: true });
         if (mode === "persistent-conflict") {
-          assert.equal((logs.at(-1)?.[1] as { operation: string }).operation, "year_post_blur_state_conflict");
+          assert.ok(logs.some(row => row[0] === "[MediRef] DOB final verification completed"));
           const flags = logs.find(row => row[0] === "[MediRef] DOB year_post_blur_classification")![1] as Record<string, boolean>;
           assert.equal(flags.year_post_blur_visible_value_persisted, true);
           assert.equal(flags.year_post_blur_aria_now_matches_expected, false);
+          assert.equal(flags.yearAriaStateDiffersFromVisible, true);
         }
         if (mode === "reverts-on-blur") {
           const flags = logs.find(row => row[0] === "[MediRef] DOB year_post_blur_classification")![1] as Record<string, boolean>;
@@ -489,7 +493,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         console.log = (...args: unknown[]) => { logs.push(args); };
         console.warn = (...args: unknown[]) => { logs.push(args); };
         try {
-          if (mode === "accepted") assert.equal(await enter(), true);
+          if (["accepted", "conflict"].includes(mode)) assert.equal(await enter(), true);
           else await assert.rejects(enter, /Unable to enter patient DOB in MediRef date control/);
         } finally {
           console.log = originalLog; console.warn = originalWarn;
@@ -500,7 +504,7 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         assert.equal(has("month_pre_navigation_focus"), false);
         assert.equal(has("year_selection_focus_started"), false);
         assert.equal(await page.locator("body").getAttribute("data-keyboard-used"), null);
-        if (mode === "accepted") {
+        if (["accepted", "conflict"].includes(mode)) {
           for (const part of ["day", "month", "year"]) {
             assert.deepEqual(logs.find(row => row[0] === `[MediRef] DOB ${part}_selection_safety`)![1],
               { activeElementIsPart: false, selectionInsidePart: true });
