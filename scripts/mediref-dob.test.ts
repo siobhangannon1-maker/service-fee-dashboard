@@ -294,6 +294,77 @@ test("MediRef DOB entry in an isolated local browser", async (t) => {
         assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB year_focus"));
       });
     }
+    for (const advance of [true, false]) {
+      await t.test(`natural year focus with ineffective programmatic focus: ${advance}`, async () => {
+        await page.setContent(`<div data-date-field-input>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="day" aria-valuenow="31">31</span>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="month" aria-valuenow="12">12</span>
+          <span role="spinbutton" contenteditable="true" tabindex="0" data-segment="year" aria-valuenow="2001">2001</span>
+        </div><button>Next</button>`);
+        await page.locator('[data-date-field-input]').evaluate((group, advance) => {
+          const day = group.querySelector<HTMLElement>('[data-segment="day"]')!;
+          const month = group.querySelector<HTMLElement>('[data-segment="month"]')!;
+          const year = group.querySelector<HTMLElement>('[data-segment="year"]')!;
+          // Component accepts keyboard navigation but redirects independent focus attempts.
+          const nativeFocus = HTMLElement.prototype.focus;
+          let navigationAllowed = false;
+          month.addEventListener("keydown", event => {
+            if (event.key === "Tab" && !event.shiftKey) navigationAllowed = true;
+          });
+          year.addEventListener("focus", () => {
+            if (!navigationAllowed) {
+              year.setAttribute("data-focus-attempts", String(Number(year.getAttribute("data-focus-attempts") || 0) + 1));
+              nativeFocus.call(document.querySelector("button"));
+            }
+            navigationAllowed = false;
+          });
+          for (const field of [day, month, year]) {
+            let digits = 0;
+            field.addEventListener("focus", () => { digits = 0; });
+            field.addEventListener("input", () => {
+              field.setAttribute("aria-valuenow", String(Number(field.textContent)));
+              digits++;
+              if (advance && digits === 2 && field !== year) {
+                if (field === month) navigationAllowed = true;
+                nativeFocus.call(field === day ? month : year);
+              }
+            });
+          }
+        }, advance);
+        const year = page.locator('[data-segment="year"]');
+        await year.focus();
+        assert.equal(await year.evaluate(element => document.activeElement === element), false);
+        // Native Tab navigation works in this explicit fixture, without calling year.focus().
+        await page.locator('[data-segment="month"]').focus();
+        await page.keyboard.press("Tab");
+        assert.equal(await year.evaluate(element => document.activeElement === element), true);
+        await page.keyboard.press("Shift+Tab");
+        assert.equal(await page.locator('[data-segment="month"]').evaluate(element => document.activeElement === element), true);
+        await page.locator("button").focus();
+        const attempts = await year.getAttribute("data-focus-attempts");
+        const logs: unknown[][] = [];
+        const originalLog = console.log; const originalWarn = console.warn;
+        console.log = (...args: unknown[]) => { logs.push(args); };
+        console.warn = (...args: unknown[]) => { logs.push(args); };
+        try {
+          if (advance) assert.equal(await enter(), true);
+          else await assert.rejects(enter, { message: "Unable to enter patient DOB in MediRef date control" });
+        } finally { console.log = originalLog; console.warn = originalWarn; }
+        if (advance) {
+          assert.equal(await year.getAttribute("data-focus-attempts"), attempts);
+          assert.equal(await year.getAttribute("aria-valuenow"), "1990");
+          assert.ok(logs.some(entry => entry[0] === "[MediRef] DOB year_existing_focus_reused"));
+          for (const phase of ["after_month_entry", "after_month_verify", "before_year_entry"]) {
+            const info = logs.find(entry => entry[0] === `[MediRef] DOB ${phase}`)?.[1] as { matches: { year: boolean } };
+            assert.equal(info.matches.year, true);
+          }
+        } else {
+          assert.equal(await year.getAttribute("aria-valuenow"), "2001");
+          assert.ok(!logs.some(entry => entry[0] === "[MediRef] DOB year_write_started"));
+        }
+        assert.ok(!JSON.stringify(logs).includes("1990"));
+      });
+    }
     await t.test("plain contenteditable segments verify textContent without a value property", async () => {
       await page.setContent(`<div data-date-field-input>
         <span contenteditable="true" data-type="day">31</span>

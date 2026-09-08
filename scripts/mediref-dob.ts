@@ -138,6 +138,27 @@ function segment(group: Locator, part: string) {
     .or(group.locator(`[data-type="${part}"], [data-segment="${part}"]`));
 }
 
+async function logActiveSegment(group: Locator, phase: string) {
+  const matches: Record<string, boolean> = {};
+  for (const part of ["day", "month", "year"]) {
+    const field = segment(group, part);
+    matches[part] = await field.count() === 1 && await field.evaluate(element => element === document.activeElement);
+  }
+  const structure = await group.evaluate(element => {
+    const active = document.activeElement;
+    const role = active?.getAttribute("role");
+    const part = active?.getAttribute("data-segment");
+    return {
+      tagName: active?.tagName ?? null,
+      role: role == null ? null : ["spinbutton", "textbox", "group", "button"].includes(role) ? role : "other",
+      dataSegment: part == null ? null : ["day", "month", "year"].includes(part) ? part : "other",
+      contentEditable: active instanceof HTMLElement && active.isContentEditable,
+      insideDobGroup: Boolean(active && element.contains(active)),
+    };
+  });
+  console.log(`[MediRef] DOB ${phase}`, { ...structure, matches });
+}
+
 async function usableStandard(field: Locator) {
   return await field.evaluate((element, selector) =>
     (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
@@ -217,16 +238,19 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
       }
       if (!fields.day || !fields.month || !fields.year) continue;
 
+      let usedCustomYear = false;
       console.log("[MediRef] Entering DOB using segmented date control");
       for (const part of ["day", "month", "year"] as const) {
         stage = `${part} entry`;
         operation = "inspect";
+        if (part === "year") await logActiveSegment(group, "before_year_entry");
         const field = fields[part]!;
         const structure = await segmentStructure(field, part);
         console.log("[MediRef] DOB segment structure", structure);
         if (structure.disabled || structure.readOnly) throw new Error(failure);
         const customYear = part === "year" && structure.isContentEditable && structure.role === "spinbutton";
         if (customYear) {
+          usedCustomYear = true;
           const yearStep = (name: string) => {
             operation = name;
             console.log(`[MediRef] DOB ${name}`);
@@ -241,19 +265,23 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
             yearStep("year_resolved");
             operation = "year_read_before_write";
             yearState = await observeYear(year, "before write");
-            yearStep("year_focus_attempt_started");
-            try {
-              await year.focus({ timeout });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : "";
-              console.log("[MediRef] DOB year_focus_attempt_failed", {
-                detached: await originalYear.evaluate(element => !element.isConnected).catch(() => null),
-                timeout: error instanceof Error && error.name === "TimeoutError",
-                pointerInterceptionReported: /intercepts pointer events/i.test(message),
-              });
-              throw new Error(failure);
+            if (await year.evaluate(element => element === document.activeElement)) {
+              yearStep("year_existing_focus_reused");
+            } else {
+              yearStep("year_focus_attempt_started");
+              try {
+                await year.focus({ timeout });
+              } catch (error) {
+                const message = error instanceof Error ? error.message : "";
+                console.log("[MediRef] DOB year_focus_attempt_failed", {
+                  detached: await originalYear.evaluate(element => !element.isConnected).catch(() => null),
+                  timeout: error instanceof Error && error.name === "TimeoutError",
+                  pointerInterceptionReported: /intercepts pointer events/i.test(message),
+                });
+                throw new Error(failure);
+              }
+              yearStep("year_focus_attempt_completed");
             }
-            yearStep("year_focus_attempt_completed");
             operation = "year_focus_inspection";
             const focus = await year.evaluate((element, { original, previous }) => ({
               activeElementIsYear: document.activeElement === element,
@@ -269,7 +297,7 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
             await originalYear.dispose();
           }
           yearStep("year_select_all_started");
-          await year.press("ControlOrMeta+A", { timeout });
+          await page.keyboard.press("ControlOrMeta+A");
           yearStep("year_select_all_sent");
           yearStep("year_selection_inspection_started");
           const selectionState = await year.evaluate((element) => {
@@ -297,7 +325,11 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           }
           yearStep("year_selection_verified");
           yearStep("year_write_started");
-          await year.pressSequentially(values.year, { timeout });
+          // Preserve the confirmed native focus; Locator typing would focus again.
+          for (const digit of values.year) {
+            if (!await year.evaluate(element => document.activeElement === element)) throw new Error(failure);
+            await page.keyboard.press(digit);
+          }
           yearStep("year_write_completed");
           yearState = await observeYear(year, "year_write", yearState);
           operation = "year_verify";
@@ -319,6 +351,7 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
         operation = "write";
         if (structure.native) {
           await field.fill(values[part], { timeout });
+          if (part !== "year") await logActiveSegment(group, `after_${part}_entry`);
         } else {
           if (!structure.isContentEditable && structure.role !== "spinbutton") throw new Error(failure);
           if (structure.isContentEditable) {
@@ -333,6 +366,7 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           }
           operation = "write";
           await field.pressSequentially(values[part], { timeout });
+          if (part !== "year") await logActiveSegment(group, `after_${part}_entry`);
           if (structure.isContentEditable) {
             operation = "commit";
             await field.blur({ timeout });
@@ -340,11 +374,13 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
         }
         operation = "verify";
         await waitForSegment(field, values[part]);
+        if (part !== "year") await logActiveSegment(group, `after_${part}_verify`);
         console.log("[MediRef] DOB segment verified", { part });
       }
       stage = "final verification";
       operation = "leave control";
-      await fields.year.press("Tab", { timeout });
+      if (!usedCustomYear) await fields.year.press("Tab", { timeout });
+      else if (await fields.year.evaluate(element => document.activeElement === element)) await page.keyboard.press("Tab");
       // Year need not be last in tab order. Commit on group exit before reading values.
       await group.evaluate((element) => {
         const active = document.activeElement;
