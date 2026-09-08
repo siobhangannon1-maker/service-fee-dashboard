@@ -235,23 +235,37 @@ export async function enterPatientDob(page: Page, iso: string, human: string) {
           const year = segment(group, "year");
           const originalYear = await year.elementHandle({ timeout });
           if (!originalYear) throw new Error(failure);
+          const previousActive = await page.evaluateHandle(() => document.activeElement);
           let yearState: Array<string | null>;
           try {
             yearStep("year_resolved");
             operation = "year_read_before_write";
             yearState = await observeYear(year, "before write");
-            yearStep("year_click_started");
-            await year.click({ timeout });
-            yearStep("year_clicked");
+            yearStep("year_focus_attempt_started");
+            try {
+              await year.focus({ timeout });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "";
+              console.log("[MediRef] DOB year_focus_attempt_failed", {
+                detached: await originalYear.evaluate(element => !element.isConnected).catch(() => null),
+                timeout: error instanceof Error && error.name === "TimeoutError",
+                pointerInterceptionReported: /intercepts pointer events/i.test(message),
+              });
+              throw new Error(failure);
+            }
+            yearStep("year_focus_attempt_completed");
             operation = "year_focus_inspection";
-            const focus = await year.evaluate((element, original) => ({
+            const focus = await year.evaluate((element, { original, previous }) => ({
               activeElementIsYear: document.activeElement === element,
-              nodeChangedAfterClick: element !== original,
-            }), originalYear);
+              nodeChangedAfterFocus: element !== original,
+              originalNodeDetached: !original.isConnected,
+              activeElementChanged: document.activeElement !== previous,
+            }), { original: originalYear, previous: previousActive });
             console.log("[MediRef] DOB year_focus", focus);
             if (!focus.activeElementIsYear) throw new Error(failure);
-            yearStep("year_focus_verified");
+            yearStep("year_active_element_verified");
           } finally {
+            await previousActive.dispose();
             await originalYear.dispose();
           }
           yearStep("year_select_all_started");
