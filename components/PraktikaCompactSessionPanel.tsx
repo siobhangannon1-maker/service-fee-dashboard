@@ -44,7 +44,7 @@ function isConnected(status: SessionStatus) {
 function needsLogin(status: SessionStatus) { return status === "waiting_for_credentials"; }
 
 function statusLabel(status: SessionStatus) {
-  if (status === "checking_connection") return "Connection issue";
+  if (status === "checking_connection") return "Loading status…";
   if (status === "connected") return "Connected";
   if (["idle", "not_started", "expired"].includes(status)) return "Not connected";
   if (status === "waiting_for_mfa") return "MFA needed";

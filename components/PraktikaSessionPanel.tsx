@@ -100,7 +100,7 @@ function friendlyRelativeTime(value?: string | null) {
 }
 
 function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
-  if (state.status === "checking_connection") return { label: "Connection issue", headline: "Connection issue", message: "Connection issue", tone: "border-slate-200 bg-slate-50 text-slate-950", dot: "bg-slate-400" };
+  if (state.status === "checking_connection") return { label: "Loading status…", headline: "Loading status…", message: "Loading status…", tone: "border-slate-200 bg-slate-50 text-slate-950", dot: "bg-slate-400" };
   if (isReconnectStatus(state.status)) {
     return {
       label: "Reconnecting",

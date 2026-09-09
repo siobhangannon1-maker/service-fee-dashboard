@@ -85,7 +85,7 @@ function connectionState(
 
 function connectionLabel(state: ConnectionDisplayState) {
   if (state === "loading") return "Loading status…";
-  if (state === "checking") return "Connection issue";
+  if (state === "checking") return "Loading status…";
   if (state === "connected") return "Connected";
   if (state === "connecting") return "Connection underway";
   if (state === "idle") return "Not connected";
@@ -489,7 +489,7 @@ function PraktikaToolsPopupContent({
 
               {session?.message ? (
                 <p className="mt-2 text-xs text-slate-600">
-                  {currentStatus === "checking_connection" ? "Connection issue" : currentStatus === "not_started" ? "Not connected. Connect before syncing." : session.message}
+                  {currentStatus === "checking_connection" ? "Loading status…" : currentStatus === "not_started" ? "Not connected. Connect before syncing." : session.message}
                 </p>
               ) : null}
 

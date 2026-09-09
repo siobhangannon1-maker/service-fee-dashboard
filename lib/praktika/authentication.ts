@@ -19,8 +19,8 @@ export type PraktikaConnectionRow = HelperHealth & {
 export type EffectivePraktikaStatus = "connected" | "checking_connection" | "refreshing" | "refresh_requested" | "idle" |
   "not_started" | "waiting_for_credentials" | "waiting_for_mfa" | "expired" | "error";
 
-// Stored status is the login/workflow phase. Live connection additionally needs
-// the current owner's lease AND recent GST proof. Cookies/URLs cannot grant proof.
+// Operational availability and GST proof freshness are separate truths.
+// Only authenticationVerified may be used as positive authentication evidence.
 export function derivePraktikaConnection(row: PraktikaConnectionRow, now = Date.now()) {
   const helperAlive = hasLivePraktikaHelper(row, now);
   const authenticationVerified = hasFreshPraktikaAuthentication(row, now);
@@ -35,15 +35,12 @@ export function derivePraktikaConnection(row: PraktikaConnectionRow, now = Date.
   } else if (!helperAlive) {
     status = row.cookie || row.current_url ? "idle" : "not_started";
     message = status === "idle" ? "Praktika helper is idle. Reconnect or queue work to verify the saved session." : "No live Praktika helper is available.";
-  } else if (!authenticationVerified) {
-    status = "checking_connection";
-    message = "Connection issue";
   } else if (row.status === "refreshing") {
     status = "refreshing";
     message = "Praktika authentication is unverified. Reconnect or queue work to check it.";
   } else {
     status = "connected";
-    message = "Praktika helper is live and authentication was recently verified.";
+    message = "Praktika helper is available. Authentication is checked before work.";
   }
   return { status, message, connected: status === "connected", helperAlive, authenticationVerified };
 }

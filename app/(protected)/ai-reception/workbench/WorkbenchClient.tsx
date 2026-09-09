@@ -171,7 +171,7 @@ type PraktikaSessionState = {
 
 function praktikaSessionStatusLabel(status: PraktikaSessionState["status"]) {
   switch (status) {
-    case "checking_connection": return "Connection issue";
+    case "checking_connection": return "Loading status…";
     case "connected": return "Connected";
     case "waiting_for_mfa": return "MFA required";
     case "waiting_for_credentials":
@@ -499,7 +499,7 @@ function PraktikaWorkbenchPanel({
             Session status: {praktikaSessionStatusLabel(state.status)}
           </h2>
 
-          <p className="mt-1 max-w-3xl text-sm opacity-85">{state.status === "checking_connection" ? "Connection issue" : state.status === "not_started" || state.status === "idle" ? "Not connected." : state.message}</p>
+          <p className="mt-1 max-w-3xl text-sm opacity-85">{state.status === "checking_connection" ? "Loading status…" : state.status === "not_started" || state.status === "idle" ? "Not connected." : state.message}</p>
 
           {state.updatedAt ? (
             <p className="mt-1 text-xs opacity-70">

@@ -122,7 +122,7 @@ test("Workbench understands current API status vocabulary",async()=>{
  assert.equal(label("waiting_for_credentials"),"Login required");
 });
 
-test("proof timer expires without a completed poll and checks again on visibility/focus", async () => {
+test("lease timer expires without a completed poll and checks again on visibility/focus", async () => {
  const source=await read("lib/praktika/use-status-expiry.ts");
  let now=1_000_000; let expired=0; let scheduled: (()=>void)|undefined;
  const listeners: Record<string,()=>void>={};
@@ -134,10 +134,10 @@ test("proof timer expires without a completed poll and checks again on visibilit
  });
  const proof={status:"connected",connected:true,authenticatedAt:new Date(now-119000).toISOString(),helperHeartbeatAt:new Date(now).toISOString()};
  assert.equal(arm(proof),"connected");assert.equal(expired,0);
- now+=1000;scheduled!();assert.equal(expired,1);
- assert.equal(arm(proof),"checking_connection");
+ now+=1000;scheduled!();assert.equal(expired,0);
+ assert.equal(arm(proof),"connected");
  assert.equal(arm({...proof,authenticatedAt:new Date(now).toISOString(),helperHeartbeatAt:new Date(now).toISOString()}),"connected");
- now+=90000;listeners.visibilitychange();assert.equal(expired,3);
+ now+=90000;listeners.visibilitychange();assert.equal(expired,1);
  assert.equal(arm({status:"connected",connected:true}),"not_started");
  assert.equal(arm({status:"idle"}),"not_started");
  assert.equal(arm({status:"not_started"}),"not_started");
