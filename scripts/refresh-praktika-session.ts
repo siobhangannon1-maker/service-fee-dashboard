@@ -241,10 +241,10 @@ const ensureAuthenticated = createPraktikaAuthenticationGate({
       if (!shuttingDown && ownedContext && cookieSnapshots) {
         const verifiedCookies = await ownedContext.cookies(PRAKTIKA_BASE_URL);
         await assertOwned();
-        if (!shuttingDown && !cookieSnapshots.capture(verifiedCookies, helperInstanceId!))
-          console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_failed: true, reason: "capture_unavailable" }));
-      }
-    } catch { console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_failed: true, reason: "capture_unavailable" })); }
+        if (!shuttingDown) cookieSnapshots.capture(verifiedCookies, helperInstanceId!);
+        else console.log("[Praktika snapshot]", JSON.stringify({event:"snapshot_capture_skipped",reason:"shutdown_started"}));
+      } else console.log("[Praktika snapshot]", JSON.stringify({event:"snapshot_capture_skipped",reason:shuttingDown?"shutdown_started":!ownedContext?"context_unavailable":"store_unavailable"}));
+    } catch { console.log("[Praktika snapshot]", JSON.stringify({ event: "snapshot_capture_failed", reason: ownershipLost ? "ownership_lost" : "cookie_read_unavailable" })); }
   },
   recordFailure: async (status) => {
     operationalThisGeneration = false;

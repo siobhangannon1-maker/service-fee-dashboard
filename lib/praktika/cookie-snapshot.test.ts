@@ -70,3 +70,19 @@ test('production one-shot restore uses consumed source binding and GST, never re
   if(injections)assert.equal(recoveries,1);
  }
 });
+
+test('capture diagnostics distinguish success, validation skip, deletion and filesystem failure without secrets',t=>{
+ const root=fixture(t),events:unknown[]=[];
+ const store=createCookieSnapshotStore(root,binding,event=>events.push(event));
+ assert.equal(store.capture(cookies,'source'),true);
+ assert.equal(store.capture(cookies.slice(0,1),'source'),false);
+ const output=JSON.stringify(events);
+ assert.match(output,/snapshot_capture_succeeded/);assert.match(output,/missing_required_cookies/);assert.match(output,/capture_invalid/);
+ assert.match(output,/required_cookie_count/);assert.match(output,/snapshot_path_hash/);
+ assert.doesNotMatch(output,/SYNTHETIC_SECRET/);assert.ok(!output.includes(root));
+ const blocked=path.join(root,'blocked');writeFileSync(blocked,'fixture');
+ const failures:unknown[]=[];
+ assert.equal(createCookieSnapshotStore(blocked,binding,e=>failures.push(e)).capture(cookies,'source'),false);
+ assert.match(JSON.stringify(failures),/snapshot_capture_failed/);assert.match(JSON.stringify(failures),/directory/);
+ assert.ok(!JSON.stringify(failures).includes(blocked));
+});

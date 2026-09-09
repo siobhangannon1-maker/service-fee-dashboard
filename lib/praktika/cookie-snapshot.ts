@@ -19,29 +19,44 @@ function cookies(value: unknown, origin: string): Cookie[] | null {
  }
  return result;
 }
-export function createCookieSnapshotStore(storageRoot: string, binding: SnapshotBinding) {
+type Diagnostic = { event: string; reason?: string; required_cookie_count?: number; snapshot_path_hash: string; stage?: string };
+export function createCookieSnapshotStore(storageRoot: string, binding: SnapshotBinding,
+ log: (event: Diagnostic) => void = event => console.log('[Praktika snapshot]', JSON.stringify(event))) {
  const dir = path.join(storageRoot, 'praktika-auth-snapshots');
  // One slot per session: binding changes invalidate the previous slot, not another user's slot.
  const file = path.join(dir, createHash('sha256').update(binding.sessionId).digest('hex') + '.json');
+ const emit = (event: string, details: Omit<Diagnostic, 'event' | 'snapshot_path_hash'> = {}) => log({event,snapshot_path_hash:createHash('sha256').update(file).digest('hex'),...details});
  const sameBinding = (v: unknown) => record(v) && Object.entries(binding).every(([k,x])=>v[k]===x);
  function secureDirectory() {
   mkdirSync(dir,{recursive:true,mode:0o700});
   if (!lstatSync(dir).isDirectory() || lstatSync(dir).isSymbolicLink()) throw Error();
   chmodSync(dir,0o700);
  }
- function invalidate() { try { secureDirectory(); unlinkSync(file); } catch { /* Missing or inaccessible snapshots are never trusted. */ } }
+ function invalidate(reason: 'authentication_challenge' | 'binding_mismatch' | 'stale' | 'invalid' | 'capture_invalid' = 'authentication_challenge') {
+  try { secureDirectory(); unlinkSync(file); emit('snapshot_invalidated',{reason}); }
+  catch(e) { if (!record(e) || e.code !== 'ENOENT') emit('snapshot_invalidation_failed',{reason:'io_failure'}); }
+ }
  return {
   invalidate,
   capture(verifiedCookies: Cookie[], sourceGeneration: string, now = Date.now()): boolean {
-   const selected = cookies(verifiedCookies.filter(c=>names.includes(c.name)), binding.origin);
-   if (!selected) { invalidate(); return false; }
+   const allowed = verifiedCookies.filter(c=>names.includes(c.name));
+   const required_cookie_count = new Set(allowed.map(c=>c.name)).size;
+   emit('snapshot_capture_started',{required_cookie_count});
+   const selected = cookies(allowed, binding.origin);
+   if (!selected) {
+    const reason = required_cookie_count !== 2 ? 'missing_required_cookies' : allowed.length !== 2 ? 'duplicate_auth_cookies' : 'cookie_attributes_rejected';
+    emit('snapshot_capture_skipped',{required_cookie_count,reason});
+    invalidate('capture_invalid'); return false;
+   }
    let temp: string | undefined;
+   let stage = 'directory';
    try {
     secureDirectory(); temp=file+'.'+randomUUID()+'.tmp';
+    stage='open';
     const fd=openSync(temp,'wx',0o600);
-    try { writeFileSync(fd,JSON.stringify({version:1,binding,sourceGeneration,capturedAt:now,cookies:selected})); fsyncSync(fd); } finally { closeSync(fd); }
-    renameSync(temp,file);return true;
-   } catch { return false; }
+    try { stage='write'; writeFileSync(fd,JSON.stringify({version:1,binding,sourceGeneration,capturedAt:now,cookies:selected})); stage='flush'; fsyncSync(fd); } finally { closeSync(fd); }
+    stage='rename'; renameSync(temp,file); emit('snapshot_capture_succeeded',{required_cookie_count}); return true;
+   } catch(e) { emit('snapshot_capture_failed',{stage,reason:record(e)&&['EACCES','EPERM','ENOSPC','EROFS'].includes(String(e.code))?String(e.code):'io_failure'}); return false; }
    finally { if(temp)try{unlinkSync(temp);}catch{} }
   },
   load(sourceGeneration: string, now = Date.now()): { cookies: Cookie[]; reason?: never } | { cookies: null; reason: SnapshotReason } {
@@ -52,11 +67,11 @@ export function createCookieSnapshotStore(storageRoot: string, binding: Snapshot
     const stat=fstatSync(fd);if(!stat.isFile() || stat.size>65536 || (stat.mode & 0o077)!==0) return {cookies:null,reason:'invalid'};
     const data: unknown=JSON.parse(readFileSync(fd,'utf8'));
     if(!record(data) || data.version!==1 || typeof data.capturedAt!=='number') return {cookies:null,reason:'invalid'};
-    if(!sameBinding(data.binding)) { invalidate();return {cookies:null,reason:'binding_mismatch'}; }
+    if(!sameBinding(data.binding)) { invalidate('binding_mismatch');return {cookies:null,reason:'binding_mismatch'}; }
     if(data.sourceGeneration!==sourceGeneration) return {cookies:null,reason:'generation_mismatch'};
-    if(!Number.isFinite(data.capturedAt) || data.capturedAt>now || now-data.capturedAt>=COOKIE_SNAPSHOT_MAX_AGE_MS) {invalidate();return {cookies:null,reason:'stale'};}
+    if(!Number.isFinite(data.capturedAt) || data.capturedAt>now || now-data.capturedAt>=COOKIE_SNAPSHOT_MAX_AGE_MS) {invalidate('stale');return {cookies:null,reason:'stale'};}
     const selected=cookies(data.cookies,binding.origin);
-    if(!selected || selected.some(c=>c.expires!==-1 && c.expires*1000<=now)) {invalidate();return {cookies:null,reason:'invalid'};}
+    if(!selected || selected.some(c=>c.expires!==-1 && c.expires*1000<=now)) {invalidate('invalid');return {cookies:null,reason:'invalid'};}
     return {cookies:selected};
    } catch(e) { return {cookies:null,reason:record(e)&&e.code==='ENOENT'?'missing':'io_failure'}; }
    finally {if(fd!==undefined)closeSync(fd);}
