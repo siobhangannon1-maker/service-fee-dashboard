@@ -1,3 +1,4 @@
+import { ApiAuthorizationError, requireApiUser } from "@/lib/auth";
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -7,6 +8,7 @@ function normalise(value: string | null | undefined) {
 
 export async function GET(request: NextRequest) {
   try {
+    await requireApiUser();
     const query = (request.nextUrl.searchParams.get("q") || "").trim();
 
     if (query.length < 2) {
@@ -59,7 +61,7 @@ export async function GET(request: NextRequest) {
       .order("first_name", { ascending: true });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: "Patient search failed." }, { status: 500 });
     }
 
     const filtered = (data || []).filter((patient) => {
@@ -108,10 +110,13 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (error instanceof ApiAuthorizationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json(
       {
         error:
-          error instanceof Error ? error.message : "Patient search failed.",
+          "Patient search failed.",
       },
       { status: 500 }
     );

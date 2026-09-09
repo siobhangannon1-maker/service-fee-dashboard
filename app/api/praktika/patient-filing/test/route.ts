@@ -1,3 +1,4 @@
+import { ApiAuthorizationError, requireApiUser } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import {
   uploadPatientCommunicationFile,
@@ -45,6 +46,7 @@ function isPdf(file: File) {
 
 export async function POST(request: Request) {
   try {
+    await requireApiUser();
     const formData = await request.formData();
 
     const patientId = String(formData.get("patientId") ?? "").trim();
@@ -116,12 +118,14 @@ export async function POST(request: Request) {
       noteResult,
     });
   } catch (error: any) {
-    console.error("Praktika assisted filing failed:", error);
+    if (error instanceof ApiAuthorizationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
 
     return NextResponse.json(
       {
         ok: false,
-        error: error?.message || "Praktika assisted filing failed.",
+        error: "Praktika assisted filing failed.",
       },
       { status: 500 }
     );

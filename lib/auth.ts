@@ -62,3 +62,26 @@ export async function requireRole(allowedRoles: AppRole[]) {
 
   return { supabase, user, role: userRole };
 }
+
+// Route handlers need JSON errors, rather than the page helpers' redirects.
+// Identity and roles use the same verified server client/database as requireRole.
+export class ApiAuthorizationError extends Error {
+  constructor(public status: 401 | 403, message: string) { super(message); }
+}
+
+export async function requireApiUser() {
+  const supabase = await createClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user) throw new ApiAuthorizationError(401, "Authentication required.");
+  return { supabase, user };
+}
+
+export async function requireApiRole(allowedRoles: AppRole[]) {
+  const { supabase, user } = await requireApiUser();
+  const { data, error } = await supabase.from("user_roles").select("role")
+    .eq("user_id", user.id).maybeSingle();
+  if (error || !data || !allowedRoles.includes(data.role as AppRole)) {
+    throw new ApiAuthorizationError(403, "Access denied.");
+  }
+  return { supabase, user, role: data.role as AppRole };
+}

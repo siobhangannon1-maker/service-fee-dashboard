@@ -1,3 +1,4 @@
+import { ApiAuthorizationError, requireApiRole } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { autoFileInboxItemToPraktika } from "@/lib/ai/brain/praktikaAutoFile";
 
@@ -5,6 +6,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
+    await requireApiRole(["super_admin"]);
     const body = await request.json();
 
     const inboxItemId = String(body.inboxItemId || "").trim();
@@ -24,12 +26,15 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result);
   } catch (error: any) {
-    console.error("Praktika inbox filing failed:", error);
+    if (error instanceof ApiAuthorizationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
 
     return NextResponse.json(
       {
         ok: false,
-        error: error?.message || "Praktika inbox filing failed.",
+        error: "Praktika inbox filing failed.",
       },
       { status: 500 }
     );

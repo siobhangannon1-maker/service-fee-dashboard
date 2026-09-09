@@ -1,3 +1,4 @@
+import { ApiAuthorizationError, requireApiRole } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { autoFileInboxItemToPraktika } from "@/lib/ai/brain/praktikaAutoFile";
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
+    await requireApiRole(["super_admin"]);
     const mode = await getCurrentUserPraktikaSessionMode();
     const body = await request.json();
 
@@ -43,7 +45,7 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: "Praktika filing failed." }, { status: 500 });
     }
 
     await supabaseAdmin.from("ai_workbench_audit_events").insert({
@@ -73,7 +75,7 @@ export async function POST(request: Request) {
         },
       );
     } catch (error: any) {
-      filingError = error?.message || "Auto filing failed after match confirmation.";
+      filingError = "Auto filing failed after match confirmation.";
 
       await supabaseAdmin.from("ai_workbench_audit_events").insert({
         inbox_item_id: inboxItemId,
@@ -103,8 +105,11 @@ export async function POST(request: Request) {
         : "Patient match confirmed and attachments filed to Praktika.",
     });
   } catch (error: any) {
+    if (error instanceof ApiAuthorizationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json(
-      { error: error?.message || "Failed to confirm Praktika match." },
+      { error: "Failed to confirm Praktika match." },
       { status: 500 },
     );
   }

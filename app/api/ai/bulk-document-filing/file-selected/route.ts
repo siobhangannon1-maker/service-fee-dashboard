@@ -1,3 +1,4 @@
+import { ApiAuthorizationError, requireApiRole } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { autoFileInboxItemToPraktika } from "@/lib/ai/brain/praktikaAutoFile";
 import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
@@ -8,6 +9,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
+    await requireApiRole(["super_admin"]);
     const mode = await getCurrentUserPraktikaSessionMode();
     const body = await request.json();
     const inboxItemIds = Array.isArray(body.inboxItemIds)
@@ -45,7 +47,7 @@ export async function POST(request: Request) {
         results.push({
           inboxItemId,
           ok: false,
-          error: error?.message || "Filing failed.",
+          error: "Filing failed.",
         });
       }
     }
@@ -57,12 +59,15 @@ export async function POST(request: Request) {
       results,
     });
   } catch (error: any) {
-    console.error("Bulk filing failed:", error);
+    if (error instanceof ApiAuthorizationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
 
     return NextResponse.json(
       {
         ok: false,
-        error: error?.message || "Bulk filing failed.",
+        error: "Bulk filing failed.",
       },
       { status: 500 },
     );

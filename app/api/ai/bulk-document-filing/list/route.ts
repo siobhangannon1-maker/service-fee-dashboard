@@ -1,3 +1,4 @@
+import { ApiAuthorizationError, requireApiRole } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -5,6 +6,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   try {
+    await requireApiRole(["super_admin"]);
     const url = new URL(request.url);
     const batchId = String(url.searchParams.get("batchId") || "").trim();
 
@@ -49,10 +51,13 @@ export async function GET(request: Request) {
       items: data || [],
     });
   } catch (error: any) {
+    if (error instanceof ApiAuthorizationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json(
       {
         ok: false,
-        error: error?.message || "Failed to load bulk filing batch.",
+        error: "Failed to load bulk filing batch.",
       },
       { status: 500 },
     );

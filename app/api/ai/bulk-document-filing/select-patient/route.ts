@@ -1,3 +1,4 @@
+import { ApiAuthorizationError, requireApiRole } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -5,6 +6,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
+    await requireApiRole(["super_admin"]);
     const body = await request.json();
 
     const inboxItemId = String(body.inboxItemId || "").trim();
@@ -58,10 +60,13 @@ export async function POST(request: Request) {
       item: data,
     });
   } catch (error: any) {
+    if (error instanceof ApiAuthorizationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json(
       {
         ok: false,
-        error: error?.message || "Failed to select patient.",
+        error: "Failed to select patient.",
       },
       { status: 500 },
     );
