@@ -6,7 +6,26 @@ export const PRAKTIKA_AUTH_PROBE_TIMEOUT_MS = 10_000;
 const MAX_PROBE_BYTES = 2 * 1024 * 1024;
 const PATH = "/php/json/db_reportingDataWarehouse.php";
 export type AuthenticationFailurePhase = "error" | "waiting_for_credentials" | "waiting_for_mfa";
-export type ProbeResult = { verified: boolean; phase: AuthenticationFailurePhase; httpStatus: number | null; parsedArray: boolean };
+export type RedirectCategory = "login_redirect" | "same_origin_other_redirect" | "external_redirect" | "redirect_destination_unavailable";
+type RedirectDiagnostics = { redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
+
+// Classify only; never return URL components or change authentication decisions.
+export function classifyPraktikaRedirect(location: string | undefined, expectedUrl: string): Pick<RedirectDiagnostics, "redirect_category" | "same_origin"> {
+  const unavailable = { redirect_category: "redirect_destination_unavailable" as const, same_origin: null };
+  if (!location?.trim() || /[\u0000-\u001f\u007f]/.test(location)) return unavailable;
+  try {
+    const expected = new URL(expectedUrl);
+    const destination = new URL(location, expected);
+    if (!["https:", "http:"].includes(destination.protocol)) return unavailable;
+    const same_origin = destination.origin === expected.origin;
+    // Only the confirmed login path is allowlisted. Query, fragment and userinfo
+    // are never used or emitted; arbitrary paths are never emitted either.
+    return { same_origin, redirect_category: !same_origin ? "external_redirect"
+      : destination.pathname === "/v2/login" ? "login_redirect" : "same_origin_other_redirect" };
+  } catch { return unavailable; }
+}
+
+export type ProbeResult = { redirectDiagnostics?: RedirectDiagnostics; verified: boolean; phase: AuthenticationFailurePhase; httpStatus: number | null; parsedArray: boolean };
 export class PraktikaAuthenticationUnverified extends Error {
   constructor(readonly phase: AuthenticationFailurePhase = "error") { super("Praktika authentication could not be verified. Reconnect before retrying this job."); }
 }
@@ -52,6 +71,7 @@ export function praktikaPracticeDate(now = new Date(), timeZone = process.env.PR
 }
 
 export async function probePraktikaAuthentication(context: BrowserContext, practiceId: string, baseUrl: string): Promise<ProbeResult> {
+  const startedAt = performance.now();
   const failed: ProbeResult = { verified: false, phase: "error", httpStatus: null, parsedArray: false };
   try {
     if (!/^\d+$/.test(practiceId)) return failed;
@@ -68,7 +88,15 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
       });
       try {
         if (response.url() !== url || !response.ok()) {
-          if (response.status() >= 300 && response.status() < 400) return { ...failed, httpStatus: response.status() };
+          if (response.status() >= 300 && response.status() < 400) {
+            // Diagnostics must not turn a redirect into success or a challenge.
+            let location: string | undefined;
+            try { location = response.headers()["location"]; } catch { /* Metadata unavailable. */ }
+            return { ...failed, httpStatus: response.status(), redirectDiagnostics: {
+              ...classifyPraktikaRedirect(location, url), responseReceived: true as const,
+              elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
+            } };
+          }
         }
         const body = await response.body();
         if (body.length > MAX_PROBE_BYTES) return { ...failed, httpStatus: response.status() };
@@ -118,6 +146,14 @@ export function createPraktikaAuthenticationGate(deps: {
         if (!renew || result.phase !== "error") await deps.recordFailure(result.phase);
         console.log(renew && result.phase === "error" ? "[Praktika auth] renewal_transient_failure" : "[Praktika auth] probe_failed", {
           httpStatus: result.httpStatus, parsedArray: result.parsedArray, phase: result.phase,
+          ...(result.redirectDiagnostics ? {
+            redirect_category: result.redirectDiagnostics.redirect_category,
+            same_origin: result.redirectDiagnostics.same_origin,
+            responseReceived: result.redirectDiagnostics.responseReceived,
+            elapsed_ms: result.redirectDiagnostics.elapsed_ms,
+            proof_age_ms: Number.isFinite(Date.parse(session.authenticated_at || ""))
+              ? Math.max(0, Date.now() - Date.parse(session.authenticated_at!)) : null,
+          } : {}),
         });
         throw new PraktikaAuthenticationUnverified(result.phase);
       }
