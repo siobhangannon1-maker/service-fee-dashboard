@@ -156,3 +156,8 @@ test("Tools only active connection actions override Connected, not queue/referre
  assert.equal(state("connected",true),"connecting");
  assert.match(extract(source,"requestReconnect"),/setDisplayStatus\("refresh_requested"\)/);
 });
+
+test("connected popup hides the background checking caption", async () => {
+  const source = await read(paths[0]);
+  assert.match(source, /\{checking && !isConnected \? \(/);
+});

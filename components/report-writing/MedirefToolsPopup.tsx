@@ -41,8 +41,8 @@ function getConnectionState(status?: string, connected?: boolean): ConnectionSta
 
 function connectionLabel(state: ConnectionState) {
   if (state === "connected") return "Connected";
-  if (state === "connecting") return "Connection underway";
-  return "No connection";
+  if (state === "connecting") return "Connecting";
+  return "Not connected";
 }
 
 function dotClass(state: ConnectionState) {
@@ -56,14 +56,10 @@ export default function MedirefToolsPopup({
   onOpenChange,
   onClose,
 }: MedirefToolsPopupProps) {
-  const [session, setSession] = useState<SessionStatus | null>(null);
   const [checking, setChecking] = useState(false);
-  const [credentialsSubmitting, setCredentialsSubmitting] = useState(false);
   const [mfaSubmitting, setMfaSubmitting] = useState(false);
   const [refreshSubmitting, setRefreshSubmitting] = useState(false);
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [mfaCode, setMfaCode] = useState("");
   const [localMessage, setLocalMessage] = useState<string | null>(null);
 
@@ -75,19 +71,12 @@ export default function MedirefToolsPopup({
   const pendingStatusCountRef = useRef(0);
 
   const currentStatus = displayStatus;
-  const lastEmail = session?.medirefEmail || session?.email || email || "";
   const currentConnectionState = getConnectionState(
     currentStatus,
     displayConnected,
   );
   const isConnected = currentConnectionState === "connected";
   const isConnecting = currentConnectionState === "connecting";
-
-  const shouldShowCredentialForm =
-    currentConnectionState === "disconnected" &&
-    ["waiting_for_credentials", "expired", "error", "not_started"].includes(
-      currentStatus,
-    );
 
   const shouldShowMfaForm = currentStatus === "waiting_for_mfa";
 
@@ -174,13 +163,6 @@ export default function MedirefToolsPopup({
         return;
       }
 
-      setSession(data);
-
-      const returnedEmail = data.medirefEmail || data.email || "";
-      if (returnedEmail && !email) {
-        setEmail(returnedEmail);
-      }
-
       handleStableStatusUpdate(data);
     } finally {
       setChecking(false);
@@ -230,51 +212,6 @@ export default function MedirefToolsPopup({
       await loadStatus();
     } finally {
       setRefreshSubmitting(false);
-    }
-  }
-
-  async function submitCredentials() {
-    if (!email.trim() || !password.trim()) {
-      setLocalMessage("Enter both the MediRef email and password.");
-      return;
-    }
-
-    setLocalMessage(null);
-    setCredentialsSubmitting(true);
-    commitDisplayStatus("refresh_requested", false);
-
-    try {
-      const response = await fetch("/api/mediref/session/credentials", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          scope: "practice",
-          email: email.trim(),
-          username: email.trim(),
-          password,
-        }),
-      });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok || data.success === false || data.ok === false) {
-        setLocalMessage(
-          data.error || data.message || "Could not submit MediRef credentials.",
-        );
-        commitDisplayStatus("error", false);
-        return;
-      }
-
-      setPassword("");
-      setLocalMessage(
-        "Credentials submitted. The Cloud helper will continue the MediRef login.",
-      );
-
-      await loadStatus();
-    } finally {
-      setCredentialsSubmitting(false);
     }
   }
 
@@ -356,13 +293,6 @@ export default function MedirefToolsPopup({
                 </h3>
               </div>
 
-              <p className="mt-2 text-xs text-slate-500">
-                {isConnected ? "Logged in as" : "MediRef account"}{" "}
-                <span className="font-semibold">
-                  {lastEmail || "No email saved"}
-                </span>
-              </p>
-
               {currentConnectionState === "disconnected" ? (
                 <p className="mt-2 text-xs font-semibold text-red-700">
                   Not currently connected. Connect before sending via MediRef.
@@ -376,69 +306,18 @@ export default function MedirefToolsPopup({
               ) : null}
             </div>
 
-            {currentConnectionState === "disconnected" ? (
+            {!isConnected ? (
               <button
                 type="button"
                 onClick={requestReconnect}
-                disabled={refreshSubmitting}
+                disabled={refreshSubmitting || isConnecting}
                 className="shrink-0 rounded-xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
               >
-                {refreshSubmitting ? "Connecting..." : "Connect"}
+                {refreshSubmitting || isConnecting ? "Connecting" : "Connect"}
               </button>
             ) : null}
           </div>
         </div>
-
-        {shouldShowCredentialForm ? (
-          <div className="rounded-2xl border border-slate-200 p-3">
-            <h3 className="text-sm font-bold text-slate-950">MediRef login</h3>
-
-            <p className="mt-1 text-xs text-slate-500">
-              If your helper opens the MediRef login screen that asks for an
-              emailed code first, click <strong>Login with password</strong>.
-              The helper will then use the email/password stored here.
-            </p>
-
-            <div className="mt-3 space-y-3">
-              <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-700">
-                  Email
-                </label>
-
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                  placeholder="email@example.com"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-700">
-                  Password
-                </label>
-
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                  placeholder="Password"
-                />
-              </div>
-
-              <button
-                type="button"
-                onClick={submitCredentials}
-                disabled={credentialsSubmitting}
-                className="w-full rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
-              >
-                {credentialsSubmitting ? "Submitting..." : "Save credentials"}
-              </button>
-            </div>
-          </div>
-        ) : null}
 
         {shouldShowMfaForm ? (
           <div className="rounded-2xl border border-orange-200 bg-orange-50 p-3">

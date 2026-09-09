@@ -470,7 +470,7 @@ function PraktikaToolsPopupContent({
                 </span>
               </p>
 
-              {checking ? (
+              {checking && !isConnected ? (
                 <p className="mt-2 text-xs text-slate-500">
                   Checking Praktika connection...
                 </p>
