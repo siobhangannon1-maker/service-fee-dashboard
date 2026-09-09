@@ -16,7 +16,7 @@ type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type PdfAttachment = { filename: string; pdf: Buffer };
 type Patient = { firstName?: unknown; lastName?: unknown; dob?: unknown };
 type Stage = "draft_ready" | "patient_save_started" | "patient_saved" | "upload_parameters_requested" | "upload_parameters_received" | "pdf_upload_started" | "pdf_upload_completed" | "attachment_save_started" | "attachment_saved" | "draft_prepared";
-type Logger = (message: string, fields: { attachmentCount: number; attachmentIndex?: number; httpStatus?: number; structuralSuccess?: boolean }) => void;
+type Logger = (message: string, fields: { attachmentCount: number; attachmentIndex?: number; httpStatus?: number; structuralSuccess?: boolean; allStructurallyComplete?: boolean }) => void;
 
 export class MedirefRemoteDraftError extends Error {
   constructor(public readonly stage: string) { super(`Unable to prepare MediRef remote draft (stage: ${stage}).`); }
@@ -158,6 +158,19 @@ export async function prepareRemoteDraft(options: {
       draft.files.push(buildFileMetadata(key, uploadId, attachment.filename, attachment.pdf.length, uploadStarted));
     }
     attachmentIndex = undefined;
+    const allStructurallyComplete = draft.files.length === attachmentCount && draft.files.every((file, index) => {
+      const f = file as ReturnType<typeof buildFileMetadata>;
+      const a = options.attachments[index];
+      return f.originalName === a.filename && f.customName === a.filename.replace(/\.pdf$/i, "") &&
+        f.ext === ".pdf" && f.type === "application/pdf" && f.size === a.pdf.length && f.size > 0 &&
+        f.status === "complete" && f.uploadAttempts === 0 && typeof f.uploadId === "string" &&
+        /^[a-z0-9]{24}$/.test(f.uploadId) && typeof f.key === "string" && f.s3key === f.key &&
+        f.key.endsWith(`/${options.s3uuid}/${f.uploadId}`) &&
+        f.progress.bytesUploaded === f.size && f.progress.bytesTotal === f.size && f.progress.percentage === 100 &&
+        Number.isFinite(f.progress.uploadStarted);
+    });
+    log("[MediRef remote] attachment_metadata_ready", { attachmentCount, allStructurallyComplete });
+    if (!allStructurallyComplete) throw new Error("Incomplete attachment metadata.");
     emit("attachment_save_started");
     const attachmentSave = await post(saveRoute, draft); emit("attachment_saved", attachmentSave.status);
     emit("draft_prepared");
@@ -169,7 +182,7 @@ export async function prepareRemoteDraft(options: {
   }
 }
 
-export async function prepareRemoteDraftWithBrowser(page: Page, patient: Patient, localPdfPaths: string[], openCompose: () => Promise<void>) {
+export async function prepareRemoteDraftWithBrowser(page: Page, patient: Patient, localPdfPaths: string[], openCompose: () => Promise<void>, retryDiagnostic?: { jobId: string }) {
   let stage = "validate_attachment";
   try {
     if (localPdfPaths.length === 0) throw new Error("At least one PDF is required.");
@@ -191,7 +204,8 @@ export async function prepareRemoteDraftWithBrowser(page: Page, patient: Patient
     await page.waitForURL(url => draftIdFromComposeUrl(url.href) !== null, { timeout: 15_000, waitUntil: "domcontentloaded" });
     const s3uuid = draftIdFromComposeUrl(page.url());
     if (!s3uuid) throw new Error("Draft identity unavailable.");
-    return await prepareRemoteDraft({ request: page.context().request, s3uuid, patient, attachments });
+    return await prepareRemoteDraft({ request: page.context().request, s3uuid, patient, attachments,
+      log: retryDiagnostic ? (message, fields) => console.log(message, { jobId: retryDiagnostic.jobId, ...fields }) : undefined });
   } catch (error) {
     throw error instanceof MedirefRemoteDraftError ? error : new MedirefRemoteDraftError(stage);
   }

@@ -58,7 +58,7 @@ export function buildRetryRequest(draft: RetryDraft, job: RetryJob | null, bucke
     throw new RetryError("Unable to retry MediRef: the required periodontal chart is missing from the saved attachment package. Prepare the complete package before retrying.");
   }
   return {
-    action: "send_letter", draftId: draft.id,
+    action: "send_letter", draftId: draft.id, retryMediref: true,
     patient: { firstName: names[0], lastName: names.slice(1).join(" "), dob },
     recipient: { name: "", practiceName: "", email: "", providerNumber: "" },
     medirefAutoMatchRecipient: false, attachments,
@@ -102,9 +102,10 @@ export async function queueRetry(store: RetryStore, id: string, bucket: string) 
   // restoring 'failed' would allow another click to create a duplicate job.
   try {
     if (await store.active(id)) throw new RetryError(activeRetryMessage);
+    console.log("[MediRef retry] job_payload_ready", { attachmentCount: request.attachments.length, includesPeriodontalChart: Boolean(draft.periodontal_chart_attachment_name && request.attachments.some(a => a.fileName === draft.periodontal_chart_attachment_name)) });
     const job = await store.enqueue(request);
     await store.markQueued(id);
-    console.log("[MediRef retry] helper_job_created", { attachmentCount: request.attachments.length });
+    console.log("[MediRef retry] helper_job_created", { jobId: job.id, attachmentCount: request.attachments.length });
     return { ok: true, message: "MediRef retry queued.", jobId: job.id };
   } catch {
     throw new RetryError("MediRef retry could not be confirmed. Check the queue before trying again; further retries are blocked to prevent duplicates.", 503);

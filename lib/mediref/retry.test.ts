@@ -20,7 +20,7 @@ function fixture() {
 test("failed draft queues a new trusted MediRef request and preserves other workflow fields", async () => {
   const f = fixture();
   assert.equal((await queueRetry(f.store, id, "report-assets")).jobId, "new-job");
-  assert.deepEqual(f.requests, [{ action: "send_letter", draftId: id, patient: { firstName: "Test", lastName: "Patient", dob: "1990-06-09" }, recipient: { name: "", practiceName: "", email: "", providerNumber: "" }, medirefAutoMatchRecipient: false, attachments: [attachment], message: "Existing message" }]);
+  assert.deepEqual(f.requests, [{ action: "send_letter", draftId: id, retryMediref: true, patient: { firstName: "Test", lastName: "Patient", dob: "1990-06-09" }, recipient: { name: "", practiceName: "", email: "", providerNumber: "" }, medirefAutoMatchRecipient: false, attachments: [attachment], message: "Existing message" }]);
   assert.deepEqual(Object.keys(f.updates[0]).sort(), ["workflow_status", "workflow_mediref_status", "workflow_started_at", "workflow_completed_at", "workflow_error", "workflow_last_message", "updated_at"].sort());
 });
 for (const patch of [{ workflow_mediref_status: "completed" }, { workflow_status: "running" }, { deleted_at: "today" }, { status: "draft" }, { patient_name: "" }, { patient_dob: "" }]) {
@@ -161,6 +161,7 @@ test("retry logs expose counts and booleans only", async () => {
   await exports.queueRetry(periodontalFixture().store, id, "report-assets");
   assert.deepEqual(JSON.parse(JSON.stringify(logs)), [
     ["[MediRef retry] attachment_set_resolved", { attachmentCount: 2, includesPeriodontalChart: true }],
-    ["[MediRef retry] helper_job_created", { attachmentCount: 2 }],
+    ["[MediRef retry] job_payload_ready", { attachmentCount: 2, includesPeriodontalChart: true }],
+    ["[MediRef retry] helper_job_created", { jobId: "new-job", attachmentCount: 2 }],
   ]);
 });

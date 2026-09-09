@@ -10,6 +10,7 @@ const supabaseAdmin = createClient(
 
 export type MedirefHelperRequest = {
   action: "send_letter";
+  retryMediref?: true;
   draftId: string;
   patient: { firstName: string; lastName: string; dob: string | null };
   recipient: {

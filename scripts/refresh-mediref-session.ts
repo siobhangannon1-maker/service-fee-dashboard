@@ -923,7 +923,7 @@ async function downloadStagedAttachments(job: MedirefHelperJob) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mediref-send-"));
   const files: Array<{ localPath: string; fileName: string }> = [];
 
-  for (const attachment of rawAttachments) {
+  for (const [attachmentIndex, attachment] of rawAttachments.entries()) {
     if (!attachment?.bucket || !attachment?.storagePath || !attachment?.fileName) {
       throw new Error("MediRef job has an invalid attachment.");
     }
@@ -933,6 +933,11 @@ async function downloadStagedAttachments(job: MedirefHelperJob) {
       .download(attachment.storagePath);
 
     if (error || !data) {
+      if (job.payload?.retryMediref === true) {
+        console.log("[MediRef remote] attachment_download_failed", { jobId: job.id, attachmentIndex, attachmentCount: rawAttachments.length });
+        await fs.rm(tempDir, { recursive: true, force: true });
+        throw new Error("Unable to download staged Retry MediRef PDF.");
+      }
       throw new Error(
         `Could not download staged MediRef PDF: ${
           error?.message || "No file returned."
@@ -940,8 +945,24 @@ async function downloadStagedAttachments(job: MedirefHelperJob) {
       );
     }
 
+    const bytes = Buffer.from(await data.arrayBuffer());
+    if (job.payload?.retryMediref === true && (attachment.contentType !== "application/pdf" ||
+      path.basename(attachment.fileName) !== attachment.fileName || bytes.subarray(0, 5).toString() !== "%PDF-")) {
+      console.log("[MediRef remote] attachment_input", { jobId: job.id, attachmentIndex,
+        attachmentCount: rawAttachments.length, contentType: attachment.contentType === "application/pdf" ? "application/pdf" : "invalid",
+        byteLengthPositive: bytes.length > 0, pdfMagicValid: bytes.subarray(0, 5).toString() === "%PDF-", localFileExists: false });
+      await fs.rm(tempDir, { recursive: true, force: true });
+      throw new Error("Invalid staged Retry MediRef PDF attachment.");
+    }
     const localPath = path.join(tempDir, attachment.fileName);
-    await fs.writeFile(localPath, Buffer.from(await data.arrayBuffer()));
+    await fs.writeFile(localPath, bytes);
+    if (job.payload?.retryMediref === true) {
+      const localFileExists = await fs.stat(localPath).then(stat => stat.isFile());
+      console.log("[MediRef remote] attachment_input", { jobId: job.id, attachmentIndex,
+        attachmentCount: rawAttachments.length, contentType: "application/pdf",
+        byteLengthPositive: bytes.length > 0, pdfMagicValid: true, localFileExists });
+      if (!localFileExists) throw new Error("Retry MediRef local attachment is unavailable.");
+    }
 
     files.push({
       localPath,
@@ -2025,7 +2046,7 @@ async function sendMedirefLetterWithBrowser(
   const request = job.payload;
 
   if (USE_REMOTE_DRAFT_API) {
-    return prepareRemoteDraftWithBrowser(page, request.patient || {}, localPdfPaths, () => openComposePage(page));
+    return prepareRemoteDraftWithBrowser(page, request.patient || {}, localPdfPaths, () => openComposePage(page), request.retryMediref === true ? { jobId: job.id } : undefined);
   }
 
   await openComposePage(page);
