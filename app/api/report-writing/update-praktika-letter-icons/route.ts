@@ -9,6 +9,7 @@ import { performQueuedIconAction } from "@/lib/report-writing/complete-workflow"
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -172,7 +173,10 @@ async function updatePraktikaAppointmentIcons({
   iconIds: number[];
 }) {
   return await performQueuedIconAction({
-    enqueue: () => createPraktikaHelperJob({
+    deadlineMs: 105000,
+    enqueue: async () => {
+      console.log("[Praktika icon] helper_enqueue_started", { draftId, appointmentPresent: Boolean(appointmentId), letterSentConfigured: LETTER_SENT_ICON_ID === 6597 });
+      const job = await createPraktikaHelperJob({
       appUserId: mode.scope === "user" ? mode.appUserId : null,
       jobType: "update_praktika_letter_icons",
       priority: 80,
@@ -187,9 +191,22 @@ async function updatePraktikaAppointmentIcons({
           appointment_icon3id: iconIds[2], appointment_icon4id: iconIds[3],
         }],
       },
-    }),
+      });
+      console.log("[Praktika icon] helper_job_created", { draftId, helperJobCreated: true });
+      return job;
+    },
     markRunning: () => saveIconStatus(draftId, "running"),
-    wait: async (jobId) => (await waitForPraktikaHelperJob(jobId, { timeoutMs: 15000, intervalMs: 2000 })).response,
+    wait: async (jobId) => {
+      try {
+        const job = await waitForPraktikaHelperJob(jobId, { timeoutMs: 90000, intervalMs: 2000 });
+        console.log("[Praktika icon] helper_completed", { draftId, helperJobStatus: "completed" });
+        return job.response;
+      } catch (error) {
+        console.log("[Praktika icon] helper_wait_failed", { draftId,
+          timeout: error instanceof Error && /did not finish in time/.test(error.message) });
+        throw error;
+      }
+    },
   });
 }
 
@@ -325,6 +342,7 @@ export async function POST(req: Request) {
     }
 
     const queueItem = await findQueueItem({ queueId, draftId });
+    console.log("[Praktika icon] queue_lookup_completed", { draftId, queueItemFound: Boolean(queueItem) });
 
     if (queueItem) {
       const raw = asObject(queueItem.raw_json);
@@ -336,6 +354,7 @@ export async function POST(req: Request) {
         const { changed, oldIconIds, updatedIconIds, replacedIconIds } =
           replaceLetterWorkflowIcons(currentIconIds);
 
+        console.log("[Praktika icon] target_resolved", { draftId, appointmentSource: "queue", appointmentPresent: true, typistLetterIconFound: currentIconIds.includes(TYPIST_LETTER_ICON_ID), pendingLetterIconFound: changed });
         if (!changed) {
           await logIconAttempt({
             draftId,
@@ -466,6 +485,7 @@ export async function POST(req: Request) {
       praktikaPatientId,
     });
 
+    console.log("[Praktika icon] fallback_lookup_completed", { draftId, patientIdPresent: Boolean(praktikaPatientId), appointmentSource: indexedAppointment ? "fallback" : "none", appointmentPresent: Boolean(indexedAppointment?.appointment_id) });
     if (!indexedAppointment) {
       await logIconAttempt({
         draftId,

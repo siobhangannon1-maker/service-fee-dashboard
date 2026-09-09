@@ -50,7 +50,7 @@ export async function runCompleteWorkflowIconStep(
       message: "PDF uploaded to Praktika. Checking for an appointment icon to update." });
     const response = await request("/api/report-writing/update-praktika-letter-icons", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ draftId, ...target }), signal: AbortSignal.timeout(45000),
+      body: JSON.stringify({ draftId, ...target }), signal: AbortSignal.timeout(120000),
     });
     const data = await response.json();
     if (!response.ok || !data.success || data.error) throw new Error("Appointment icon update failed or timed out.");
