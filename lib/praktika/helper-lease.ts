@@ -26,6 +26,7 @@ export async function writePraktikaHelper(db: SupabaseClient, sessionId: string,
   if (error || data !== true) throw new PraktikaOwnershipLost();
 }
 export interface PraktikaJobOwnership {
+  isShuttingDown?(): boolean;
   assertOwned(): Promise<void>;
   ensureAuthenticated(): Promise<void>;
   updateSession(values: Record<string, unknown>): Promise<void>;

@@ -1312,6 +1312,7 @@ export async function processOnePraktikaHelperJob(
   ownership: PraktikaJobOwnership,
 ): Promise<PraktikaJobResult> {
   await ownership.assertOwned();
+  if (ownership.isShuttingDown?.()) return { outcome: "none" };
   const job = await claimNextJob(appUserId || null);
 
   if (!job) return { outcome: "none" };
@@ -1324,8 +1325,10 @@ export async function processOnePraktikaHelperJob(
 
   try {
     await ownership.assertOwned();
+    if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
     await ownership.ensureAuthenticated();
     await ownership.assertOwned();
+    if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
     const response =
       job.job_type === "hydrate_report_letter_queue_item"
         ? await hydrateReportLetterQueueItem(context, job)
@@ -1339,7 +1342,7 @@ export async function processOnePraktikaHelperJob(
   } catch (error: any) {
     // A request may already have reached Praktika. Leave it for reconciliation,
     // rather than converting ownership loss into an automatic operation retry.
-    if (error instanceof PraktikaOwnershipLost) throw error;
+    if (ownership.isShuttingDown?.() || error instanceof PraktikaOwnershipLost) throw error;
     await ownership.assertOwned();
     if (error instanceof PraktikaAuthenticationUnverified) {
       await failJob(job, error.message, !error.transient);

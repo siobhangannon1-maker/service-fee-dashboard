@@ -1,7 +1,7 @@
 import { claimPraktikaHelper, writePraktikaHelper } from "../lib/praktika/helper-lease";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 
 dotenv.config({ path: ".env.local" });
 dotenv.config();
@@ -33,6 +33,24 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 });
 
 const running = new Set<string>();
+const children = new Map<string, { child: ChildProcess; owner: string }>();
+let shuttingDown = false;
+let pollTimer: ReturnType<typeof setInterval> | undefined;
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(pollTimer);
+  for (const { child } of children.values()) child.kill("SIGTERM");
+  // Never release a generation merely because the supervisor is stopping.
+  const deadline = setTimeout(() => process.exit(1), 28_000);
+  const drained = setInterval(() => {
+    if (!checkInProgress && running.size === 0) {
+      clearTimeout(deadline); clearInterval(drained);
+    }
+  }, 50);
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
 let checkInProgress = false;
 let lastMemoryLogAt = 0;
 
@@ -55,7 +73,7 @@ function logWatcherMemory() {
 }
 
 function helperCapacityAvailable() {
-  return running.size < MAX_CONCURRENT_HELPERS;
+  return !shuttingDown && running.size < MAX_CONCURRENT_HELPERS;
 }
 
 async function startHelperForSession(session: any, reason: string) {
@@ -87,29 +105,36 @@ async function startHelperForSession(session: any, reason: string) {
   }
 
   const owner = instanceId;
+  if (shuttingDown) {
+    await writePraktikaHelper(supabase, session.id, owner, "release").catch(() => {});
+    running.delete(session.id);
+    return false;
+  }
   let cleanedUp = false;
   const cleanup = async (failed: boolean) => {
     if (cleanedUp) return;
     cleanedUp = true;
     try {
       // A late exit can neither promote Connected nor overwrite a newer owner.
-      await writePraktikaHelper(supabase, session.id, owner, "release", {
+      if (!shuttingDown || !failed) await writePraktikaHelper(supabase, session.id, owner, "release", {
         status: failed ? "error" : "not_started",
       });
     } catch {
       console.warn("Praktika helper exit cleanup skipped: ownership unavailable.");
     } finally {
+      children.delete(session.id);
       running.delete(session.id);
     }
   };
 
   try {
     const child = spawn(
-      "npm",
-      ["run", "refresh:praktika-session", "--", `--session-id=${session.id}`,
+      process.execPath,
+      ["--import", "tsx", "scripts/refresh-praktika-session.ts", `--session-id=${session.id}`,
         `--helper-instance-id=${owner}`],
       { cwd: process.cwd(), stdio: "inherit", shell: process.platform === "win32" },
     );
+    children.set(session.id, { child, owner });
     child.on("exit", (code) => { void cleanup(code !== 0); });
     child.on("error", () => { void cleanup(true); });
   } catch {
@@ -243,6 +268,7 @@ async function checkPendingJobs() {
 }
 
 async function check() {
+  if (shuttingDown) return;
   if (checkInProgress) {
     console.log("Watcher check skipped because the previous check is still running.");
     return;
@@ -278,7 +304,8 @@ async function main() {
 
   await check();
 
-  setInterval(() => {
+  if (shuttingDown) return;
+  pollTimer = setInterval(() => {
     check().catch((error) => {
       console.error("Watcher check failed:", error);
     });

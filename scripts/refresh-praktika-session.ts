@@ -170,6 +170,20 @@ let verificationRequested = false;
 let ownedContext: BrowserContext | undefined;
 let renewal: ReturnType<typeof startPraktikaAuthenticationRenewal> | undefined;
 let loginTransition = true;
+let shuttingDown = false;
+let jobActive = false;
+let shutdownDeadline: ReturnType<typeof setTimeout> | undefined;
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  renewal?.stop();
+  // A hard deadline deliberately leaves ownership to lease expiry. Never replay
+  // a potentially accepted external write just to finish a deployment.
+  shutdownDeadline = setTimeout(() => process.exit(1), 20_000);
+  if (!jobActive) void ownedContext?.close().catch(() => {});
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
 
 async function ownedWrite(action: "check" | "heartbeat" | "update" | "authenticate" | "authentication_failed", values: Record<string, unknown> = {}) {
   if (ownershipLost) throw new PraktikaOwnershipLost();
@@ -226,6 +240,7 @@ function startHeartbeat(context: BrowserContext) {
       ]);
       if (!stopped) await ownedWrite("heartbeat");
     } catch {
+      if (shuttingDown) return;
       stopped = true;
       clearInterval(timer);
       ownershipLost = true;
@@ -694,13 +709,16 @@ async function drainAvailableHelperJobs(
   let failedCount = 0;
   let needsReconnect = false;
 
-  while (completedCount + failedCount < HELPER_JOB_DRAIN_LIMIT) {
-    const result: PraktikaJobResult = await processOnePraktikaHelperJob(
-      context,
-      appUserId,
-      { assertOwned, updateSession, ensureAuthenticated },
-    );
-
+  while (!shuttingDown && completedCount + failedCount < HELPER_JOB_DRAIN_LIMIT) {
+    jobActive = true;
+    let result: PraktikaJobResult;
+    try {
+      result = await processOnePraktikaHelperJob(
+        context,
+        appUserId,
+        { assertOwned, updateSession, ensureAuthenticated, isShuttingDown: () => shuttingDown },
+      );
+    } finally { jobActive = false; }
     if (result.outcome === "none") break;
     if (result.outcome === "completed") {
       completedCount += 1;
@@ -735,7 +753,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
   let lastUsefulWorkAt = Date.now();
   let lastMemoryLogAt = 0;
 
-  while (true) {
+  while (!shuttingDown) {
     let sleepAfterCycleMs = HELPER_IDLE_POLL_INTERVAL_MS;
 
     try {
@@ -814,8 +832,6 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
             );
           });
 
-          await releaseOwnership();
-
           console.log(
             `Session ${session.id} reached the ${Math.round(
               HELPER_IDLE_SHUTDOWN_MS / 60_000,
@@ -870,7 +886,8 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         await performRealBrowserActivity(page);
       }
     } catch (error: any) {
-      if (ownershipLost || error instanceof PraktikaOwnershipLost) throw new PraktikaOwnershipLost();
+      if (shuttingDown) return;
+    if (ownershipLost || error instanceof PraktikaOwnershipLost) throw new PraktikaOwnershipLost();
       const message = String(error?.message || "");
 
       if (
@@ -919,6 +936,11 @@ async function refreshOnce() {
         : "Cloud helper is checking your saved Praktika browser session.",
   });
 
+  if (shuttingDown) {
+    await releaseOwnership();
+    if (shutdownDeadline) clearTimeout(shutdownDeadline);
+    return;
+  }
   const context = await chromium.launchPersistentContext(
     path.join(PROFILE_ROOT, profileName),
     {
@@ -937,12 +959,13 @@ async function refreshOnce() {
 
   let page: Page | undefined;
   try {
+    if (shuttingDown) return;
     await assertOwned();
     page = await context.newPage();
     renewal = startPraktikaAuthenticationRenewal({
       readSession: getSession,
       eligible: async () => {
-        if (loginTransition || ownershipLost || !page || page.isClosed()) return false;
+        if (shuttingDown || loginTransition || ownershipLost || !page || page.isClosed()) return false;
         const current = await getSession();
         return ["connected", "refreshing"].includes(current.status) && await isBrowserUiLoggedIn(page);
       },
@@ -984,7 +1007,7 @@ async function refreshOnce() {
     const startedAt = Date.now();
     let attemptedCredentials = false;
 
-    while (Date.now() - startedAt < LOGIN_TIMEOUT_MS) {
+    while (!shuttingDown && Date.now() - startedAt < LOGIN_TIMEOUT_MS) {
       if (await isBrowserUiLoggedIn(page)) {
         await page.waitForTimeout(3000);
         const saved = await saveCookies(context, page);
@@ -1028,6 +1051,7 @@ async function refreshOnce() {
 
     throw new Error("Timed out waiting for Praktika login/MFA completion.");
   } catch (error: any) {
+    if (shuttingDown) return;
     if (ownershipLost || error instanceof PraktikaOwnershipLost) throw new PraktikaOwnershipLost();
     await clearTemporaryPassword({
       status: "error",
@@ -1039,8 +1063,10 @@ async function refreshOnce() {
   } finally {
     renewal?.stop();
     await stopHeartbeat();
+    // Closure must succeed before ownership can become available to a successor.
+    await context.close();
     await releaseOwnership();
-    await context.close().catch(() => {});
+    if (shutdownDeadline) clearTimeout(shutdownDeadline);
     logProcessMemory(`session=${session.id} after-context-close`);
   }
 }

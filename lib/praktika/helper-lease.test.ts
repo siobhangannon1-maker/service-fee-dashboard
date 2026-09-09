@@ -67,7 +67,7 @@ async function watcher(claim: () => Promise<string | null>, writes: unknown[]) {
   const spawns: string[][] = [];
   const running = new Set<string>();
   const result = await functionsFrom("scripts/watch-praktika-refresh.ts", ["startHelperForSession"], {
-    running, console: quiet, helperCapacityAvailable: () => true,
+    shuttingDown: false, children: new Map(), running, console: quiet, helperCapacityAvailable: () => true,
     claimPraktikaHelper: claim, supabase: {}, MAX_CONCURRENT_HELPERS: 3,
     writePraktikaHelper: async (...args: unknown[]) => { writes.push(args.slice(1)); },
     process: { cwd: () => ".", platform: "linux" },
@@ -122,7 +122,7 @@ test("helper session writes fail closed, close old browser, and refuse subsequen
 test("browser liveness failure releases as error and closes browser without authentication write", async () => {
   let tick: (() => void) | undefined; const events: string[] = [];
   const globals = {
-    ownershipLost: false, PRAKTIKA_HELPER_HEARTBEAT_MS: 15_000, PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS: 5_000,
+    shuttingDown: false, ownershipLost: false, PRAKTIKA_HELPER_HEARTBEAT_MS: 15_000, PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS: 5_000,
     setTimeout, clearTimeout,
     setInterval: (callback: () => void) => { tick = callback; return 1; }, clearInterval() {},
     ownedWrite: async (action: string) => { events.push(action); },
@@ -179,7 +179,8 @@ test("production consumers gate saved Connected on liveness, and idle does not p
   const helper = await read("scripts/refresh-praktika-session.ts");
   const idle = helper.slice(helper.indexOf("} else if (Date.now() - lastUsefulWorkAt"), helper.indexOf("} else if (await pageHasMfaInput", helper.indexOf("} else if (Date.now() - lastUsefulWorkAt")));
   assert.match(idle, /false, \/\/ Save reusable cookies/);
-  assert.match(idle, /await releaseOwnership\(\)/);
+  assert.match(idle, /return;/);
+  assert.match(helper, /await context.close\(\);\s*await releaseOwnership\(\)/);
   assert.doesNotMatch(idle, /status: "connected"/);
   for (const file of ["scripts/watch-praktika-refresh.ts", "scripts/refresh-praktika-session.ts", "scripts/praktika-helper-job-processor.ts"]) {
     assert.doesNotMatch(await read(file), /\.from\("praktika_sessions"\)\s*\.update/);
