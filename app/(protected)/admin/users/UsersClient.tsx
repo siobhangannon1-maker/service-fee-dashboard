@@ -212,13 +212,17 @@ export default function UsersClient() {
   }
 
   async function updateRole(userId: string, role: Role) {
-    const { error } = await supabase
-      .from("user_roles")
-      .upsert({ user_id: userId, role }, { onConflict: "user_id" });
-
-    if (error) {
+    try {
+      const response = await fetch("/api/admin/update-user-role", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, role }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Failed to update role.");
+    } catch (error) {
       setTone("error");
-      setMessage(error.message);
+      setMessage(error instanceof Error ? error.message : "Failed to update role.");
       return;
     }
 
