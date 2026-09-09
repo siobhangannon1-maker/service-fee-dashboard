@@ -1,4 +1,4 @@
-import { createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
+import { startPraktikaAuthenticationRenewal, createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
 import {
   writePraktikaHelper, PraktikaOwnershipLost, PRAKTIKA_HELPER_HEARTBEAT_MS,
   PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS,
@@ -168,6 +168,8 @@ if (!helperInstanceId) throw new Error("Missing --helper-instance-id; start thro
 let ownershipLost = false;
 let verificationRequested = false;
 let ownedContext: BrowserContext | undefined;
+let renewal: ReturnType<typeof startPraktikaAuthenticationRenewal> | undefined;
+let loginTransition = true;
 
 async function ownedWrite(action: "check" | "heartbeat" | "update" | "authenticate" | "authentication_failed", values: Record<string, unknown> = {}) {
   if (ownershipLost) throw new PraktikaOwnershipLost();
@@ -175,12 +177,15 @@ async function ownedWrite(action: "check" | "heartbeat" | "update" | "authentica
     await writePraktikaHelper(supabase, sessionId!, helperInstanceId!, action, values);
   } catch {
     ownershipLost = true;
+    renewal?.stop();
     await ownedContext?.close().catch(() => {});
     throw new PraktikaOwnershipLost();
   }
 }
 async function assertOwned() { await ownedWrite("check"); }
 async function releaseOwnership(failed = false) {
+  renewal?.stop();
+  ensureAuthenticated.stop();
   await writePraktikaHelper(supabase, sessionId!, helperInstanceId!, "release", {
     status: failed ? "error" : "not_started",
   }).catch(() => {});
@@ -198,7 +203,8 @@ const ensureAuthenticated = createPraktikaAuthenticationGate({
 });
 async function verifyRequestedConnection() {
   verificationRequested = false;
-  try { await ensureAuthenticated(); }
+  ensureAuthenticated.resume();
+  try { await ensureAuthenticated(); loginTransition = false; }
   catch (error) { if (!(error instanceof PraktikaAuthenticationUnverified)) throw error; }
 }
 
@@ -246,6 +252,7 @@ async function getSession() {
 
   if (data.helper_instance_id !== helperInstanceId) {
     ownershipLost = true;
+    renewal?.stop();
     await ownedContext?.close().catch(() => {});
     throw new PraktikaOwnershipLost();
   }
@@ -253,6 +260,10 @@ async function getSession() {
 }
 
 async function updateSession(values: Record<string, unknown>) {
+  if (["refreshing", "refresh_requested", "waiting_for_credentials", "waiting_for_mfa", "expired", "error"].includes(String(values.status || ""))) {
+    loginTransition = true;
+    await ensureAuthenticated.invalidate();
+  }
   await ownedWrite("update", values);
 }
 
@@ -478,6 +489,8 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
     return false;
   }
 
+  loginTransition = true;
+  await ensureAuthenticated.invalidate();
   verificationRequested = true;
   console.log("Submitting Praktika credentials from saved pending credentials.");
 
@@ -508,6 +521,8 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
 
 async function submitMfaCodeIfAvailable(page: Page) {
   if (!(await pageHasMfaInput(page))) return false;
+  loginTransition = true;
+  await ensureAuthenticated.invalidate();
 
   const code = await getAndClearMfaCode();
 
@@ -921,6 +936,18 @@ async function refreshOnce() {
   try {
     await assertOwned();
     page = await context.newPage();
+    renewal = startPraktikaAuthenticationRenewal({
+      readSession: getSession,
+      eligible: async () => {
+        if (loginTransition || ownershipLost || !page || page.isClosed()) return false;
+        const current = await getSession();
+        return current.status === "connected" && await isBrowserUiLoggedIn(page);
+      },
+      renew: ensureAuthenticated.renew,
+      stopGate: ensureAuthenticated.stop,
+    });
+    context.once("close", () => renewal?.stop());
+    page.once("close", () => renewal?.stop());
     if (await hasExistingBrowserSession(page)) {
       const saved = await saveCookies(context, page);
 
@@ -1007,6 +1034,7 @@ async function refreshOnce() {
 
     throw error;
   } finally {
+    renewal?.stop();
     await stopHeartbeat();
     await releaseOwnership();
     await context.close().catch(() => {});

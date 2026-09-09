@@ -108,14 +108,15 @@ test("clean exit only releases captured generation; never promotes Connected; du
 test("helper session writes fail closed, close old browser, and refuse subsequent writes", async () => {
   const globals = {
     ownershipLost: false, sessionId: "session", helperInstanceId: "old-owner",
+    renewal: { stop: () => { stopped++; } },
     ownedContext: { close: async () => { closed++; } }, supabase: {}, PraktikaOwnershipLost,
     writePraktikaHelper: async () => { attempts++; throw new PraktikaOwnershipLost(); },
   };
-  let attempts = 0; let closed = 0;
+  let attempts = 0; let closed = 0; let stopped = 0;
   const { ownedWrite } = await functionsFrom("scripts/refresh-praktika-session.ts", ["ownedWrite"], globals);
   await assert.rejects(ownedWrite("update", { status: "connected" }), PraktikaOwnershipLost);
   await assert.rejects(ownedWrite("heartbeat"), PraktikaOwnershipLost);
-  assert.equal(closed, 1); assert.equal(attempts, 1);
+  assert.equal(closed, 1); assert.equal(attempts, 1); assert.equal(stopped, 1);
 });
 
 test("browser liveness failure releases as error and closes browser without authentication write", async () => {

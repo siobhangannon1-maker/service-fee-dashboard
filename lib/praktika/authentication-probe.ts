@@ -8,7 +8,7 @@ const PATH = "/php/json/db_reportingDataWarehouse.php";
 export type AuthenticationFailurePhase = "error" | "waiting_for_credentials" | "waiting_for_mfa";
 export type ProbeResult = { verified: boolean; phase: AuthenticationFailurePhase; httpStatus: number | null; parsedArray: boolean };
 export class PraktikaAuthenticationUnverified extends Error {
-  constructor() { super("Praktika authentication could not be verified. Reconnect before retrying this job."); }
+  constructor(readonly phase: AuthenticationFailurePhase = "error") { super("Praktika authentication could not be verified. Reconnect before retrying this job."); }
 }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -53,7 +53,6 @@ export function praktikaPracticeDate(now = new Date(), timeZone = process.env.PR
 
 export async function probePraktikaAuthentication(context: BrowserContext, practiceId: string, baseUrl: string): Promise<ProbeResult> {
   const failed: ProbeResult = { verified: false, phase: "error", httpStatus: null, parsedArray: false };
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (!/^\d+$/.test(practiceId)) return failed;
     const origin = new URL(baseUrl).origin;
@@ -76,11 +75,11 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
         return validateGstResponse(response.status(), response.url() === url, body.toString("utf8"));
       } finally { await response.dispose().catch(() => {}); }
     })();
-    return await Promise.race([request, new Promise<ProbeResult>((resolve) => {
-      timer = setTimeout(() => resolve(failed), PRAKTIKA_AUTH_PROBE_TIMEOUT_MS);
-    })]);
+    // Keep the gate occupied until Playwright transport/body disposal settles.
+    // Its native request timeout bounds the request; never race it with a detached timer.
+    return await request;
   } catch { return failed; }
-  finally { if (timer) clearTimeout(timer); }
+
 }
 
 export function createPraktikaAuthenticationGate(deps: {
@@ -90,26 +89,111 @@ export function createPraktikaAuthenticationGate(deps: {
   recordSuccess(): Promise<void>;
   recordFailure(phase: AuthenticationFailurePhase): Promise<void>;
 }) {
-  // One gate instance per owning child generation; never shared across owners.
+  // One gate and one transport per owning child generation.
   let inFlight: Promise<void> | undefined;
-  return function ensureAuthenticated(): Promise<void> {
+  let epoch = 0;
+  let suspended = false;
+  let stopped = false;
+  const verify = (renew = false): Promise<void> => {
+    if (stopped) return Promise.reject(new PraktikaOwnershipLost());
+    if (suspended) return Promise.reject(new PraktikaAuthenticationUnverified());
     if (inFlight) return inFlight;
+    const startedEpoch = epoch;
+    const assertCurrent = async () => {
+      await deps.assertOwned();
+      if (stopped) throw new PraktikaOwnershipLost();
+      if (epoch !== startedEpoch) throw new PraktikaAuthenticationUnverified();
+    };
     inFlight = (async () => {
-      await deps.assertOwned();
-      if (hasFreshPraktikaAuthentication(await deps.readOwnedSession())) return;
-      console.log("[Praktika auth] probe_started");
+      await assertCurrent();
+      const session = await deps.readOwnedSession();
+      await assertCurrent();
+      if (!renew && hasFreshPraktikaAuthentication(session)) return;
+      console.log(renew ? "[Praktika auth] renewal_started" : "[Praktika auth] probe_started");
       const result = await deps.probe();
-      await deps.assertOwned();
-      console.log(result.verified ? "[Praktika auth] probe_succeeded" : "[Praktika auth] probe_failed", {
-        httpStatus: result.httpStatus, parsedArray: result.parsedArray,
-      });
+      await assertCurrent();
       if (!result.verified) {
-        await deps.recordFailure(result.phase);
-        throw new PraktikaAuthenticationUnverified();
+        // Background ambiguity never creates or destroys proof. Its original
+        // deadline remains authoritative, even if a job joins this request.
+        if (!renew || result.phase !== "error") await deps.recordFailure(result.phase);
+        console.log(renew && result.phase === "error" ? "[Praktika auth] renewal_transient_failure" : "[Praktika auth] probe_failed", {
+          httpStatus: result.httpStatus, parsedArray: result.parsedArray, phase: result.phase,
+        });
+        throw new PraktikaAuthenticationUnverified(result.phase);
       }
       await deps.recordSuccess();
+      await assertCurrent();
       if (!hasFreshPraktikaAuthentication(await deps.readOwnedSession())) throw new PraktikaOwnershipLost();
+      console.log(renew ? "[Praktika auth] renewal_succeeded" : "[Praktika auth] probe_succeeded", {
+        httpStatus: result.httpStatus, parsedArray: result.parsedArray,
+      });
     })().finally(() => { inFlight = undefined; });
     return inFlight;
   };
+  return Object.assign(() => verify(), {
+    renew: () => verify(true),
+    // Call before changing browser login state; drain any old transport before
+    // starting a new login/probe, and suppress its late result.
+    invalidate: async () => { suspended = true; epoch++; await inFlight?.catch(() => {}); },
+    resume: () => { suspended = false; },
+    stop: () => { stopped = true; epoch++; },
+  });
+}
+
+export const PRAKTIKA_AUTH_RENEWAL_MS = 60_000;
+export const PRAKTIKA_AUTH_RETRY_MS = 15_000;
+
+export function startPraktikaAuthenticationRenewal(deps: {
+  readSession(): Promise<HelperHealth>;
+  eligible(): Promise<boolean>;
+  renew(): Promise<void>;
+  stopGate(): void;
+  now?: () => number;
+}) {
+  let stopped = false;
+  let pending = false;
+  let nextAttempt = 0;
+  let retried = false;
+  let lastProof: string | null | undefined;
+  const now = deps.now || Date.now;
+  const tick = async () => {
+    if (stopped || pending) return;
+    pending = true;
+    try {
+      if (!await deps.eligible() || stopped) return;
+      const row = await deps.readSession();
+      if (row.authenticated_at !== lastProof) {
+        lastProof = row.authenticated_at;
+        nextAttempt = 0;
+        retried = false;
+      }
+      const proof = Date.parse(row.authenticated_at || "");
+      if (stopped || now() < nextAttempt || (Number.isFinite(proof) && now() - proof < PRAKTIKA_AUTH_RENEWAL_MS)) return;
+      try {
+        await deps.renew();
+        retried = false;
+        nextAttempt = now() + PRAKTIKA_AUTH_RENEWAL_MS;
+      } catch (error) {
+        if (error instanceof PraktikaOwnershipLost) { stop(); return; }
+        if (error instanceof PraktikaAuthenticationUnverified && error.phase !== "error") {
+          nextAttempt = now() + PRAKTIKA_AUTH_RENEWAL_MS;
+          retried = false;
+          return;
+        }
+        nextAttempt = now() + (retried ? PRAKTIKA_AUTH_RENEWAL_MS : PRAKTIKA_AUTH_RETRY_MS);
+        if (!retried) console.log("[Praktika auth] renewal_retry_scheduled");
+        retried = !retried;
+      }
+    } catch { stop(); }
+    finally { pending = false; }
+  };
+  const timer = setInterval(() => { void tick(); }, 2_000);
+  function stop() {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    deps.stopGate();
+    console.log("[Praktika auth] renewal_stopped");
+  }
+  return { stop, tick };
 }
