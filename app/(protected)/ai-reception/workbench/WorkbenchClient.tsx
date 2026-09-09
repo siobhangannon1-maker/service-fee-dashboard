@@ -1,5 +1,7 @@
 "use client";
 
+import { useStatusExpiry } from "@/lib/praktika/use-status-expiry";
+
 import PraktikaCompactSessionPanel from "@/components/PraktikaCompactSessionPanel";
 import PraktikaReferrerMatchPanel from "@/components/ai/PraktikaReferrerMatchPanel";
 import ArchiveCompletedReferralButton from "@/components/ai/ArchiveCompletedReferralButton";
@@ -171,12 +173,13 @@ function praktikaSessionStatusLabel(status: PraktikaSessionState["status"]) {
     case "connected": return "Connected";
     case "waiting_for_mfa": return "MFA required";
     case "waiting_for_credentials":
-    case "expired": return "Login required";
+    return "Login required";
+    case "expired": return "Not connected";
     case "refreshing":
     case "refresh_requested": return "Checking connection";
     case "error": return "Connection failed";
-    case "idle": return "Idle";
-    default: return "Checking";
+    case "idle": return "Not connected";
+    default: return "Not connected";
   }
 }
 
@@ -380,16 +383,16 @@ function PraktikaWorkbenchPanel({
 }) {
   const [state, setState] = useState<PraktikaSessionState>({
     status: "not_started",
-    message: "Checking Praktika session...",
+    message: "Not connected.",
   });
   const [code, setCode] = useState("");
   const [sessionBusy, setSessionBusy] = useState(false);
 
+  const armStatusExpiry = useStatusExpiry(() => { setState(current => current.status === "connected" ? { ...current, status: "not_started", message: "Not connected." } : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {
     const requestId = ++statusRequest.current;
-    setState(current => current.status === "connected" ? { ...current, status: "refreshing" } : current);
     try {
       const response = await fetch("/api/praktika/session/status", {
         cache: "no-store",
@@ -403,7 +406,7 @@ function PraktikaWorkbenchPanel({
       }
 
       setState({
-        status: result?.status || "idle",
+        status: armStatusExpiry(result || {}) as PraktikaSessionState["status"],
         message: result?.message || "Praktika session status checked.",
         currentUrl: result?.currentUrl || undefined,
         updatedAt: result?.updatedAt || new Date().toISOString(),
@@ -494,7 +497,7 @@ function PraktikaWorkbenchPanel({
             Session status: {praktikaSessionStatusLabel(state.status)}
           </h2>
 
-          <p className="mt-1 max-w-3xl text-sm opacity-85">{state.message}</p>
+          <p className="mt-1 max-w-3xl text-sm opacity-85">{state.status === "not_started" || state.status === "idle" ? "Not connected." : state.message}</p>
 
           {state.updatedAt ? (
             <p className="mt-1 text-xs opacity-70">

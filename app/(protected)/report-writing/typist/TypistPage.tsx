@@ -3640,7 +3640,7 @@ export default function TypistPage() {
       return "Praktika connection has an error.";
     }
 
-    if (status === "idle") return "Praktika helper is idle.";
+    if (status === "idle") return "Praktika is not connected.";
 
     if (status === "not_started") {
       return "Praktika has not been connected yet.";

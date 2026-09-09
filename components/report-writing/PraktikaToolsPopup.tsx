@@ -1,5 +1,7 @@
 "use client";
 
+import { useStatusExpiry } from "@/lib/praktika/use-status-expiry";
+
 import { useRef, useEffect, useMemo, useState } from "react";
 
 type PraktikaToolsPopupProps = {
@@ -68,8 +70,7 @@ function connectionState(
 
   if (
     status === "refreshing" ||
-    status === "refresh_requested" ||
-    status === "waiting_for_mfa"
+    status === "refresh_requested"
   ) {
     return "connecting";
   }
@@ -80,15 +81,15 @@ function connectionState(
 function connectionLabel(state: ConnectionDisplayState) {
   if (state === "connected") return "Connected";
   if (state === "connecting") return "Connection underway";
-  if (state === "idle") return "Idle";
-  return "No connection";
+  if (state === "idle") return "Not connected";
+  return "Not connected";
 }
 
 function dotClass(state: ConnectionDisplayState) {
   if (state === "connected") return "bg-emerald-500";
   if (state === "connecting") return "bg-orange-500";
   if (state === "idle") return "bg-slate-400";
-  return "bg-red-500";
+  return "bg-slate-400";
 }
 
 export default function PraktikaToolsPopup(props: PraktikaToolsPopupProps) {
@@ -117,7 +118,7 @@ function PraktikaToolsPopupContent({
   needsReconnect = false,
 }: PraktikaToolsPopupProps) {
   const [session, setSession] = useState<SessionStatus | null>(null);
-  const [displayStatus, setDisplayStatus] = useState("refreshing");
+  const [displayStatus, setDisplayStatus] = useState("not_started");
   const [checking, setChecking] = useState(false);
   const [credentialsSubmitting, setCredentialsSubmitting] = useState(false);
   const [mfaSubmitting, setMfaSubmitting] = useState(false);
@@ -147,7 +148,7 @@ function PraktikaToolsPopupContent({
     finalSyncingReferrers;
 
   const currentConnectionState: ConnectionDisplayState =
-    connectionState(currentStatus, isBusy);
+    connectionState(currentStatus, credentialsSubmitting || mfaSubmitting || refreshSubmitting);
 
   const isConnected = currentConnectionState === "connected";
 
@@ -227,11 +228,11 @@ function PraktikaToolsPopupContent({
     }
   }
 
+  const armStatusExpiry = useStatusExpiry(() => { setDisplayStatus(current => current === "connected" ? "not_started" : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {
     const requestId = ++statusRequest.current;
-    setDisplayStatus(current => current === "connected" ? "refreshing" : current);
     try {
       setChecking(true);
 
@@ -249,7 +250,7 @@ function PraktikaToolsPopupContent({
       }
       setSession(data);
       // Backend derived truth takes effect immediately; never retain stale green.
-      setDisplayStatus(data.status === "connected" && data.connected !== true ? "refreshing" : data.status || "not_started");
+      setDisplayStatus(armStatusExpiry(data));
       if (data.connected === true) { setLocalMessage(null); setPassword(""); }
     } catch {
       if (requestId !== statusRequest.current) return;
@@ -458,7 +459,7 @@ function PraktikaToolsPopupContent({
                   )}`}
                 />
                 <h3 className="text-sm font-bold text-slate-950">
-                  Praktika: {connectionLabel(currentConnectionState)}
+                  Praktika: {currentStatus === "waiting_for_credentials" ? "Credentials required" : currentStatus === "waiting_for_mfa" ? "MFA required" : currentStatus === "error" ? "Connection error" : connectionLabel(currentConnectionState)}
                 </h3>
               </div>
 
@@ -476,7 +477,7 @@ function PraktikaToolsPopupContent({
               ) : null}
 
               {currentConnectionState === "disconnected" ? (
-                <p className="mt-2 text-xs font-semibold text-red-700">
+                <p className="mt-2 text-xs font-semibold text-slate-600">
                   Not currently connected. Connect before syncing.
                 </p>
               ) : null}
@@ -489,7 +490,7 @@ function PraktikaToolsPopupContent({
 
               {session?.message ? (
                 <p className="mt-2 text-xs text-slate-600">
-                  {session.message}
+                  {currentStatus === "not_started" ? "Not connected. Connect before syncing." : session.message}
                 </p>
               ) : null}
 

@@ -115,7 +115,7 @@ export default function PraktikaReconnectPopup() {
 
           {session.praktikaUsername ? (
             <p className="mt-2 text-xs text-slate-500">
-              Connected as: <strong>{session.praktikaUsername}</strong>
+              Account: <strong>{session.praktikaUsername}</strong>
             </p>
           ) : null}
 

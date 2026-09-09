@@ -1,5 +1,7 @@
 "use client";
 
+import { useStatusExpiry } from "@/lib/praktika/use-status-expiry";
+
 import { useRef, useEffect, useState } from "react";
 
 type SessionScope = "practice" | "user";
@@ -96,7 +98,7 @@ function friendlyRelativeTime(value?: string | null) {
 }
 
 function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
-  if (liveStatus === "checking" || isReconnectStatus(state.status)) {
+  if (isReconnectStatus(state.status)) {
     return {
       label: "Reconnecting",
       tone: "border-blue-200 bg-blue-50 text-blue-950",
@@ -120,19 +122,14 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
   }
 
   if (
-    state.status === "waiting_for_credentials" ||
-    state.status === "not_started" ||
-    state.status === "expired"
+    state.status === "waiting_for_credentials"
   ) {
     return {
       label: "Login needed",
       tone: "border-amber-200 bg-amber-50 text-amber-950",
       dot: "bg-amber-500",
       headline: "Praktika login needed",
-      message:
-        state.status === "expired"
-          ? "Your Praktika session has expired. Enter your login details to reconnect."
-          : "Enter your Praktika username and password to connect.",
+      message: "Enter your Praktika username and password to connect.",
     };
   }
 
@@ -146,9 +143,9 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
     };
   }
 
-  if (state.status === "idle") {
-    return { label: "Idle", tone: "border-slate-200 bg-slate-50 text-slate-950", dot: "bg-slate-400",
-      headline: "Praktika helper is idle", message: state.message };
+  if (["idle", "not_started", "expired"].includes(state.status)) {
+    return { label: "Not connected", tone: "border-slate-200 bg-slate-50 text-slate-950", dot: "bg-slate-400",
+      headline: "Not connected", message: "Connect to Praktika before continuing." };
   }
 
   if (state.status === "connected" && liveStatus === "connected") {
@@ -162,10 +159,10 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
   }
 
   return {
-    label: "Checking",
+    label: "Not connected",
     tone: "border-slate-200 bg-slate-50 text-slate-950",
     dot: "bg-slate-400",
-    headline: "Checking Praktika",
+    headline: "Not connected",
     message: state.message || "Checking your Praktika connection.",
   };
 }
@@ -179,7 +176,7 @@ export default function PraktikaSessionPanel({
 }) {
   const [state, setState] = useState<SessionState>({
     status: "not_started",
-    message: "Checking Praktika session...",
+    message: "Not connected.",
   });
 
   const [liveStatus, setLiveStatus] = useState<LiveStatus>("not_checked");
@@ -193,11 +190,11 @@ export default function PraktikaSessionPanel({
   const [validating, setValidating] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  const armStatusExpiry = useStatusExpiry(() => { setState(current => current.status === "connected" ? { ...current, status: "not_started", message: "Not connected." } : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {
     const requestId = ++statusRequest.current;
-    setState(current => current.status === "connected" ? { ...current, status: "refreshing" } : current);
     try {
       const res = await fetch(`/api/praktika/session/status?scope=${scope}`, {
         cache: "no-store",
@@ -208,7 +205,7 @@ export default function PraktikaSessionPanel({
 
       const nextState: SessionState = {
         scope: json.scope || scope,
-        status: json.status || "error",
+        status: armStatusExpiry(json) as SessionStatus,
         message: json.message || "Unknown Praktika session state.",
         currentUrl: json.currentUrl || null,
         praktikaUsername: json.praktikaUsername || null,

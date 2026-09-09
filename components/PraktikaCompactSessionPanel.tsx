@@ -1,5 +1,7 @@
 "use client";
 
+import { useStatusExpiry } from "@/lib/praktika/use-status-expiry";
+
 import { useRef, useEffect, useState } from "react";
 
 type SessionScope = "practice" | "user";
@@ -49,11 +51,11 @@ function needsLogin(status: SessionStatus) {
 
 function statusLabel(status: SessionStatus) {
   if (status === "connected") return "Connected";
-  if (status === "idle") return "Idle";
+  if (["idle", "not_started", "expired"].includes(status)) return "Not connected";
   if (status === "waiting_for_mfa") return "MFA needed";
   if (status === "refresh_requested" || status === "refreshing") return "Reconnecting";
   if (needsLogin(status)) return "Login needed";
-  return "Checking";
+  return "Not connected";
 }
 
 export default function PraktikaCompactSessionPanel({
@@ -63,7 +65,7 @@ export default function PraktikaCompactSessionPanel({
 }) {
   const [state, setState] = useState<SessionState>({
     status: "not_started",
-    message: "Checking Praktika...",
+    message: "Not connected.",
   });
 
   const [open, setOpen] = useState(false);
@@ -72,11 +74,11 @@ export default function PraktikaCompactSessionPanel({
   const [mfaCode, setMfaCode] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const armStatusExpiry = useStatusExpiry(() => { setState(current => current.status === "connected" ? { ...current, status: "not_started", message: "Not connected." } : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {
     const requestId = ++statusRequest.current;
-    setState(current => current.status === "connected" ? { ...current, status: "refreshing" } : current);
     try {
       const res = await fetch(`/api/praktika/session/status?scope=${scope}`, {
         cache: "no-store",
@@ -85,7 +87,7 @@ export default function PraktikaCompactSessionPanel({
       if (requestId !== statusRequest.current) return;
 
       setState({
-        status: json.status || "error",
+        status: armStatusExpiry(json) as SessionStatus,
         message: json.message || "Unknown Praktika state.",
         praktikaUsername: json.praktikaUsername || null,
         refreshedAt: json.refreshedAt || null,
@@ -188,7 +190,7 @@ export default function PraktikaCompactSessionPanel({
             <div className="flex items-center gap-2">
               <span
                 className={`h-2.5 w-2.5 rounded-full ${
-                  connected ? "bg-emerald-500" : state.status === "idle" ? "bg-slate-400" : "bg-amber-500"
+                  connected ? "bg-emerald-500" : ["idle", "not_started", "expired"].includes(state.status) ? "bg-slate-400" : "bg-amber-500"
                 }`}
               />
               <span className="text-sm font-semibold text-slate-900">
@@ -199,7 +201,7 @@ export default function PraktikaCompactSessionPanel({
             <div className="mt-1 truncate text-xs text-slate-500">
               {state.praktikaUsername
                 ? `Logged in as ${state.praktikaUsername}`
-                : state.message}
+                : ["idle", "not_started", "expired"].includes(state.status) ? "Not connected." : state.message}
             </div>
           </div>
 
@@ -221,7 +223,7 @@ export default function PraktikaCompactSessionPanel({
                 <h2 className="text-xl font-bold text-slate-900">
                   Praktika Session
                 </h2>
-                <p className="mt-1 text-sm text-slate-500">{state.message}</p>
+                <p className="mt-1 text-sm text-slate-500">{["idle", "not_started", "expired"].includes(state.status) ? "Not connected." : ["idle", "not_started", "expired"].includes(state.status) ? "Not connected." : state.message}</p>
               </div>
 
               <button
@@ -237,14 +239,14 @@ export default function PraktikaCompactSessionPanel({
               className={`mt-4 rounded-2xl border p-4 ${
                 connected
                   ? "border-emerald-200 bg-emerald-50 text-emerald-900"
-                  : state.status === "idle"
+                  : ["idle", "not_started", "expired"].includes(state.status)
                     ? "border-slate-200 bg-slate-50 text-slate-900"
                     : "border-amber-200 bg-amber-50 text-amber-900"
               }`}
             >
               <div className="font-semibold">{statusLabel(state.status)}</div>
               <div className="mt-1 text-sm">
-                Connected as: {state.praktikaUsername || "Not connected"}
+                Account: {state.praktikaUsername || "Not connected"}
               </div>
             </div>
 

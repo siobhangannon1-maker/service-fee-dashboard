@@ -20,7 +20,7 @@ function extract(source: string, name: string) {
     ts.forEachChild(node, visit);
   }
   visit(ast); assert.ok(found);
-  return ts.transpileModule(found.getText(ast).replace(/^export default /, ""), {
+  return ts.transpileModule(found.getText(ast).replace(/^export (?:default )?/, ""), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
   }).outputText;
 }
@@ -37,7 +37,7 @@ for (const path of paths) {
         else state = value as typeof state;
       };
       const load = runInNewContext(extract(source, "loadStatus") + "\nloadStatus", {
-        statusRequest, scope: "user", username: "", dismissedForStatus: null,
+        armStatusExpiry: (data: {status: string}) => data.status, statusRequest, scope: "user", username: "", dismissedForStatus: null,
         fetch: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
         safeJson: (response: { json(): unknown }) => response.json(),
         setState: update, setSession: update, setDisplayStatus: update,
@@ -46,6 +46,7 @@ for (const path of paths) {
         shouldShowNotification: () => false, console: { error() {} },
       });
       const old = load(); const current = load();
+      assert.equal(state.status, "connected", "background fetch must not downgrade connected");
       requests[1].resolve({ ok: true, json: async () => ({ status: "error", connected: false }) });
       await current; assert.equal(state.status, "error");
       if (rejectOld) requests[0].reject(new Error("fixture network error"));
@@ -66,19 +67,19 @@ test("Tools popup discards cached child when closed and starts checking on reope
   });
   assert.equal(wrapper({ open: false }), null);
   assert.equal(wrapper({ open: true }), child);
-  assert.match(source, /\[displayStatus, setDisplayStatus\] = useState\("refreshing"\)/);
+  assert.match(source, /\[displayStatus, setDisplayStatus\] = useState\("not_started"\)/);
   assert.doesNotMatch(source, /needsReconnect && currentStatus !== "connected"\s*\?/);
   const state = runInNewContext(extract(source, "connectionState") + "\nconnectionState", {});
   assert.equal(state("idle", false), "idle");
   assert.equal(state("connected", false), "connected");
-  assert.equal(state("waiting_for_mfa", false), "connecting");
+  assert.equal(state("waiting_for_mfa", false), "disconnected");
   assert.equal(state("waiting_for_credentials", false), "disconnected");
 });
-test("panels poll at five seconds and retire green while request is pending", async () => {
+test("panels poll at five seconds without retiring green while request is pending", async () => {
   for (const path of paths.slice(1, 3)) {
     const source = await read(path);
     assert.match(source, /STATUS_POLL_MS = 5000/);
-    assert.match(source, /setState\(current => current.status === "connected" \? \{ \.\.\.current, status: "refreshing" \}/);
+    assert.doesNotMatch(extract(source, "loadStatus"), /setState\(current => current.status === "connected"/);
   }
 });
 test("migration removes table and column client mutation grants without changing SELECT or RLS", async () => {
@@ -95,7 +96,7 @@ test("session panel display matrix: green only for connected, actionable credent
  for(const status of ["not_started","refreshing","connected","idle","waiting_for_credentials","waiting_for_mfa","error","expired"]){
   const result=display({status,message:""},status==="connected"?"connected":"not_checked");
   assert.equal(result.dot.includes("emerald"),status==="connected");
-  if(status==="idle")assert.equal(result.label,"Idle");
+  if(status==="idle")assert.equal(result.label,"Not connected");
   if(status==="waiting_for_credentials")assert.equal(result.label,"Login needed");
   if(status==="waiting_for_mfa")assert.equal(result.label,"MFA needed");
  }
@@ -109,14 +110,49 @@ test("compact panel and Tools display matrix",async()=>{
   assert.equal(functions.dotClass(functions.connectionState(status,false)).includes("emerald"),status==="connected");
   assert.equal(label(status)==="Connected",status==="connected");
  }
- assert.equal(label("idle"),"Idle");
+ assert.equal(label("idle"),"Not connected");
  assert.equal(label("waiting_for_mfa"),"MFA needed");
 });
 test("Workbench understands current API status vocabulary",async()=>{
  const source=await read(paths[4]);
  const label=runInNewContext(extract(source,"praktikaSessionStatusLabel")+"\npraktikaSessionStatusLabel",{});
  assert.equal(label("connected"),"Connected");
- assert.equal(label("idle"),"Idle");
+ assert.equal(label("idle"),"Not connected");
  assert.equal(label("waiting_for_mfa"),"MFA required");
  assert.equal(label("waiting_for_credentials"),"Login required");
+});
+
+test("proof timer expires without a completed poll and checks again on visibility/focus", async () => {
+ const source=await read("lib/praktika/use-status-expiry.ts");
+ let now=1_000_000; let expired=0; let scheduled: (()=>void)|undefined;
+ const listeners: Record<string,()=>void>={};
+ const target={addEventListener:(key:string,fn:()=>void)=>{listeners[key]=fn;},removeEventListener:()=>{}};
+ const arm=runInNewContext(extract(source,"connectionExpiry")+extract(source,"useStatusExpiry")+"\nuseStatusExpiry(onExpire)",{
+  Date: {now:()=>now,parse:Date.parse},onExpire:()=>{expired++;},
+  useRef:(current:unknown)=>({current}),useCallback:(fn:unknown)=>fn,useEffect:(fn:()=>void)=>fn(),
+  window:target,document:target,setTimeout:(fn:()=>void)=>{scheduled=fn;return 1;},clearTimeout:()=>{scheduled=undefined;},
+ });
+ const proof={status:"connected",connected:true,authenticatedAt:new Date(now-119000).toISOString(),helperHeartbeatAt:new Date(now).toISOString()};
+ assert.equal(arm(proof),"connected");assert.equal(expired,0);
+ now+=1000;scheduled!();assert.equal(expired,1);
+ assert.equal(arm(proof),"not_started");
+ assert.equal(arm({...proof,authenticatedAt:new Date(now).toISOString(),helperHeartbeatAt:new Date(now).toISOString()}),"connected");
+ now+=90000;listeners.visibilitychange();assert.equal(expired,3);
+ assert.equal(arm({status:"connected",connected:true}),"not_started");
+ assert.equal(arm({status:"idle"}),"not_started");
+ assert.equal(arm({status:"not_started"}),"not_started");
+ assert.equal(arm({status:"refreshing",helperAlive:false}),"not_started");
+ assert.equal(arm({status:"refreshing",helperAlive:true,storedStatus:"connected"}),"not_started");
+ assert.equal(arm({status:"refreshing",helperAlive:true,storedStatus:"refreshing"}),"refreshing");
+ assert.equal(arm({status:"refresh_requested"}),"refresh_requested");
+ assert.equal(arm({status:"waiting_for_credentials"}),"waiting_for_credentials");
+ assert.equal(arm({status:"waiting_for_mfa"}),"waiting_for_mfa");
+});
+test("Tools only active connection actions override Connected, not queue/referrer work",async()=>{
+ const source=await read(paths[0]);
+ assert.ok(source.includes("connectionState(currentStatus, credentialsSubmitting || mfaSubmitting || refreshSubmitting)"));
+ const state=runInNewContext(extract(source,"connectionState")+"\nconnectionState",{});
+ assert.equal(state("connected",false),"connected");
+ assert.equal(state("connected",true),"connecting");
+ assert.match(extract(source,"requestReconnect"),/setDisplayStatus\("refresh_requested"\)/);
 });
