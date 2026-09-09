@@ -24,15 +24,14 @@ test('watcher stops claims and releases late claim without spawning; repeated si
  assert.equal(await api.startHelperForSession({id:'later'},'pending_job'),false);
  for(const file of [watcher,helper]) for(const signal of ['SIGTERM','SIGINT']) assert.ok(readFileSync(file,'utf8').includes(`process.on("${signal}", shutdown)`));
 });
-test('idle shutdown closes promptly, active shutdown drains, deadline performs no lease release', () => {
- for(const active of [false,true]) {
- let closes=0, stops=0, exits=0; let deadline!:()=>void;
- const scope={shuttingDown:false,jobActive:active,shutdownDeadline:undefined,renewal:{stop(){stops++;}},ownedContext:{close:async()=>{closes++;}},setTimeout(fn:()=>void){deadline=fn;return 1;},process:{exit(){exits++;}}};
- const shutdown=runInNewContext(extract(helper,['shutdown'])+'\nshutdown',scope);
- shutdown();shutdown();assert.equal(closes,active?0:1);assert.equal(stops,1);deadline();assert.equal(exits,1);
- }
+test('helper delegates signals once and disables Playwright signal ownership', () => {
+ let starts=0, stops=0;
+ const shutdown=runInNewContext(extract(helper,['shutdown'])+'\nshutdown', {shuttingDown:false,renewal:{stop(){stops++;}},shutdownCoordinator:{start(){starts++;}}});
+ shutdown();shutdown();assert.equal(starts,1);assert.equal(stops,1);
  const source=readFileSync(helper,'utf8');
- assert.match(source,/await stopHeartbeat\(\);[\s\S]*await context.close\(\);[\s\S]*await releaseOwnership\(\)/);
+ assert.match(source,/handleSIGTERM: false/);assert.match(source,/handleSIGINT: false/);
+ assert.doesNotMatch(source,/handleSIGHUP: false/);
+ assert.match(source,/const \[closed\] = await Promise.all/);
  assert.match(source,/while \(!shuttingDown && remainingUsefulWorkMs\(\) > 0 && completedCount/);
 });
 test('active job completes once during drain; interrupted external request is never retried', async()=>{

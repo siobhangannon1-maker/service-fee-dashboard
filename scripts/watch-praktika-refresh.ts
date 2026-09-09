@@ -41,7 +41,12 @@ function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(pollTimer);
-  for (const { child } of children.values()) child.kill("SIGTERM");
+  console.log("[Praktika lifecycle]", JSON.stringify({ event: "shutdown_started", stage: "watcher" }));
+  for (const { child, owner } of children.values()) {
+    let delivered = false;
+    try { delivered = child.kill("SIGTERM"); } catch { /* Log only the fixed delivery result. */ }
+    console.log("[Praktika lifecycle]", JSON.stringify({ event: "helper_signal_sent", generation: owner, delivered }));
+  }
   // Never release a generation merely because the supervisor is stopping.
   const deadline = setTimeout(() => process.exit(1), 28_000);
   const drained = setInterval(() => {

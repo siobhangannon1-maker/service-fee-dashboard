@@ -87,7 +87,7 @@ test("helper preserves restored idle budget; only useful work resets it; shutdow
  api.noteUsefulWork();assert.equal(api.remainingUsefulWorkMs(),5400000);
  const source=read("scripts/refresh-praktika-session.ts");
  assert.match(source,/if \(usefulWorkDeadline === null\) noteUsefulWork\(\)/);
- assert.ok(source.indexOf("await context.close();",source.indexOf("} finally {",source.indexOf("async function refreshOnce"))) < source.lastIndexOf("await requestPlannedRestoration"));
+ assert.ok(source.indexOf("shutdownCoordinator.close()",source.indexOf("} finally {",source.indexOf("async function refreshOnce"))) < source.lastIndexOf("await requestPlannedRestoration"));
  assert.match(source,/if \(shuttingDown\) unresolvedShutdownWork = true/);
  assert.match(source,/process.exitCode = 75/);
  assert.match(read("scripts/watch-praktika-refresh.ts"),/code === 75/);

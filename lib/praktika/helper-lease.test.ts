@@ -109,7 +109,7 @@ test("helper session writes fail closed, close old browser, and refuse subsequen
   const globals = {
     ownershipLost: false, sessionId: "session", helperInstanceId: "old-owner",
     renewal: { stop: () => { stopped++; } },
-    ownedContext: { close: async () => { closed++; } }, supabase: {}, PraktikaOwnershipLost,
+    shutdownCoordinator: { close: async () => { closed++; return true; } }, supabase: {}, PraktikaOwnershipLost,
     writePraktikaHelper: async () => { attempts++; throw new PraktikaOwnershipLost(); },
   };
   let attempts = 0; let closed = 0; let stopped = 0;
@@ -123,6 +123,7 @@ test("browser liveness failure releases as error and closes browser without auth
   let tick: (() => void) | undefined; const events: string[] = [];
   const globals = {
     shuttingDown: false, ownershipLost: false, PRAKTIKA_HELPER_HEARTBEAT_MS: 15_000, PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS: 5_000,
+    shutdownCoordinator: { close: async () => { events.push("close"); return true; } },
     setTimeout, clearTimeout,
     setInterval: (callback: () => void) => { tick = callback; return 1; }, clearInterval() {},
     ownedWrite: async (action: string) => { events.push(action); },
@@ -131,7 +132,7 @@ test("browser liveness failure releases as error and closes browser without auth
   const { startHeartbeat } = await functionsFrom("scripts/refresh-praktika-session.ts", ["startHeartbeat"], globals);
   const stop = startHeartbeat({ cookies: async () => { throw new Error("browser closed"); }, close: async () => { events.push("close"); } });
   tick!(); await stop();
-  assert.deepEqual(events, ["release", "close"]); assert.equal(globals.ownershipLost, true);
+  assert.deepEqual(events, ["close", "release"]); assert.equal(globals.ownershipLost, true);
 });
 
 test("ownership loss during a job never requeues an ambiguous external operation", async () => {
@@ -180,7 +181,7 @@ test("production consumers gate saved Connected on liveness, and idle does not p
   const idle = helper.slice(helper.indexOf("} else if (remainingUsefulWorkMs()"), helper.indexOf("} else if (await pageHasMfaInput", helper.indexOf("} else if (remainingUsefulWorkMs()")));
   assert.match(idle, /false, \/\/ Save reusable cookies/);
   assert.match(idle, /return;/);
-  assert.match(helper, /await context.close\(\);[^]*?await releaseOwnership\(\)/);
+  assert.match(helper, /shutdownCoordinator.close\(\)[^]*?await releaseOwnership\(\)/);
   assert.doesNotMatch(idle, /status: "connected"/);
   for (const file of ["scripts/watch-praktika-refresh.ts", "scripts/refresh-praktika-session.ts", "scripts/praktika-helper-job-processor.ts"]) {
     assert.doesNotMatch(await read(file), /\.from\("praktika_sessions"\)\s*\.update/);

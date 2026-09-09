@@ -1,4 +1,5 @@
-import { mayRestoreAfterShutdown, requestPlannedRestoration } from "../lib/praktika/planned-restoration";
+import { createShutdownCoordinator, type SkipReason } from "../lib/praktika/shutdown-coordinator";
+import { requestPlannedRestoration } from "../lib/praktika/planned-restoration";
 import { startPraktikaAuthenticationRenewal, createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
 import {
   writePraktikaHelper, PraktikaOwnershipLost, PRAKTIKA_HELPER_HEARTBEAT_MS,
@@ -169,6 +170,7 @@ if (!helperInstanceId) throw new Error("Missing --helper-instance-id; start thro
 let ownershipLost = false;
 let verificationRequested = false;
 let ownedContext: BrowserContext | undefined;
+let browserLaunch: Promise<BrowserContext> | undefined;
 let renewal: ReturnType<typeof startPraktikaAuthenticationRenewal> | undefined;
 let loginTransition = true;
 let shuttingDown = false;
@@ -184,15 +186,18 @@ function remainingUsefulWorkMs() {
 }
 function noteUsefulWork() { usefulWorkDeadline = performance.now() + HELPER_IDLE_SHUTDOWN_MS; }
 
-let shutdownDeadline: ReturnType<typeof setTimeout> | undefined;
+const shutdownCoordinator = createShutdownCoordinator({
+  close: async () => { const context = ownedContext || await browserLaunch; await context?.close(); },
+  active: () => jobActive,
+  interrupt: () => { unresolvedShutdownWork = true; },
+  log: (event, metadata) => console.log("[Praktika lifecycle]", JSON.stringify({ event, generation: helperInstanceId, ...metadata })),
+  exit: () => process.exit(75),
+});
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   renewal?.stop();
-  // A hard deadline deliberately leaves ownership to lease expiry. Never replay
-  // a potentially accepted external write just to finish a deployment.
-  shutdownDeadline = setTimeout(() => process.exit(1), 20_000);
-  if (!jobActive) void ownedContext?.close().catch(() => {});
+  shutdownCoordinator.start();
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
@@ -204,7 +209,7 @@ async function ownedWrite(action: "check" | "heartbeat" | "update" | "authentica
   } catch {
     ownershipLost = true;
     renewal?.stop();
-    await ownedContext?.close().catch(() => {});
+    await shutdownCoordinator.close();
     throw new PraktikaOwnershipLost();
   }
 }
@@ -265,8 +270,8 @@ function startHeartbeat(context: BrowserContext) {
       stopped = true;
       clearInterval(timer);
       ownershipLost = true;
-      await releaseOwnership(true);
-      await context.close().catch(() => {});
+      if (await shutdownCoordinator.close()) await releaseOwnership(true);
+      else process.exitCode = 75;
     } finally {
       if (deadline) clearTimeout(deadline);
     }
@@ -292,7 +297,7 @@ async function getSession() {
   if (data.helper_instance_id !== helperInstanceId) {
     ownershipLost = true;
     renewal?.stop();
-    await ownedContext?.close().catch(() => {});
+    await shutdownCoordinator.close();
     throw new PraktikaOwnershipLost();
   }
   return data as SessionRow;
@@ -958,13 +963,16 @@ async function refreshOnce() {
   });
 
   if (shuttingDown) {
+    shutdownCoordinator.emit("restoration_skipped", "no_operational_history");
     await releaseOwnership();
-    if (shutdownDeadline) clearTimeout(shutdownDeadline);
+    shutdownCoordinator.finish();
     return;
   }
-  const context = await chromium.launchPersistentContext(
+  browserLaunch = chromium.launchPersistentContext(
     path.join(PROFILE_ROOT, profileName),
     {
+      handleSIGTERM: false,
+      handleSIGINT: false,
       headless: HEADLESS,
       viewport: { width: 1280, height: 900 },
       args: [
@@ -975,6 +983,7 @@ async function refreshOnce() {
     },
   );
 
+  const context = await browserLaunch;
   ownedContext = context;
   const stopHeartbeat = startHeartbeat(context);
 
@@ -1086,29 +1095,65 @@ async function refreshOnce() {
     throw error;
   } finally {
     renewal?.stop();
-    await stopHeartbeat();
-    // Closure must succeed before ownership can become available to a successor.
-    await context.close();
-    if (!ownershipLost && mayRestoreAfterShutdown(shuttingDown, operationalThisGeneration, unresolvedShutdownWork, remainingUsefulWorkMs())) {
-      // The RPC commits intent and generation-fenced release together. On RPC
-      // failure do not separately release: lease expiry remains the fallback.
+    shutdownCoordinator.drained();
+    // Stop heartbeat and close together so a pending heartbeat cannot spend the close budget twice.
+    // A timed-out close never permits release.
+    const [closed] = await Promise.all([shutdownCoordinator.close(), stopHeartbeat()]);
+    shutdownCoordinator.decision();
+    let reason: SkipReason | undefined = !closed ? "browser_close_failed"
+      : ownershipLost ? "ownership_lost"
+      : !shuttingDown ? "not_planned"
+      : !operationalThisGeneration ? "no_operational_history"
+      : unresolvedShutdownWork ? "unresolved_shutdown_work"
+      : !Number.isFinite(remainingUsefulWorkMs()) || remainingUsefulWorkMs() <= 0 ? "idle_deadline_expired" : undefined;
+    if (!reason) {
+      // Diagnostic preflight only; the RPC still makes the atomic authoritative decision.
       try {
-        const requested = await requestPlannedRestoration(supabase, sessionId!, helperInstanceId!, remainingUsefulWorkMs());
-        console.log(requested ? "[Praktika lifecycle] restoration_requested" : "[Praktika lifecycle] restoration_skipped");
-        if (!requested) await releaseOwnership();
+        const { data, error } = await supabase.from("praktika_sessions")
+          .select("status,helper_instance_id,helper_heartbeat_at,app_user_id").eq("id", sessionId!)
+          .abortSignal(AbortSignal.timeout(1_000)).single();
+        if (error || !data) throw new Error("Preflight unavailable");
+        if (data.helper_instance_id !== helperInstanceId) reason = "ownership_lost";
+        else if (data.status !== "connected") reason = "session_status_ineligible";
+        else {
+          let query = supabase.from("praktika_helper_jobs").select("id", { count: "exact", head: true }).eq("status", "processing");
+          query = data.app_user_id === null ? query.is("app_user_id", null) : query.eq("app_user_id", data.app_user_id);
+          const result = await query.abortSignal(AbortSignal.timeout(1_000));
+          if (result.error) throw new Error("Preflight unavailable");
+          if (result.count) reason = "processing_job_present";
+        }
+        if (!reason) {
+          const requested = await requestPlannedRestoration(supabase, sessionId!, helperInstanceId!, remainingUsefulWorkMs());
+          if (requested) shutdownCoordinator.emit("restoration_requested");
+          else reason = "rpc_rejected";
+        }
       } catch {
-        process.exitCode = 75; // Supervisor must leave this generation to lease expiry.
-        console.warn("[Praktika lifecycle] restoration_skipped");
+        reason = "rpc_transport_failure";
+        shutdownCoordinator.emit("restoration_request_failed");
       }
-    } else {
-      await releaseOwnership();
     }
-    if (shutdownDeadline) clearTimeout(shutdownDeadline);
+    if (reason) {
+      shutdownCoordinator.emit("restoration_skipped", reason);
+      if (!closed || reason === "rpc_transport_failure" || reason === "ownership_lost" || unresolvedShutdownWork) {
+        process.exitCode = 75; // Leave ambiguous/failed cleanup to lease expiry.
+      } else await releaseOwnership();
+    }
+    if (!closed) {
+      // Chromium may still be alive. Keep the planned hard deadline armed.
+      if (!shuttingDown) process.exit(75);
+      return;
+    }
+    shutdownCoordinator.finish();
     logProcessMemory(`session=${session.id} after-context-close`);
   }
 }
 
 refreshOnce().catch((error) => {
+  if (shuttingDown) {
+    shutdownCoordinator.emit("restoration_skipped", ownershipLost ? "ownership_lost" : "unresolved_shutdown_work");
+    shutdownCoordinator.finish();
+    process.exit(75);
+  }
   console.error("Failed to refresh Praktika session:");
   console.error(error);
   process.exit(1);
