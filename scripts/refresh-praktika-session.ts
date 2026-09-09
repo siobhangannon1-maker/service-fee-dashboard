@@ -321,19 +321,25 @@ async function safePageUrl(page: Page) {
   }
 }
 
-function pageIsLogoutUrl(page: Page) {
+function praktikaPagePath(page: Page): string | null {
   try {
-    return page.url().toLowerCase().includes("/logout");
-  } catch {
-    return false;
-  }
+    const url = new URL(page.url());
+    return url.origin === PRAKTIKA_BASE_URL ? url.pathname.replace(/\/$/, "") || "/" : null;
+  } catch { return null; }
+}
+
+function pageIsLogoutUrl(page: Page) {
+  return praktikaPagePath(page) === "/v2/logout" || praktikaPagePath(page) === "/logout";
+}
+
+function pageIsLoginUrl(page: Page) {
+  return praktikaPagePath(page) === "/v2/login";
 }
 
 function looksLikeLoggedOutText(text: string) {
   const lower = text.toLowerCase();
 
   return (
-    lower.includes("logout") ||
     lower.includes("login failed") ||
     lower.includes("logged-out") ||
     lower.includes("logged out") ||
@@ -375,19 +381,18 @@ async function pageHasVisiblePasswordInput(page: Page) {
 
 async function pageHasMfaInput(page: Page) {
   const selectors = [
-    'input[inputmode="numeric"]',
-    'input[name*="code" i]',
-    'input[id*="code" i]',
     'input[name*="mfa" i]',
     'input[id*="mfa" i]',
     'input[name*="otp" i]',
     'input[id*="otp" i]',
-    'input[type="tel"]',
   ];
 
   for (const selector of selectors) {
-    const count = await page.locator(selector).count().catch(() => 0);
-    if (count > 0) return true;
+    const inputs = page.locator(selector);
+    const count = await inputs.count().catch(() => 0);
+    for (let i = 0; i < count; i++) {
+      if (await inputs.nth(i).isVisible().catch(() => false)) return true;
+    }
   }
 
   const bodyText = await page.locator("body").innerText().catch(() => "");
@@ -398,9 +403,7 @@ async function pageHasMfaInput(page: Page) {
     lower.includes("multi-factor") ||
     lower.includes("multifactor") ||
     lower.includes("authentication code") ||
-    lower.includes("mfa") ||
-    lower.includes("one-time") ||
-    lower.includes("otp")
+    lower.includes("one-time code")
   );
 }
 
@@ -425,27 +428,13 @@ async function dismissBlockingDialogs(page: Page) {
 async function isBrowserUiLoggedIn(page: Page) {
   await dismissBlockingDialogs(page);
 
-  const url = page.url().toLowerCase();
-
-  if (
-    url.includes("/login") ||
-    url.includes("/v2/login") ||
-    url.includes("/logout")
-  ) {
-    return false;
-  }
-
-  if (await pageHasVisiblePasswordInput(page)) {
-    return false;
-  }
-
+  const pathname = praktikaPagePath(page);
+  if (!pathname || pageIsLoginUrl(page) || pageIsLogoutUrl(page)) return false;
+  if (await pageHasVisiblePasswordInput(page) || await pageHasMfaInput(page)) return false;
   const bodyText = await page.locator("body").innerText().catch(() => "");
-
-  if (looksLikeLoggedOutText(bodyText)) {
-    return false;
-  }
-
-  return url.includes(PRAKTIKA_BASE_URL.toLowerCase());
+  if (looksLikeLoggedOutText(bodyText)) return false;
+  // Application-page eligibility only; GST remains the positive auth proof.
+  return pathname === "/v2" || pathname.startsWith("/v2/");
 }
 
 async function hasExistingBrowserSession(page: Page) {
@@ -483,13 +472,16 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
 
   const usernameField = page
     .locator(
-      'input[type="email"], input[name="email"], input[name="username"], input[name="login"], input[type="text"]',
+      'input[type="email"]:visible, input[name="email"]:visible, input[name="username"]:visible, input[name="login"]:visible, input[type="text"]:visible',
     )
     .first();
 
-  const passwordField = page.locator('input[type="password"]').first();
+  const passwordField = page.locator('input[type="password"]:visible').first();
 
   if ((await usernameField.count()) === 0 || (await passwordField.count()) === 0) {
+    if (pageIsLoginUrl(page) || await pageHasVisiblePasswordInput(page)) {
+      await updateSession({ status: "waiting_for_credentials", message: "Praktika login requires attention.", refresh_requested_at: null });
+    }
     return false;
   }
 
@@ -558,7 +550,7 @@ async function submitMfaCodeIfAvailable(page: Page) {
 
   const codeInput = page
     .locator(
-      'input[inputmode="numeric"], input[name*="code" i], input[id*="code" i], input[name*="mfa" i], input[id*="mfa" i], input[name*="otp" i], input[id*="otp" i], input[type="tel"], input[type="text"]',
+      'input[inputmode="numeric"]:visible, input[name*="code" i]:visible, input[id*="code" i]:visible, input[name*="mfa" i]:visible, input[id*="mfa" i]:visible, input[name*="otp" i]:visible, input[id*="otp" i]:visible, input[type="tel"]:visible, input[type="text"]:visible',
     )
     .first();
 
@@ -1049,6 +1041,8 @@ async function refreshOnce() {
       await page.waitForTimeout(2500);
     }
 
+    const finalSession = await getSession();
+    if (["waiting_for_credentials", "waiting_for_mfa"].includes(finalSession.status)) return;
     throw new Error("Timed out waiting for Praktika login/MFA completion.");
   } catch (error: any) {
     if (shuttingDown) return;
