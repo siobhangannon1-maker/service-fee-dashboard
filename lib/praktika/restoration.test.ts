@@ -29,5 +29,6 @@ test('startup preserves challenges at deadline and only probes through the exist
  assert.match(source,/throw new Error\("Timed out waiting for Praktika login\/MFA completion\."\)/);
  assert.match(source,/`user_\$\{session.app_user_id \|\| session.id\}`/);
  assert.match(source,/launchPersistentContext\(\s*path.join\(PROFILE_ROOT, profileName\)/);
- assert.doesNotMatch(source,/addCookies\(/);
+ assert.match(source,/context.addCookies\(snapshot.cookies\)/);
+ assert.match(source,/isWarmRestoration && !snapshotRestoreAttempted/);
 });

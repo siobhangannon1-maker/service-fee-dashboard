@@ -1,3 +1,4 @@
+import { createCookieSnapshotStore } from "../lib/praktika/cookie-snapshot";
 import { createShutdownCoordinator, type SkipReason } from "../lib/praktika/shutdown-coordinator";
 import { requestPlannedRestoration } from "../lib/praktika/planned-restoration";
 import { startPraktikaAuthenticationRenewal, createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
@@ -179,6 +180,8 @@ const restoredRemaining = argValue("restore-idle-remaining-ms");
 const isWarmRestoration = restoredRemaining !== null;
 let usefulWorkDeadline: number | null = isWarmRestoration
   ? performance.now() + Math.max(0, Number(restoredRemaining) || 0) : null;
+let cookieSnapshots: ReturnType<typeof createCookieSnapshotStore> | undefined;
+let snapshotRestoreAttempted = false;
 let operationalThisGeneration = false;
 let unresolvedShutdownWork = false;
 function remainingUsefulWorkMs() {
@@ -233,10 +236,20 @@ const ensureAuthenticated = createPraktikaAuthenticationGate({
     await ownedWrite("authenticate");
     if (isWarmRestoration && !operationalThisGeneration) console.log("[Praktika lifecycle] restoration_succeeded");
     operationalThisGeneration = true;
+    // Capture only after the positive GST write. No background cookie refresh can capture proof.
+    try {
+      if (!shuttingDown && ownedContext && cookieSnapshots) {
+        const verifiedCookies = await ownedContext.cookies(PRAKTIKA_BASE_URL);
+        await assertOwned();
+        if (!shuttingDown && !cookieSnapshots.capture(verifiedCookies, helperInstanceId!))
+          console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_failed: true, reason: "capture_unavailable" }));
+      }
+    } catch { console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_failed: true, reason: "capture_unavailable" })); }
   },
   recordFailure: async (status) => {
     operationalThisGeneration = false;
     await ownedWrite("authentication_failed", { status });
+    cookieSnapshots?.invalidate();
     if (isWarmRestoration) console.log(status === "waiting_for_mfa"
       ? "[Praktika lifecycle] restoration_mfa_required" : "[Praktika lifecycle] restoration_credentials_required");
   },
@@ -314,6 +327,7 @@ async function updateSession(values: Record<string, unknown>) {
     await ensureAuthenticated.invalidate();
   }
   await ownedWrite("update", values);
+  if (["waiting_for_credentials", "waiting_for_mfa"].includes(String(values.status))) cookieSnapshots?.invalidate();
 }
 
 async function clearTemporaryPassword(extraValues: Record<string, unknown> = {}) {
@@ -954,6 +968,11 @@ async function refreshOnce() {
       ? "practice"
       : `user_${session.app_user_id || session.id}`;
 
+  cookieSnapshots = createCookieSnapshotStore(PLAYWRIGHT_STORAGE_DIR, {
+    sessionId: session.id, appUserId: session.app_user_id, scope: session.scope,
+    profile: path.resolve(PROFILE_ROOT, profileName), origin: new URL(PRAKTIKA_BASE_URL).origin,
+  });
+
   await updateSession({
     status: "refreshing",
     message:
@@ -1014,6 +1033,49 @@ async function refreshOnce() {
         }
 
         return;
+      }
+    }
+
+    if (isWarmRestoration && !snapshotRestoreAttempted && !await pageHasMfaInput(page) &&
+      (pageIsLoginUrl(page) || await pageHasVisiblePasswordInput(page))) {
+      snapshotRestoreAttempted = true;
+      const currentCookies = await context.cookies(PRAKTIKA_BASE_URL);
+      if (!["PHPSESSID", "UAT"].every(name => currentCookies.some(cookie => cookie.name === name))) {
+        await assertOwned();
+        // The spent durable intent binds this new owner to the outgoing snapshot generation.
+        const { data: intent, error } = await supabase.from("praktika_helper_restorations")
+          .select("source_instance_id").eq("session_id", session.id)
+          .eq("consumed_instance_id", helperInstanceId!).abortSignal(AbortSignal.timeout(1_000)).maybeSingle();
+        const snapshot = !error && intent ? cookieSnapshots.load(intent.source_instance_id) : null;
+        console.log("[Praktika snapshot]", JSON.stringify({ snapshot_present: Boolean(snapshot?.cookies), snapshot_bound: Boolean(snapshot?.cookies), ...(snapshot?.reason ? { reason: snapshot.reason } : {}) }));
+        if (snapshot?.cookies) {
+          await assertOwned();
+          if (shuttingDown) return;
+          try {
+            await context.addCookies(snapshot.cookies);
+          } catch {
+            console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_failed: true, reason: "injection_failed" }));
+            // Do not expose Playwright errors, which may contain cookie arguments.
+            if (KEEP_BROWSER_OPEN) await keepBrowserOpenForever(context, page);
+            return;
+          }
+          console.log("[Praktika snapshot]", JSON.stringify({ snapshot_injected: true }));
+          await page.goto(`${PRAKTIKA_BASE_URL}/v2/`, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+          ensureAuthenticated.resume();
+          try {
+            await ensureAuthenticated();
+            loginTransition = false;
+            console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_succeeded: true }));
+          } catch (error) {
+            if (!(error instanceof PraktikaAuthenticationUnverified)) throw error;
+            console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_failed: true, reason: error.transient ? "transient_verification" : "authentication_challenge" }));
+            if (!error.transient) cookieSnapshots.invalidate();
+            else loginTransition = false;
+          }
+          // Continue the existing recovery/challenge loop, never reinject in that loop.
+          if (KEEP_BROWSER_OPEN) await keepBrowserOpenForever(context, page);
+          return;
+        }
       }
     }
 
