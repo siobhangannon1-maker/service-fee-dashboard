@@ -4,6 +4,7 @@ import { useRef, useEffect, useState } from "react";
 
 type PraktikaStatus =
   | "not_started"
+  | "checking_connection"
   | "connected"
   | "refreshing"
   | "waiting_for_credentials"
@@ -67,7 +68,7 @@ export default function PraktikaReconnectPopup() {
 
       setSession(next);
 
-      if (next.status === "connected") {
+      if (!shouldShowNotification(next.status)) {
         setOpen(false);
         setDismissedForStatus(null);
         return;

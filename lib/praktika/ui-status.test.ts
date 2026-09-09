@@ -59,15 +59,15 @@ for (const path of paths) {
     assert.match(source, /return \(\) => \{\s*\+\+statusRequest.current;/);
   });
 }
-test("Tools popup discards cached child when closed and starts checking on reopen", async () => {
+test("Tools popup retains local child while closed and starts unknown as loading", async () => {
   const source = await read(paths[0]);
   const child = {};
   const wrapper = runInNewContext(extract(source, "PraktikaToolsPopup") + "\nPraktikaToolsPopup", {
     React: { createElement: (type: unknown) => type }, PraktikaToolsPopupContent: child,
   });
-  assert.equal(wrapper({ open: false }), null);
+  assert.equal(wrapper({ open: false }), child);
   assert.equal(wrapper({ open: true }), child);
-  assert.match(source, /\[displayStatus, setDisplayStatus\] = useState\("not_started"\)/);
+  assert.match(source, /\[displayStatus, setDisplayStatus\] = useState\("loading"\)/);
   assert.doesNotMatch(source, /needsReconnect && currentStatus !== "connected"\s*\?/);
   const state = runInNewContext(extract(source, "connectionState") + "\nconnectionState", {});
   assert.equal(state("idle", false), "idle");
@@ -127,7 +127,7 @@ test("proof timer expires without a completed poll and checks again on visibilit
  let now=1_000_000; let expired=0; let scheduled: (()=>void)|undefined;
  const listeners: Record<string,()=>void>={};
  const target={addEventListener:(key:string,fn:()=>void)=>{listeners[key]=fn;},removeEventListener:()=>{}};
- const arm=runInNewContext(extract(source,"connectionExpiry")+extract(source,"useStatusExpiry")+"\nuseStatusExpiry(onExpire)",{
+ const arm=runInNewContext(extract(source,"connectionExpiry")+extract(source,"currentStatus")+extract(source,"useStatusExpiry")+"\nuseStatusExpiry(onExpire)",{
   Date: {now:()=>now,parse:Date.parse},onExpire:()=>{expired++;},
   useRef:(current:unknown)=>({current}),useCallback:(fn:unknown)=>fn,useEffect:(fn:()=>void)=>fn(),
   window:target,document:target,setTimeout:(fn:()=>void)=>{scheduled=fn;return 1;},clearTimeout:()=>{scheduled=undefined;},
@@ -135,7 +135,7 @@ test("proof timer expires without a completed poll and checks again on visibilit
  const proof={status:"connected",connected:true,authenticatedAt:new Date(now-119000).toISOString(),helperHeartbeatAt:new Date(now).toISOString()};
  assert.equal(arm(proof),"connected");assert.equal(expired,0);
  now+=1000;scheduled!();assert.equal(expired,1);
- assert.equal(arm(proof),"not_started");
+ assert.equal(arm(proof),"checking_connection");
  assert.equal(arm({...proof,authenticatedAt:new Date(now).toISOString(),helperHeartbeatAt:new Date(now).toISOString()}),"connected");
  now+=90000;listeners.visibilitychange();assert.equal(expired,3);
  assert.equal(arm({status:"connected",connected:true}),"not_started");
@@ -143,7 +143,7 @@ test("proof timer expires without a completed poll and checks again on visibilit
  assert.equal(arm({status:"not_started"}),"not_started");
  assert.equal(arm({status:"refreshing",helperAlive:false}),"not_started");
  assert.equal(arm({status:"refreshing",helperAlive:true,storedStatus:"connected"}),"not_started");
- assert.equal(arm({status:"refreshing",helperAlive:true,storedStatus:"refreshing"}),"refreshing");
+ assert.equal(arm({status:"refreshing",helperHeartbeatAt:new Date(now).toISOString(),helperAlive:true,storedStatus:"refreshing"}),"refreshing");
  assert.equal(arm({status:"refresh_requested"}),"refresh_requested");
  assert.equal(arm({status:"waiting_for_credentials"}),"waiting_for_credentials");
  assert.equal(arm({status:"waiting_for_mfa"}),"waiting_for_mfa");

@@ -9,6 +9,7 @@ type SessionScope = "practice" | "user";
 type SessionStatus =
   | "idle"
   | "not_started"
+  | "checking_connection"
   | "connected"
   | "refreshing"
   | "waiting_for_credentials"
@@ -40,16 +41,10 @@ function isConnected(status: SessionStatus) {
   return status === "connected";
 }
 
-function needsLogin(status: SessionStatus) {
-  return (
-    status === "waiting_for_credentials" ||
-    status === "not_started" ||
-    status === "expired" ||
-    status === "error"
-  );
-}
+function needsLogin(status: SessionStatus) { return status === "waiting_for_credentials"; }
 
 function statusLabel(status: SessionStatus) {
+  if (status === "checking_connection") return "Connection issue";
   if (status === "connected") return "Connected";
   if (["idle", "not_started", "expired"].includes(status)) return "Not connected";
   if (status === "waiting_for_mfa") return "MFA needed";
@@ -74,7 +69,7 @@ export default function PraktikaCompactSessionPanel({
   const [mfaCode, setMfaCode] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const armStatusExpiry = useStatusExpiry(() => { setState(current => current.status === "connected" ? { ...current, status: "not_started", message: "Not connected." } : current); });
+  const armStatusExpiry = useStatusExpiry(status => { setState(current => ["connected", "checking_connection"].includes(current.status) ? { ...current, status: status as typeof current.status } : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {
@@ -318,7 +313,8 @@ export default function PraktikaCompactSessionPanel({
             )}
 
             <div className="mt-4 flex gap-2">
-              <button
+              {["not_started", "idle", "expired", "error"].includes(state.status) ? (
+<button
                 type="button"
                 onClick={reconnect}
                 disabled={busy}
@@ -326,6 +322,7 @@ export default function PraktikaCompactSessionPanel({
               >
                 {busy ? "Reconnecting..." : "Force reconnect"}
               </button>
+) : null}
 
               <button
                 type="button"

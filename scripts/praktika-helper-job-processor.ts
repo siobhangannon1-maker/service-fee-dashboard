@@ -1342,8 +1342,8 @@ export async function processOnePraktikaHelperJob(
     if (error instanceof PraktikaOwnershipLost) throw error;
     await ownership.assertOwned();
     if (error instanceof PraktikaAuthenticationUnverified) {
-      await failJob(job, error.message, true);
-      return { outcome: "needs_reconnect", jobId: job.id };
+      await failJob(job, error.message, !error.transient);
+      return { outcome: error.transient ? "failed" : "needs_reconnect", jobId: job.id };
     }
     const message = error?.message || "Praktika helper job failed.";
     console.error(`Failed Praktika helper job ${job.id}:`, message);

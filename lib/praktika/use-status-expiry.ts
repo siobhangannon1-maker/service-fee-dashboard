@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
-type StatusProof = {
+export type StatusProof = {
   status?: string;
   helperAlive?: boolean;
   storedStatus?: string;
@@ -11,8 +11,6 @@ type StatusProof = {
   helperHeartbeatAt?: string | null;
 };
 
-// Conservative UI deadlines matching the production 120s proof / 90s lease.
-// Status responses can remove green sooner; polling never extends these deadlines.
 export function connectionExpiry(data: StatusProof, now = Date.now()): number | null {
   const proof = Date.parse(data.authenticatedAt || "");
   const heartbeat = Date.parse(data.helperHeartbeatAt || "");
@@ -21,19 +19,38 @@ export function connectionExpiry(data: StatusProof, now = Date.now()): number | 
   return Math.min(proof + 120_000, heartbeat + 90_000);
 }
 
-export function useStatusExpiry(onExpire: () => void) {
+// A cached proof never outlives either deadline. Unknown is neutral, not green.
+export function currentStatus(data: StatusProof | null, now = Date.now()): string {
+  if (!data) return "checking_connection";
+  const status = data.status || "error";
+  if (["idle", "not_started", "expired"].includes(status)) return "not_started";
+  if (["waiting_for_credentials", "waiting_for_mfa", "error", "refresh_requested"].includes(status)) return status;
+  const heartbeat = Date.parse(data.helperHeartbeatAt || "");
+  const alive = Number.isFinite(heartbeat) && heartbeat <= now && now < heartbeat + 90_000;
+  if (!alive) return "not_started";
+  if (status === "connected") {
+    const expiry = connectionExpiry(data, now);
+    return expiry !== null && now < expiry ? "connected" : "checking_connection";
+  }
+  return status;
+}
+
+export function useStatusExpiry(onExpire: (status: string) => void) {
   const callback = useRef(onExpire);
   callback.current = onExpire;
-  const deadline = useRef<number | null>(null);
+  const latest = useRef<StatusProof | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const check = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
-    if (deadline.current === null) return;
-    const remaining = deadline.current - Date.now();
-    if (remaining <= 0) {
-      deadline.current = null;
-      callback.current();
-    } else timer.current = setTimeout(check, remaining);
+    const data = latest.current;
+    if (!data) return;
+    const status = currentStatus(data);
+    if (status !== data.status) callback.current(status);
+    const deadline = status === "connected" ? connectionExpiry(data)
+      : status === "checking_connection" ? Date.parse(data.helperHeartbeatAt || "") + 90_000 : null;
+    if (deadline !== null && Number.isFinite(deadline) && deadline > Date.now()) {
+      timer.current = setTimeout(check, deadline - Date.now());
+    }
   }, []);
   useEffect(() => {
     window.addEventListener("focus", check);
@@ -45,12 +62,8 @@ export function useStatusExpiry(onExpire: () => void) {
     };
   }, [check]);
   return useCallback((data: StatusProof) => {
-    deadline.current = connectionExpiry(data);
-    const status = data.status === "connected" &&
-      (deadline.current === null || deadline.current <= Date.now()) ? "refreshing" : data.status || "error";
+    latest.current = data;
     check();
-    if (["idle", "not_started", "expired"].includes(status)) return "not_started";
-    if (status === "refreshing" && (data.status === "connected" || data.helperAlive === false || data.storedStatus === "connected")) return "not_started";
-    return status;
+    return currentStatus(data);
   }, [check]);
 }

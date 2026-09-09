@@ -1,6 +1,6 @@
 "use client";
 
-import { useStatusExpiry } from "@/lib/praktika/use-status-expiry";
+import { currentStatus as cachedStatus, useStatusExpiry } from "@/lib/praktika/use-status-expiry";
 
 import { useRef, useEffect, useMemo, useState } from "react";
 
@@ -32,6 +32,9 @@ type PraktikaToolsPopupProps = {
 
 type SessionStatus = {
   status?: string;
+  connected?: boolean;
+  helperHeartbeatAt?: string | null;
+  authenticatedAt?: string | null;
   message?: string | null;
   praktikaUsername?: string | null;
   praktika_username?: string | null;
@@ -40,7 +43,7 @@ type SessionStatus = {
   has_cookie?: boolean;
 };
 
-type ConnectionDisplayState = "connected" | "connecting" | "idle" | "disconnected";
+type ConnectionDisplayState = "loading" | "checking" | "connected" | "connecting" | "idle" | "disconnected";
 
 function addDays(dateString: string, days: number) {
   const date = new Date(`${dateString}T00:00:00`);
@@ -65,6 +68,8 @@ function connectionState(
   busy: boolean,
 ): ConnectionDisplayState {
   if (busy) return "connecting";
+  if (status === "loading") return "loading";
+  if (status === "checking_connection") return "checking";
   if (status === "idle") return "idle";
   if (status === "connected") return "connected";
 
@@ -79,6 +84,8 @@ function connectionState(
 }
 
 function connectionLabel(state: ConnectionDisplayState) {
+  if (state === "loading") return "Loading status…";
+  if (state === "checking") return "Connection issue";
   if (state === "connected") return "Connected";
   if (state === "connecting") return "Connection underway";
   if (state === "idle") return "Not connected";
@@ -94,7 +101,7 @@ function dotClass(state: ConnectionDisplayState) {
 
 export default function PraktikaToolsPopup(props: PraktikaToolsPopupProps) {
   // Closing discards cached status; reopening starts with a fresh checking state.
-  return props.open ? <PraktikaToolsPopupContent {...props} /> : null;
+  return <PraktikaToolsPopupContent {...props} />;
 }
 
 function PraktikaToolsPopupContent({
@@ -118,7 +125,7 @@ function PraktikaToolsPopupContent({
   needsReconnect = false,
 }: PraktikaToolsPopupProps) {
   const [session, setSession] = useState<SessionStatus | null>(null);
-  const [displayStatus, setDisplayStatus] = useState("not_started");
+  const [displayStatus, setDisplayStatus] = useState("loading");
   const [checking, setChecking] = useState(false);
   const [credentialsSubmitting, setCredentialsSubmitting] = useState(false);
   const [mfaSubmitting, setMfaSubmitting] = useState(false);
@@ -129,7 +136,7 @@ function PraktikaToolsPopupContent({
   const [mfaCode, setMfaCode] = useState("");
   const [localMessage, setLocalMessage] = useState<string | null>(null);
 
-  const currentStatus = displayStatus;
+  const currentStatus = displayStatus === "connected" ? cachedStatus(session) : displayStatus;
   const lastUsername =
     session?.praktikaUsername ||
     session?.praktika_username ||
@@ -152,17 +159,9 @@ function PraktikaToolsPopupContent({
 
   const isConnected = currentConnectionState === "connected";
 
-  const shouldShowReconnectWarning = needsReconnect && !isConnected;
+  const shouldShowReconnectWarning = needsReconnect && currentConnectionState === "disconnected";
 
-  const shouldShowCredentialForm =
-  currentStatus !== "connected" &&
-  currentStatus !== "waiting_for_mfa" &&
-  (currentConnectionState === "disconnected" ||
-    needsReconnect ||
-    currentStatus === "waiting_for_credentials" ||
-    currentStatus === "expired" ||
-    currentStatus === "error" ||
-    currentStatus === "not_started");
+  const shouldShowCredentialForm = currentStatus === "waiting_for_credentials";
 
   const shouldShowMfaBox = currentStatus === "waiting_for_mfa";
 
@@ -228,7 +227,7 @@ function PraktikaToolsPopupContent({
     }
   }
 
-  const armStatusExpiry = useStatusExpiry(() => { setDisplayStatus(current => current === "connected" ? "not_started" : current); });
+  const armStatusExpiry = useStatusExpiry(status => { setDisplayStatus(current => ["connected", "checking_connection"].includes(current) ? status : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {
@@ -490,7 +489,7 @@ function PraktikaToolsPopupContent({
 
               {session?.message ? (
                 <p className="mt-2 text-xs text-slate-600">
-                  {currentStatus === "not_started" ? "Not connected. Connect before syncing." : session.message}
+                  {currentStatus === "checking_connection" ? "Connection issue" : currentStatus === "not_started" ? "Not connected. Connect before syncing." : session.message}
                 </p>
               ) : null}
 
@@ -501,7 +500,7 @@ function PraktikaToolsPopupContent({
               ) : null}
             </div>
 
-            {currentConnectionState !== "connected" && currentStatus !== "waiting_for_mfa" ? (
+            {["disconnected", "idle"].includes(currentConnectionState) && currentStatus !== "waiting_for_mfa" && !shouldShowCredentialForm ? (
               <button
                 type="button"
                 onClick={requestReconnect}

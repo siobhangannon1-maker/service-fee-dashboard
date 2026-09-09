@@ -40,7 +40,7 @@ test('transient renewal failure preserves proof; strict stale job still blocks',
   assert.equal(derivePraktikaConnection({ ...f.row, helper_heartbeat_at: new Date(future).toISOString() }, future).connected, false);
   f.row.authenticated_at = null;
   await assert.rejects(f.gate(), PraktikaAuthenticationUnverified);
-  assert.deepEqual(f.stats(), { probes: 2, successes: 0, failures: 1 });
+  assert.deepEqual(f.stats(), { probes: 2, successes: 0, failures: 0 });
 });
 for (const [body, phase] of [['<input type="password">', 'waiting_for_credentials'], ['<input autocomplete="one-time-code">', 'waiting_for_mfa']]) {
   test('renewal immediately surfaces ' + phase, async () => {

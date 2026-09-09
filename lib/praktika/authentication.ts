@@ -16,7 +16,7 @@ export type PraktikaConnectionRow = HelperHealth & {
   current_url?: string | null;
   message?: string | null;
 };
-export type EffectivePraktikaStatus = "connected" | "refreshing" | "refresh_requested" | "idle" |
+export type EffectivePraktikaStatus = "connected" | "checking_connection" | "refreshing" | "refresh_requested" | "idle" |
   "not_started" | "waiting_for_credentials" | "waiting_for_mfa" | "expired" | "error";
 
 // Stored status is the login/workflow phase. Live connection additionally needs
@@ -35,7 +35,10 @@ export function derivePraktikaConnection(row: PraktikaConnectionRow, now = Date.
   } else if (!helperAlive) {
     status = row.cookie || row.current_url ? "idle" : "not_started";
     message = status === "idle" ? "Praktika helper is idle. Reconnect or queue work to verify the saved session." : "No live Praktika helper is available.";
-  } else if (!authenticationVerified || row.status === "refreshing") {
+  } else if (!authenticationVerified) {
+    status = "checking_connection";
+    message = "Connection issue";
+  } else if (row.status === "refreshing") {
     status = "refreshing";
     message = "Praktika authentication is unverified. Reconnect or queue work to check it.";
   } else {

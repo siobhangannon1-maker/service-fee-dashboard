@@ -162,7 +162,8 @@ type WorkflowReason = {
 };
 
 type PraktikaSessionState = {
-  status: "not_started" | "idle" | "refreshing" | "refresh_requested" | "waiting_for_credentials" | "waiting_for_mfa" | "connected" | "expired" | "error";
+  status: "not_started" | "idle" | "refreshing" | "refresh_requested" | "waiting_for_credentials" | "waiting_for_mfa" | "checking_connection"
+  | "connected" | "expired" | "error";
   message: string;
   currentUrl?: string;
   updatedAt?: string;
@@ -170,13 +171,14 @@ type PraktikaSessionState = {
 
 function praktikaSessionStatusLabel(status: PraktikaSessionState["status"]) {
   switch (status) {
+    case "checking_connection": return "Connection issue";
     case "connected": return "Connected";
     case "waiting_for_mfa": return "MFA required";
     case "waiting_for_credentials":
     return "Login required";
     case "expired": return "Not connected";
     case "refreshing":
-    case "refresh_requested": return "Checking connection";
+    case "refresh_requested": return "Connecting";
     case "error": return "Connection failed";
     case "idle": return "Not connected";
     default: return "Not connected";
@@ -388,7 +390,7 @@ function PraktikaWorkbenchPanel({
   const [code, setCode] = useState("");
   const [sessionBusy, setSessionBusy] = useState(false);
 
-  const armStatusExpiry = useStatusExpiry(() => { setState(current => current.status === "connected" ? { ...current, status: "not_started", message: "Not connected." } : current); });
+  const armStatusExpiry = useStatusExpiry(status => { setState(current => ["connected", "checking_connection"].includes(current.status) ? { ...current, status: status as typeof current.status } : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {
@@ -497,7 +499,7 @@ function PraktikaWorkbenchPanel({
             Session status: {praktikaSessionStatusLabel(state.status)}
           </h2>
 
-          <p className="mt-1 max-w-3xl text-sm opacity-85">{state.status === "not_started" || state.status === "idle" ? "Not connected." : state.message}</p>
+          <p className="mt-1 max-w-3xl text-sm opacity-85">{state.status === "checking_connection" ? "Connection issue" : state.status === "not_started" || state.status === "idle" ? "Not connected." : state.message}</p>
 
           {state.updatedAt ? (
             <p className="mt-1 text-xs opacity-70">

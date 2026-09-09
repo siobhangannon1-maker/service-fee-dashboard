@@ -205,7 +205,10 @@ async function verifyRequestedConnection() {
   verificationRequested = false;
   ensureAuthenticated.resume();
   try { await ensureAuthenticated(); loginTransition = false; }
-  catch (error) { if (!(error instanceof PraktikaAuthenticationUnverified)) throw error; }
+  catch (error) {
+    if (!(error instanceof PraktikaAuthenticationUnverified)) throw error;
+    if (error.transient) loginTransition = false;
+  }
 }
 
 // Chromium responsiveness only: no Praktika request and no authentication proof.
@@ -941,7 +944,7 @@ async function refreshOnce() {
       eligible: async () => {
         if (loginTransition || ownershipLost || !page || page.isClosed()) return false;
         const current = await getSession();
-        return current.status === "connected" && await isBrowserUiLoggedIn(page);
+        return ["connected", "refreshing"].includes(current.status) && await isBrowserUiLoggedIn(page);
       },
       renew: ensureAuthenticated.renew,
       stopGate: ensureAuthenticated.stop,

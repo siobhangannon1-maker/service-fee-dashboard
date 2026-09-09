@@ -9,6 +9,7 @@ type SessionScope = "practice" | "user";
 type SessionStatus =
   | "idle"
   | "not_started"
+  | "checking_connection"
   | "connected"
   | "refreshing"
   | "waiting_for_credentials"
@@ -17,7 +18,8 @@ type SessionStatus =
   | "expired"
   | "error";
 
-type LiveStatus = "not_checked" | "checking" | "connected" | "expired" | "error";
+type LiveStatus = "not_checked" | "checking" | "checking_connection"
+  | "connected" | "expired" | "error";
 
 type SessionState = {
   scope?: SessionScope;
@@ -98,6 +100,7 @@ function friendlyRelativeTime(value?: string | null) {
 }
 
 function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
+  if (state.status === "checking_connection") return { label: "Connection issue", headline: "Connection issue", message: "Connection issue", tone: "border-slate-200 bg-slate-50 text-slate-950", dot: "bg-slate-400" };
   if (isReconnectStatus(state.status)) {
     return {
       label: "Reconnecting",
@@ -190,7 +193,7 @@ export default function PraktikaSessionPanel({
   const [validating, setValidating] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const armStatusExpiry = useStatusExpiry(() => { setState(current => current.status === "connected" ? { ...current, status: "not_started", message: "Not connected." } : current); });
+  const armStatusExpiry = useStatusExpiry(status => { setState(current => ["connected", "checking_connection"].includes(current.status) ? { ...current, status: status as typeof current.status } : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {
@@ -438,14 +441,7 @@ export default function PraktikaSessionPanel({
 
   const display = getDisplayState(state, liveStatus);
 
-  const showCredentials =
-    scope === "user" &&
-    (state.status === "waiting_for_credentials" ||
-      state.status === "not_started" ||
-      state.status === "expired" ||
-      state.status === "error") &&
-    !isReconnectStatus(state.status) &&
-    liveStatus !== "checking";
+  const showCredentials = scope === "user" && state.status === "waiting_for_credentials";
 
   const showMfa = state.status === "waiting_for_mfa";
 
@@ -625,7 +621,8 @@ export default function PraktikaSessionPanel({
               {validating ? "Checking..." : "Check now"}
             </button>
 
-            <button
+            {["not_started", "idle", "expired", "error"].includes(state.status) ? (
+<button
               type="button"
               onClick={refreshSession}
               disabled={busy || validating}
@@ -633,6 +630,7 @@ export default function PraktikaSessionPanel({
             >
               {busy || isReconnectStatus(state.status) ? "Reconnecting..." : "Force reconnect"}
             </button>
+) : null}
           </div>
         </div>
       ) : null}

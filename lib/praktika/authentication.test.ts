@@ -91,7 +91,7 @@ test("failed concurrent probe shares failure and cannot create proof", async () 
   const fixture = gateFixture(false, false);
   const results = await Promise.allSettled([fixture.ensure(), fixture.ensure()]);
   assert.ok(results.every(result => result.status === "rejected" && result.reason instanceof PraktikaAuthenticationUnverified));
-  assert.deepEqual(fixture.stats(), { probes: 1, writes: 0, failures: 1 });
+  assert.deepEqual(fixture.stats(), { probes: 1, writes: 0, failures: 0 });
 });
 
 test("ownership lost in flight prevents authentication write", async () => {
@@ -147,7 +147,7 @@ test("status route exposes derived truth without probing or persisting proof", a
   assert.equal((await get(new Request("https://fixture.invalid/api"))).connected, true);
   row = { ...row, authenticated_at: null };
   const unverified = await get(new Request("https://fixture.invalid/api"));
-  assert.equal(unverified.connected, false); assert.equal(unverified.status, "refreshing");
+  assert.equal(unverified.connected, false); assert.equal(unverified.status, "checking_connection");
   assert.equal(unverified.storedStatus, "connected");
   row = { ...row, helper_heartbeat_at: new Date(0).toISOString() };
   const idle = await get(new Request("https://fixture.invalid/api"));

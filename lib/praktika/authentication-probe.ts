@@ -27,7 +27,7 @@ export function classifyPraktikaRedirect(location: string | undefined, expectedU
 
 export type ProbeResult = { redirectDiagnostics?: RedirectDiagnostics; verified: boolean; phase: AuthenticationFailurePhase; httpStatus: number | null; parsedArray: boolean };
 export class PraktikaAuthenticationUnverified extends Error {
-  constructor(readonly phase: AuthenticationFailurePhase = "error") { super("Praktika authentication could not be verified. Reconnect before retrying this job."); }
+  constructor(readonly phase: AuthenticationFailurePhase = "error", readonly transient = false) { super(transient ? "Praktika verification is temporarily unavailable. Retry remains bounded." : "Praktika authentication could not be verified. Reconnect before retrying this job."); }
 }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -89,11 +89,12 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
       try {
         if (response.url() !== url || !response.ok()) {
           if (response.status() >= 300 && response.status() < 400) {
-            // Diagnostics must not turn a redirect into success or a challenge.
+            // Redirects never prove authentication; only the confirmed login path is a challenge.
             let location: string | undefined;
             try { location = response.headers()["location"]; } catch { /* Metadata unavailable. */ }
-            return { ...failed, httpStatus: response.status(), redirectDiagnostics: {
-              ...classifyPraktikaRedirect(location, url), responseReceived: true as const,
+            const redirect = classifyPraktikaRedirect(location, url);
+            return { ...failed, phase: redirect.redirect_category === "login_redirect" ? "waiting_for_credentials" as const : "error" as const, httpStatus: response.status(), redirectDiagnostics: {
+              ...redirect, responseReceived: true as const,
               elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
             } };
           }
@@ -141,9 +142,9 @@ export function createPraktikaAuthenticationGate(deps: {
       const result = await deps.probe();
       await assertCurrent();
       if (!result.verified) {
-        // Background ambiguity never creates or destroys proof. Its original
-        // deadline remains authoritative, even if a job joins this request.
-        if (!renew || result.phase !== "error") await deps.recordFailure(result.phase);
+        // Ambiguity never creates or destroys proof, regardless of the initiating
+        // caller. Only explicit authentication negatives clear it.
+        if (result.phase !== "error") await deps.recordFailure(result.phase);
         console.log(renew && result.phase === "error" ? "[Praktika auth] renewal_transient_failure" : "[Praktika auth] probe_failed", {
           httpStatus: result.httpStatus, parsedArray: result.parsedArray, phase: result.phase,
           ...(result.redirectDiagnostics ? {
@@ -155,7 +156,7 @@ export function createPraktikaAuthenticationGate(deps: {
               ? Math.max(0, Date.now() - Date.parse(session.authenticated_at!)) : null,
           } : {}),
         });
-        throw new PraktikaAuthenticationUnverified(result.phase);
+        throw new PraktikaAuthenticationUnverified(result.phase, result.phase === "error");
       }
       await deps.recordSuccess();
       await assertCurrent();
