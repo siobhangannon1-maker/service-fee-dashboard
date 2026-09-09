@@ -1,68 +1,33 @@
+import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
+import { derivePraktikaConnection } from "@/lib/praktika/authentication";
 import { NextResponse } from "next/server";
 
 import {
-  getCurrentUserPraktikaSessionMode,
   getPraktikaSession,
-  type PraktikaSessionMode,
 } from "@/lib/praktika/hybrid-session-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function isLoginOrLogoutUrl(currentUrl: string | null) {
-  const url = String(currentUrl || "").toLowerCase();
-
-  return (
-    url.includes("/login") ||
-    url.includes("/v2/login") ||
-    url.includes("/logout")
-  );
-}
-
 export async function GET(request: Request) {
   try {
     const requestUrl = new URL(request.url);
-    const requestedScope = requestUrl.searchParams.get("scope");
-
-    let mode: PraktikaSessionMode;
-
-    if (requestedScope === "practice") {
-      mode = { scope: "practice" };
-    } else {
-      mode = await getCurrentUserPraktikaSessionMode();
-    }
+    const mode = await authorizePraktikaSession(Object.fromEntries(requestUrl.searchParams));
 
     const session = await getPraktikaSession(mode);
 
     const hasCookie = Boolean(session.cookie);
-    const invalidCurrentUrl = isLoginOrLogoutUrl(session.current_url);
-
-    const connected =
-      session.status === "connected" &&
-      hasCookie &&
-      !invalidCurrentUrl;
-
-    let status = session.status;
-    let message =
-      session.message || "Praktika session status is unavailable.";
-
-    /*
-     * Protect against inconsistent saved states without changing the database.
-     */
-    if (session.status === "connected" && !hasCookie) {
-      status = "not_started";
-      message = "No saved Praktika browser session was found.";
-    }
-
-    if (session.status === "connected" && invalidCurrentUrl) {
-      status = "expired";
-      message =
-        "The Praktika helper is currently on a login or logout page.";
-    }
+    const { status, message, connected, helperAlive, authenticationVerified } = derivePraktikaConnection(session);
 
     return NextResponse.json(
       {
         connected,
+        helperAlive,
+        helperHeartbeatAt: session.helper_heartbeat_at ?? null,
+        // Liveness and authentication proof are independently required.
+        authenticatedAt: session.authenticated_at ?? null,
+        authenticationVerified,
+        storedStatus: session.status,
         status,
         message,
 
@@ -87,6 +52,9 @@ export async function GET(request: Request) {
       },
     );
   } catch (error: unknown) {
+    if (error instanceof PraktikaSessionAuthorizationError) {
+      return NextResponse.json({ connected: false, status: "error", error: error.message, message: error.message }, { status: error.status });
+    }
     const message =
       error instanceof Error
         ? error.message
@@ -97,6 +65,10 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         connected: false,
+        helperAlive: false,
+        helperHeartbeatAt: null,
+        authenticatedAt: null,
+        authenticationVerified: false,
         status: "error",
         message,
 

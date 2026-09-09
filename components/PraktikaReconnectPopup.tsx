@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useRef, useEffect, useState } from "react";
 
 type PraktikaStatus =
   | "not_started"
@@ -47,13 +47,17 @@ export default function PraktikaReconnectPopup() {
   const [dismissedForStatus, setDismissedForStatus] =
     useState<PraktikaStatus | null>(null);
 
+  const statusRequest = useRef(0);
+
   async function loadStatus() {
+    const requestId = ++statusRequest.current;
     try {
       const res = await fetch("/api/praktika/session/status?scope=user", {
         cache: "no-store",
       });
 
       const json = await safeJson(res);
+      if (requestId !== statusRequest.current) return;
 
       const next: SessionState = {
         status: json.status || "error",
@@ -76,6 +80,7 @@ export default function PraktikaReconnectPopup() {
         setOpen(true);
       }
     } catch {
+      if (requestId !== statusRequest.current) return;
       // Ignore temporary network/dev reload interruptions.
     }
   }
@@ -85,7 +90,7 @@ export default function PraktikaReconnectPopup() {
 
     const timer = window.setInterval(loadStatus, 30000);
 
-    return () => window.clearInterval(timer);
+    return () => { ++statusRequest.current; window.clearInterval(timer); };
   }, [dismissedForStatus]);
 
   if (!open) return null;

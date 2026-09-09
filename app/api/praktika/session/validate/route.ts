@@ -1,7 +1,7 @@
+import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
 import { NextResponse } from "next/server";
 
 import {
-  getCurrentUserPraktikaSessionMode,
   markPraktikaRefreshRequested,
 } from "@/lib/praktika/hybrid-session-store";
 import { validatePraktikaSession } from "@/lib/praktika/validate-praktika-session";
@@ -12,13 +12,9 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const scope = body?.scope || "user";
     const requestRefresh = Boolean(body?.requestRefresh);
 
-    const mode =
-      scope === "practice"
-        ? { scope: "practice" as const }
-        : await getCurrentUserPraktikaSessionMode();
+    const mode = await authorizePraktikaSession(body);
 
     const result = await validatePraktikaSession(mode);
 
@@ -33,6 +29,9 @@ export async function POST(request: Request) {
       refreshRequested: !result.connected && requestRefresh,
     });
   } catch (error: any) {
+    if (error instanceof PraktikaSessionAuthorizationError) {
+      return NextResponse.json({ connected: false, status: "error", error: error.message, message: error.message }, { status: error.status });
+    }
     return NextResponse.json(
       {
         ok: false,

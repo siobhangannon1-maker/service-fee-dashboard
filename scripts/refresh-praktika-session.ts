@@ -1,3 +1,8 @@
+import { createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
+import {
+  writePraktikaHelper, PraktikaOwnershipLost, PRAKTIKA_HELPER_HEARTBEAT_MS,
+  PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS,
+} from "../lib/praktika/helper-lease";
 import path from "node:path";
 import crypto from "node:crypto";
 import dotenv from "dotenv";
@@ -81,6 +86,9 @@ type SessionRow = {
   id: string;
   scope: "practice" | "user";
   app_user_id: string | null;
+  helper_instance_id: string | null;
+  helper_heartbeat_at: string | null;
+  authenticated_at: string | null;
   status: string;
   message: string | null;
   cookie: string | null;
@@ -155,7 +163,77 @@ if (!sessionId) {
   throw new Error("Missing --session-id=<praktika_sessions.id>");
 }
 
+const helperInstanceId = argValue("helper-instance-id");
+if (!helperInstanceId) throw new Error("Missing --helper-instance-id; start through the owning watcher.");
+let ownershipLost = false;
+let verificationRequested = false;
+let ownedContext: BrowserContext | undefined;
+
+async function ownedWrite(action: "check" | "heartbeat" | "update" | "authenticate" | "authentication_failed", values: Record<string, unknown> = {}) {
+  if (ownershipLost) throw new PraktikaOwnershipLost();
+  try {
+    await writePraktikaHelper(supabase, sessionId!, helperInstanceId!, action, values);
+  } catch {
+    ownershipLost = true;
+    await ownedContext?.close().catch(() => {});
+    throw new PraktikaOwnershipLost();
+  }
+}
+async function assertOwned() { await ownedWrite("check"); }
+async function releaseOwnership(failed = false) {
+  await writePraktikaHelper(supabase, sessionId!, helperInstanceId!, "release", {
+    status: failed ? "error" : "not_started",
+  }).catch(() => {});
+}
+
+const ensureAuthenticated = createPraktikaAuthenticationGate({
+  assertOwned,
+  readOwnedSession: getSession,
+  probe: async () => {
+    if (!ownedContext) throw new PraktikaOwnershipLost();
+    return probePraktikaAuthentication(ownedContext, String(process.env.PRAKTIKA_PRACTICE_ID || "").trim(), PRAKTIKA_BASE_URL);
+  },
+  recordSuccess: () => ownedWrite("authenticate"),
+  recordFailure: (status) => ownedWrite("authentication_failed", { status }),
+});
+async function verifyRequestedConnection() {
+  verificationRequested = false;
+  try { await ensureAuthenticated(); }
+  catch (error) { if (!(error instanceof PraktikaAuthenticationUnverified)) throw error; }
+}
+
+// Chromium responsiveness only: no Praktika request and no authentication proof.
+function startHeartbeat(context: BrowserContext) {
+  let stopped = false;
+  let pending: Promise<void> | undefined;
+  const tick = async () => {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        context.cookies().then(() => undefined),
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(() => reject(new Error("Browser liveness unavailable")), PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS);
+        }),
+      ]);
+      if (!stopped) await ownedWrite("heartbeat");
+    } catch {
+      stopped = true;
+      clearInterval(timer);
+      ownershipLost = true;
+      await releaseOwnership(true);
+      await context.close().catch(() => {});
+    } finally {
+      if (deadline) clearTimeout(deadline);
+    }
+  };
+  const timer = setInterval(() => {
+    if (!pending && !stopped) pending = tick().finally(() => { pending = undefined; });
+  }, PRAKTIKA_HELPER_HEARTBEAT_MS);
+  return async () => { stopped = true; clearInterval(timer); await pending; };
+}
+
 async function getSession() {
+  await assertOwned();
   const { data, error } = await supabase
     .from("praktika_sessions")
     .select("*")
@@ -166,21 +244,16 @@ async function getSession() {
     throw new Error(error?.message || "Session not found.");
   }
 
+  if (data.helper_instance_id !== helperInstanceId) {
+    ownershipLost = true;
+    await ownedContext?.close().catch(() => {});
+    throw new PraktikaOwnershipLost();
+  }
   return data as SessionRow;
 }
 
 async function updateSession(values: Record<string, unknown>) {
-  const { error } = await supabase
-    .from("praktika_sessions")
-    .update({
-      ...values,
-      updated_at: nowIso(),
-    })
-    .eq("id", sessionId);
-
-  if (error) {
-    throw new Error(`Could not update Praktika session: ${error.message}`);
-  }
+  await ownedWrite("update", values);
 }
 
 async function clearTemporaryPassword(extraValues: Record<string, unknown> = {}) {
@@ -206,18 +279,7 @@ async function getAndClearMfaCode() {
 
   if (!code) return null;
 
-  const { error } = await supabase
-    .from("praktika_sessions")
-    .update({
-      mfa_code: null,
-      mfa_code_updated_at: null,
-      updated_at: nowIso(),
-    })
-    .eq("id", sessionId);
-
-  if (error) {
-    throw new Error(`Could not clear MFA code: ${error.message}`);
-  }
+  await updateSession({ mfa_code: null, mfa_code_updated_at: null });
 
   return code;
 }
@@ -416,6 +478,7 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
     return false;
   }
 
+  verificationRequested = true;
   console.log("Submitting Praktika credentials from saved pending credentials.");
 
   await usernameField.fill(username);
@@ -478,6 +541,7 @@ async function submitMfaCodeIfAvailable(page: Page) {
     .first()
     .click({ force: true });
 
+  verificationRequested = true;
   await updateSession({
     status: "refreshing",
     message: "MFA code submitted. Waiting for Praktika to finish signing in.",
@@ -490,7 +554,7 @@ async function submitMfaCodeIfAvailable(page: Page) {
   return true;
 }
 
-async function saveCookies(context: BrowserContext, page: Page, message?: string) {
+async function saveCookies(context: BrowserContext, page: Page, message?: string, markConnected = true) {
   const { cookieHeader, hasPhpSession, hasUat } = await buildCookieHeader(context);
 
   if (!cookieHeader) {
@@ -512,9 +576,9 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
 
   await clearTemporaryCredentialsAfterSuccess({
     cookie: cookieHeader,
-    status: "connected",
+    ...(markConnected && !["error", "waiting_for_credentials", "waiting_for_mfa"].includes(session.status) ? { status: "connected" } : {}),
     message:
-      message ||
+      (["error", "waiting_for_credentials", "waiting_for_mfa"].includes(session.status) ? session.message : null) || message ||
       (KEEP_BROWSER_OPEN
         ? "Praktika helper browser is connected."
         : "Praktika session refreshed successfully."),
@@ -616,6 +680,7 @@ async function drainAvailableHelperJobs(
     const result: PraktikaJobResult = await processOnePraktikaHelperJob(
       context,
       appUserId,
+      { assertOwned, updateSession, ensureAuthenticated },
     );
 
     if (result.outcome === "none") break;
@@ -675,6 +740,10 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
       }
 
       if (await isBrowserUiLoggedIn(page)) {
+        if (verificationRequested || session.status === "refresh_requested") {
+          await updateSession({ status: "refreshing", refresh_requested_at: null });
+          await verifyRequestedConnection();
+        }
         if (now - lastCookieRefreshAt >= KEEP_ALIVE_INTERVAL_MS) {
           await saveCookies(
             context,
@@ -719,6 +788,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
             `Praktika helper is sleeping after ${Math.round(
               HELPER_IDLE_SHUTDOWN_MS / 60_000,
             )} minutes without helper jobs. It will restart automatically when new work arrives.`,
+            false, // Save reusable cookies without promoting the closing browser.
           ).catch((error) => {
             console.warn(
               "Could not save cookies immediately before idle shutdown:",
@@ -726,20 +796,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
             );
           });
 
-          await updateSession({
-            status: "connected",
-            message:
-              `Praktika helper is sleeping after ${Math.round(
-                HELPER_IDLE_SHUTDOWN_MS / 60_000,
-              )} minutes of inactivity. It will restart automatically when new work arrives.`,
-            refresh_requested_at: null,
-            last_used_at: nowIso(),
-          }).catch((error) => {
-            console.warn(
-              "Could not update session before idle shutdown:",
-              error,
-            );
-          });
+          await releaseOwnership();
 
           console.log(
             `Session ${session.id} reached the ${Math.round(
@@ -795,6 +852,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         await performRealBrowserActivity(page);
       }
     } catch (error: any) {
+      if (ownershipLost || error instanceof PraktikaOwnershipLost) throw new PraktikaOwnershipLost();
       const message = String(error?.message || "");
 
       if (
@@ -856,13 +914,18 @@ async function refreshOnce() {
     },
   );
 
-  const page = await context.newPage();
+  ownedContext = context;
+  const stopHeartbeat = startHeartbeat(context);
 
+  let page: Page | undefined;
   try {
+    await assertOwned();
+    page = await context.newPage();
     if (await hasExistingBrowserSession(page)) {
       const saved = await saveCookies(context, page);
 
       if (saved) {
+        await verifyRequestedConnection();
         if (KEEP_BROWSER_OPEN) {
           await keepBrowserOpenForever(context, page);
         }
@@ -897,6 +960,7 @@ async function refreshOnce() {
         const saved = await saveCookies(context, page);
 
         if (saved) {
+          await verifyRequestedConnection();
           if (KEEP_BROWSER_OPEN) {
             await keepBrowserOpenForever(context, page);
           }
@@ -934,14 +998,17 @@ async function refreshOnce() {
 
     throw new Error("Timed out waiting for Praktika login/MFA completion.");
   } catch (error: any) {
+    if (ownershipLost || error instanceof PraktikaOwnershipLost) throw new PraktikaOwnershipLost();
     await clearTemporaryPassword({
       status: "error",
       message: error?.message || "Praktika session refresh failed.",
-      current_url: await safePageUrl(page),
+      current_url: page ? await safePageUrl(page) : null,
     });
 
     throw error;
   } finally {
+    await stopHeartbeat();
+    await releaseOwnership();
     await context.close().catch(() => {});
     logProcessMemory(`session=${session.id} after-context-close`);
   }

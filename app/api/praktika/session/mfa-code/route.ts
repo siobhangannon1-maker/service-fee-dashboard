@@ -1,6 +1,6 @@
+import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
 import { NextResponse } from "next/server";
 import {
-  getCurrentUserPraktikaSessionMode,
   savePraktikaMfaCode,
 } from "@/lib/praktika/hybrid-session-store";
 
@@ -10,8 +10,8 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    const mode = await authorizePraktikaSession(body);
     const code = String(body?.code || "").replace(/\D/g, "").trim();
-    const scope = body?.scope || "user";
 
     if (!code) {
       return NextResponse.json(
@@ -20,10 +20,6 @@ export async function POST(request: Request) {
       );
     }
 
-    const mode =
-      scope === "practice"
-        ? { scope: "practice" as const }
-        : await getCurrentUserPraktikaSessionMode();
 
     await savePraktikaMfaCode({ mode, code });
 
@@ -33,6 +29,9 @@ export async function POST(request: Request) {
       message: "MFA code saved. Waiting for local helper machine.",
     });
   } catch (error: any) {
+    if (error instanceof PraktikaSessionAuthorizationError) {
+      return NextResponse.json({ connected: false, status: "error", error: error.message, message: error.message }, { status: error.status });
+    }
     return NextResponse.json(
       {
         ok: false,

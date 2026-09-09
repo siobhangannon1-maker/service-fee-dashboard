@@ -1,4 +1,6 @@
 import "server-only";
+import { hasFreshPraktikaAuthentication } from "./authentication";
+import { hasLivePraktikaHelper } from "./helper-lease";
 
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
@@ -39,6 +41,9 @@ export type PraktikaSessionRow = {
   refresh_requested_at: string | null;
   refreshed_at: string | null;
   last_used_at: string | null;
+  helper_instance_id: string | null;
+  helper_heartbeat_at: string | null;
+  authenticated_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -166,6 +171,7 @@ export async function updatePraktikaSession(
     Omit<
       PraktikaSessionRow,
       "id" | "scope" | "app_user_id" | "created_at" | "updated_at"
+      | "helper_instance_id" | "helper_heartbeat_at" | "authenticated_at"
     >
   >,
 ) {
@@ -242,8 +248,8 @@ export async function markPraktikaRefreshRequested(
 
   if (
     current.status === "refresh_requested" ||
-    current.status === "refreshing" ||
-    current.status === "waiting_for_mfa"
+    (hasLivePraktikaHelper(current) &&
+      ((current.status === "refreshing" && hasFreshPraktikaAuthentication(current)) || current.status === "waiting_for_mfa"))
   ) {
     return;
   }

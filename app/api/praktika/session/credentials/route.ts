@@ -1,6 +1,5 @@
+import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
 import { NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
@@ -21,6 +20,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
 
+    const mode = await authorizePraktikaSession(body);
+    if (mode.scope !== "user") throw new PraktikaSessionAuthorizationError(400, "Credentials require user scope.");
     const username = String(body.username || "").trim();
     const password = String(body.password || "").trim();
 
@@ -31,40 +32,13 @@ export async function POST(request: Request) {
       );
     }
 
-    const cookieStore = await cookies();
-
-    const supabaseAuth = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll();
-          },
-          setAll() {},
-        },
-      },
-    );
-
-    const {
-      data: { user },
-      error: userError,
-    } = await supabaseAuth.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "You must be logged in." },
-        { status: 401 },
-      );
-    }
-
     const now = new Date().toISOString();
 
     const { data: existing, error: existingError } = await supabaseAdmin
       .from("praktika_sessions")
       .select("id")
       .eq("scope", "user")
-      .eq("app_user_id", user.id)
+      .eq("app_user_id", mode.appUserId)
       .maybeSingle();
 
     if (existingError) {
@@ -84,13 +58,15 @@ export async function POST(request: Request) {
           refresh_requested_at: now,
           updated_at: now,
         })
-        .eq("id", existing.id);
+        .eq("id", existing.id)
+        .eq("scope", "user")
+        .eq("app_user_id", mode.appUserId);
 
       if (error) throw new Error(error.message);
     } else {
       const { error } = await supabaseAdmin.from("praktika_sessions").insert({
         scope: "user",
-        app_user_id: user.id,
+        app_user_id: mode.appUserId,
         pending_praktika_username: username,
         pending_praktika_password: password,
         praktika_username: username,
@@ -109,6 +85,9 @@ export async function POST(request: Request) {
       message: "Credentials submitted.",
     });
   } catch (error) {
+    if (error instanceof PraktikaSessionAuthorizationError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+    }
     return NextResponse.json(
       {
         success: false,

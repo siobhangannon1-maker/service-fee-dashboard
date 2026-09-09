@@ -1,3 +1,4 @@
+import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
 import { NextResponse } from "next/server";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
 import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
@@ -9,6 +10,7 @@ const PRACTICE_MODE = { scope: "practice" as const };
 
 export async function GET() {
   try {
+    await authorizePraktikaSession({ scope: "practice" });
     const practiceId = process.env.PRAKTIKA_PRACTICE_ID;
 
     if (!practiceId) {
@@ -48,6 +50,7 @@ export async function GET() {
       sampleRows: parsed.slice(0, 10),
     });
   } catch (error) {
+    if (error instanceof PraktikaSessionAuthorizationError) return NextResponse.json({ error: error.message }, { status: error.status });
     console.error(error);
 
     return NextResponse.json(

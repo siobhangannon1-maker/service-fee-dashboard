@@ -1,3 +1,4 @@
+import { derivePraktikaConnection } from "./authentication";
 import "server-only";
 
 import {
@@ -98,7 +99,7 @@ export async function waitForPraktikaConnected(
       !requiredRefreshTime || refreshedTime >= requiredRefreshTime;
 
     if (
-      session.status === "connected" &&
+      derivePraktikaConnection(session).connected &&
       session.cookie &&
       refreshIsNewEnough
     ) {

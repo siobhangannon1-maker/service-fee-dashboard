@@ -1,3 +1,4 @@
+import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -28,11 +29,13 @@ function isoDateOnly(value: unknown) {
 }
 
 async function getHydrationAppUserId() {
+  const mode = await authorizePraktikaSession();
+  if (mode.scope !== "user") return null;
   const { data, error } = await supabase
     .from("praktika_sessions")
     .select("app_user_id, updated_at")
     .eq("scope", "user")
-    .not("app_user_id", "is", null)
+    .eq("app_user_id", mode.appUserId)
     .in("status", ["connected", "refreshing", "refresh_requested"])
     .order("updated_at", { ascending: false })
     .limit(1)
@@ -77,6 +80,7 @@ async function getAlreadyQueuedQueueIds(queueIds: string[]) {
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
+    await authorizePraktikaSession(body);
     const providerId = clean(body.providerId);
     const status = clean(body.status) || "active";
     const limit = Math.min(Math.max(Number(body.limit || 50), 1), 100);
@@ -212,6 +216,7 @@ export async function POST(req: Request) {
       message: "Queue hydration jobs enqueued.",
     });
   } catch (error) {
+    if (error instanceof PraktikaSessionAuthorizationError) return NextResponse.json({ error: error.message }, { status: error.status });
     console.error("Hydrate letter queue failed:", error);
 
     return NextResponse.json(

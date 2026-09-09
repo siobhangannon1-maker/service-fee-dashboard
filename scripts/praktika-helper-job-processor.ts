@@ -1,3 +1,5 @@
+import { PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
+import { PraktikaOwnershipLost, type PraktikaJobOwnership } from "../lib/praktika/helper-lease";
 import { type BrowserContext } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 
@@ -171,9 +173,9 @@ async function completeJob(jobId: string, response: unknown) {
   if (error) throw new Error(error.message);
 }
 
-async function failJob(job: any, message: string) {
+async function failJob(job: any, message: string, forcePermanent = false) {
   const attempts = Number(job.attempts || 0);
-  const permanent = attempts >= 3;
+  const permanent = forcePermanent || attempts >= 3;
 
   const { error } = await supabase
     .from("praktika_helper_jobs")
@@ -334,51 +336,22 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any)
   return parsed;
 }
 
-async function markSessionConnectedForJob(job: any) {
+async function markSessionConnectedForJob(job: any, ownership: PraktikaJobOwnership) {
   if (!job.app_user_id) return;
-
-  await supabase
-    .from("praktika_sessions")
-    .update({
-      status: "connected",
-      message: "Praktika helper browser is connected. Helper jobs can run for this user.",
-      refreshed_at: nowIso(),
-      last_used_at: nowIso(),
-      updated_at: nowIso(),
-      refresh_requested_at: null,
-    })
-    .eq("scope", "user")
-    .eq("app_user_id", job.app_user_id);
+  await ownership.updateSession({
+    status: "connected",
+    message: "Praktika helper browser is connected. Helper jobs can run for this user.",
+    refreshed_at: nowIso(), last_used_at: nowIso(), refresh_requested_at: null,
+  });
 }
 
-async function markSessionNeedsReconnectForJob(job: any, message: string) {
+async function markSessionWaitingForCredentialsForJob(job: any, ownership: PraktikaJobOwnership) {
   if (!job.app_user_id) return;
-
-  await supabase
-    .from("praktika_sessions")
-    .update({
-      status: "refresh_requested",
-      message,
-      refresh_requested_at: nowIso(),
-      updated_at: nowIso(),
-    })
-    .eq("scope", "user")
-    .eq("app_user_id", job.app_user_id);
-}
-
-async function markSessionWaitingForCredentialsForJob(job: any) {
-  if (!job.app_user_id) return;
-
-  await supabase
-    .from("praktika_sessions")
-    .update({
-      status: "waiting_for_credentials",
-      message: "Enter your Praktika username and password in DocuDental.",
-      refresh_requested_at: null,
-      updated_at: nowIso(),
-    })
-    .eq("scope", "user")
-    .eq("app_user_id", job.app_user_id);
+  await ownership.updateSession({
+    status: "waiting_for_credentials",
+    message: "Enter your Praktika username and password in DocuDental.",
+    refresh_requested_at: null,
+  });
 }
 
 async function runPraktikaRequest(context: BrowserContext, request: any) {
@@ -1335,8 +1308,10 @@ export type PraktikaJobResult =
 
 export async function processOnePraktikaHelperJob(
   context: BrowserContext,
-  appUserId?: string | null,
+  appUserId: string | null | undefined,
+  ownership: PraktikaJobOwnership,
 ): Promise<PraktikaJobResult> {
+  await ownership.assertOwned();
   const job = await claimNextJob(appUserId || null);
 
   if (!job) return { outcome: "none" };
@@ -1348,16 +1323,28 @@ export async function processOnePraktikaHelperJob(
   );
 
   try {
+    await ownership.assertOwned();
+    await ownership.ensureAuthenticated();
+    await ownership.assertOwned();
     const response =
       job.job_type === "hydrate_report_letter_queue_item"
         ? await hydrateReportLetterQueueItem(context, job)
         : await runPraktikaRequest(context, job.request);
 
+    await ownership.assertOwned();
     await completeJob(job.id, response);
-    await markSessionConnectedForJob(job);
+    await markSessionConnectedForJob(job, ownership);
     console.log(`Completed Praktika helper job ${job.id}`);
     return { outcome: "completed", jobId: job.id };
   } catch (error: any) {
+    // A request may already have reached Praktika. Leave it for reconciliation,
+    // rather than converting ownership loss into an automatic operation retry.
+    if (error instanceof PraktikaOwnershipLost) throw error;
+    await ownership.assertOwned();
+    if (error instanceof PraktikaAuthenticationUnverified) {
+      await failJob(job, error.message, true);
+      return { outcome: "needs_reconnect", jobId: job.id };
+    }
     const message = error?.message || "Praktika helper job failed.";
     console.error(`Failed Praktika helper job ${job.id}:`, message);
 
@@ -1370,7 +1357,7 @@ export async function processOnePraktikaHelperJob(
       message.toLowerCase().includes("hijacked or expired session");
 
     if (isLoggedOutOrExpired) {
-      await markSessionWaitingForCredentialsForJob(job);
+      await markSessionWaitingForCredentialsForJob(job, ownership);
       await failJob(job, message);
       return { outcome: "needs_reconnect", jobId: job.id };
     }

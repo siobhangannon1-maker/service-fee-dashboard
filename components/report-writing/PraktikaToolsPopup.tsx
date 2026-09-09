@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useRef, useEffect, useMemo, useState } from "react";
 
 type PraktikaToolsPopupProps = {
   open: boolean;
@@ -38,7 +38,7 @@ type SessionStatus = {
   has_cookie?: boolean;
 };
 
-type ConnectionDisplayState = "connected" | "connecting" | "disconnected";
+type ConnectionDisplayState = "connected" | "connecting" | "idle" | "disconnected";
 
 function addDays(dateString: string, days: number) {
   const date = new Date(`${dateString}T00:00:00`);
@@ -63,6 +63,7 @@ function connectionState(
   busy: boolean,
 ): ConnectionDisplayState {
   if (busy) return "connecting";
+  if (status === "idle") return "idle";
   if (status === "connected") return "connected";
 
   if (
@@ -79,26 +80,23 @@ function connectionState(
 function connectionLabel(state: ConnectionDisplayState) {
   if (state === "connected") return "Connected";
   if (state === "connecting") return "Connection underway";
+  if (state === "idle") return "Idle";
   return "No connection";
 }
 
 function dotClass(state: ConnectionDisplayState) {
   if (state === "connected") return "bg-emerald-500";
   if (state === "connecting") return "bg-orange-500";
+  if (state === "idle") return "bg-slate-400";
   return "bg-red-500";
 }
 
-function isPositiveSessionStatus(status: string) {
-  return (
-    status === "connected" ||
-    status === "refreshing" ||
-    status === "refresh_requested" ||
-    status === "waiting_for_mfa" ||
-    status === "waiting_for_credentials"
-  );
+export default function PraktikaToolsPopup(props: PraktikaToolsPopupProps) {
+  // Closing discards cached status; reopening starts with a fresh checking state.
+  return props.open ? <PraktikaToolsPopupContent {...props} /> : null;
 }
 
-export default function PraktikaToolsPopup({
+function PraktikaToolsPopupContent({
   open,
   onOpenChange,
   onClose,
@@ -119,8 +117,7 @@ export default function PraktikaToolsPopup({
   needsReconnect = false,
 }: PraktikaToolsPopupProps) {
   const [session, setSession] = useState<SessionStatus | null>(null);
-  const [displayStatus, setDisplayStatus] = useState("not_started");
-  const [failedStatusChecks, setFailedStatusChecks] = useState(0);
+  const [displayStatus, setDisplayStatus] = useState("refreshing");
   const [checking, setChecking] = useState(false);
   const [credentialsSubmitting, setCredentialsSubmitting] = useState(false);
   const [mfaSubmitting, setMfaSubmitting] = useState(false);
@@ -150,9 +147,7 @@ export default function PraktikaToolsPopup({
     finalSyncingReferrers;
 
   const currentConnectionState: ConnectionDisplayState =
-    needsReconnect && currentStatus !== "connected"
-      ? "disconnected"
-      : connectionState(currentStatus, isBusy);
+    connectionState(currentStatus, isBusy);
 
   const isConnected = currentConnectionState === "connected";
 
@@ -232,7 +227,11 @@ export default function PraktikaToolsPopup({
     }
   }
 
+  const statusRequest = useRef(0);
+
   async function loadStatus() {
+    const requestId = ++statusRequest.current;
+    setDisplayStatus(current => current === "connected" ? "refreshing" : current);
     try {
       setChecking(true);
 
@@ -242,47 +241,21 @@ export default function PraktikaToolsPopup({
       });
 
       const data = await response.json().catch(() => null);
+      if (requestId !== statusRequest.current) return;
 
       if (!response.ok || !data) {
-        setFailedStatusChecks((current) => {
-          const next = current + 1;
-
-          if (next >= 5) {
-            setDisplayStatus("error");
-          }
-
-          return next;
-        });
-
+        setDisplayStatus("error");
         return;
       }
-
       setSession(data);
-
-      if (data.status === "connected") {
-        setLocalMessage(null);
-        setPassword("");
-      }
-
-      const nextStatus = data.status || "not_started";
-
-      if (isPositiveSessionStatus(nextStatus)) {
-        setFailedStatusChecks(0);
-        setDisplayStatus(nextStatus);
-        return;
-      }
-
-      setFailedStatusChecks((current) => {
-        const next = current + 1;
-
-        if (next >= 5) {
-          setDisplayStatus(nextStatus);
-        }
-
-        return next;
-      });
+      // Backend derived truth takes effect immediately; never retain stale green.
+      setDisplayStatus(data.status === "connected" && data.connected !== true ? "refreshing" : data.status || "not_started");
+      if (data.connected === true) { setLocalMessage(null); setPassword(""); }
+    } catch {
+      if (requestId !== statusRequest.current) return;
+      setDisplayStatus("error");
     } finally {
-      setChecking(false);
+      if (requestId === statusRequest.current) setChecking(false);
     }
   }
 
@@ -295,7 +268,7 @@ export default function PraktikaToolsPopup({
       loadStatus();
     }, 5000);
 
-    return () => window.clearInterval(interval);
+    return () => { ++statusRequest.current; window.clearInterval(interval); };
   }, [open]);
 
   async function requestReconnect() {
@@ -527,7 +500,7 @@ export default function PraktikaToolsPopup({
               ) : null}
             </div>
 
-            {currentConnectionState === "disconnected" ? (
+            {currentConnectionState !== "connected" && currentStatus !== "waiting_for_mfa" ? (
               <button
                 type="button"
                 onClick={requestReconnect}

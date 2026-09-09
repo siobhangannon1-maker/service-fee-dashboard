@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useRef, useEffect, useState } from "react";
 
 type SessionScope = "practice" | "user";
 
 type SessionStatus =
+  | "idle"
   | "not_started"
   | "connected"
   | "refreshing"
@@ -29,7 +30,7 @@ type SessionState = {
   mfaCodeUpdatedAt?: string | null;
 };
 
-const STATUS_POLL_MS =30000;
+const STATUS_POLL_MS = 5000;
 const RECONNECT_STATUSES: SessionStatus[] = ["refresh_requested", "refreshing"];
 
 function isReconnectStatus(status: SessionStatus) {
@@ -40,6 +41,7 @@ function isActionNeededStatus(status: SessionStatus) {
   return (
     status === "waiting_for_credentials" ||
     status === "waiting_for_mfa" ||
+    status === "idle" ||
     status === "not_started" ||
     status === "expired" ||
     status === "error"
@@ -144,7 +146,12 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
     };
   }
 
-  if (state.status === "connected" || liveStatus === "connected") {
+  if (state.status === "idle") {
+    return { label: "Idle", tone: "border-slate-200 bg-slate-50 text-slate-950", dot: "bg-slate-400",
+      headline: "Praktika helper is idle", message: state.message };
+  }
+
+  if (state.status === "connected" && liveStatus === "connected") {
     return {
       label: "Connected",
       tone: "border-emerald-200 bg-emerald-50 text-emerald-950",
@@ -186,13 +193,18 @@ export default function PraktikaSessionPanel({
   const [validating, setValidating] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  const statusRequest = useRef(0);
+
   async function loadStatus() {
+    const requestId = ++statusRequest.current;
+    setState(current => current.status === "connected" ? { ...current, status: "refreshing" } : current);
     try {
       const res = await fetch(`/api/praktika/session/status?scope=${scope}`, {
         cache: "no-store",
       });
 
       const json = await safeJson(res);
+      if (requestId !== statusRequest.current) return;
 
       const nextState: SessionState = {
         scope: json.scope || scope,
@@ -216,15 +228,9 @@ export default function PraktikaSessionPanel({
         );
       }
 
-      if (
-        nextState.status === "waiting_for_credentials" ||
-        nextState.status === "waiting_for_mfa" ||
-        nextState.status === "expired" ||
-        nextState.status === "error"
-      ) {
-        setLiveStatus("not_checked");
-      }
+      if (nextState.status !== "connected") setLiveStatus("not_checked");
     } catch (error: any) {
+      if (requestId !== statusRequest.current) return;
       console.error("Praktika session status failed:", error);
 
       setState({
@@ -242,6 +248,7 @@ export default function PraktikaSessionPanel({
     const timer = window.setInterval(loadStatus, STATUS_POLL_MS);
 
     return () => {
+      ++statusRequest.current;
       window.clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -497,7 +504,7 @@ export default function PraktikaSessionPanel({
             <button
               type="button"
               onClick={refreshSession}
-              disabled={isBusyState}
+              disabled={busy || validating}
               className="rounded-lg bg-slate-950 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             >
               {isBusyState ? "Reconnecting..." : "Reconnect Praktika"}
@@ -624,7 +631,7 @@ export default function PraktikaSessionPanel({
             <button
               type="button"
               onClick={refreshSession}
-              disabled={isBusyState}
+              disabled={busy || validating}
               className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
             >
               {busy || isReconnectStatus(state.status) ? "Reconnecting..." : "Force reconnect"}

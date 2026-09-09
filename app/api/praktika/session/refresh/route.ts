@@ -1,7 +1,8 @@
+import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
+import { derivePraktikaConnection } from "@/lib/praktika/authentication";
 import { NextResponse } from "next/server";
 
 import {
-  getCurrentUserPraktikaSessionMode,
   getPraktikaSession,
   markPraktikaRefreshRequested,
 } from "@/lib/praktika/hybrid-session-store";
@@ -9,30 +10,16 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const RECENT_CONNECTION_WINDOW_MS = 5 * 60 * 1000;
-
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const scope = body?.scope || "user";
     const force = Boolean(body?.force);
 
-    const mode =
-      scope === "practice"
-        ? { scope: "practice" as const }
-        : await getCurrentUserPraktikaSessionMode();
+    const mode = await authorizePraktikaSession(body);
 
     const session = await getPraktikaSession(mode);
 
-    const lastActivity =
-      session.last_used_at || session.refreshed_at || session.updated_at;
-
-    const recentlyConnected =
-      !force &&
-      session.status === "connected" &&
-      lastActivity &&
-      Date.now() - new Date(lastActivity).getTime() <
-        RECENT_CONNECTION_WINDOW_MS;
+    const recentlyConnected = !force && derivePraktikaConnection(session).connected;
 
     if (recentlyConnected) {
       return NextResponse.json({
@@ -55,6 +42,9 @@ export async function POST(request: Request) {
       message: "Your Praktika refresh was requested.",
     });
   } catch (error: any) {
+    if (error instanceof PraktikaSessionAuthorizationError) {
+      return NextResponse.json({ connected: false, status: "error", error: error.message, message: error.message }, { status: error.status });
+    }
     return NextResponse.json(
       {
         ok: false,

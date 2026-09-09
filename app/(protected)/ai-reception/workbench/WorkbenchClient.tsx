@@ -1,5 +1,6 @@
 "use client";
 
+import PraktikaCompactSessionPanel from "@/components/PraktikaCompactSessionPanel";
 import PraktikaReferrerMatchPanel from "@/components/ai/PraktikaReferrerMatchPanel";
 import ArchiveCompletedReferralButton from "@/components/ai/ArchiveCompletedReferralButton";
 import PraktikaReferralWorkflowSection from "@/components/ai/PraktikaReferralWorkflowSection";
@@ -8,7 +9,7 @@ import InboxItemAuditTrail from "@/components/ai/InboxItemAuditTrail";
 import ClassificationV2Button from "@/components/ai/ClassificationV2Button";
 import FileInboxItemToPraktikaButton from "@/components/ai/FileInboxItemToPraktikaButton";
 import AutomationPreviewCard from "@/components/ai/AutomationPreviewCard";
-import { useEffect, useMemo, useState } from "react";
+import { useRef, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import BulkSafeAutomationButton from "@/components/ai/BulkSafeAutomationButton";
 import CreateNewPraktikaPatientFromInboxButton from "@/components/ai/CreateNewPraktikaPatientFromInboxButton";
@@ -159,7 +160,7 @@ type WorkflowReason = {
 };
 
 type PraktikaSessionState = {
-  status: "idle" | "running" | "mfa_required" | "success" | "error";
+  status: "not_started" | "idle" | "refreshing" | "refresh_requested" | "waiting_for_credentials" | "waiting_for_mfa" | "connected" | "expired" | "error";
   message: string;
   currentUrl?: string;
   updatedAt?: string;
@@ -167,17 +168,15 @@ type PraktikaSessionState = {
 
 function praktikaSessionStatusLabel(status: PraktikaSessionState["status"]) {
   switch (status) {
-    case "success":
-      return "Connected";
-    case "mfa_required":
-      return "MFA required";
-    case "running":
-      return "Refreshing session";
-    case "error":
-      return "Connection failed";
-    case "idle":
-    default:
-      return "Checking";
+    case "connected": return "Connected";
+    case "waiting_for_mfa": return "MFA required";
+    case "waiting_for_credentials":
+    case "expired": return "Login required";
+    case "refreshing":
+    case "refresh_requested": return "Checking connection";
+    case "error": return "Connection failed";
+    case "idle": return "Idle";
+    default: return "Checking";
   }
 }
 
@@ -380,19 +379,24 @@ function PraktikaWorkbenchPanel({
   onRefreshWorkbenchItems: () => Promise<void>;
 }) {
   const [state, setState] = useState<PraktikaSessionState>({
-    status: "idle",
+    status: "not_started",
     message: "Checking Praktika session...",
   });
   const [code, setCode] = useState("");
   const [sessionBusy, setSessionBusy] = useState(false);
 
+  const statusRequest = useRef(0);
+
   async function loadStatus() {
+    const requestId = ++statusRequest.current;
+    setState(current => current.status === "connected" ? { ...current, status: "refreshing" } : current);
     try {
       const response = await fetch("/api/praktika/session/status", {
         cache: "no-store",
       });
 
       const result = await response.json().catch(() => null);
+      if (requestId !== statusRequest.current) return;
 
       if (!response.ok) {
         throw new Error(result?.error || "Could not check Praktika session.");
@@ -405,6 +409,7 @@ function PraktikaWorkbenchPanel({
         updatedAt: result?.updatedAt || new Date().toISOString(),
       });
     } catch (error) {
+      if (requestId !== statusRequest.current) return;
       setState({
         status: "error",
         message:
@@ -423,7 +428,7 @@ function PraktikaWorkbenchPanel({
       loadStatus();
     }, 5000);
 
-    return () => window.clearInterval(timer);
+    return () => { ++statusRequest.current; window.clearInterval(timer); };
   }, []);
 
   async function refreshSession() {
@@ -432,7 +437,7 @@ function PraktikaWorkbenchPanel({
     try {
       setState((current) => ({
         ...current,
-        status: "running",
+        status: "refresh_requested",
         message: "Refreshing Praktika session...",
         updatedAt: new Date().toISOString(),
       }));
@@ -469,9 +474,9 @@ function PraktikaWorkbenchPanel({
   }
 
   const tone =
-    state.status === "success"
+    state.status === "connected"
       ? "border-emerald-200 bg-emerald-50 text-emerald-900"
-      : state.status === "mfa_required"
+      : state.status === "waiting_for_mfa"
         ? "border-amber-200 bg-amber-50 text-amber-900"
         : state.status === "error"
           ? "border-red-200 bg-red-50 text-red-900"
@@ -528,10 +533,10 @@ function PraktikaWorkbenchPanel({
           <button
             type="button"
             onClick={refreshSession}
-            disabled={sessionBusy || state.status === "running"}
+            disabled={sessionBusy || (state.status === "refreshing" || state.status === "refresh_requested")}
             className="rounded-full bg-slate-950 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            {state.status === "running" || sessionBusy
+            {(state.status === "refreshing" || state.status === "refresh_requested") || sessionBusy
               ? "Refreshing..."
               : "Refresh Praktika session"}
           </button>
@@ -557,16 +562,18 @@ function PraktikaWorkbenchPanel({
         </div>
       </div>
 
-      {state.status === "mfa_required" ? (
+      {state.status === "waiting_for_credentials" || state.status === "expired" ? <PraktikaCompactSessionPanel scope="user" /> : null}
+
+      {state.status === "waiting_for_mfa" ? (
         <div className="mt-4 rounded-2xl border border-amber-300 bg-white/80 p-3">
           <label className="block">
             <div className="mb-1 text-xs font-semibold text-amber-900">
-              Email MFA code
+              MFA code
             </div>
             <input
               value={code}
               onChange={(event) => setCode(event.target.value)}
-              placeholder="Enter code from email"
+              placeholder="Enter MFA code"
               className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-4 focus:ring-amber-100"
             />
           </label>

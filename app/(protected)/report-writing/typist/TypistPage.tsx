@@ -3640,6 +3640,8 @@ export default function TypistPage() {
       return "Praktika connection has an error.";
     }
 
+    if (status === "idle") return "Praktika helper is idle.";
+
     if (status === "not_started") {
       return "Praktika has not been connected yet.";
     }
@@ -3670,12 +3672,11 @@ export default function TypistPage() {
 
       const status = String(data.status || "not_started");
 
-      // IMPORTANT:
-      // Helper-job syncs use the live local Playwright/Chrome helper browser.
-      // They should NOT be blocked just because no copied Praktika cookie is
-      // saved in Supabase. Praktika appears to reject copied-cookie requests
-      // quickly, so "hasCookie" is no longer a reliable sync gate.
-      if (status !== "connected") {
+      // Idle/stale proof may queue work: the owning worker verifies GST before
+      // the operation. Status reads themselves never issue an authentication probe.
+      const canVerifyOnDemand = status === "idle" ||
+        (status === "refreshing" && data.helperAlive === true && data.storedStatus === "connected");
+      if (data.connected !== true && !canVerifyOnDemand) {
         const statusLabel = getPraktikaStatusMessage(status);
         const message = `${statusLabel} Click Manage, reconnect Praktika, then run the sync again.`;
 

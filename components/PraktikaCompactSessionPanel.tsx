@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useRef, useEffect, useState } from "react";
 
 type SessionScope = "practice" | "user";
 
 type SessionStatus =
+  | "idle"
   | "not_started"
   | "connected"
   | "refreshing"
@@ -22,7 +23,7 @@ type SessionState = {
   lastUsedAt?: string | null;
 };
 
-const STATUS_POLL_MS = 30000;
+const STATUS_POLL_MS = 5000;
 
 async function safeJson(res: Response) {
   const text = await res.text();
@@ -48,6 +49,7 @@ function needsLogin(status: SessionStatus) {
 
 function statusLabel(status: SessionStatus) {
   if (status === "connected") return "Connected";
+  if (status === "idle") return "Idle";
   if (status === "waiting_for_mfa") return "MFA needed";
   if (status === "refresh_requested" || status === "refreshing") return "Reconnecting";
   if (needsLogin(status)) return "Login needed";
@@ -70,29 +72,39 @@ export default function PraktikaCompactSessionPanel({
   const [mfaCode, setMfaCode] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const statusRequest = useRef(0);
+
   async function loadStatus() {
-    const res = await fetch(`/api/praktika/session/status?scope=${scope}`, {
-      cache: "no-store",
-    });
-    const json = await safeJson(res);
+    const requestId = ++statusRequest.current;
+    setState(current => current.status === "connected" ? { ...current, status: "refreshing" } : current);
+    try {
+      const res = await fetch(`/api/praktika/session/status?scope=${scope}`, {
+        cache: "no-store",
+      });
+      const json = await safeJson(res);
+      if (requestId !== statusRequest.current) return;
 
-    setState({
-      status: json.status || "error",
-      message: json.message || "Unknown Praktika state.",
-      praktikaUsername: json.praktikaUsername || null,
-      refreshedAt: json.refreshedAt || null,
-      lastUsedAt: json.lastUsedAt || null,
-    });
+      setState({
+        status: json.status || "error",
+        message: json.message || "Unknown Praktika state.",
+        praktikaUsername: json.praktikaUsername || null,
+        refreshedAt: json.refreshedAt || null,
+        lastUsedAt: json.lastUsedAt || null,
+      });
 
-    if (json.praktikaUsername && !username) {
-      setUsername(json.praktikaUsername);
+      if (json.praktikaUsername && !username) {
+        setUsername(json.praktikaUsername);
+      }
+    } catch {
+      if (requestId !== statusRequest.current) return;
+      setState({ status: "error", message: "Could not verify Praktika connection." });
     }
   }
 
   useEffect(() => {
     loadStatus();
     const timer = window.setInterval(loadStatus, STATUS_POLL_MS);
-    return () => window.clearInterval(timer);
+    return () => { ++statusRequest.current; window.clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope]);
 
@@ -176,7 +188,7 @@ export default function PraktikaCompactSessionPanel({
             <div className="flex items-center gap-2">
               <span
                 className={`h-2.5 w-2.5 rounded-full ${
-                  connected ? "bg-emerald-500" : "bg-amber-500"
+                  connected ? "bg-emerald-500" : state.status === "idle" ? "bg-slate-400" : "bg-amber-500"
                 }`}
               />
               <span className="text-sm font-semibold text-slate-900">
@@ -225,7 +237,9 @@ export default function PraktikaCompactSessionPanel({
               className={`mt-4 rounded-2xl border p-4 ${
                 connected
                   ? "border-emerald-200 bg-emerald-50 text-emerald-900"
-                  : "border-amber-200 bg-amber-50 text-amber-900"
+                  : state.status === "idle"
+                    ? "border-slate-200 bg-slate-50 text-slate-900"
+                    : "border-amber-200 bg-amber-50 text-amber-900"
               }`}
             >
               <div className="font-semibold">{statusLabel(state.status)}</div>

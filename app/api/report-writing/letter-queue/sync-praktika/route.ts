@@ -1,3 +1,4 @@
+import { authorizePraktikaSession } from "@/lib/praktika/session-authorization";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -273,11 +274,13 @@ async function fetchAppointmentRowsFromPraktika({
 }
 
 async function getHydrationAppUserId() {
+  const mode = await authorizePraktikaSession();
+  if (mode.scope !== "user") return null;
   const { data } = await supabase
     .from("praktika_sessions")
     .select("app_user_id, updated_at")
     .eq("scope", "user")
-    .not("app_user_id", "is", null)
+    .eq("app_user_id", mode.appUserId)
     .in("status", ["connected", "refreshing", "refresh_requested"])
     .order("updated_at", { ascending: false })
     .limit(1)

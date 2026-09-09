@@ -1,3 +1,4 @@
+import { claimPraktikaHelper, writePraktikaHelper } from "../lib/praktika/helper-lease";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { spawn } from "node:child_process";
@@ -72,78 +73,49 @@ async function startHelperForSession(session: any, reason: string) {
 
   running.add(session.id);
 
-  console.log(
-    `Starting Praktika helper for ${session.scope} session ${session.id}. Reason: ${reason}. Active helpers: ${running.size}/${MAX_CONCURRENT_HELPERS}`,
-  );
-
-  await supabase
-    .from("praktika_sessions")
-    .update({
-      status: "refreshing",
-      message:
-        reason === "pending_job"
-          ? "Cloud Praktika helper is starting to process queued jobs."
-          : "Cloud Praktika helper is starting.",
-      updated_at: nowIso(),
-    })
-    .eq("id", session.id);
-
-  const child = spawn(
-    "npm",
-    ["run", "refresh:praktika-session", "--", `--session-id=${session.id}`],
-    {
-      cwd: process.cwd(),
-      stdio: "inherit",
-      shell: process.platform === "win32",
-    },
-  );
-
-  child.on("exit", async (code) => {
+  let instanceId: string | null;
+  try {
+    instanceId = await claimPraktikaHelper(supabase, session.id);
+  } catch {
     running.delete(session.id);
+    console.error("Praktika helper ownership claim failed; no helper started.");
+    return false;
+  }
+  if (!instanceId) {
+    running.delete(session.id);
+    return false;
+  }
 
-    console.log(
-      `Praktika helper for ${session.id} exited with code ${code}. Active helpers: ${running.size}/${MAX_CONCURRENT_HELPERS}`,
-    );
-
-    if (code === 0) {
-      await supabase
-        .from("praktika_sessions")
-        .update({
-          status: "connected",
-          message:
-            "Praktika helper is sleeping to save memory. It will restart automatically when new work arrives.",
-          updated_at: nowIso(),
-        })
-        .eq("id", session.id);
-
-      return;
+  const owner = instanceId;
+  let cleanedUp = false;
+  const cleanup = async (failed: boolean) => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    try {
+      // A late exit can neither promote Connected nor overwrite a newer owner.
+      await writePraktikaHelper(supabase, session.id, owner, "release", {
+        status: failed ? "error" : "not_started",
+      });
+    } catch {
+      console.warn("Praktika helper exit cleanup skipped: ownership unavailable.");
+    } finally {
+      running.delete(session.id);
     }
+  };
 
-    await supabase
-      .from("praktika_sessions")
-      .update({
-        status: "error",
-        message:
-          "Cloud Praktika helper stopped unexpectedly. Click Reconnect before syncing again.",
-        updated_at: nowIso(),
-      })
-      .eq("id", session.id);
-  });
-
-  child.on("error", async (error) => {
-    running.delete(session.id);
-
-    console.error(`Praktika helper for ${session.id} failed to start:`, error);
-
-    await supabase
-      .from("praktika_sessions")
-      .update({
-        status: "error",
-        message: `Cloud Praktika helper failed to start: ${error.message}`,
-        updated_at: nowIso(),
-      })
-      .eq("id", session.id);
-  });
+  try {
+    const child = spawn(
+      "npm",
+      ["run", "refresh:praktika-session", "--", `--session-id=${session.id}`,
+        `--helper-instance-id=${owner}`],
+      { cwd: process.cwd(), stdio: "inherit", shell: process.platform === "win32" },
+    );
+    child.on("exit", (code) => { void cleanup(code !== 0); });
+    child.on("error", () => { void cleanup(true); });
+  } catch {
+    await cleanup(true);
+    return false;
+  }
 
   return true;
 }
