@@ -1,3 +1,4 @@
+import { mayRestoreAfterShutdown, requestPlannedRestoration } from "../lib/praktika/planned-restoration";
 import { startPraktikaAuthenticationRenewal, createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
 import {
   writePraktikaHelper, PraktikaOwnershipLost, PRAKTIKA_HELPER_HEARTBEAT_MS,
@@ -172,6 +173,17 @@ let renewal: ReturnType<typeof startPraktikaAuthenticationRenewal> | undefined;
 let loginTransition = true;
 let shuttingDown = false;
 let jobActive = false;
+const restoredRemaining = argValue("restore-idle-remaining-ms");
+const isWarmRestoration = restoredRemaining !== null;
+let usefulWorkDeadline: number | null = isWarmRestoration
+  ? performance.now() + Math.max(0, Number(restoredRemaining) || 0) : null;
+let operationalThisGeneration = false;
+let unresolvedShutdownWork = false;
+function remainingUsefulWorkMs() {
+  return usefulWorkDeadline === null ? 0 : Math.max(0, usefulWorkDeadline - performance.now());
+}
+function noteUsefulWork() { usefulWorkDeadline = performance.now() + HELPER_IDLE_SHUTDOWN_MS; }
+
 let shutdownDeadline: ReturnType<typeof setTimeout> | undefined;
 function shutdown() {
   if (shuttingDown) return;
@@ -212,8 +224,17 @@ const ensureAuthenticated = createPraktikaAuthenticationGate({
     if (!ownedContext) throw new PraktikaOwnershipLost();
     return probePraktikaAuthentication(ownedContext, String(process.env.PRAKTIKA_PRACTICE_ID || "").trim(), PRAKTIKA_BASE_URL);
   },
-  recordSuccess: () => ownedWrite("authenticate"),
-  recordFailure: (status) => ownedWrite("authentication_failed", { status }),
+  recordSuccess: async () => {
+    await ownedWrite("authenticate");
+    if (isWarmRestoration && !operationalThisGeneration) console.log("[Praktika lifecycle] restoration_succeeded");
+    operationalThisGeneration = true;
+  },
+  recordFailure: async (status) => {
+    operationalThisGeneration = false;
+    await ownedWrite("authentication_failed", { status });
+    if (isWarmRestoration) console.log(status === "waiting_for_mfa"
+      ? "[Praktika lifecycle] restoration_mfa_required" : "[Praktika lifecycle] restoration_credentials_required");
+  },
 });
 async function verifyRequestedConnection() {
   verificationRequested = false;
@@ -278,6 +299,11 @@ async function getSession() {
 }
 
 async function updateSession(values: Record<string, unknown>) {
+  if (["waiting_for_credentials", "waiting_for_mfa", "error", "expired"].includes(String(values.status || ""))) {
+    operationalThisGeneration = false;
+    if (isWarmRestoration && values.status === "waiting_for_credentials") console.log("[Praktika lifecycle] restoration_credentials_required");
+    if (isWarmRestoration && values.status === "waiting_for_mfa") console.log("[Praktika lifecycle] restoration_mfa_required");
+  }
   if (["refreshing", "refresh_requested", "waiting_for_credentials", "waiting_for_mfa", "expired", "error"].includes(String(values.status || ""))) {
     loginTransition = true;
     await ensureAuthenticated.invalidate();
@@ -701,7 +727,7 @@ async function drainAvailableHelperJobs(
   let failedCount = 0;
   let needsReconnect = false;
 
-  while (!shuttingDown && completedCount + failedCount < HELPER_JOB_DRAIN_LIMIT) {
+  while (!shuttingDown && remainingUsefulWorkMs() > 0 && completedCount + failedCount < HELPER_JOB_DRAIN_LIMIT) {
     jobActive = true;
     let result: PraktikaJobResult;
     try {
@@ -710,6 +736,9 @@ async function drainAvailableHelperJobs(
         appUserId,
         { assertOwned, updateSession, ensureAuthenticated, isShuttingDown: () => shuttingDown },
       );
+    } catch (error) {
+      if (shuttingDown) unresolvedShutdownWork = true;
+      throw error;
     } finally { jobActive = false; }
     if (result.outcome === "none") break;
     if (result.outcome === "completed") {
@@ -742,10 +771,10 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
 
   let lastRealActivityAt = 0;
   let lastCookieRefreshAt = 0;
-  let lastUsefulWorkAt = Date.now();
+  if (usefulWorkDeadline === null) noteUsefulWork();
   let lastMemoryLogAt = 0;
 
-  while (!shuttingDown) {
+  while (!shuttingDown && remainingUsefulWorkMs() > 0) {
     let sleepAfterCycleMs = HELPER_IDLE_POLL_INTERVAL_MS;
 
     try {
@@ -759,7 +788,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
 
       if (session.mfa_code && (await pageHasMfaInput(page))) {
         await submitMfaCodeIfAvailable(page);
-        lastUsefulWorkAt = Date.now();
+        noteUsefulWork();
       }
 
       if (now - lastRealActivityAt >= REAL_ACTIVITY_INTERVAL_MS) {
@@ -787,7 +816,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         );
 
         if (jobSummary.completedCount > 0) {
-          lastUsefulWorkAt = Date.now();
+          noteUsefulWork();
           console.log(
             `Completed ${jobSummary.completedCount} Praktika helper job${
               jobSummary.completedCount === 1 ? "" : "s"
@@ -809,7 +838,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
             `Praktika session requires reconnect. Stopping job drain for session ${session.id}.`,
           );
           sleepAfterCycleMs = HELPER_IDLE_POLL_INTERVAL_MS;
-        } else if (Date.now() - lastUsefulWorkAt >= HELPER_IDLE_SHUTDOWN_MS) {
+        } else if (remainingUsefulWorkMs() <= 0) {
           await saveCookies(
             context,
             page,
@@ -834,7 +863,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         }
       } else if (await pageHasMfaInput(page)) {
         await submitMfaCodeIfAvailable(page);
-        lastUsefulWorkAt = Date.now();
+        noteUsefulWork();
       } else if (await pageHasVisiblePasswordInput(page)) {
         const hasNewCredentials = Boolean(
           session.pending_praktika_username && session.pending_praktika_password,
@@ -842,7 +871,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
 
         if (hasNewCredentials) {
           await fillLoginIfCredentialsAvailable(page);
-          lastUsefulWorkAt = Date.now();
+          noteUsefulWork();
         } else {
           await updateSession({
             status: "waiting_for_credentials",
@@ -867,7 +896,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           });
 
           await page.waitForTimeout(2500);
-          lastUsefulWorkAt = Date.now();
+          noteUsefulWork();
           continue;
         }
 
@@ -951,7 +980,7 @@ async function refreshOnce() {
 
   let page: Page | undefined;
   try {
-    if (shuttingDown) return;
+    if (shuttingDown || (isWarmRestoration && remainingUsefulWorkMs() <= 0)) return;
     await assertOwned();
     page = await context.newPage();
     renewal = startPraktikaAuthenticationRenewal({
@@ -964,8 +993,8 @@ async function refreshOnce() {
       renew: ensureAuthenticated.renew,
       stopGate: ensureAuthenticated.stop,
     });
-    context.once("close", () => renewal?.stop());
-    page.once("close", () => renewal?.stop());
+    context.once("close", () => { if (!shuttingDown) operationalThisGeneration = false; renewal?.stop(); });
+    page.once("close", () => { if (!shuttingDown) operationalThisGeneration = false; renewal?.stop(); });
     if (await hasExistingBrowserSession(page)) {
       const saved = await saveCookies(context, page);
 
@@ -999,7 +1028,7 @@ async function refreshOnce() {
     const startedAt = Date.now();
     let attemptedCredentials = false;
 
-    while (!shuttingDown && Date.now() - startedAt < LOGIN_TIMEOUT_MS) {
+    while (!shuttingDown && (!isWarmRestoration || remainingUsefulWorkMs() > 0) && Date.now() - startedAt < LOGIN_TIMEOUT_MS) {
       if (await isBrowserUiLoggedIn(page)) {
         await page.waitForTimeout(3000);
         const saved = await saveCookies(context, page);
@@ -1041,6 +1070,7 @@ async function refreshOnce() {
       await page.waitForTimeout(2500);
     }
 
+    if (isWarmRestoration && remainingUsefulWorkMs() <= 0) return;
     const finalSession = await getSession();
     if (["waiting_for_credentials", "waiting_for_mfa"].includes(finalSession.status)) return;
     throw new Error("Timed out waiting for Praktika login/MFA completion.");
@@ -1059,7 +1089,20 @@ async function refreshOnce() {
     await stopHeartbeat();
     // Closure must succeed before ownership can become available to a successor.
     await context.close();
-    await releaseOwnership();
+    if (!ownershipLost && mayRestoreAfterShutdown(shuttingDown, operationalThisGeneration, unresolvedShutdownWork, remainingUsefulWorkMs())) {
+      // The RPC commits intent and generation-fenced release together. On RPC
+      // failure do not separately release: lease expiry remains the fallback.
+      try {
+        const requested = await requestPlannedRestoration(supabase, sessionId!, helperInstanceId!, remainingUsefulWorkMs());
+        console.log(requested ? "[Praktika lifecycle] restoration_requested" : "[Praktika lifecycle] restoration_skipped");
+        if (!requested) await releaseOwnership();
+      } catch {
+        process.exitCode = 75; // Supervisor must leave this generation to lease expiry.
+        console.warn("[Praktika lifecycle] restoration_skipped");
+      }
+    } else {
+      await releaseOwnership();
+    }
     if (shutdownDeadline) clearTimeout(shutdownDeadline);
     logProcessMemory(`session=${session.id} after-context-close`);
   }

@@ -19,7 +19,7 @@ test('watcher stops claims and releases late claim without spawning; repeated si
  supabase:{},claimPraktikaHelper:()=>new Promise<string>(r=>resolve=r),writePraktikaHelper:async()=>{releases++;},spawn:()=>{spawns++;},
  };
  const api=runInNewContext(extract(watcher,['shutdown','helperCapacityAvailable','startHelperForSession'])+'\n({shutdown,startHelperForSession})',scope);
- const pending=api.startHelperForSession({id:'fixture'},'pending_job'); api.shutdown(); api.shutdown(); resolve('generation');
+ const pending=api.startHelperForSession({id:'fixture'},'refresh_requested'); api.shutdown(); api.shutdown(); resolve('generation');
  assert.equal(await pending,false); assert.equal(spawns,0); assert.equal(releases,1); assert.equal(signals,1);
  assert.equal(await api.startHelperForSession({id:'later'},'pending_job'),false);
  for(const file of [watcher,helper]) for(const signal of ['SIGTERM','SIGINT']) assert.ok(readFileSync(file,'utf8').includes(`process.on("${signal}", shutdown)`));
@@ -32,8 +32,8 @@ test('idle shutdown closes promptly, active shutdown drains, deadline performs n
  shutdown();shutdown();assert.equal(closes,active?0:1);assert.equal(stops,1);deadline();assert.equal(exits,1);
  }
  const source=readFileSync(helper,'utf8');
- assert.match(source,/await stopHeartbeat\(\);[\s\S]*await context.close\(\);\s*await releaseOwnership\(\)/);
- assert.match(source,/while \(!shuttingDown && completedCount/);
+ assert.match(source,/await stopHeartbeat\(\);[\s\S]*await context.close\(\);[\s\S]*await releaseOwnership\(\)/);
+ assert.match(source,/while \(!shuttingDown && remainingUsefulWorkMs\(\) > 0 && completedCount/);
 });
 test('active job completes once during drain; interrupted external request is never retried', async()=>{
  for(const fails of [false,true]) {

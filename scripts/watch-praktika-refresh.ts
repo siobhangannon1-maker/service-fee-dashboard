@@ -1,3 +1,4 @@
+import { claimPlannedRestoration } from "../lib/praktika/planned-restoration";
 import { claimPraktikaHelper, writePraktikaHelper } from "../lib/praktika/helper-lease";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
@@ -92,8 +93,30 @@ async function startHelperForSession(session: any, reason: string) {
   running.add(session.id);
 
   let instanceId: string | null;
+  let idleRemainingMs: number | undefined;
+  let claimReceivedAt = 0;
+  let restoring = reason === "restoration";
+  let restorationSource = session.source_instance_id;
   try {
-    instanceId = await claimPraktikaHelper(supabase, session.id);
+    if (reason === "pending_job") {
+      // Queued work has priority, but must not reset a carried idle budget
+      // before it has actually completed useful work.
+      const { data, error } = await supabase.from("praktika_helper_restorations")
+        .select("source_instance_id").eq("session_id", session.id)
+        .is("consumed_at", null).gt("expires_at", nowIso()).maybeSingle();
+      if (error) throw new Error("Restoration lookup unavailable");
+      if (data) { restoring = true; restorationSource = data.source_instance_id; }
+    }
+    if (shuttingDown) { running.delete(session.id); return false; }
+    if (restoring) {
+      const claim = await claimPlannedRestoration(supabase, session.id, restorationSource);
+      instanceId = claim?.instance_id || null;
+      idleRemainingMs = claim?.idle_remaining_ms;
+      claimReceivedAt = performance.now();
+      if (claim) console.log("[Praktika lifecycle] restoration_consumed");
+    } else {
+      instanceId = await claimPraktikaHelper(supabase, session.id);
+    }
   } catch {
     running.delete(session.id);
     console.error("Praktika helper ownership claim failed; no helper started.");
@@ -105,18 +128,18 @@ async function startHelperForSession(session: any, reason: string) {
   }
 
   const owner = instanceId;
-  if (shuttingDown) {
+  if (shuttingDown || (idleRemainingMs !== undefined && idleRemainingMs <= 0)) {
     await writePraktikaHelper(supabase, session.id, owner, "release").catch(() => {});
     running.delete(session.id);
     return false;
   }
   let cleanedUp = false;
-  const cleanup = async (failed: boolean) => {
+  const cleanup = async (failed: boolean, leaseFallback = false) => {
     if (cleanedUp) return;
     cleanedUp = true;
     try {
       // A late exit can neither promote Connected nor overwrite a newer owner.
-      if (!shuttingDown || !failed) await writePraktikaHelper(supabase, session.id, owner, "release", {
+      if (!leaseFallback && (!shuttingDown || !failed)) await writePraktikaHelper(supabase, session.id, owner, "release", {
         status: failed ? "error" : "not_started",
       });
     } catch {
@@ -131,11 +154,13 @@ async function startHelperForSession(session: any, reason: string) {
     const child = spawn(
       process.execPath,
       ["--import", "tsx", "scripts/refresh-praktika-session.ts", `--session-id=${session.id}`,
-        `--helper-instance-id=${owner}`],
+        `--helper-instance-id=${owner}`,
+        ...(idleRemainingMs === undefined ? [] : [`--restore-idle-remaining-ms=${Math.max(0, Math.floor(idleRemainingMs - (performance.now() - claimReceivedAt)))}`])],
       { cwd: process.cwd(), stdio: "inherit", shell: process.platform === "win32" },
     );
+    if (restoring) console.log("[Praktika lifecycle] restoration_started");
     children.set(session.id, { child, owner });
-    child.on("exit", (code) => { void cleanup(code !== 0); });
+    child.on("exit", (code) => { void cleanup(code !== 0, code === 75); });
     child.on("error", () => { void cleanup(true); });
   } catch {
     await cleanup(true);
@@ -267,6 +292,19 @@ async function checkPendingJobs() {
   }
 }
 
+async function checkRestorationRequests() {
+  if (!helperCapacityAvailable()) return;
+  const { data, error } = await supabase.from("praktika_helper_restorations")
+    .select("session_id, source_instance_id")
+    .is("consumed_at", null).gt("expires_at", nowIso())
+    .order("requested_at", { ascending: true }).limit(PENDING_JOB_SCAN_LIMIT);
+  if (error) { console.warn("[Praktika lifecycle] restoration_skipped"); return; }
+  for (const request of data || []) {
+    if (!helperCapacityAvailable()) break;
+    await startHelperForSession({ id: request.session_id, source_instance_id: request.source_instance_id }, "restoration");
+  }
+}
+
 async function check() {
   if (shuttingDown) return;
   if (checkInProgress) {
@@ -286,6 +324,7 @@ async function check() {
 
     await checkRefreshRequests();
     await checkPendingJobs();
+    await checkRestorationRequests();
   } finally {
     checkInProgress = false;
   }

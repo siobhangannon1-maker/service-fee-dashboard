@@ -177,10 +177,10 @@ test("production consumers gate saved Connected on liveness, and idle does not p
     assert.match(await read(file), /derivePraktikaConnection\(/);
   }
   const helper = await read("scripts/refresh-praktika-session.ts");
-  const idle = helper.slice(helper.indexOf("} else if (Date.now() - lastUsefulWorkAt"), helper.indexOf("} else if (await pageHasMfaInput", helper.indexOf("} else if (Date.now() - lastUsefulWorkAt")));
+  const idle = helper.slice(helper.indexOf("} else if (remainingUsefulWorkMs()"), helper.indexOf("} else if (await pageHasMfaInput", helper.indexOf("} else if (remainingUsefulWorkMs()")));
   assert.match(idle, /false, \/\/ Save reusable cookies/);
   assert.match(idle, /return;/);
-  assert.match(helper, /await context.close\(\);\s*await releaseOwnership\(\)/);
+  assert.match(helper, /await context.close\(\);[^]*?await releaseOwnership\(\)/);
   assert.doesNotMatch(idle, /status: "connected"/);
   for (const file of ["scripts/watch-praktika-refresh.ts", "scripts/refresh-praktika-session.ts", "scripts/praktika-helper-job-processor.ts"]) {
     assert.doesNotMatch(await read(file), /\.from\("praktika_sessions"\)\s*\.update/);

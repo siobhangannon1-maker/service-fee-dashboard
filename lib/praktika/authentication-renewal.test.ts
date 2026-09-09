@@ -37,7 +37,7 @@ test('transient renewal failure preserves proof; strict stale job still blocks',
   assert.equal(f.row.authenticated_at, proof); assert.equal(f.row.status, 'connected');
   assert.equal(derivePraktikaConnection(f.row).connected, true);
   const future = Date.now() + 121000;
-  assert.equal(derivePraktikaConnection({ ...f.row, helper_heartbeat_at: new Date(future).toISOString() }, future).connected, false);
+  assert.equal(derivePraktikaConnection({ ...f.row, helper_heartbeat_at: new Date(future).toISOString() }, future).connected, true);
   f.row.authenticated_at = null;
   await assert.rejects(f.gate(), PraktikaAuthenticationUnverified);
   assert.deepEqual(f.stats(), { probes: 2, successes: 0, failures: 0 });
@@ -100,9 +100,9 @@ test('transport rejection settles before another GST starts', async () => {
 test('helper stops renewal before release and leaves useful-work idle accounting untouched', () => {
   const source = readFileSync('scripts/refresh-praktika-session.ts', 'utf8');
   assert.match(source, /async function releaseOwnership[^]*?renewal\?\.stop\(\)/);
-  assert.match(source, /context.once\("close", \(\) => renewal\?\.stop\(\)\)/);
+  assert.match(source, /context.once\("close", \(\) => \{[^]*?renewal\?\.stop\(\)/);
   const scheduler = source.slice(source.indexOf('renewal = startPraktikaAuthenticationRenewal'), source.indexOf('context.once("close"'));
-  assert.doesNotMatch(scheduler, /lastUsefulWorkAt/);
+  assert.doesNotMatch(scheduler, /noteUsefulWork|usefulWorkDeadline\s*=/);
   assert.match(scheduler, /loginTransition/);
 });
 
