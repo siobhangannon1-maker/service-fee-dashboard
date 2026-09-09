@@ -86,7 +86,7 @@ test("processor retries transient verification before any external operation; la
 
 test("credential UI is limited to explicit credentials state", () => {
   const popup = readFileSync("components/report-writing/PraktikaToolsPopup.tsx", "utf8");
-  assert.match(popup, /const shouldShowCredentialForm = currentStatus === "waiting_for_credentials";/);
+  assert.match(popup, /currentStatus === "waiting_for_credentials" \|\|/);
   const panel = readFileSync("components/PraktikaSessionPanel.tsx", "utf8");
   assert.match(panel, /const showCredentials = scope === "user" && state.status === "waiting_for_credentials";/);
   const compact = readFileSync("components/PraktikaCompactSessionPanel.tsx", "utf8");
@@ -99,8 +99,8 @@ test("credential UI is limited to explicit credentials state", () => {
   const declarations = ast.statements.filter(n => ts.isFunctionDeclaration(n) && ["connectionState", "connectionLabel"].includes(n.name?.text || ""));
   const code = ts.transpileModule(declarations.map(n => n.getText(ast)).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const { connectionState, connectionLabel } = runInNewContext(code + "\n({connectionState, connectionLabel})");
-  assert.equal(connectionLabel(connectionState("checking_connection", false)), "Loading status…");
-  assert.equal(connectionLabel(connectionState("loading", false)), "Loading status…");
+  assert.equal(connectionLabel(connectionState("checking_connection", false)), "Loading…");
+  assert.equal(connectionLabel(connectionState("loading", false)), "Loading…");
   assert.equal(connectionLabel(connectionState("connected", false)), "Connected");
   assert.match(source, /\["disconnected", "idle"\]\.includes\(currentConnectionState\) && currentStatus !== "waiting_for_mfa" && !shouldShowCredentialForm/);
   for (const status of ["checking_connection", "loading", "refreshing", "connected"]) {

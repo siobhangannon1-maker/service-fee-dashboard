@@ -37,7 +37,7 @@ for (const path of paths) {
         else state = value as typeof state;
       };
       const load = runInNewContext(extract(source, "loadStatus") + "\nloadStatus", {
-        armStatusExpiry: (data: {status: string}) => data.status, statusRequest, scope: "user", username: "", dismissedForStatus: null,
+        credentialRequestActive: { current: false }, armStatusExpiry: (data: {status: string}) => data.status, statusRequest, scope: "user", username: "", dismissedForStatus: null,
         fetch: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
         safeJson: (response: { json(): unknown }) => response.json(),
         setState: update, setSession: update, setDisplayStatus: update,
@@ -154,10 +154,23 @@ test("Tools only active connection actions override Connected, not queue/referre
  const state=runInNewContext(extract(source,"connectionState")+"\nconnectionState",{});
  assert.equal(state("connected",false),"connected");
  assert.equal(state("connected",true),"connecting");
- assert.match(extract(source,"requestReconnect"),/setDisplayStatus\("refresh_requested"\)/);
+ assert.match(extract(source,"requestReconnect"),/setCredentialsRequested\(true\)/);
 });
 
 test("connected popup hides the background checking caption", async () => {
   const source = await read(paths[0]);
-  assert.match(source, /\{checking && !isConnected \? \(/);
+  assert.doesNotMatch(source, /Checking Praktika connection|Last Praktika username|Logged in as|session\.message/);
 });
+
+ test("Connect opens blank-password credentials immediately without a request", async () => {
+ const source = await read(paths[0]); let shown = false, password = "old", username = "";
+ const click = runInNewContext(extract(source, "requestReconnect") + "\nrequestReconnect", {
+   username: "", lastUsername: "fixture", setLocalMessage() {}, setUsername: (v:string)=>username=v,
+   setPassword: (v:string)=>password=v, setCredentialsRequested: (v:boolean)=>shown=v,
+ });
+ click(); assert.equal(shown,true); assert.equal(password,""); assert.equal(username,"fixture");
+ assert.doesNotMatch(source,/Not currently connected|Not connected\. Connect before syncing|session\.message/);
+ assert.match(extract(source,"submitCredentials"),/setCredentialsRequested\(false\)/);
+ assert.match(extract(source,"submitCredentials"),/setDisplayStatus\("refreshing"\)/);
+ assert.match(source,/!credentialsSubmitting && !mfaSubmitting/);
+ });

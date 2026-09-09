@@ -84,10 +84,10 @@ function connectionState(
 }
 
 function connectionLabel(state: ConnectionDisplayState) {
-  if (state === "loading") return "Loading status…";
-  if (state === "checking") return "Loading status…";
+  if (state === "loading") return "Loading…";
+  if (state === "checking") return "Loading…";
   if (state === "connected") return "Connected";
-  if (state === "connecting") return "Connection underway";
+  if (state === "connecting") return "Connecting";
   if (state === "idle") return "Not connected";
   return "Not connected";
 }
@@ -100,7 +100,7 @@ function dotClass(state: ConnectionDisplayState) {
 }
 
 export default function PraktikaToolsPopup(props: PraktikaToolsPopupProps) {
-  // Closing discards cached status; reopening starts with a fresh checking state.
+  // Keep cached operational status across popup openings.
   return <PraktikaToolsPopupContent {...props} />;
 }
 
@@ -122,14 +122,15 @@ function PraktikaToolsPopupContent({
   syncingReferrers,
   message,
   preSyncMessage,
-  needsReconnect = false,
 }: PraktikaToolsPopupProps) {
   const [session, setSession] = useState<SessionStatus | null>(null);
   const [displayStatus, setDisplayStatus] = useState("loading");
-  const [checking, setChecking] = useState(false);
+  const [, setChecking] = useState(false);
   const [credentialsSubmitting, setCredentialsSubmitting] = useState(false);
   const [mfaSubmitting, setMfaSubmitting] = useState(false);
-  const [refreshSubmitting, setRefreshSubmitting] = useState(false);
+  const refreshSubmitting = false;
+  const [credentialsRequested, setCredentialsRequested] = useState(false);
+  const credentialRequestActive = useRef(false);
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -157,11 +158,9 @@ function PraktikaToolsPopupContent({
   const currentConnectionState: ConnectionDisplayState =
     connectionState(currentStatus, credentialsSubmitting || mfaSubmitting || refreshSubmitting);
 
-  const isConnected = currentConnectionState === "connected";
-
-  const shouldShowReconnectWarning = needsReconnect && currentConnectionState === "disconnected";
-
-  const shouldShowCredentialForm = currentStatus === "waiting_for_credentials";
+  const shouldShowCredentialForm = !credentialsSubmitting && !mfaSubmitting &&
+    (currentStatus === "waiting_for_credentials" ||
+      (credentialsRequested && ["disconnected", "idle"].includes(currentConnectionState)));
 
   const shouldShowMfaBox = currentStatus === "waiting_for_mfa";
 
@@ -171,6 +170,8 @@ function PraktikaToolsPopupContent({
   }, [queueFromDate]);
 
   function closePopup() {
+    setPassword("");
+    setCredentialsRequested(false);
     if (onOpenChange) {
       onOpenChange(false);
       return;
@@ -231,6 +232,7 @@ function PraktikaToolsPopupContent({
   const statusRequest = useRef(0);
 
   async function loadStatus() {
+    if (credentialRequestActive.current) return;
     const requestId = ++statusRequest.current;
     try {
       setChecking(true);
@@ -248,6 +250,7 @@ function PraktikaToolsPopupContent({
         return;
       }
       setSession(data);
+      setUsername(current => current || data.praktikaUsername || data.praktika_username || data.username || "");
       // Backend derived truth takes effect immediately; never retain stale green.
       setDisplayStatus(armStatusExpiry(data));
       if (data.connected === true) { setLocalMessage(null); setPassword(""); }
@@ -271,37 +274,11 @@ function PraktikaToolsPopupContent({
     return () => { ++statusRequest.current; window.clearInterval(interval); };
   }, [open]);
 
-  async function requestReconnect() {
+  function requestReconnect() {
     setLocalMessage(null);
-    setRefreshSubmitting(true);
-    setDisplayStatus("refresh_requested");
-
-    try {
-      const response = await fetch("/api/praktika/session/refresh", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          scope: "user",
-          force: true,
-        }),
-      });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok || data.success === false || data.ok === false) {
-        setLocalMessage(
-          data.error || data.message || "Could not connect to Praktika.",
-        );
-        return;
-      }
-
-      setLocalMessage("Connect requested. The cloud Praktika helper will start shortly.");
-      await loadStatus();
-    } finally {
-      setRefreshSubmitting(false);
-    }
+    setUsername(username || lastUsername);
+    setPassword("");
+    setCredentialsRequested(true);
   }
 
   async function submitCredentials() {
@@ -311,6 +288,9 @@ function PraktikaToolsPopupContent({
     }
 
     setLocalMessage(null);
+    ++statusRequest.current;
+    credentialRequestActive.current = true;
+    setCredentialsRequested(false);
     setCredentialsSubmitting(true);
     setDisplayStatus("refreshing");
 
@@ -363,11 +343,14 @@ function PraktikaToolsPopupContent({
       }
 
       setPassword("");
-      setLocalMessage("Connecting to Praktika using the cloud helper...");
-
-      await loadStatus();
+      setLocalMessage(null);
+    } catch {
+      setLocalMessage("Could not submit credentials. Please try again.");
     } finally {
+      setPassword("");
+      credentialRequestActive.current = false;
       setCredentialsSubmitting(false);
+      await loadStatus();
     }
   }
 
@@ -458,40 +441,9 @@ function PraktikaToolsPopupContent({
                   )}`}
                 />
                 <h3 className="text-sm font-bold text-slate-950">
-                  Praktika: {currentStatus === "waiting_for_credentials" ? "Credentials required" : currentStatus === "waiting_for_mfa" ? "MFA required" : currentStatus === "error" ? "Connection error" : connectionLabel(currentConnectionState)}
+                  Praktika: {currentStatus === "waiting_for_mfa" ? "MFA required" : connectionLabel(currentConnectionState)}
                 </h3>
               </div>
-
-              <p className="mt-2 text-xs text-slate-500">
-                {isConnected ? "Logged in as" : "Last Praktika username"}{" "}
-                <span className="font-semibold">
-                  {lastUsername || "No username saved"}
-                </span>
-              </p>
-
-              {checking && !isConnected ? (
-                <p className="mt-2 text-xs text-slate-500">
-                  Checking Praktika connection...
-                </p>
-              ) : null}
-
-              {currentConnectionState === "disconnected" ? (
-                <p className="mt-2 text-xs font-semibold text-slate-600">
-                  Not currently connected. Connect before syncing.
-                </p>
-              ) : null}
-
-              {shouldShowReconnectWarning ? (
-                <p className="mt-2 text-xs font-semibold text-amber-700">
-                  Connect is required before the next sync.
-                </p>
-              ) : null}
-
-              {session?.message ? (
-                <p className="mt-2 text-xs text-slate-600">
-                  {currentStatus === "checking_connection" ? "Loading status…" : currentStatus === "not_started" ? "Not connected. Connect before syncing." : session.message}
-                </p>
-              ) : null}
 
               {localMessage ? (
                 <p className="mt-2 text-xs font-semibold text-blue-700">
