@@ -1,6 +1,6 @@
+import { authorizeMedirefSession } from "@/lib/mediref/session-authorization";
 import { NextResponse } from "next/server";
 import {
-  getCurrentUserMedirefSessionMode,
   getMedirefSession,
   markMedirefRefreshRequested,
 } from "@/lib/mediref/hybrid-session-store";
@@ -12,14 +12,18 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
+    const authorization = await authorizeMedirefSession();
+    if (authorization.response) return authorization.response;
     const body = await request.json().catch(() => ({}));
     const scope = body?.scope || "practice";
     const force = Boolean(body?.force);
 
+    if (scope !== "practice" && scope !== "user") return NextResponse.json({ ok: false, error: "Invalid session scope." }, { status: 400 });
+
     const mode =
       scope === "practice"
         ? { scope: "practice" as const }
-        : await getCurrentUserMedirefSessionMode();
+        : { scope: "user" as const, appUserId: authorization.actorUserId };
 
     const session = await getMedirefSession(mode);
 
@@ -50,8 +54,8 @@ export async function POST(request: Request) {
       {
         ok: false,
         success: false,
-        message: error?.message || "Could not request MediRef refresh.",
-        error: error?.message || "Could not request MediRef refresh.",
+        message: "Could not request MediRef refresh.",
+        error: "Could not request MediRef refresh.",
       },
       { status: 500 },
     );

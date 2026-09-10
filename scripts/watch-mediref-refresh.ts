@@ -1,3 +1,4 @@
+import { claimMedirefGeneration, writeMedirefGeneration } from "../lib/mediref/helper-generation";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -42,6 +43,8 @@ type PracticeSession = {
 let activeChild: ChildProcess | null = null;
 let activeSessionId: string | null = null;
 let activeReason: string | null = null;
+let activeGeneration: string | null = null;
+const generationClient = { rpc: (name: string, args: Record<string, unknown>) => supabase.rpc(name, args).abortSignal(AbortSignal.timeout(5000)) };
 let shuttingDown = false;
 let pollTimer: NodeJS.Timeout | null = null;
 let checkInProgress = false;
@@ -77,25 +80,6 @@ function logError(message: string, error?: unknown) {
   }
 
   console.error(`${prefix} ${message}`, error);
-}
-
-async function updatePracticeSession(
-  sessionId: string,
-  values: Record<string, unknown>,
-) {
-  const { error } = await supabase
-    .from("mediref_sessions")
-    .update({
-      ...values,
-      updated_at: nowIso(),
-    })
-    .eq("id", sessionId);
-
-  if (error) {
-    logError(
-      `Could not update MediRef practice session ${sessionId}: ${error.message}`,
-    );
-  }
 }
 
 async function getPracticeSession(): Promise<PracticeSession> {
@@ -163,10 +147,6 @@ function scheduleNextPoll(delay = POLL_INTERVAL_MS) {
   }, delay);
 }
 
-function getTsxCliPath() {
-  return path.resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
-}
-
 async function startHelperForPracticeSession(
   session: PracticeSession,
   reason: string,
@@ -193,13 +173,13 @@ async function startHelperForPracticeSession(
     `Starting MediRef helper for practice session ${session.id}. Reason: ${reason}.`,
   );
 
-  await updatePracticeSession(session.id, {
-    status: "refreshing",
-    message:
-      reason === "pending_job"
-        ? "MediRef helper is processing queued practice jobs."
-        : "MediRef helper is starting.",
-  });
+  const generation = await claimMedirefGeneration(generationClient, session.id);
+  if (!generation) return;
+  if (shuttingDown) {
+    await writeMedirefGeneration(generationClient, session.id, generation, "release");
+    return;
+  }
+  activeGeneration = generation;
 
   const helperScript = path.resolve(
     process.cwd(),
@@ -209,7 +189,7 @@ async function startHelperForPracticeSession(
 
   const child = spawn(
     process.execPath,
-    [getTsxCliPath(), helperScript, `--session-id=${session.id}`],
+    ["--import", "tsx", helperScript, `--session-id=${session.id}`, `--helper-instance-id=${generation}`],
     {
       cwd: process.cwd(),
       stdio: "inherit",
@@ -235,10 +215,8 @@ async function startHelperForPracticeSession(
 
     logError("MediRef helper failed to start.", error);
 
-    await updatePracticeSession(session.id, {
-      status: "error",
-      message: `MediRef helper failed to start: ${error.message}`,
-    });
+    // A child error can also mean signalling failed. Only release if no OS child existed.
+    await writeMedirefGeneration(generationClient, session.id, generation, child.pid ? "stop" : "release").catch(() => false);
 
     if (!shuttingDown) {
       restartTimer = setTimeout(() => {
@@ -264,24 +242,10 @@ async function startHelperForPracticeSession(
       `MediRef helper for practice session ${session.id} exited with ${exitDescription}.`,
     );
 
-    if (shuttingDown) {
-      return;
-    }
-
-    if (code === 0 && signal == null) {
-      await updatePracticeSession(session.id, {
-        status: "ready",
-        message:
-          "MediRef helper stopped cleanly and will restart automatically when new work arrives.",
-      });
-    } else {
-      await updatePracticeSession(session.id, {
-        status: "error",
-        message:
-          `MediRef helper stopped unexpectedly with ${exitDescription}. ` +
-          "The watcher will retry automatically.",
-      });
-    }
+    // Exit proves the helper stopped, not that every Chromium descendant closed.
+    // Invalidate proof; helper cleanup releases only after confirmed browser close.
+    await writeMedirefGeneration(generationClient, session.id, generation, "stop").catch(() => false);
+    if (shuttingDown) return;
 
     /*
       Re-check quickly after any helper exit.
@@ -349,6 +313,9 @@ async function stopActiveChild(signal: NodeJS.Signals) {
     `Forwarding ${signal} to MediRef helper PID ${child.pid ?? "unknown"}.`,
   );
 
+  if (activeSessionId && activeGeneration) {
+    void writeMedirefGeneration(generationClient, activeSessionId, activeGeneration, "stop").catch(() => false);
+  }
   child.kill(signal);
 
   await new Promise<void>((resolve) => {
@@ -408,11 +375,11 @@ async function main() {
     )} seconds.`,
   );
 
-  process.once("SIGTERM", () => {
+  process.on("SIGTERM", () => {
     void shutdown("SIGTERM");
   });
 
-  process.once("SIGINT", () => {
+  process.on("SIGINT", () => {
     void shutdown("SIGINT");
   });
 

@@ -1,6 +1,6 @@
+import { authorizeMedirefSession } from "@/lib/mediref/session-authorization";
 import { NextResponse } from "next/server";
 import {
-  getCurrentUserMedirefSessionMode,
   getMedirefSession,
 } from "@/lib/mediref/hybrid-session-store";
 
@@ -11,29 +11,32 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   try {
+    const authorization = await authorizeMedirefSession();
+    if (authorization.response) return authorization.response;
     const url = new URL(request.url);
     const scope = url.searchParams.get("scope") || "practice";
+
+    if (scope !== "practice" && scope !== "user") return NextResponse.json({ ok: false, error: "Invalid session scope." }, { status: 400 });
 
     const mode =
       scope === "practice"
         ? { scope: "practice" as const }
-        : await getCurrentUserMedirefSessionMode();
+        : { scope: "user" as const, appUserId: authorization.actorUserId };
 
     const session = await getMedirefSession(mode);
 
     const hasCookie = Boolean(session.cookie);
 
-    const { status, message } = safeToolsStatus(session, null).session;
-    const currentUrl = session.current_url;
+    const { status, message, validForMs, helperAlive } = safeToolsStatus(session, null).session;
 
     return NextResponse.json(
       {
         scope: session.scope,
         status,
         message,
-        currentUrl,
-        medirefEmail: session.mediref_email,
-        email: session.mediref_email,
+        validForMs,
+        helperAlive,
+
         connected: status === "connected",
         updatedAt: session.updated_at,
         refreshRequestedAt: status === "connected" ? null : session.refresh_requested_at,
@@ -50,7 +53,9 @@ export async function GET(request: Request) {
         scope: "unknown",
         status: "error",
         connected: false,
-        message: error?.message || "Could not load MediRef session status.",
+        validForMs: 0,
+        helperAlive: false,
+        message: "Could not load MediRef session status.",
         currentUrl: null,
         medirefEmail: null,
         email: null,

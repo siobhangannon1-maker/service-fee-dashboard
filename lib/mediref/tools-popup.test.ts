@@ -20,13 +20,17 @@ function render(status: string) {
   } : requireModule(name) });
   return renderToStaticMarkup(React.createElement(exports.default, { open: true }));
 }
-test("MediRef popup shows three simple states without credentials", () => {
+test("MediRef popup shows actionable states without credentials", () => {
   for (const status of ["not_started", "error", "waiting_for_credentials", "refresh_requested", "refreshing", "waiting_for_mfa", "connected"]) {
     const html = render(status);
     assert.doesNotMatch(html, /type="(?:email|password)"|Save credentials|Logged in as|MediRef account/);
-    if (status === "connected") {
-      assert.match(html, /MediRef: Connected/);
-      assert.doesNotMatch(html, />Connect<|>Connecting</);
+    if (status === "waiting_for_credentials") {
+      assert.match(html, /MediRef: Login required/);
+    } else if (status === "waiting_for_mfa") {
+      assert.match(html, /MediRef: MFA required/);
+    } else if (status === "connected") {
+      assert.match(html, /MediRef: Not connected/);
+
     } else if (["refresh_requested", "refreshing", "waiting_for_mfa"].includes(status)) {
       assert.match(html, /MediRef: Connecting/);
       assert.match(html, /disabled=""[^>]*>Connecting<\/button>/);
@@ -37,4 +41,34 @@ test("MediRef popup shows three simple states without credentials", () => {
     if (status === "waiting_for_mfa") assert.match(html, /Verification code/);
   }
   assert.doesNotMatch(source, /\/session\/credentials/);
+});
+
+test("authoritative downgrade removes green on first response; positive state expires without polling", async () => {
+  const { chromium } = await import("playwright");
+  const { build } = await import("esbuild");
+  const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import Popup from './components/report-writing/MedirefToolsPopup'; createRoot(document.getElementById('root')).render(<Popup open={true}/>);`, resolveDir: process.cwd(), loader: "tsx" }, bundle: true, write: false, platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"production"' } });
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.clock.install();
+    let next = { status: "connected", connected: true, validForMs: 120000 };
+    await page.route("**/*", route => new URL(route.request().url()).pathname === "/" ?
+      route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' }) : route.fulfill({ json: next }));
+    await page.goto("http://mediref-connection.test/");
+    await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    await page.getByText("MediRef: Connected", { exact: true }).waitFor();
+    for (const [status, label] of [["refreshing", "Connecting"], ["waiting_for_credentials", "Login required"], ["waiting_for_mfa", "MFA required"], ["error", "Not connected"]]) {
+      next = { status, connected: false, validForMs: 0 };
+      await page.clock.runFor(5000);
+      await page.getByText(`MediRef: ${label}`, { exact: true }).waitFor();
+      assert.equal(await page.getByText("MediRef: Connected", { exact: true }).count(), 0);
+      next = { status: "connected", connected: true, validForMs: 120000 };
+      await page.clock.runFor(5000);
+      await page.getByText("MediRef: Connected", { exact: true }).waitFor();
+    }
+    next = { status: "connected", connected: true, validForMs: 1000 };
+    await page.clock.runFor(5000);
+    await page.clock.runFor(1100);
+    await page.getByText("MediRef: Not connected", { exact: true }).waitFor();
+  } finally { await browser.close(); }
 });

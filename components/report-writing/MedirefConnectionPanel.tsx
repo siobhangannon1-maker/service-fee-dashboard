@@ -1,19 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type MedirefStatus = {
   success: boolean;
   status: string;
   connected: boolean;
+  validForMs?: number;
   message: string;
 };
 
 export default function MedirefConnectionPanel() {
   const [status, setStatus] = useState<MedirefStatus | null>(null);
+  const version = useRef(0);
+  const [deadline, setDeadline] = useState(0);
+  const [clock, setClock] = useState(0);
+  useEffect(() => {
+    const timer = setTimeout(() => setClock(Date.now()), Math.max(0, deadline - Date.now()));
+    return () => clearTimeout(timer);
+  }, [deadline]);
   const [loading, setLoading] = useState(false);
 
   async function checkStatus() {
+    const current = ++version.current;
+    const started = Date.now();
     setLoading(true);
 
     try {
@@ -22,8 +32,13 @@ export default function MedirefConnectionPanel() {
       });
 
       const data = await response.json();
+      if (current !== version.current) return;
+      if (!response.ok) throw new Error();
+      setDeadline(started + (data.validForMs || 0));
+      setClock(Date.now());
       setStatus(data);
     } catch {
+      if (current !== version.current) return;
       setStatus({
         success: false,
         status: "error",
@@ -37,9 +52,11 @@ export default function MedirefConnectionPanel() {
 
   useEffect(() => {
     checkStatus();
+    const timer = setInterval(() => { void checkStatus(); }, 5000);
+    return () => clearInterval(timer);
   }, []);
 
-  const connected = status?.connected;
+  const connected = status?.status === "connected" && status.connected && deadline > clock;
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -61,7 +78,7 @@ export default function MedirefConnectionPanel() {
                   : "bg-amber-100 text-amber-700"
               }`}
             >
-              {connected ? "Connected" : "Needs reconnect"}
+              {connected ? "Connected" : status?.status === "waiting_for_mfa" ? "MFA required" : status?.status === "waiting_for_credentials" ? "Login required" : ["refreshing", "refresh_requested"].includes(status?.status || "") ? "Reconnecting" : "Unavailable"}
             </span>
           </div>
         </div>
@@ -78,9 +95,8 @@ export default function MedirefConnectionPanel() {
 
       {!connected && (
         <div className="mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
-          For now, reconnect by logging into MediRef in Chrome, copying the new
-          session cookie, updating <code>.env.local</code>, and restarting the
-          app. Later we can replace this with a proper reconnect workflow.
+          MediRef can reconnect automatically when work arrives. Use MediRef Tools
+          if sign-in or verification needs attention.
         </div>
       )}
     </div>

@@ -1,3 +1,4 @@
+import { claimMedirefGeneration, writeMedirefGeneration, createMedirefLifecycle } from "../lib/mediref/helper-generation";
 import { prepareRemoteDraftWithBrowser } from "../lib/mediref/remote-draft-adapter";
 import path from "node:path";
 import os from "node:os";
@@ -150,6 +151,28 @@ if (!sessionId) {
   throw new Error("Missing --session-id=<mediref_sessions.id>");
 }
 
+// Generation RPCs have their own bounded transport; browser/login timing is unchanged.
+const generationClient = {
+  rpc: (name: string, args: Record<string, unknown>) => supabase.rpc(name, args).abortSignal(AbortSignal.timeout(5000)),
+};
+let instanceId = argValue("helper-instance-id");
+let browserContext: BrowserContext | null = null;
+let browserLaunch: Promise<BrowserContext> | null = null;
+let claimPending: Promise<string | null> | null = null;
+const lifecycle = createMedirefLifecycle({
+  write: async (action, values) => {
+    if (claimPending) await claimPending;
+    return instanceId ? writeMedirefGeneration(generationClient, sessionId!, instanceId, action, values) : false;
+  },
+  close: async () => {
+    if (browserLaunch) browserContext = await browserLaunch;
+    if (browserContext) await browserContext.close();
+  },
+  exit: () => process.exit(0),
+});
+process.on("SIGTERM", () => { void lifecycle.stop(); });
+process.on("SIGINT", () => { void lifecycle.stop(); });
+
 async function getSession() {
   const { data, error } = await supabase
     .from("mediref_sessions")
@@ -165,14 +188,7 @@ async function getSession() {
 }
 
 async function updateSession(values: Record<string, unknown>) {
-  const { error } = await supabase
-    .from("mediref_sessions")
-    .update({ ...values, updated_at: nowIso() })
-    .eq("id", sessionId);
-
-  if (error) {
-    throw new Error(`Could not update MediRef session: ${error.message}`);
-  }
+  await lifecycle.write("update", values);
 }
 
 async function clearTemporaryPassword(extraValues: Record<string, unknown> = {}) {
@@ -195,18 +211,7 @@ async function getAndClearMfaCode() {
 
   if (!code) return null;
 
-  const { error } = await supabase
-    .from("mediref_sessions")
-    .update({
-      mfa_code: null,
-      mfa_code_updated_at: null,
-      updated_at: nowIso(),
-    })
-    .eq("id", sessionId);
-
-  if (error) {
-    throw new Error(`Could not clear MediRef MFA code: ${error.message}`);
-  }
+  await updateSession({ mfa_code: null, mfa_code_updated_at: null });
 
   return code;
 }
@@ -707,7 +712,8 @@ async function saveCookies(
 
   const now = nowIso();
 
-  await clearTemporaryCredentialsAfterSuccess({
+  await lifecycle.write("authenticate", {
+    pending_mediref_email: null, pending_mediref_password: null,
     cookie: cookieHeader,
     status: "connected",
     message:
@@ -732,6 +738,8 @@ function workerId() {
 }
 
 async function claimNextPendingMedirefJob() {
+  if (lifecycle.stopping) return null;
+  await lifecycle.write("check");
   const { data: candidates, error } = await supabase
     .from("mediref_helper_jobs")
     .select("*")
@@ -749,6 +757,7 @@ async function claimNextPendingMedirefJob() {
   const candidate = candidates?.[0] as MedirefHelperJob | undefined;
   if (!candidate) return null;
 
+  if (lifecycle.stopping) return null;
   const { data: claimed, error: claimError } = await supabase
     .from("mediref_helper_jobs")
     .update({
@@ -2181,7 +2190,8 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           last_used_at: nowIso(),
         });
 
-        process.exit(0);
+        await lifecycle.stop();
+        return;
       }
 
       if (session.mfa_code && (await pageHasMfaInput(page)) && !(await clickUsePasswordOptionIfVisible(page))) {
@@ -2226,7 +2236,8 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         });
 
         console.warn("MediRef helper browser/context closed. Exiting helper.");
-        process.exit(0);
+        await lifecycle.stop();
+        return;
       }
 
       await updateSession({
@@ -2243,6 +2254,13 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
 }
 
 async function refreshOnce() {
+  if (!instanceId) {
+    claimPending = claimMedirefGeneration(generationClient, sessionId!).then(owner => { instanceId = owner; return owner; });
+    await claimPending;
+  }
+  if (!instanceId || lifecycle.stopping) return;
+  await lifecycle.write("check");
+  lifecycle.start();
   const session = await getSession();
 
   if (session.scope !== "practice") {
@@ -2261,7 +2279,7 @@ async function refreshOnce() {
       "Local helper is checking the saved practice MediRef browser session.",
   });
 
-  const context = await chromium.launchPersistentContext(
+  browserLaunch = chromium.launchPersistentContext(
     path.join(PROFILE_ROOT, "practice"),
     {
       headless: HEADLESS,
@@ -2274,6 +2292,10 @@ async function refreshOnce() {
     },
   );
 
+  const context = await browserLaunch;
+  browserContext = context;
+  if (lifecycle.stopping) return;
+  context.once("close", () => { void lifecycle.stop(); });
   const page = await context.newPage();
 
   try {
@@ -2347,14 +2369,12 @@ async function refreshOnce() {
 
     throw error;
   } finally {
-    if (!KEEP_BROWSER_OPEN) {
-      await context.close().catch(() => {});
-    }
+    await lifecycle.stop();
   }
 }
 
 refreshOnce().catch((error) => {
   console.error("Failed to refresh MediRef practice session:");
   console.error(error);
-  process.exit(1);
+  void lifecycle.stop();
 });

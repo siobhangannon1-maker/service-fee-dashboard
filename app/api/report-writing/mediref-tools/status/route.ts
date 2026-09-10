@@ -12,7 +12,7 @@ export async function GET() {
     if (!await getUserStatus(actor.actorUserId)) return NextResponse.json({ ok: false, error: "Account is inactive." }, { status: 403 });
     // Do not use getMedirefSession: it creates a session when missing. This endpoint is read-only.
     const [session, job] = await Promise.all([
-      supabaseAdmin.from("mediref_sessions").select("status,refreshed_at,last_used_at,updated_at").eq("scope", "practice").is("app_user_id", null).maybeSingle(),
+      supabaseAdmin.from("mediref_sessions").select("status,refreshed_at,last_used_at,updated_at,helper_instance_id,helper_heartbeat_at,helper_expires_at,helper_stopping_at,authenticated_instance_id,authenticated_at").eq("scope", "practice").is("app_user_id", null).maybeSingle(),
       supabaseAdmin.from("mediref_helper_jobs").select("status,job_type,error,created_at,updated_at").is("app_user_id", null).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     if (session.error || job.error) throw new Error("Status unavailable");

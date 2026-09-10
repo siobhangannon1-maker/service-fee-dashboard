@@ -1,20 +1,36 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ToolsStatus } from "@/lib/mediref/tools-status";
 
 export function MedirefToolsButton() {
   const dialog = useRef<HTMLDialogElement>(null);
   const [status, setStatus] = useState<ToolsStatus | null>(null);
+  const [deadline, setDeadline] = useState(0);
+  const [clock, setClock] = useState(0);
+  const version = useRef(0);
+  useEffect(() => {
+    const timer = setTimeout(() => setClock(Date.now()), Math.max(0, deadline - Date.now()));
+    return () => clearTimeout(timer);
+  }, [deadline]);
+  useEffect(() => {
+    const timer = setInterval(() => { if (dialog.current?.open) void refresh(); }, 5000);
+    return () => clearInterval(timer);
+  }, []);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   async function refresh() {
+    const current = ++version.current;
+    const started = Date.now();
     setBusy(true); setMessage("");
     try {
       const response = await fetch("/api/report-writing/mediref-tools/status", { cache: "no-store" });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error();
+      if (current !== version.current) return;
+      setDeadline(started + (data.session?.validForMs || 0));
+      setClock(Date.now());
       setStatus(data);
-    } catch { setStatus(null); setMessage("Unable to load MediRef status."); }
+    } catch { if (current !== version.current) return; setStatus(null); setMessage("Unable to load MediRef status."); }
     finally { setBusy(false); }
   }
   async function reconnect() {
@@ -30,10 +46,11 @@ export function MedirefToolsButton() {
     } catch { setMessage("Unable to request MediRef reconnect."); }
     finally { setBusy(false); }
   }
-  const connection = status?.session.status === "connected" ? "Connected" : status?.session.status === "error" ? "Error" :
+  const connection = status?.session.status === "connected" ? (deadline > clock ? "Connected" : "Unavailable") : status?.session.status === "error" ? "Error" :
     status?.session.status === "ready" ? "Ready — authentication unverified" : status?.session.status === "sleeping" ? "Sleeping" :
     ["refreshing", "refresh_requested"].includes(status?.session.status || "") ? "Reconnecting" :
-    ["expired", "waiting_for_credentials", "waiting_for_mfa", "not_started"].includes(status?.session.status || "") ? "Needs reconnect" : "Unknown";
+    status?.session.status === "waiting_for_credentials" ? "Login required" : status?.session.status === "waiting_for_mfa" ? "MFA required" :
+    ["expired", "not_started"].includes(status?.session.status || "") ? "Needs reconnect" : "Unknown";
   return <>
     <button type="button" className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold" onClick={() => { dialog.current?.showModal(); void refresh(); }}>MediRef Tools</button>
     <dialog ref={dialog} aria-labelledby="mediref-tools-title" className="m-auto w-[460px] max-w-[calc(100vw-2rem)] rounded-3xl border border-slate-200 bg-white p-5 shadow-2xl backdrop:bg-black/30">

@@ -21,6 +21,12 @@ export type MedirefSessionMode =
   | { scope: "user"; appUserId: string };
 
 export type MedirefSessionRow = {
+  helper_instance_id: string | null;
+  helper_heartbeat_at: string | null;
+  helper_expires_at: string | null;
+  helper_stopping_at: string | null;
+  authenticated_instance_id: string | null;
+  authenticated_at: string | null;
   id: string;
   scope: MedirefSessionScope;
   app_user_id: string | null;
@@ -154,20 +160,30 @@ export async function getMedirefSession(
   return created as MedirefSessionRow;
 }
 
+const sessionUpdateFields = [
+  "provider_id", "label", "mediref_email", "pending_mediref_email", "pending_mediref_password",
+  "credentials_updated_at", "cookie", "status", "message", "current_url", "mfa_code",
+  "mfa_code_updated_at", "refresh_requested_at", "refreshed_at", "last_used_at",
+] as const;
+type SessionUpdate = Partial<Pick<MedirefSessionRow, typeof sessionUpdateFields[number]>>;
+
 export async function updateMedirefSession(
   mode: MedirefSessionMode,
-  values: Partial<
-    Omit<
-      MedirefSessionRow,
-      "id" | "scope" | "app_user_id" | "created_at" | "updated_at"
-    >
-  >,
+  values: SessionUpdate,
 ) {
+  // Reject arbitrary runtime input before even discovering/creating a session.
+  if (!values || typeof values !== "object" || Array.isArray(values)
+    || Object.keys(values).some(key => !(sessionUpdateFields as readonly string[]).includes(key))) {
+    throw new Error("Invalid MediRef session update field.");
+  }
+  const safeValues = Object.fromEntries(sessionUpdateFields
+    .filter(key => Object.prototype.hasOwnProperty.call(values, key))
+    .map(key => [key, values[key]]));
   const current = await getMedirefSession(mode);
 
   let query = supabaseAdmin
     .from("mediref_sessions")
-    .update({ ...values, updated_at: new Date().toISOString() })
+    .update({ ...safeValues, updated_at: new Date().toISOString() })
     .eq("id", current.id)
     .eq("scope", current.scope);
 

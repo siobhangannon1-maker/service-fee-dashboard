@@ -16,6 +16,7 @@ type SessionStatus = {
   medirefEmail?: string | null;
   email?: string | null;
   connected?: boolean;
+  validForMs?: number;
   updatedAt?: string | null;
   refreshRequestedAt?: string | null;
   refreshedAt?: string | null;
@@ -23,11 +24,13 @@ type SessionStatus = {
   mfaCodeUpdatedAt?: string | null;
 };
 
-type ConnectionState = "connected" | "connecting" | "disconnected";
+type ConnectionState = "connected" | "connecting" | "disconnected" | "login" | "mfa";
 
 function getConnectionState(status?: string, connected?: boolean): ConnectionState {
-  if (connected || status === "connected") return "connected";
+  if (connected) return "connected";
 
+  if (status === "waiting_for_credentials") return "login";
+  if (status === "waiting_for_mfa") return "mfa";
   if (
     status === "refreshing" ||
     status === "refresh_requested" ||
@@ -41,6 +44,8 @@ function getConnectionState(status?: string, connected?: boolean): ConnectionSta
 
 function connectionLabel(state: ConnectionState) {
   if (state === "connected") return "Connected";
+  if (state === "login") return "Login required";
+  if (state === "mfa") return "MFA required";
   if (state === "connecting") return "Connecting";
   return "Not connected";
 }
@@ -65,10 +70,13 @@ export default function MedirefToolsPopup({
 
   const [displayStatus, setDisplayStatus] = useState("not_started");
   const [displayConnected, setDisplayConnected] = useState(false);
-  const failedStatusChecksRef = useRef(0);
-  const pendingStatusRef = useRef<string | null>(null);
-  const pendingConnectedRef = useRef(false);
-  const pendingStatusCountRef = useRef(0);
+  const requestVersion = useRef(0);
+  const [expiresAt, setExpiresAt] = useState(0);
+  useEffect(() => {
+    if (!displayConnected) return;
+    const timer = setTimeout(() => { setDisplayConnected(false); setDisplayStatus("not_started"); }, Math.max(0, expiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [expiresAt, displayConnected]);
 
   const currentStatus = displayStatus;
   const currentConnectionState = getConnectionState(
@@ -93,80 +101,25 @@ export default function MedirefToolsPopup({
 
   function commitDisplayStatus(status: string, connected: boolean) {
     setDisplayStatus(status || "not_started");
-    setDisplayConnected(Boolean(connected || status === "connected"));
-  }
-
-  function handleStableStatusUpdate(data: SessionStatus | null) {
-    if (!data) return;
-
-    const nextStatus = data.status || "not_started";
-    const nextConnected = Boolean(data.connected || nextStatus === "connected");
-    const nextState = getConnectionState(nextStatus, nextConnected);
-    const currentState = getConnectionState(displayStatus, displayConnected);
-
-    // Connected is a positive signal. Show it immediately.
-    if (nextState === "connected") {
-      failedStatusChecksRef.current = 0;
-      pendingStatusRef.current = null;
-      pendingStatusCountRef.current = 0;
-      commitDisplayStatus(nextStatus, nextConnected);
-      return;
-    }
-
-    // Connecting is also useful for staff to see quickly, but do not downgrade
-    // from connected unless we see the same non-connected state more than once.
-    if (currentState !== "connected" && nextState === "connecting") {
-      failedStatusChecksRef.current = 0;
-      pendingStatusRef.current = null;
-      pendingStatusCountRef.current = 0;
-      commitDisplayStatus(nextStatus, nextConnected);
-      return;
-    }
-
-    const pendingKey = `${nextStatus}:${nextConnected ? "1" : "0"}`;
-
-    if (pendingStatusRef.current === pendingKey) {
-      pendingStatusCountRef.current += 1;
-    } else {
-      pendingStatusRef.current = pendingKey;
-      pendingConnectedRef.current = nextConnected;
-      pendingStatusCountRef.current = 1;
-    }
-
-    const requiredConfirmations = currentState === "connected" ? 4 : 2;
-
-    if (pendingStatusCountRef.current >= requiredConfirmations) {
-      failedStatusChecksRef.current = 0;
-      commitDisplayStatus(nextStatus, pendingConnectedRef.current);
-    }
+    setDisplayConnected(connected);
   }
 
   async function loadStatus() {
+    const version = ++requestVersion.current;
+    const started = Date.now();
     try {
       setChecking(true);
-
-      const response = await fetch("/api/mediref/session/status?scope=practice", {
-        method: "GET",
-        cache: "no-store",
-      });
-
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok || !data) {
-        failedStatusChecksRef.current += 1;
-
-        // Do not turn red on a single missed status check. This prevents flicker.
-        if (failedStatusChecksRef.current >= 4) {
-          commitDisplayStatus("error", false);
-        }
-
-        return;
-      }
-
-      handleStableStatusUpdate(data);
-    } finally {
-      setChecking(false);
-    }
+      const response = await fetch("/api/mediref/session/status?scope=practice", { cache: "no-store" });
+      const data: SessionStatus = await response.json();
+      if (version !== requestVersion.current) return;
+      if (!response.ok || !data) throw new Error();
+      const deadline = started + (typeof data.validForMs === "number" ? data.validForMs : 0);
+      setExpiresAt(deadline);
+      commitDisplayStatus(data.status || "not_started", data.status === "connected" && data.connected === true && deadline > Date.now());
+    } catch {
+      if (version !== requestVersion.current) return;
+      commitDisplayStatus("error", false);
+    } finally { setChecking(false); }
   }
 
   useEffect(() => {
@@ -180,11 +133,12 @@ export default function MedirefToolsPopup({
 
     return () => window.clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, displayStatus, displayConnected]);
+  }, [open]);
 
   async function requestReconnect() {
     setLocalMessage(null);
     setRefreshSubmitting(true);
+    requestVersion.current++;
     commitDisplayStatus("refresh_requested", false);
 
     try {
@@ -295,7 +249,7 @@ export default function MedirefToolsPopup({
 
               {currentConnectionState === "disconnected" ? (
                 <p className="mt-2 text-xs font-semibold text-red-700">
-                  Not currently connected. Connect before sending via MediRef.
+                  MediRef can reconnect automatically when work arrives. Use Connect if sign-in needs attention.
                 </p>
               ) : null}
 
