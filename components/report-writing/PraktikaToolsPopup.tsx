@@ -232,22 +232,26 @@ function PraktikaToolsPopupContent({
     }
   }
 
-  const armStatusExpiry = useStatusExpiry(status => { setDisplayStatus(current => ["connected", "checking_connection"].includes(current) ? status : current); });
+  const armStatusExpiry = useStatusExpiry(status => { setDisplayStatus(current => ["connected", "checking_connection"].includes(current) ? status : current); }, true);
   const statusRequest = useRef(0);
 
   async function loadStatus() {
     if (credentialRequestActive.current) return;
     const requestId = ++statusRequest.current;
+    // Finish before the next five-second poll; late results cannot restore green.
+    const signal = AbortSignal.timeout(4000);
     try {
       setChecking(true);
 
       const response = await fetch("/api/praktika/session/status?scope=user", {
         method: "GET",
         cache: "no-store",
+        signal,
       });
 
       const data = await response.json().catch(() => null);
       if (requestId !== statusRequest.current) return;
+      if (signal.aborted) throw new Error("Status request expired");
 
       if (!response.ok || !data) {
         setDisplayStatus("error");

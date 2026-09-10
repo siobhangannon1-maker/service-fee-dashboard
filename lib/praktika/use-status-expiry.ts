@@ -39,23 +39,41 @@ export function currentStatus(data: StatusProof | null, now = Date.now()): strin
   return status;
 }
 
-export function useStatusExpiry(onExpire: (status: string) => void) {
+// UI verification budget, independent of lease and authentication-proof freshness.
+export const CHECKING_WINDOW_MS = 30_000;
+export function createCheckingWindow() {
+  let deadline: number | null = null;
+  return (status: string, now: number) => {
+    if (status !== "checking_connection") {
+      deadline = null;
+      return { status, deadline: null };
+    }
+    deadline ??= now + CHECKING_WINDOW_MS;
+    return { status: now < deadline ? status : "not_started", deadline };
+  };
+}
+
+export function useStatusExpiry(onExpire: (status: string) => void, boundChecking = false) {
   const callback = useRef(onExpire);
   callback.current = onExpire;
   const latest = useRef<StatusProof | null>(null);
+  const checkingWindow = useRef(createCheckingWindow());
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const check = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
     const data = latest.current;
     if (!data) return;
-    const status = currentStatus(data);
+    const rawStatus = currentStatus(data);
+    const checking = boundChecking ? checkingWindow.current(rawStatus, Date.now()) : { status: rawStatus, deadline: null };
+    const status = checking.status;
     if (status !== data.status) callback.current(status);
     const deadline = status === "connected" ? connectionExpiry(data) :
-      status === "checking_connection" ? Date.parse(data.helperHeartbeatAt || "") + 90_000 : null;
+      status === "checking_connection" ? Math.min(Date.parse(data.helperHeartbeatAt || "") + 90_000, checking.deadline ?? Infinity) : null;
     if (deadline !== null && Number.isFinite(deadline) && deadline > Date.now()) {
       timer.current = setTimeout(check, deadline - Date.now());
     }
-  }, []);
+    return status;
+  }, [boundChecking]);
   useEffect(() => {
     window.addEventListener("focus", check);
     document.addEventListener("visibilitychange", check);
@@ -67,7 +85,6 @@ export function useStatusExpiry(onExpire: (status: string) => void) {
   }, [check]);
   return useCallback((data: StatusProof) => {
     latest.current = data;
-    check();
-    return currentStatus(data);
+    return check() ?? currentStatus(data);
   }, [check]);
 }

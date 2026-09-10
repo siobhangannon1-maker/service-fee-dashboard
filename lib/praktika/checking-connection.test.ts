@@ -182,3 +182,42 @@ for (const scenario of ["fresh", "missing-proof", "stale-proof", "stale-lease", 
     assert.equal(reads, ["fresh", "credentials", "mfa", "error"].includes(scenario) ? 1 : 2);
   });
 }
+
+test("Checking budget is independent of continually renewed heartbeat and stale proof", async () => {
+  const { createCheckingWindow, CHECKING_WINDOW_MS } = await import("./use-status-expiry");
+  const window = createCheckingWindow(); const start = Date.now();
+  for (let elapsed = 0; elapsed <= 90000; elapsed += 5000) {
+    const status = currentStatus({ status: "checking_connection", helperAlive: true, helperHeartbeatAt: new Date(start + elapsed).toISOString() }, start + elapsed);
+    assert.equal(window(status, start + elapsed).status, elapsed < CHECKING_WINDOW_MS ? "checking_connection" : "not_started");
+  }
+  assert.equal(window("connected", start + 90001).status, "connected");
+  assert.equal(window("checking_connection", start + 90002).status, "checking_connection");
+});
+
+test("popup bounds live unverified checking, exposes Connect, and preserves login/MFA controls", async () => {
+  const { chromium } = await import("playwright"); const { build } = await import("esbuild");
+  const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import Popup from './components/report-writing/PraktikaToolsPopup'; createRoot(document.getElementById('root')).render(<Popup open={true}/>);`, resolveDir: process.cwd(), loader: "tsx" }, bundle: true, write: false, platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"production"' } });
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage(); await page.clock.install();
+    let status = "checking_connection";
+    await page.route("**/*", async route => {
+      if (new URL(route.request().url()).pathname === "/") return route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' });
+      assert.equal(new URL(route.request().url()).search, "?scope=user");
+      const now = await page.evaluate(() => Date.now());
+      return route.fulfill({ json: { status, connected: status === "connected", helperAlive: true, helperHeartbeatAt: new Date(now).toISOString(), authenticatedAt: status === "connected" ? new Date(now).toISOString() : null } });
+    });
+    await page.goto("http://praktika-ui.test/"); await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    await page.getByText("Praktika: Checking connection", { exact: true }).waitFor();
+    for (let n = 0; n < 7; n++) { await page.clock.runFor(5000); await page.waitForTimeout(20); }
+    await page.getByText("Praktika: Not connected", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Connect", exact: true }).isVisible(), true);
+    for (const state of ["not_started", "error", "waiting_for_credentials", "waiting_for_mfa", "connected"]) {
+      status = state; await page.clock.runFor(5000); await page.waitForTimeout(20);
+      if (state === "connected") await page.getByText("Praktika: Connected", { exact: true }).waitFor();
+      else if (state === "waiting_for_credentials") assert.equal(await page.locator('input[type="password"]').isVisible(), true);
+      else if (state === "waiting_for_mfa") await page.getByText("Praktika: MFA required", { exact: true }).waitFor();
+      else assert.equal(await page.getByRole("button", { name: "Connect", exact: true }).isVisible(), true);
+    }
+  } finally { await browser.close(); }
+});

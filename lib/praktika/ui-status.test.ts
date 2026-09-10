@@ -37,7 +37,7 @@ for (const path of paths) {
         else state = value as typeof state;
       };
       const load = runInNewContext(extract(source, "loadStatus") + "\nloadStatus", {
-        credentialRequestActive: { current: false }, armStatusExpiry: (data: {status: string}) => data.status, statusRequest, scope: "user", username: "", dismissedForStatus: null,
+        AbortSignal, credentialRequestActive: { current: false }, armStatusExpiry: (data: {status: string}) => data.status, statusRequest, scope: "user", username: "", dismissedForStatus: null,
         fetch: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
         safeJson: (response: { json(): unknown }) => response.json(),
         setState: update, setSession: update, setDisplayStatus: update,
@@ -127,8 +127,8 @@ test("lease timer expires without a completed poll and checks again on visibilit
  let now=1_000_000; let expired=0; let scheduled: (()=>void)|undefined;
  const listeners: Record<string,()=>void>={};
  const target={addEventListener:(key:string,fn:()=>void)=>{listeners[key]=fn;},removeEventListener:()=>{}};
- const arm=runInNewContext(extract(source,"connectionExpiry")+extract(source,"currentStatus")+extract(source,"useStatusExpiry")+"\nuseStatusExpiry(onExpire)",{
-  Date: {now:()=>now,parse:Date.parse},onExpire:()=>{expired++;},
+ const arm=runInNewContext(extract(source,"connectionExpiry")+extract(source,"currentStatus")+extract(source,"createCheckingWindow")+extract(source,"useStatusExpiry")+"\nuseStatusExpiry(onExpire)",{
+  CHECKING_WINDOW_MS: 30000, Date: {now:()=>now,parse:Date.parse},onExpire:()=>{expired++;},
   useRef:(current:unknown)=>({current}),useCallback:(fn:unknown)=>fn,useEffect:(fn:()=>void)=>fn(),
   window:target,document:target,setTimeout:(fn:()=>void)=>{scheduled=fn;return 1;},clearTimeout:()=>{scheduled=undefined;},
  });
@@ -174,3 +174,18 @@ test("connected popup hides the background checking caption", async () => {
  assert.match(extract(source,"submitCredentials"),/setDisplayStatus\("refreshing"\)/);
  assert.match(source,/!credentialsSubmitting && !mfaSubmitting/);
  });
+
+test("popup timeout is actionable and a late positive response cannot restore Connected", async () => {
+  const source = await read(paths[0]);
+  for (const reject of [true, false]) {
+    let status = "connected"; const signal = { aborted: false };
+    const load = runInNewContext(extract(source, "loadStatus") + "\nloadStatus", {
+      AbortSignal: { timeout: (ms: number) => { assert.equal(ms, 4000); return signal; } },
+      credentialRequestActive: { current: false }, statusRequest: { current: 0 },
+      fetch: async () => { signal.aborted = true; if (reject) throw new Error("PRIVATE"); return { ok: true, json: async () => ({ status: "connected", connected: true }) }; },
+      setChecking() {}, setDisplayStatus: (s: string) => { status = s; },
+      setSession: () => assert.fail("expired response must not be consumed"),
+    });
+    await load(); assert.equal(status, "error");
+  }
+});
