@@ -262,10 +262,18 @@ export async function POST(req: Request) {
       );
     }
 
-    const { data: attempts, error: attemptError } = await supabase.from("praktika_helper_jobs")
-      .select("id").eq("job_type", "upload_report_to_praktika").eq("request->>reportDraftId", draftId).limit(1);
-    if (attemptError || attempts?.length || draft.uploaded_to_praktika) {
-      return NextResponse.json({ success: false, error: "An upload already exists or needs reconciliation. The approved letter is retained." }, { status: 409 });
+    const { data: attempts, error: attemptError } = await Promise.resolve(supabase.from("praktika_helper_jobs")
+      .select("id").eq("job_type", "upload_report_to_praktika").eq("request->>reportDraftId", draftId).limit(1)).catch((error: unknown) => ({ data: null, error: error || {} }));
+    if (attemptError) {
+      const reason = typeof attemptError === "object" && attemptError !== null
+        && "name" in attemptError && attemptError.name === "TimeoutError" ? "lookup_timeout" : "lookup_failed";
+      console.warn("praktika_upload_attempt", { stage: "upload_attempt_lookup", reason });
+      return NextResponse.json({ success: false, code: reason, stage: "upload_attempt_lookup",
+        error: "Previous Praktika upload attempts could not be verified. No new upload was started; the approved letter is retained." }, { status: 503 });
+    }
+    if (attempts?.length || draft.uploaded_to_praktika) {
+      console.warn("praktika_upload_attempt", { stage: "upload_attempt_lookup", reason: "existing_attempt" });
+      return NextResponse.json({ success: false, code: "existing_attempt", stage: "upload_attempt_lookup", error: "An upload already exists or needs reconciliation. The approved letter is retained." }, { status: 409 });
     }
     // Atomic per-draft reservation also protects direct/concurrent route calls.
     const { data: claimed, error: claimError } = await supabase.from("report_drafts")

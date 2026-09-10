@@ -156,11 +156,21 @@ export async function POST(req: Request) {
           return NextResponse.json({ success: false, reconnectRequired: true, error: praktikaConnectionRequired }, { status: 409 });
         }
         // Do not replay an upload with an uncertain or already successful outcome.
-        const { data: attempts, error: attemptError } = await supabase.from("praktika_helper_jobs")
+        const { data: attempts, error: attemptError } = await Promise.resolve(supabase.from("praktika_helper_jobs")
           .select("id").eq("job_type", "upload_report_to_praktika")
-          .eq("request->>reportDraftId", draftId).limit(1).abortSignal(AbortSignal.timeout(5000));
-        if (attemptError || attempts?.length) return NextResponse.json({ success: false,
+          .eq("request->>reportDraftId", draftId).limit(1).abortSignal(AbortSignal.timeout(5000))).catch((error: unknown) => ({ data: null, error: error || {} }));
+        if (attemptError) {
+          const reason = typeof attemptError === "object" && attemptError !== null
+            && "name" in attemptError && attemptError.name === "TimeoutError" ? "lookup_timeout" : "lookup_failed";
+          console.warn("praktika_upload_attempt", { stage: "upload_attempt_lookup", reason });
+          return NextResponse.json({ success: false, code: reason, stage: "upload_attempt_lookup",
+            error: "Previous Praktika upload attempts could not be verified. No new upload was started; the approved letter is retained." }, { status: 503 });
+        }
+        if (attempts?.length) {
+          console.warn("praktika_upload_attempt", { stage: "upload_attempt_lookup", reason: "existing_attempt" });
+          return NextResponse.json({ success: false, code: "existing_attempt", stage: "upload_attempt_lookup",
           error: "This report already has an upload attempt. Check its helper result before retrying; the approved letter is retained." }, { status: 409 });
+        }
       }
       const { data, error } = await claimWorkflowStart(supabase, draftId, updatePayload);
       if (error) return NextResponse.json({ success: false, error: "Could not start workflow." }, { status: 500 });

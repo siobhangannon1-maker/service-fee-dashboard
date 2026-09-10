@@ -18,7 +18,7 @@ function extract(path: string, name: string) {
   assert.ok(fn, name);
   return ts.transpileModule(fn.getText(ast).replace(/^export /, ""), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 }
-function database(tables: Record<string, Row[]>, events: string[]) {
+function database(tables: Record<string, Row[]>, events: string[], lookupError?: unknown, throws = false) {
   return { from(table: string) {
     let patch: Row | undefined, filters: ((r: Row) => boolean)[] = [], limit = Infinity;
     const field = (r: Row, key: string) => key.includes("->>") ? r[key.split("->>")[0]]?.[key.split("->>")[1]] : r[key];
@@ -40,6 +40,10 @@ function database(tables: Record<string, Row[]>, events: string[]) {
         })); return query;
       },
       execute(single: boolean) {
+        if (table === "praktika_helper_jobs" && lookupError) {
+          if (throws) throw lookupError;
+          return { data: null, error: lookupError };
+        }
         const rows = (tables[table] || []).filter(r => filters.every(f => f(r))).slice(0, limit);
         if (patch) { events.push(`update:${table}`); rows.forEach(r => Object.assign(r, patch)); }
         return { data: single ? rows[0] ?? null : rows, error: null };
@@ -49,7 +53,7 @@ function database(tables: Record<string, Row[]>, events: string[]) {
     }; return query;
   }} as unknown as SupabaseClient;
 }
-function fixture(status = "connected") {
+function fixture(status = "connected", lookupError?: unknown, throws = false) {
   const events: string[] = [];
   const tables: Record<string, Row[]> = {
     praktika_sessions: [{ scope: "user", app_user_id: "current-user", status,
@@ -60,7 +64,7 @@ function fixture(status = "connected") {
       workflow_status: "idle", workflow_praktika_upload_status: "pending", workflow_icon_update_status: "pending" }],
     report_letter_queue: [{ report_draft_id: "synthetic-draft", status: "started" }], praktika_helper_jobs: [],
   };
-  const db = database(tables, events);
+  const db = database(tables, events, lookupError, throws);
   const mocks: Row = {
     supabase: db, isUserPraktikaReady, praktikaConnectionRequired, isConfirmedPraktikaUpload,
     claimWorkflowStart, AbortSignal, Date, URL, Buffer, console: { log() {}, error() {}, warn() {} },
@@ -214,4 +218,48 @@ test("fresh current-user proof permits one workflow start; another user's proof 
   assert.equal(f.tables.report_drafts[0].workflow_status, "running");
   assert.equal(f.tables.report_drafts[0].uploaded_to_praktika, false);
   assert.ok(!f.events.includes("pdf"));
+});
+
+for (const path of [startPath, uploadPath]) {
+  for (const [name, error, expected] of [
+    ["timeout", { name: "TimeoutError", message: "PRIVATE" }, "lookup_timeout"],
+    ["database", { code: "42501", message: "PRIVATE" }, "lookup_failed"],
+    ["unclassified rejection", {}, "lookup_failed"],
+    ["ambiguous abort", { name: "AbortError", message: "PRIVATE" }, "lookup_failed"],
+  ] as const) for (const throws of [false, true]) {
+    test(`${path}: ${name} ${throws ? "thrown" : "returned"} fails closed before all work`, async () => {
+      const f = fixture("connected", error, throws);
+      const draft = f.tables.report_drafts[0];
+      Object.assign(draft, { workflow_status: null, workflow_praktika_upload_status: null });
+      const before = JSON.stringify(f.tables); const logs: unknown[] = [];
+      f.mocks.console = { warn: (...args: unknown[]) => logs.push(args), error: (...args: unknown[]) => logs.push(args) };
+      const response = await f.route(path)(request({ startWorkflow: true, workflowStatus: "running", praktikaUploadStatus: "pending" }));
+      assert.equal(response.status, 503);
+      const body = await response.json(); assert.equal(body.code, expected); assert.equal(body.stage, "upload_attempt_lookup");
+      assert.match(body.error, /could not be verified/); assert.doesNotMatch(body.error, /already has|already exists/);
+      assert.equal(JSON.stringify(f.tables), before); assert.deepEqual(f.events, []);
+      assert.equal(JSON.stringify(logs), JSON.stringify([["praktika_upload_attempt", { stage: "upload_attempt_lookup", reason: expected }]]));
+      assert.doesNotMatch(JSON.stringify({ body, logs }), /PRIVATE/);
+    });
+  }
+  for (const status of ["pending", "processing", "completed", "failed"]) {
+    test(`${path}: existing ${status} attempt retains duplicate protection`, async () => {
+      const f = fixture();
+      f.tables.praktika_helper_jobs.push({ id: "prior", job_type: "upload_report_to_praktika", request: { reportDraftId: "synthetic-draft" }, status });
+      const before = JSON.stringify(f.tables);
+      const response = await f.route(path)(request({ startWorkflow: true, workflowStatus: "running", praktikaUploadStatus: "pending" }));
+      assert.equal(response.status, 409); assert.equal((await response.json()).code, "existing_attempt");
+      assert.equal(JSON.stringify(f.tables), before); assert.deepEqual(f.events, []);
+    });
+  }
+}
+test("fresh approved draft with null workflow fields starts and confirms exactly one upload", async () => {
+  const f = fixture(); const draft = f.tables.report_drafts[0];
+  Object.assign(draft, { workflow_status: null, workflow_praktika_upload_status: null, workflow_icon_update_status: null, workflow_mediref_status: null });
+  const response = await f.route(startPath)(request({ startWorkflow: true, workflowStatus: "running", praktikaUploadStatus: "pending" }));
+  assert.equal(response.status, 200); assert.equal(draft.workflow_status, "running");
+  f.mocks.waitForPraktikaHelperJob = async () => ({ status: "completed", response: { patient_communication: { iFileId: 123 } } });
+  assert.equal((await f.route(uploadPath)(request())).status, 200);
+  assert.equal(draft.uploaded_to_praktika, true); assert.equal(draft.workflow_praktika_upload_status, "completed");
+  assert.equal(f.events.filter(e => e === "upload-job").length, 1);
 });
