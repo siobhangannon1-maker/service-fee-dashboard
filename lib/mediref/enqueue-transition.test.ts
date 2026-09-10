@@ -126,3 +126,55 @@ test("late insertion cannot run the normal success callback after timeout", asyn
   finish({ id: "late-job" }); await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(attempted, true); assert.deepEqual(f.events, ["pending"]);
 });
+
+import { createEnqueueDiagnostics, safeEnqueueFailure, enqueueStages, enqueueFailure } from "./enqueue-transition";
+for (const stage of enqueueStages) {
+  test(`safe failure metadata and client message: ${stage}`, async () => {
+    const diagnostics = createEnqueueDiagnostics();
+    diagnostics.setStage(stage);
+    const failure = diagnostics.failure();
+    assert.equal(failure.stage, stage);
+    assert.ok(failure.elapsedMs >= 0);
+    const request: typeof fetch = async url => String(url).endsWith("workflow-status")
+      ? Response.json({ success: true })
+      : Response.json({ success: false, ...failure, message: "SECRET patient cookie filename" }, { status: 500 });
+    await assert.rejects(requestMedirefEnqueue("fixture", {}, request), error => {
+      assert.equal((error as Error).message, safeEnqueueFailure(stage).message);
+      assert.doesNotMatch(String(error), /SECRET/);
+      return true;
+    });
+  });
+}
+for (const stage of ["active_job_lookup", "preparation_claim", "patient_validation", "attachment_validation", "second_active_job_lookup", "helper_insertion"] as const) {
+  test(`transition records actual failing stage: ${stage}`, async () => {
+    const f = fixture(); const diagnostics = createEnqueueDiagnostics();
+    if (stage === "active_job_lookup") f.actions.active = async () => { throw new Error("SECRET"); };
+    if (stage === "preparation_claim") f.actions.claim = async () => false;
+    if (stage === "patient_validation") f.request.patient.dob = "invalid";
+    if (stage === "attachment_validation") f.request.attachments = [];
+    if (stage === "second_active_job_lookup") { let n = 0; f.actions.active = async () => { if (++n > 1) throw new Error("SECRET"); return null; }; }
+    if (stage === "helper_insertion") f.actions.insert = async () => { throw new Error("SECRET"); };
+    await assert.rejects(enqueueMedirefTransition({ ...f.actions, diagnostics }));
+    assert.equal(diagnostics.failure().stage, stage);
+    assert.doesNotMatch(JSON.stringify(diagnostics.failure()), /SECRET/);
+  });
+}
+test("deadline freezes the interrupted preparation stage", async () => {
+  const f = fixture(); const diagnostics = createEnqueueDiagnostics();
+  f.actions.prepare = async () => { diagnostics.setStage("pdf_generation"); return new Promise(() => {}); };
+  await assert.rejects(enqueueMedirefTransition({ ...f.actions, diagnostics, deadlineMs: 5 }));
+  diagnostics.setStage("helper_insertion");
+  assert.equal(diagnostics.failure().stage, "pdf_generation");
+  assert.equal(diagnostics.failure().deadlineExceeded, true);
+  assert.equal(f.events.includes("insert"), false);
+});
+for (const mode of ["malformed", "unknown", "network"] as const) {
+  test(`${mode} client failure has generic redacted fallback even if reconciliation fails`, async () => {
+    const request: typeof fetch = async url => {
+      if (String(url).endsWith("workflow-status") || mode === "network") throw new Error("SECRET");
+      if (mode === "malformed") return new Response("SECRET");
+      return Response.json({ success: false, code: "UNKNOWN", stage: "unknown", message: "SECRET" }, { status: 500 });
+    };
+    await assert.rejects(requestMedirefEnqueue("fixture", {}, request), { message: enqueueFailure });
+  });
+}

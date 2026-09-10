@@ -5,7 +5,7 @@ import {
   createReportAuditEvent,
   getAuditActor,
 } from "@/lib/report-writing/audit";
-import { enqueueMedirefTransition, enqueueFailure, EnqueueBusy } from "@/lib/mediref/enqueue-transition";
+import { enqueueMedirefTransition, enqueueFailure, EnqueueBusy, createEnqueueDiagnostics, type EnqueueDiagnostics } from "@/lib/mediref/enqueue-transition";
 import { getUserStatus } from "@/lib/getUserStatus";
 import type { MedirefHelperRequest } from "@/lib/mediref/helper-jobs";
 import { generatePeriodontalChartPdf } from "@/lib/praktika/periodontal-chart";
@@ -258,10 +258,7 @@ async function updatePerioStatus(params: {
     .eq("id", params.draftId);
 
   if (error) {
-    console.error(
-      "[send-via-mediref] Could not update periodontal chart status:",
-      error,
-    );
+    console.error("[MediRef enqueue] periodontal_status_update_failed");
   }
 }
 
@@ -279,7 +276,9 @@ async function stagePdf(params: {
   draftId: string;
   fileName: string;
   folder: string;
+  diagnostics: EnqueueDiagnostics;
 }): Promise<StagedPdfAttachment> {
+  params.diagnostics.setStage("pdf_validation");
   if (!params.buffer.length || params.buffer.length < 1000) {
     throw new Error(
       `Could not stage PDF for MediRef because the PDF looks empty or invalid. Size: ${params.buffer.length} bytes.`,
@@ -290,12 +289,8 @@ async function stagePdf(params: {
     params.fileName
   }`;
 
-  console.log("[send-via-mediref] Uploading PDF to MediRef staging", {
-    bucket: HELPER_UPLOAD_BUCKET,
-    storagePath,
-    byteLength: params.buffer.length,
-  });
 
+  params.diagnostics.setStage("storage_upload");
   const { error: uploadError } = await supabase.storage
     .from(HELPER_UPLOAD_BUCKET)
     .upload(storagePath, params.buffer, {
@@ -315,6 +310,7 @@ async function stagePdf(params: {
    * This ensures the MediRef helper job is never created with a path
    * that does not actually exist in Supabase Storage.
    */
+  params.diagnostics.setStage("storage_verification");
   const { data: storedPdf, error: verifyError } =
     await supabase.storage
       .from(HELPER_UPLOAD_BUCKET)
@@ -346,12 +342,6 @@ async function stagePdf(params: {
     );
   }
 
-  console.log("[send-via-mediref] PDF staged successfully", {
-    bucket: HELPER_UPLOAD_BUCKET,
-    storagePath,
-    size: storedPdf.size,
-  });
-
   return {
     bucket: HELPER_UPLOAD_BUCKET,
     storagePath,
@@ -365,7 +355,9 @@ async function generateAndStageLetterPdf(params: {
   draftId: string;
   draft: any;
   signal: AbortSignal;
+  diagnostics: EnqueueDiagnostics;
 }): Promise<StagedPdfAttachment> {
+  params.diagnostics.setStage("pdf_generation");
   const pdfResponse = await fetch(
     `${params.origin}/api/report-writing/generate-pdf`,
     {
@@ -391,6 +383,7 @@ async function generateAndStageLetterPdf(params: {
     );
   }
 
+  params.diagnostics.setStage("pdf_validation");
   const pdfBuffer = Buffer.from(
     await pdfResponse.arrayBuffer(),
   );
@@ -409,6 +402,7 @@ async function generateAndStageLetterPdf(params: {
   );
 
   return await stagePdf({
+    diagnostics: params.diagnostics,
     buffer: pdfBuffer,
     draftId: params.draftId,
     fileName: letterFileName,
@@ -428,11 +422,14 @@ export async function POST(req: Request) {
    */
   const stagedPaths: string[] = [];
 
+  const diagnostics = createEnqueueDiagnostics();
+  let draftIdPresent = false;
   let medirefJobCreated = false;
   let insertionAttempted = false;
 
   try {
     const body = await req.json();
+    draftIdPresent = Boolean(body?.draftId);
     const actor = await getAuditActor();
     if (!actor.actorUserId || !await getUserStatus(actor.actorUserId)) {
       return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
@@ -559,6 +556,7 @@ export async function POST(req: Request) {
       return data;
     }
     const transition = await enqueueMedirefTransition({
+      diagnostics,
       active: activeJob,
       claim: async () => {
         const { data, error } = await supabase.from("report_drafts").update({
@@ -573,6 +571,7 @@ export async function POST(req: Request) {
         return Boolean(data);
       },
       prepare: async (signal) => {
+        diagnostics.setStage("patient_validation");
         if (!splitName.firstName || !splitName.lastName || !draft.patient_dob) throw new Error(enqueueFailure);
         const letterStartedAt = nowMs();
 
@@ -587,6 +586,7 @@ export async function POST(req: Request) {
 
         const letterAttachment =
           await generateAndStageLetterPdf({
+            diagnostics,
             origin,
             draftId,
             draft,
@@ -607,6 +607,7 @@ export async function POST(req: Request) {
           letterAttachment,
         ];
 
+        diagnostics.setStage("periodontal_preparation");
         let periodontalChartStaged = false;
 
         let periodontalChartAttachmentName:
@@ -649,6 +650,7 @@ export async function POST(req: Request) {
               if (perioChart) {
                 const perioAttachment =
                   await stagePdf({
+                    diagnostics,
                     buffer: perioChart.buffer,
                     draftId,
                     fileName: perioChart.fileName,
@@ -843,10 +845,9 @@ export async function POST(req: Request) {
         "MediRef send has been queued. The Cloud helper will process it.",
     });
   } catch (error) {
-    console.error(
-      "Failed to queue MediRef send:",
-      error,
-    );
+    const failure = diagnostics.failure();
+    const insertionOutcome = insertionAttempted ? "unconfirmed" : "not_attempted";
+    console.error("[MediRef enqueue] failed", { draftIdPresent, ...failure, insertionOutcome });
 
     logStep("FAILED TOTAL", totalStartedAt);
 
@@ -865,20 +866,20 @@ export async function POST(req: Request) {
           .remove(stagedPaths);
 
       if (cleanupError) {
-        console.error(
-          "[send-via-mediref] Could not clean up failed MediRef staging files:",
-          cleanupError,
-        );
+        console.error("[MediRef enqueue] staging_cleanup_failed");
       }
     }
 
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof EnqueueBusy ? error.message : enqueueFailure,
+        ...failure,
+        insertionOutcome,
+        error: error instanceof EnqueueBusy ? "Another preparation for this letter is already in progress." : failure.message,
+        message: error instanceof EnqueueBusy ? "Another preparation for this letter is already in progress." : failure.message,
       },
       {
-        status: error instanceof EnqueueBusy ? 409 : 500,
+        status: error instanceof EnqueueBusy ? 409 : !failure.deadlineExceeded && (failure.stage === "patient_validation" || failure.stage === "attachment_validation") ? 400 : 500,
       },
     );
   }
