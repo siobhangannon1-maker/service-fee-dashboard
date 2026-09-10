@@ -1,13 +1,13 @@
 import type { BrowserContext } from "playwright";
 import { hasFreshPraktikaAuthentication } from "./authentication";
-import { PraktikaOwnershipLost, type HelperHealth } from "./helper-lease";
+import { PraktikaOwnershipLost, hasLivePraktikaHelper, type HelperHealth } from "./helper-lease";
 
 export const PRAKTIKA_AUTH_PROBE_TIMEOUT_MS = 10_000;
 const MAX_PROBE_BYTES = 2 * 1024 * 1024;
 const PATH = "/php/json/db_reportingDataWarehouse.php";
 export type AuthenticationFailurePhase = "error" | "waiting_for_credentials" | "waiting_for_mfa";
 export type RedirectCategory = "login_redirect" | "same_origin_other_redirect" | "external_redirect" | "redirect_destination_unavailable";
-type RedirectDiagnostics = { redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
+type RedirectDiagnostics = { destinationCategory: DestinationCategory; redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
 
 // Classify only; never return URL components or change authentication decisions.
 export function classifyPraktikaRedirect(location: string | undefined, expectedUrl: string): Pick<RedirectDiagnostics, "redirect_category" | "same_origin"> {
@@ -23,6 +23,35 @@ export function classifyPraktikaRedirect(location: string | undefined, expectedU
     return { same_origin, redirect_category: !same_origin ? "external_redirect"
       : destination.pathname === "/v2/login" ? "login_redirect" : "same_origin_other_redirect" };
   } catch { return unavailable; }
+}
+
+export type PageCategory = "login" | "mfa" | "scheduler" | "reports" | "patient_directory" | "other_application" | "unknown";
+export type DestinationCategory = "login" | "mfa" | "scheduler" | "reports" | "same_requested_path" | "other_application_path" | "external" | "unknown";
+
+// Diagnostic labels only. No inferred MFA pathname: the helper detects MFA inputs.
+export function classifyPraktikaPage(value: string, baseUrl: string): PageCategory {
+  try {
+    const url = new URL(value);
+    if (url.origin !== new URL(baseUrl).origin || !["https:", "http:"].includes(url.protocol)) return "unknown";
+    const p = url.pathname;
+    if (p === "/v2/login") return "login";
+    if (p === "/v2/scheduler") return "scheduler";
+    if (p === "/v2/reports" || p.startsWith("/v2/reports/")) return "reports";
+    if (p === "/v2/patient-directory" || p.startsWith("/v2/patient-directory/")) return "patient_directory";
+    return p === "/v2" || p.startsWith("/v2/") ? "other_application" : "unknown";
+  } catch { return "unknown"; }
+}
+export function classifyPraktikaRedirectDestination(location: string | undefined, expectedUrl: string): DestinationCategory {
+  const legacy = classifyPraktikaRedirect(location, expectedUrl);
+  if (legacy.same_origin === null) return "unknown";
+  if (!legacy.same_origin) return "external";
+  try {
+    const destination = new URL(location!, expectedUrl);
+    if (destination.pathname === new URL(expectedUrl).pathname) return "same_requested_path";
+    const category = classifyPraktikaPage(destination.href, expectedUrl);
+    if (category === "patient_directory" || category === "other_application") return "other_application_path";
+    return category;
+  } catch { return "unknown"; }
 }
 
 export type ProbeResult = { redirectDiagnostics?: RedirectDiagnostics; verified: boolean; phase: AuthenticationFailurePhase; httpStatus: number | null; parsedArray: boolean };
@@ -94,7 +123,7 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
             try { location = response.headers()["location"]; } catch { /* Metadata unavailable. */ }
             const redirect = classifyPraktikaRedirect(location, url);
             return { ...failed, phase: redirect.redirect_category === "login_redirect" ? "waiting_for_credentials" as const : "error" as const, httpStatus: response.status(), redirectDiagnostics: {
-              ...redirect, responseReceived: true as const,
+              ...redirect, destinationCategory: classifyPraktikaRedirectDestination(location, url), responseReceived: true as const,
               elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
             } };
           }
@@ -113,6 +142,7 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
 
 export function createPraktikaAuthenticationGate(deps: {
   readOwnedSession(): Promise<HelperHealth>;
+  currentPageCategory?(): PageCategory;
   assertOwned(): Promise<void>;
   probe(): Promise<ProbeResult>;
   recordSuccess(): Promise<void>;
@@ -145,6 +175,19 @@ export function createPraktikaAuthenticationGate(deps: {
         // Ambiguity never creates or destroys proof, regardless of the initiating
         // caller. Only explicit authentication negatives clear it.
         if (result.phase !== "error") await deps.recordFailure(result.phase);
+        if (renew && result.phase === "error" && result.redirectDiagnostics) {
+          let currentPageCategory: PageCategory = "unknown";
+          try { currentPageCategory = deps.currentPageCategory?.() ?? "unknown"; } catch { /* Diagnostics must not affect verification. */ }
+          const age = Date.now() - Date.parse(session.authenticated_at || "");
+          console.log("[Praktika auth] renewal_redirect", {
+            httpStatus: result.httpStatus,
+            destinationCategory: result.redirectDiagnostics.destinationCategory,
+            currentPageCategory,
+            helperAlive: hasLivePraktikaHelper(session),
+            proofStillFresh: hasFreshPraktikaAuthentication(session),
+            proofAgeBucket: !Number.isFinite(age) || age < 0 ? "unknown" : age < 60_000 ? "<1m" : age < 180_000 ? "1-3m" : age <= 300_000 ? "3-5m" : ">5m",
+          });
+        }
         console.log(renew && result.phase === "error" ? "[Praktika auth] renewal_transient_failure" : "[Praktika auth] probe_failed", {
           httpStatus: result.httpStatus, parsedArray: result.parsedArray, phase: result.phase,
           ...(result.redirectDiagnostics ? {
@@ -152,8 +195,6 @@ export function createPraktikaAuthenticationGate(deps: {
             same_origin: result.redirectDiagnostics.same_origin,
             responseReceived: result.redirectDiagnostics.responseReceived,
             elapsed_ms: result.redirectDiagnostics.elapsed_ms,
-            proof_age_ms: Number.isFinite(Date.parse(session.authenticated_at || ""))
-              ? Math.max(0, Date.now() - Date.parse(session.authenticated_at!)) : null,
           } : {}),
         });
         throw new PraktikaAuthenticationUnverified(result.phase, result.phase === "error");

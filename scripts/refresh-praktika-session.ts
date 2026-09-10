@@ -1,7 +1,7 @@
 import { createCookieSnapshotStore } from "../lib/praktika/cookie-snapshot";
 import { createShutdownCoordinator, type SkipReason } from "../lib/praktika/shutdown-coordinator";
 import { requestPlannedRestoration } from "../lib/praktika/planned-restoration";
-import { startPraktikaAuthenticationRenewal, createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
+import { startPraktikaAuthenticationRenewal, classifyPraktikaPage, createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
 import {
   writePraktikaHelper, PraktikaOwnershipLost, PRAKTIKA_HELPER_HEARTBEAT_MS,
   PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS,
@@ -225,7 +225,9 @@ async function releaseOwnership(failed = false) {
   }).catch(() => {});
 }
 
+let renewalPage: Page | undefined;
 const ensureAuthenticated = createPraktikaAuthenticationGate({
+  currentPageCategory: () => classifyPraktikaPage(renewalPage?.url() || "", PRAKTIKA_BASE_URL),
   assertOwned,
   readOwnedSession: getSession,
   probe: async () => {
@@ -1011,6 +1013,7 @@ async function refreshOnce() {
     if (shuttingDown || (isWarmRestoration && remainingUsefulWorkMs() <= 0)) return;
     await assertOwned();
     page = await context.newPage();
+    renewalPage = page;
     renewal = startPraktikaAuthenticationRenewal({
       readSession: getSession,
       eligible: async () => {
