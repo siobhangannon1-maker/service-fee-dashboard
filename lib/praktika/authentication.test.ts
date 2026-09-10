@@ -138,7 +138,7 @@ test("status route exposes derived truth without probing or persisting proof", a
   }).outputText;
   let row = { status: "connected", cookie: "fixture", helper_instance_id: "owner",
     helper_heartbeat_at: new Date().toISOString(), authenticated_at: new Date().toISOString() as string | null };
-  const get = runInNewContext(compiled + "\nGET", { URL, derivePraktikaConnection,
+  const get = runInNewContext(compiled + "\nGET", { URL, derivePraktikaConnection, PRAKTIKA_AUTH_FRESHNESS_MS,
     authorizePraktikaSession: async () => ({ scope: "user" }),
     PraktikaSessionAuthorizationError: class extends Error {},
     getPraktikaSession: async () => row,

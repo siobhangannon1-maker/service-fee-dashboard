@@ -33,8 +33,8 @@ for (const skipped of [false, true]) {
     await runCompleteWorkflowIconStep("draft", { queueId: null, praktikaPatientId: "fixture-id" }, request);
     medirefQueued = true;
     assert.equal(medirefQueued, true);
-    assert.equal(updates[0].praktikaUploadStatus, "completed");
-    assert.equal(updates[0].iconUpdateStatus, "pending");
+    assert.equal(updates[0].praktikaUploadStatus, undefined);
+    assert.equal(updates[0].iconUpdateStatus, undefined);
     assert.equal(updates[1].iconUpdateStatus, skipped ? "skipped" : "completed");
     assert.ok(updates.every((update) => update.iconUpdateStatus !== "running"));
     assert.ok(updates.every((update) => !("uploaded_to_praktika" in update)));
@@ -68,7 +68,7 @@ test("atomic workflow start rejects concurrent starts before a second upload", a
     eq: (...args: unknown[]) => { filters.push(args); return query; },
     is: (...args: unknown[]) => { filters.push(args); return query; },
     in: (...args: unknown[]) => { filters.push(args); return query; },
-    or: (value: string) => { assert.equal(value, "workflow_status.is.null,workflow_status.neq.running"); return query; },
+    or: (value: string) => { assert.ok(["workflow_status.is.null,workflow_status.neq.running", "workflow_praktika_upload_status.is.null,workflow_praktika_upload_status.neq.running"].includes(value)); return query; },
     select: () => query,
     maybeSingle: async () => {
       if (running) return { data: null, error: null };

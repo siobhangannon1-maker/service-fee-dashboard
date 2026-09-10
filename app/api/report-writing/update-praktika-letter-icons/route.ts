@@ -1,3 +1,5 @@
+import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
+import { isConfirmedPraktikaUpload } from "@/lib/report-writing/praktika-upload-result";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -181,6 +183,7 @@ async function updatePraktikaAppointmentIcons({
       jobType: "update_praktika_letter_icons",
       priority: 80,
       request: {
+        reportDraftId: draftId,
         method: "POST",
         path: "/php/forms/db_commitFormData.php",
         contentType: "json",
@@ -199,6 +202,10 @@ async function updatePraktikaAppointmentIcons({
     wait: async (jobId) => {
       try {
         const job = await waitForPraktikaHelperJob(jobId, { timeoutMs: 90000, intervalMs: 2000 });
+        if (job.status !== "completed" || !job.response || typeof job.response !== "object" ||
+            job.response.error || job.response.success === false || job.response.empty === true) {
+          throw new Error("Appointment icon helper result could not be confirmed.");
+        }
         console.log("[Praktika icon] helper_completed", { draftId, helperJobStatus: "completed" });
         return job.response;
       } catch (error) {
@@ -328,6 +335,24 @@ export async function POST(req: Request) {
     const bodyPraktikaPatientId = clean(
       body.praktikaPatientId || body.praktika_patient_id || body.patientId,
     );
+
+    if (!draftId || mode.scope !== "user" || !await isUserPraktikaReady(supabase, mode.appUserId)) {
+      return NextResponse.json({ success: false, error: praktikaConnectionRequired }, { status: 409 });
+    }
+    const { data: uploads, error: uploadError } = await supabase.from("praktika_helper_jobs")
+      .select("response").eq("job_type", "upload_report_to_praktika")
+      .eq("app_user_id", mode.appUserId).eq("request->>reportDraftId", draftId).eq("status", "completed").limit(1);
+    if (uploadError || !uploads?.length || !isConfirmedPraktikaUpload(uploads[0].response)) {
+      return NextResponse.json({ success: false, error: "A confirmed report upload is required before updating the appointment icon." }, { status: 409 });
+    }
+    const { data: claimed, error: claimError } = await supabase.from("report_drafts")
+      .update({ workflow_icon_update_status: "running", updated_at: new Date().toISOString() })
+      .eq("id", draftId).eq("uploaded_to_praktika", true).eq("workflow_praktika_upload_status", "completed")
+      .is("deleted_at", null)
+      .or("workflow_icon_update_status.is.null,workflow_icon_update_status.in.(pending,not_requested)")
+      .select("id").maybeSingle();
+    if (claimError || !claimed) return NextResponse.json({ success: false,
+      error: "The icon step is already running or needs reconciliation." }, { status: 409 });
 
     const practiceIdString = process.env.PRAKTIKA_PRACTICE_ID || "1181";
     const practiceId = Number(practiceIdString);

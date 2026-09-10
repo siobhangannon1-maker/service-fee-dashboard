@@ -37,7 +37,7 @@ test('transient renewal failure preserves proof; strict stale job still blocks',
   assert.equal(f.row.authenticated_at, proof); assert.equal(f.row.status, 'connected');
   assert.equal(derivePraktikaConnection(f.row).connected, true);
   const future = Date.now() + 121000;
-  assert.equal(derivePraktikaConnection({ ...f.row, helper_heartbeat_at: new Date(future).toISOString() }, future).connected, true);
+  assert.equal(derivePraktikaConnection({ ...f.row, helper_heartbeat_at: new Date(future).toISOString() }, future).connected, false);
   f.row.authenticated_at = null;
   await assert.rejects(f.gate(), PraktikaAuthenticationUnverified);
   assert.deepEqual(f.stats(), { probes: 2, successes: 0, failures: 0 });

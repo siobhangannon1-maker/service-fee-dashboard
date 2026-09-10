@@ -26,7 +26,7 @@ test("icon helper allows observed 22-second completion and preserves exact reque
       waitForPraktikaHelperJob: async (_id: string, options: { timeoutMs: number }) => {
         events.push("wait"); assert.ok(options.timeoutMs > 22044);
         if (failure !== "none") throw new Error(failure === "timeout" ? "Praktika helper job did not finish in time." : "execution failed");
-        return { response: { appointment_icon2id: 6597 } };
+        return { status: "completed", response: { appointment_icon2id: 6597 } };
       },
     });
     const result = run({ draftId: "fixture", mode: { scope: "practice" }, practiceId: 1, appointmentId: "123", iconIds: [0,6597,0,0] });

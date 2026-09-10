@@ -36,9 +36,8 @@ async function updateLinkedQueueRows(params: {
   if (params.sourceText !== undefined) queueUpdate.source_clinical_notes = params.sourceText
   if (params.praktikaPatientId !== undefined) queueUpdate.praktika_patient_id = params.praktikaPatientId
 
-  if (params.status === "approved") {
-    queueUpdate.status = "completed"
-  } else if (
+  // Approval finishes authoring, not the external upload/icon workflow.
+  if (
     params.status === "draft" ||
     params.status === "edited_by_typist" ||
     params.status === "awaiting_provider_approval"

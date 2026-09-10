@@ -1,3 +1,4 @@
+import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
 import { PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
 import { PraktikaOwnershipLost, type PraktikaJobOwnership } from "../lib/praktika/helper-lease";
 import { type BrowserContext } from "playwright";
@@ -330,6 +331,9 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any)
   }
 
   const parsed = parsePraktikaResponse(text, response.status());
+  if (request.reportDraftId && !isConfirmedPraktikaUpload(parsed)) {
+    throw new Error("Praktika report upload result could not be confirmed; reconciliation required.");
+  }
 
   await supabase.storage.from(fileSpec.bucket).remove([fileSpec.path]).catch(() => null);
 
@@ -1323,18 +1327,23 @@ export async function processOnePraktikaHelperJob(
     }`,
   );
 
+  let reportUploadStarted = false;
   try {
     await ownership.assertOwned();
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
     await ownership.ensureAuthenticated();
     await ownership.assertOwned();
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
+    reportUploadStarted = job.job_type === "upload_report_to_praktika";
     const response =
       job.job_type === "hydrate_report_letter_queue_item"
         ? await hydrateReportLetterQueueItem(context, job)
         : await runPraktikaRequest(context, job.request);
 
     await ownership.assertOwned();
+    if (reportUploadStarted && !isConfirmedPraktikaUpload(response)) {
+      throw new Error("Praktika report upload result could not be confirmed; reconciliation required.");
+    }
     await completeJob(job.id, response);
     await markSessionConnectedForJob(job, ownership);
     console.log(`Completed Praktika helper job ${job.id}`);
@@ -1347,6 +1356,12 @@ export async function processOnePraktikaHelperJob(
     if (error instanceof PraktikaAuthenticationUnverified) {
       await failJob(job, error.message, !error.transient);
       return { outcome: error.transient ? "failed" : "needs_reconnect", jobId: job.id };
+    }
+    if (reportUploadStarted) {
+      // The server may have saved the PDF even if its response/DB acknowledgement
+      // was lost. Never automatically replay this external write.
+      await failJob(job, "Report upload outcome is unconfirmed. Reconcile before retrying.", true);
+      return { outcome: "failed", jobId: job.id };
     }
     const message = error?.message || "Praktika helper job failed.";
     console.error(`Failed Praktika helper job ${job.id}:`, message);

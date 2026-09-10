@@ -43,7 +43,7 @@ type SessionStatus = {
   has_cookie?: boolean;
 };
 
-type ConnectionDisplayState = "loading" | "checking" | "connected" | "connecting" | "idle" | "disconnected";
+type ConnectionDisplayState = "loading" | "checking" | "connected" | "connecting" | "idle" | "disconnected" | "login_required" | "mfa_required";
 
 function addDays(dateString: string, days: number) {
   const date = new Date(`${dateString}T00:00:00`);
@@ -70,6 +70,8 @@ function connectionState(
   if (busy) return "connecting";
   if (status === "loading") return "loading";
   if (status === "checking_connection") return "checking";
+  if (status === "waiting_for_credentials") return "login_required";
+  if (status === "waiting_for_mfa") return "mfa_required";
   if (status === "idle") return "idle";
   if (status === "connected") return "connected";
 
@@ -85,7 +87,9 @@ function connectionState(
 
 function connectionLabel(state: ConnectionDisplayState) {
   if (state === "loading") return "Loading…";
-  if (state === "checking") return "Loading…";
+  if (state === "checking") return "Checking connection";
+  if (state === "login_required") return "Login required";
+  if (state === "mfa_required") return "Waiting for MFA";
   if (state === "connected") return "Connected";
   if (state === "connecting") return "Connecting";
   if (state === "idle") return "Not connected";

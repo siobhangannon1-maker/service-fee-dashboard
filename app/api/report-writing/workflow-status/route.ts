@@ -1,3 +1,4 @@
+import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -150,11 +151,25 @@ export async function POST(req: Request) {
         return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
       }
       if (workflowStatus !== "running") return NextResponse.json({ success: false, error: "Invalid workflow start." }, { status: 400 });
+      if (praktikaUploadStatus === "pending") {
+        if (!await isUserPraktikaReady(supabase, actor.actorUserId)) {
+          return NextResponse.json({ success: false, reconnectRequired: true, error: praktikaConnectionRequired }, { status: 409 });
+        }
+        // Do not replay an upload with an uncertain or already successful outcome.
+        const { data: attempts, error: attemptError } = await supabase.from("praktika_helper_jobs")
+          .select("id").eq("job_type", "upload_report_to_praktika")
+          .eq("request->>reportDraftId", draftId).limit(1).abortSignal(AbortSignal.timeout(5000));
+        if (attemptError || attempts?.length) return NextResponse.json({ success: false,
+          error: "This report already has an upload attempt. Check its helper result before retrying; the approved letter is retained." }, { status: 409 });
+      }
       const { data, error } = await claimWorkflowStart(supabase, draftId, updatePayload);
       if (error) return NextResponse.json({ success: false, error: "Could not start workflow." }, { status: 500 });
       if (!data) return NextResponse.json({ success: false, error: "Workflow is already running or this report is not eligible." }, { status: 409 });
       return NextResponse.json({ success: true, draft: data });
     }
+
+    delete updatePayload.workflow_praktika_upload_status;
+    delete updatePayload.workflow_icon_update_status;
 
     const { data, error } = await supabase
       .from("report_drafts")

@@ -8,6 +8,7 @@ export type StatusProof = {
   storedStatus?: string;
   connected?: boolean;
   authenticatedAt?: string | null;
+  authenticationExpiresAt?: string | null;
   helperHeartbeatAt?: string | null;
 };
 
@@ -15,10 +16,13 @@ export function connectionExpiry(data: StatusProof, now = Date.now()): number | 
   const heartbeat = Date.parse(data.helperHeartbeatAt || "");
   if (data.status !== "connected" || data.connected !== true ||
       data.helperAlive === false || !Number.isFinite(heartbeat) || heartbeat > now) return null;
-  return heartbeat + 90_000;
+  const authenticated = Date.parse(data.authenticatedAt || "");
+  if (!Number.isFinite(authenticated) || authenticated > now) return null;
+  const suppliedExpiry = Date.parse(data.authenticationExpiresAt || "");
+  return Math.min(heartbeat + 90_000, Number.isFinite(suppliedExpiry) ? suppliedExpiry : authenticated + 120_000);
 }
 
-// Cached operational availability expires with the lease, not the GST proof.
+// Cached Connected expires at the earlier of lease expiry or GST proof expiry.
 export function currentStatus(data: StatusProof | null, now = Date.now()): string {
   if (!data) return "loading";
   const status = data.status || "error";
@@ -27,10 +31,10 @@ export function currentStatus(data: StatusProof | null, now = Date.now()): strin
   const heartbeat = Date.parse(data.helperHeartbeatAt || "");
   const alive = Number.isFinite(heartbeat) && heartbeat <= now && now < heartbeat + 90_000;
   if (!alive || data.helperAlive === false) return "not_started";
-  if (status === "checking_connection") return "connected";
+  if (status === "checking_connection") return "checking_connection";
   if (status === "connected") {
     const expiry = connectionExpiry(data, now);
-    return expiry !== null && now < expiry ? "connected" : "not_started";
+    return expiry !== null && now < expiry ? "connected" : "checking_connection";
   }
   return status;
 }
@@ -46,8 +50,8 @@ export function useStatusExpiry(onExpire: (status: string) => void) {
     if (!data) return;
     const status = currentStatus(data);
     if (status !== data.status) callback.current(status);
-    const deadline = status === "connected"
-      ? Date.parse(data.helperHeartbeatAt || "") + 90_000 : null;
+    const deadline = status === "connected" ? connectionExpiry(data) :
+      status === "checking_connection" ? Date.parse(data.helperHeartbeatAt || "") + 90_000 : null;
     if (deadline !== null && Number.isFinite(deadline) && deadline > Date.now()) {
       timer.current = setTimeout(check, deadline - Date.now());
     }

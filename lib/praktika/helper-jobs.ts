@@ -3,6 +3,7 @@ import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export type PraktikaHelperJsonRequest = {
+  reportDraftId?: string;
   method: "POST";
   path: string;
   contentType?: "json" | "form";
@@ -11,6 +12,7 @@ export type PraktikaHelperJsonRequest = {
 };
 
 export type PraktikaHelperMultipartStorageRequest = {
+  reportDraftId?: string;
   method: "POST";
   path: string;
   contentType: "multipart_storage";
@@ -82,6 +84,7 @@ export async function waitForPraktikaHelperJob(
       .from("praktika_helper_jobs")
       .select("*")
       .eq("id", jobId)
+      .abortSignal(AbortSignal.timeout(Math.max(1, timeoutMs - (Date.now() - startedAt))))
       .single();
 
     if (error) {
@@ -96,10 +99,10 @@ export async function waitForPraktikaHelperJob(
       throw new Error(data.error_message || "Praktika helper job failed.");
     }
 
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, Math.max(0, timeoutMs - (Date.now() - startedAt)))));
   }
 
   throw new Error(
-    "Praktika helper job did not finish in time. Make sure the local Praktika helper is running.",
+    "Praktika helper job did not finish in time. Check the helper result before retrying.",
   );
 }

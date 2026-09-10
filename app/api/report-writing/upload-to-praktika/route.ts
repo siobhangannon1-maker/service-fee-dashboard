@@ -1,6 +1,8 @@
+import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
+import { isConfirmedPraktikaUpload } from "@/lib/report-writing/praktika-upload-result";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createPraktikaHelperJob } from "@/lib/praktika/helper-jobs";
+import { createPraktikaHelperJob, waitForPraktikaHelperJob } from "@/lib/praktika/helper-jobs";
 import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
 import {
   createReportAuditEvent,
@@ -9,6 +11,7 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 180;
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -209,6 +212,8 @@ async function verifyStagedUploadExists(storagePath: string) {
 export async function POST(req: Request) {
   let storagePath: string | null = null;
   let helperJobId: string | null = null;
+  let claimedDraftId: string | null = null;
+  let enqueueStarted = false;
 
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
@@ -229,6 +234,9 @@ export async function POST(req: Request) {
       );
     }
 
+    if (mode.scope !== "user" || !await isUserPraktikaReady(supabase, mode.appUserId)) {
+      return NextResponse.json({ success: false, reconnectRequired: true, error: praktikaConnectionRequired }, { status: 409 });
+    }
     const actor = await getAuditActor();
 
     const { data: draft, error: draftError } = await supabase
@@ -254,6 +262,19 @@ export async function POST(req: Request) {
       );
     }
 
+    const { data: attempts, error: attemptError } = await supabase.from("praktika_helper_jobs")
+      .select("id").eq("job_type", "upload_report_to_praktika").eq("request->>reportDraftId", draftId).limit(1);
+    if (attemptError || attempts?.length || draft.uploaded_to_praktika) {
+      return NextResponse.json({ success: false, error: "An upload already exists or needs reconciliation. The approved letter is retained." }, { status: 409 });
+    }
+    // Atomic per-draft reservation also protects direct/concurrent route calls.
+    const { data: claimed, error: claimError } = await supabase.from("report_drafts")
+      .update({ workflow_praktika_upload_status: "running", updated_at: new Date().toISOString() })
+      .eq("id", draftId).is("deleted_at", null).eq("status", "approved")
+      .or("workflow_praktika_upload_status.is.null,workflow_praktika_upload_status.in.(pending,not_requested,failed)")
+      .select("id").maybeSingle();
+    if (claimError || !claimed) return NextResponse.json({ success: false, error: "An upload is already in progress or needs reconciliation." }, { status: 409 });
+    claimedDraftId = draftId;
     const origin = new URL(req.url).origin;
 
     const pdfResponse = await fetch(`${origin}/api/report-writing/generate-pdf`, {
@@ -262,18 +283,7 @@ export async function POST(req: Request) {
       body: JSON.stringify({ draftId }),
     });
 
-    if (!pdfResponse.ok) {
-      const errorText = await pdfResponse.text();
-
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Failed to generate PDF before Praktika upload.",
-          details: errorText.slice(0, 1000),
-        },
-        { status: 500 },
-      );
-    }
+    if (!pdfResponse.ok) throw new Error("Failed to generate PDF before Praktika upload.");
 
     const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
 
@@ -309,11 +319,13 @@ export async function POST(req: Request) {
 
     await verifyStagedUploadExists(storagePath);
 
+    enqueueStarted = true;
     const helperJob = await createPraktikaHelperJob({
       appUserId: appUserIdFromMode(mode),
       jobType: "upload_report_to_praktika",
       priority: 20,
       request: {
+        reportDraftId: draftId,
         method: "POST",
         path: "/php/forms/db_updateFormData.php",
         contentType: "multipart_storage",
@@ -343,6 +355,10 @@ export async function POST(req: Request) {
     });
 
     helperJobId = helperJob.id;
+    const completed = await waitForPraktikaHelperJob(helperJob.id, { timeoutMs: 90000, intervalMs: 2000 });
+    if (completed.status !== "completed" || !isConfirmedPraktikaUpload(completed.response)) {
+      throw new Error("Praktika upload result could not be confirmed. Check the helper result before retrying.");
+    }
 
     const now = new Date().toISOString();
 
@@ -350,6 +366,7 @@ export async function POST(req: Request) {
       .from("report_drafts")
       .update({
         uploaded_to_praktika: true,
+        workflow_praktika_upload_status: "completed",
         uploaded_to_praktika_at: now,
         uploaded_by_initials: actor.actorInitials,
         uploaded_by_name: actor.actorFullName,
@@ -363,7 +380,7 @@ export async function POST(req: Request) {
 
     if (updateError) {
       console.error(
-        "Praktika upload was queued, but failed to update report status:",
+        "Praktika upload completed, but failed to update report status:",
         updateError,
       );
 
@@ -371,7 +388,7 @@ export async function POST(req: Request) {
         {
           success: false,
           error:
-            "Praktika upload was queued, but failed to update report status.",
+            "Praktika upload completed, but failed to update report status.",
           details: updateError.message,
           helperJobId: helperJob.id,
         },
@@ -383,7 +400,7 @@ export async function POST(req: Request) {
       reportDraftId: draft.id,
       providerId: draft.provider_id,
       patientName: draft.patient_name,
-      action: "Queued report upload to Praktika",
+      action: "Uploaded report to Praktika",
       details: {
         praktikaPatientId,
         fileName,
@@ -402,8 +419,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       success: true,
-      queued: true,
-      message: "Report upload to Praktika has been queued.",
+      queued: false,
+      completed: true,
+      message: "Report uploaded to Praktika.",
       fileName,
       uploadedByInitials: actor.actorInitials,
       uploadedByName: actor.actorFullName,
@@ -416,9 +434,18 @@ export async function POST(req: Request) {
       },
     });
   } catch (error) {
-    console.error("Upload report to Praktika failed:", error);
+    console.error("Upload report to Praktika failed", { helperJobCreated: Boolean(helperJobId), enqueueStarted });
+    if (claimedDraftId) {
+      await supabase.from("report_drafts").update({
+        // An ambiguous insert/wait remains reserved until explicitly reconciled.
+        workflow_praktika_upload_status: enqueueStarted ? "running" : "failed",
+        workflow_status: "failed",
+        workflow_error: enqueueStarted ? "Upload outcome is unconfirmed. Check the helper result before retrying; the letter is retained." : "PDF preparation failed. The approved letter is retained.",
+        updated_at: new Date().toISOString(),
+      }).eq("id", claimedDraftId).eq("workflow_praktika_upload_status", "running");
+    }
 
-    if (storagePath && !helperJobId) {
+    if (storagePath && !enqueueStarted) {
       await supabase.storage
         .from(HELPER_UPLOAD_BUCKET)
         .remove([storagePath])
@@ -428,10 +455,9 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to upload report to Praktika.",
+        helperJobId,
+        pending: enqueueStarted,
+        error: enqueueStarted ? "Upload outcome is unconfirmed. Check the helper result before retrying; the approved letter is retained." : "Failed to prepare the report upload. The approved letter is retained.",
       },
       { status: 500 },
     );

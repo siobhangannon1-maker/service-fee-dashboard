@@ -19,14 +19,21 @@ export type PraktikaConnectionRow = HelperHealth & {
 export type EffectivePraktikaStatus = "connected" | "checking_connection" | "refreshing" | "refresh_requested" | "idle" |
   "not_started" | "waiting_for_credentials" | "waiting_for_mfa" | "expired" | "error";
 
-// Operational availability and GST proof freshness are separate truths.
-// Only authenticationVerified may be used as positive authentication evidence.
+// Connected requires both current ownership and fresh positive GST proof.
 export function derivePraktikaConnection(row: PraktikaConnectionRow, now = Date.now()) {
   const helperAlive = hasLivePraktikaHelper(row, now);
   const authenticationVerified = hasFreshPraktikaAuthentication(row, now);
   let status: EffectivePraktikaStatus;
   let message: string;
-  if (row.status === "waiting_for_credentials" || row.status === "waiting_for_mfa" || row.status === "error" || row.status === "expired") {
+  let loginPage = false;
+  try {
+    const url = new URL(row.current_url || "");
+    loginPage = url.origin === "https://praktika.praktika.net.au" && url.pathname === "/v2/login";
+  } catch { /* Missing URL is not positive or negative authentication evidence. */ }
+  if (loginPage && row.status !== "waiting_for_mfa") {
+    status = "waiting_for_credentials";
+    message = "Please connect to Praktika.";
+  } else if (row.status === "waiting_for_credentials" || row.status === "waiting_for_mfa" || row.status === "error" || row.status === "expired") {
     status = row.status;
     message = row.message || "Praktika needs attention before work can continue.";
   } else if (row.status === "refresh_requested") {
@@ -38,9 +45,12 @@ export function derivePraktikaConnection(row: PraktikaConnectionRow, now = Date.
   } else if (row.status === "refreshing") {
     status = "refreshing";
     message = "Praktika authentication is unverified. Reconnect or queue work to check it.";
+  } else if (!authenticationVerified || row.status !== "connected") {
+    status = "checking_connection";
+    message = "Checking Praktika connection.";
   } else {
     status = "connected";
-    message = "Praktika helper is available. Authentication is checked before work.";
+    message = "Praktika is connected.";
   }
   return { status, message, connected: status === "connected", helperAlive, authenticationVerified };
 }

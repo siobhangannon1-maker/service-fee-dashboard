@@ -14,12 +14,12 @@ test("unknown, cached fresh proof, proof expiry, and lease expiry have distinct 
   const data = { status: "connected", connected: true, authenticatedAt: new Date(now).toISOString(), helperHeartbeatAt: new Date(now).toISOString() };
   assert.equal(currentStatus(null, now), "loading");
   assert.equal(currentStatus(data, now), "connected");
-  assert.equal(currentStatus({ ...data, helperHeartbeatAt: new Date(now+120000).toISOString() }, now+120000), "connected");
+  assert.equal(currentStatus({ ...data, helperHeartbeatAt: new Date(now+120000).toISOString() }, now+120000), "checking_connection");
   assert.equal(currentStatus(data, now+90000), "not_started");
   assert.equal(currentStatus({ status: "not_started" }, now), "not_started");
 });
 
-test("same-origin 307 preserves proof, retains operational connection after proof expiry, and later 200 recovers; login and MFA remain explicit", async () => {
+test("same-origin 307 preserves proof, shows checking after proof expiry, and later 200 recovers; login and MFA remain explicit", async () => {
   const now = Date.now();
   const row = { status: "connected", helper_instance_id: "owner", helper_heartbeat_at: new Date(now).toISOString(), authenticated_at: new Date(now).toISOString() as string | null };
   let responseStatus = 307, location = "/temporary", body = "[]", writes = 0;
@@ -37,14 +37,14 @@ test("same-origin 307 preserves proof, retains operational connection after proo
   await assert.rejects(gate.renew(), { transient: true });
   assert.equal(row.authenticated_at, proof); assert.equal(writes, 0);
   assert.equal(derivePraktikaConnection(row, now).status, "connected");
-  assert.equal(derivePraktikaConnection({ ...row, helper_heartbeat_at: new Date(now+120000).toISOString() }, now+120000).status, "connected");
+  assert.equal(derivePraktikaConnection({ ...row, helper_heartbeat_at: new Date(now+120000).toISOString() }, now+120000).status, "checking_connection");
   for (const age of [180000, 600000, 3600000]) {
     await assert.rejects(gate.renew(), { transient: true });
     assert.equal(row.authenticated_at, proof);
     const derived = derivePraktikaConnection({ ...row, helper_heartbeat_at: new Date(now + age).toISOString() }, now + age);
-    assert.equal(derived.status, "connected");
+    assert.equal(derived.status, "checking_connection");
     assert.equal(derived.authenticationVerified, false);
-    assert.equal(derived.connected, true);
+    assert.equal(derived.connected, false);
   }
   row.authenticated_at = null;
   await assert.rejects(gate(), { transient: true });
@@ -99,7 +99,7 @@ test("credential UI is limited to explicit credentials state", () => {
   const declarations = ast.statements.filter(n => ts.isFunctionDeclaration(n) && ["connectionState", "connectionLabel"].includes(n.name?.text || ""));
   const code = ts.transpileModule(declarations.map(n => n.getText(ast)).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const { connectionState, connectionLabel } = runInNewContext(code + "\n({connectionState, connectionLabel})");
-  assert.equal(connectionLabel(connectionState("checking_connection", false)), "Loading…");
+  assert.equal(connectionLabel(connectionState("checking_connection", false)), "Checking connection");
   assert.equal(connectionLabel(connectionState("loading", false)), "Loading…");
   assert.equal(connectionLabel(connectionState("connected", false)), "Connected");
   assert.match(source, /\["disconnected", "idle"\]\.includes\(currentConnectionState\) && currentStatus !== "waiting_for_mfa" && !shouldShowCredentialForm/);
@@ -109,7 +109,7 @@ test("credential UI is limited to explicit credentials state", () => {
  });
 
 for (const failure of ["redirect", "http500", "timeout", "network"] as const) {
-  test(`${failure}: operational connection survives without renewing stale GST proof; JIT remains blocked`, async () => {
+  test(`${failure}: stale GST proof shows checking without false Connected; JIT remains blocked`, async () => {
     const now = Date.now();
     const row = { status: "connected", helper_instance_id: "owner", helper_heartbeat_at: new Date(now).toISOString(), authenticated_at: new Date(now - 180000).toISOString() };
     const proof = row.authenticated_at;
@@ -128,13 +128,57 @@ for (const failure of ["redirect", "http500", "timeout", "network"] as const) {
     assert.equal(writes, 0);
     assert.equal(row.authenticated_at, proof);
     const state = derivePraktikaConnection(row, now);
-    assert.equal(state.connected, true);
+    assert.equal(state.connected, false);
     assert.equal(state.authenticationVerified, false);
-    assert.equal(currentStatus({ ...state, helperHeartbeatAt: row.helper_heartbeat_at, authenticatedAt: proof }, now), "connected");
+    assert.equal(currentStatus({ ...state, helperHeartbeatAt: row.helper_heartbeat_at, authenticatedAt: proof }, now), "checking_connection");
   });
 }
 
-test("legacy cookie recovery still requires positive proof independently of operational connection", () => {
-  const source = readFileSync("lib/praktika/hybrid-seamless-request.ts", "utf8");
-  assert.match(source, /connection\.connected && connection\.authenticationVerified &&/);
-});
+// Exercise the production function with the shared definition, not a particular
+// spelling of its predicate. Both legacy and explicit-proof callers must fail closed.
+for (const scenario of ["fresh", "missing-proof", "stale-proof", "stale-lease", "missing-owner", "credentials", "mfa", "error", "login-url", "old-refresh"] as const) {
+  test(`legacy recovery uses shared authentication truth: ${scenario}`, async () => {
+    const path = "lib/praktika/hybrid-seamless-request.ts";
+    const source = readFileSync(path, "utf8");
+    const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+    const fn = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === "waitForPraktikaConnected")!;
+    const code = ts.transpileModule(fn.getText(ast).replace(/^export /, ""), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const now = Date.now(); let elapsed = 0; let reads = 0;
+    const row = { status: "connected", cookie: "synthetic-cookie", helper_instance_id: "generation" as string | null,
+      helper_heartbeat_at: new Date(now).toISOString(), authenticated_at: new Date(now).toISOString() as string | null,
+      refreshed_at: new Date(now).toISOString(), current_url: "https://praktika.praktika.net.au/v2/scheduler" };
+    if (scenario === "missing-proof") row.authenticated_at = null;
+    if (scenario === "stale-proof") row.authenticated_at = new Date(0).toISOString();
+    if (scenario === "stale-lease") row.helper_heartbeat_at = new Date(now - 90000).toISOString();
+    if (scenario === "missing-owner") row.helper_instance_id = null;
+    if (scenario === "credentials") row.status = "waiting_for_credentials";
+    if (scenario === "mfa") row.status = "waiting_for_mfa";
+    if (scenario === "error") row.status = "error";
+    if (scenario === "login-url") row.current_url = "https://praktika.praktika.net.au/v2/login";
+    if (scenario === "old-refresh") row.refreshed_at = new Date(0).toISOString();
+    const before = JSON.stringify(row);
+    class CredentialsRequired extends Error {}
+    class MfaRequired extends Error {}
+    class RefreshTimeout extends Error {}
+    const mode = { scope: "user", appUserId: "synthetic-user" };
+    const wait = runInNewContext(code + "\nwaitForPraktikaConnected", {
+      Date: { now: () => now + elapsed },
+      derivePraktikaConnection: (session: typeof row) => derivePraktikaConnection(session, now + elapsed),
+      timeValue: (value: string) => Date.parse(value) || 0,
+      getPraktikaSession: async (selectedMode: unknown) => { assert.equal(selectedMode, mode); reads++; return row; },
+      sleep: async (ms: number) => { elapsed += ms; },
+      PraktikaNeedsCredentialsError: CredentialsRequired,
+      PraktikaNeedsMfaError: MfaRequired, PraktikaRefreshTimeoutError: RefreshTimeout,
+    });
+    const pending = wait(mode, { timeoutMs: 20, intervalMs: 10 }, new Date(now).toISOString());
+    if (scenario === "fresh") assert.equal(await pending, "synthetic-cookie");
+    else if (scenario === "credentials") await assert.rejects(pending, CredentialsRequired);
+    else if (scenario === "mfa") await assert.rejects(pending, MfaRequired);
+    else if (scenario === "error") await assert.rejects(pending, /Praktika refresh failed/);
+    else await assert.rejects(pending, RefreshTimeout);
+    assert.equal(JSON.stringify(row), before, "waiting must not manufacture proof or modify the session");
+    assert.equal(reads, ["fresh", "credentials", "mfa", "error"].includes(scenario) ? 1 : 2);
+  });
+}

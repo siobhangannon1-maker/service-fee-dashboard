@@ -3,7 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export async function claimWorkflowStart(db: SupabaseClient, draftId: string, update: Record<string, unknown>) {
   return await db.from("report_drafts").update(update).eq("id", draftId)
     .is("deleted_at", null).in("status", ["approved", "uploaded_to_praktika"])
-    .or("workflow_status.is.null,workflow_status.neq.running").select("*").maybeSingle();
+    .or("workflow_status.is.null,workflow_status.neq.running")
+    .or("workflow_praktika_upload_status.is.null,workflow_praktika_upload_status.neq.running").select("*").maybeSingle();
 }
 
 export async function performQueuedIconAction<T>(actions: {
@@ -46,7 +47,7 @@ export async function runCompleteWorkflowIconStep(
     if (!response.ok || !data.success) throw new Error("Could not save icon workflow status.");
   }
   try {
-    await status({ praktikaUploadStatus: "completed", iconUpdateStatus: "pending",
+    await status({
       message: "PDF uploaded to Praktika. Checking for an appointment icon to update." });
     const response = await request("/api/report-writing/update-praktika-letter-icons", {
       method: "POST", headers: { "Content-Type": "application/json" },

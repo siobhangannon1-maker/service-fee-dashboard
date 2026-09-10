@@ -72,8 +72,8 @@ test("Tools popup retains local child while closed and starts unknown as loading
   const state = runInNewContext(extract(source, "connectionState") + "\nconnectionState", {});
   assert.equal(state("idle", false), "idle");
   assert.equal(state("connected", false), "connected");
-  assert.equal(state("waiting_for_mfa", false), "disconnected");
-  assert.equal(state("waiting_for_credentials", false), "disconnected");
+  assert.equal(state("waiting_for_mfa", false), "mfa_required");
+  assert.equal(state("waiting_for_credentials", false), "login_required");
 });
 test("panels poll at five seconds without retiring green while request is pending", async () => {
   for (const path of paths.slice(1, 3)) {
@@ -134,10 +134,10 @@ test("lease timer expires without a completed poll and checks again on visibilit
  });
  const proof={status:"connected",connected:true,authenticatedAt:new Date(now-119000).toISOString(),helperHeartbeatAt:new Date(now).toISOString()};
  assert.equal(arm(proof),"connected");assert.equal(expired,0);
- now+=1000;scheduled!();assert.equal(expired,0);
- assert.equal(arm(proof),"connected");
+ now+=1000;scheduled!();assert.equal(expired,1);
+ assert.equal(arm(proof),"checking_connection");
  assert.equal(arm({...proof,authenticatedAt:new Date(now).toISOString(),helperHeartbeatAt:new Date(now).toISOString()}),"connected");
- now+=90000;listeners.visibilitychange();assert.equal(expired,1);
+ now+=90000;listeners.visibilitychange();assert.equal(expired,3);
  assert.equal(arm({status:"connected",connected:true}),"not_started");
  assert.equal(arm({status:"idle"}),"not_started");
  assert.equal(arm({status:"not_started"}),"not_started");
