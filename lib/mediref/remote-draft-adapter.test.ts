@@ -18,10 +18,23 @@ const response = (value: unknown, status = 200, raw?: string): APIResponse => ({
   dispose: async () => undefined,
 }) as unknown as APIResponse;
 
+function pageResponse(url: string, id: string, files: Array<Record<string, unknown>>): APIResponse {
+  // Live persisted records expose key and basic metadata, not uploadId/progress.
+  const persisted = files.map(({ key, originalName, customName, ext, type, size }) => ({key, originalName, customName, ext, type, size}));
+  const raw = JSON.stringify({type:"data",nodes:[{type:"skip"},{type:"data",data:flattenRemotePayload({draft:{s3uuid:id,files:persisted}} as never)}]});
+  return {...response(null), url:()=>url, body:async()=>Buffer.from(raw)} as APIResponse;
+}
+
 function fixture(failure?: string) {
   const calls: Array<{ method: string; url: string; data: unknown }> = [];
   const logs: unknown[] = [];
+  const reads: string[] = [];
   const request = {
+    get: async (url: string) => {
+      reads.push(url);
+      const saved = calls.filter(c => c.url.endsWith("saveDraft")).at(-1)!.data as {s3uuid:string;files:Array<Record<string,unknown>>};
+      return pageResponse(url, saved.s3uuid, saved.files);
+    },
     post: async (url: string, options: { data: { payload: string }; maxRedirects: number }) => {
       assert.equal(options.maxRedirects, 0);
       const data = decodeRemoteResult(JSON.stringify({ result: Buffer.from(options.data.payload, "base64").toString("utf8") }));
@@ -41,9 +54,9 @@ function fixture(failure?: string) {
       calls.push({ method: "PUT", url, data: null });
       return response(null, failure === "put" || (failure === "secondPut" && calls.length === 5) ? 403 : 204);
     },
-  } as unknown as Pick<APIRequestContext, "post" | "put">;
+  } as unknown as Pick<APIRequestContext, "post" | "put" | "get">;
   const run = (overrides = {}) => prepareRemoteDraft({ request, s3uuid: draftId, patient, attachments: [{ filename: "private-fixture.pdf", pdf: Buffer.from("%PDF-1.4\nfixture") }], log: (...args) => logs.push(args), ...overrides });
-  return { calls, logs, run, request };
+  return { calls, logs, reads, run, request };
 }
 
 test("encoding retains the captured initial flattened shape including shared defaults", () => {
@@ -99,7 +112,8 @@ test("successful patient save, upload and final file save happen in order, with 
   assert.equal(result.recipientMatchingSkipped, true);
   const output = JSON.stringify(f.logs);
   for (const value of [patient.firstName, patient.dob, draftId, signed, "private-fixture.pdf", params.key, params.key.split("/")[0]]) assert.ok(!output.includes(value));
-  assert.equal(f.logs.length, 11);
+  assert.equal(f.logs.length, 14);
+  assert.equal(f.reads.length, 1);
   assert.deepEqual(f.logs.find(log => (log as unknown[])[0] === "[MediRef remote] attachment_metadata_ready"), ["[MediRef remote] attachment_metadata_ready", { attachmentCount: 1, allStructurallyComplete: true }]);
 });
 
@@ -144,9 +158,9 @@ test("browser adapter reuses authenticated context and preserves Compose identit
   try {
     const filename = path.join(directory, "fixture.pdf"); await writeFile(filename, "%PDF-1.4 fixture");
     let opens = 0; let posts = 0;
-    const request = {
-      post: async (url: string) => { posts++; return response(url.endsWith("getUploadParameters") ? signed : { success: true }); },
-      put: async () => response(null, 200),
+    const base = fixture();
+    const request = { ...base.request,
+      post: async (...args: Parameters<typeof base.request.post>) => { posts++; return base.request.post(...args); },
     };
     const page = {
       waitForURL: async (predicate: (url: URL) => boolean) => { assert.equal(predicate(new URL(`https://www.mediref.com.au/compose/${draftId}`)), true); },
@@ -274,4 +288,72 @@ test("Retry storage download feeds the same remote adapter and complete file met
       for (const a of attachments) { assert.ok(!JSON.stringify(logs).includes(a.storagePath)); assert.ok(!JSON.stringify(logs).includes(a.fileName)); }
     } finally { await rm(downloaded.tempDir, { recursive: true, force: true }); }
   }
+});
+
+for (const mode of ["delayed", "missing", "wrong_key", "wrong_draft", "no_files", "malformed", "unsupported", "http", "redirect", "auth_loss", "html", "oversized", "timeout", "partial", "both"] as const) {
+ test(`persistence ${mode}: only matching same-draft identities permit completion`, async t => {
+  t.mock.timers.enable({apis:["Date","setTimeout"],now:100000});
+  const f = fixture(); let reads = 0;
+  f.request.get = async (url, options) => {
+    reads++; assert.equal(String(url),`https://www.mediref.com.au/compose/${draftId}/__data.json`);
+    assert.equal(options?.maxRedirects,0); assert.ok((options?.timeout ?? 0) <= 5000);
+    if(mode === "timeout") return new Promise(()=>{});
+    const saved = f.calls.filter(c=>c.url.endsWith("saveDraft")).at(-1)!.data as {files:Array<Record<string,unknown>>};
+    let files = saved.files;
+    if(mode === "missing" || mode === "delayed" && reads === 1) files = [];
+    if(mode === "wrong_key") files = files.map(file=>({...file,key:"PRIVATE_WRONG_KEY"})); // same filename is deliberately retained
+    if(mode === "partial") files = files.slice(0,1);
+    const r = pageResponse(String(url),mode === "wrong_draft" ? "PRIVATE_OTHER_DRAFT" : draftId,files);
+    if(mode === "no_files") r.body = async()=>Buffer.from(JSON.stringify({type:"data",nodes:[{type:"data",data:flattenRemotePayload({draft:{s3uuid:draftId}})}]}));
+    if(mode === "auth_loss") { r.ok=()=>false; r.status=()=>403; }
+    if(mode === "html") r.headers=()=>({"content-type":"text/html"});
+    if(mode === "oversized") r.body=async()=>Buffer.from("X".repeat(256*1024+1));
+    if(mode === "malformed") r.body = async()=>Buffer.from("PRIVATE_MALFORMED");
+    if(mode === "unsupported") r.body = async()=>Buffer.from(JSON.stringify({type:"data",nodes:[{type:"data",data:[["PRIVATE_TAG",1],"PRIVATE_VALUE"]}]}));
+    if(mode === "http" || mode === "redirect") { r.ok=()=>false; r.status=()=>mode === "http" ? 500 : 302; }
+    return r;
+  };
+  const success = mode === "delayed" || mode === "both";
+  const operation = f.run({attachments:mode === "partial" || mode === "both" ? twoPdfs : [twoPdfs[0]]});
+  const assertion = success ? operation.then(result=>assert.equal(result.remoteDraftSaved,true)) : assert.rejects(operation,(error:unknown)=>error instanceof MedirefRemoteDraftError && error.stage === "attachment_persistence_verification" && !error.message.includes("PRIVATE"));
+  for(let tick=0;tick<24;tick++) { for(let i=0;i<30;i++) await Promise.resolve(); t.mock.timers.tick(500); }
+  await assertion;
+  assert.ok(reads >= 1 && reads <= 20);
+  assert.equal(f.calls.filter(c=>c.method === "PUT").length,mode === "partial" || mode === "both" ? 2 : 1);
+  assert.equal(f.calls.filter(c=>c.url.endsWith("saveDraft")).length,2);
+  assert.equal(f.calls.filter(c=>c.url.endsWith("getUploadParameters")).length,mode === "partial" || mode === "both" ? 2 : 1);
+  const output = JSON.stringify(f.logs);
+  assert.equal(output.includes("draft_prepared"),success); assert.equal(output.includes("attachment_persistence_verified"),success);
+  assert.doesNotMatch(output,/PRIVATE|private-report|private-chart/);
+ });
+}
+
+test("worker keeps normal and Retry recoverable when remote verification rejects", async () => {
+ const source = await readFile(new URL("../../scripts/refresh-mediref-session.ts",import.meta.url),"utf8");
+ const body = source.slice(source.indexOf("async function processOnePendingMedirefJob("),source.indexOf("async function keepBrowserOpenForever("));
+ const compiled = ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ for(const retryMediref of [false,true]) {
+  const events:string[]=[];
+  const run = runInNewContext(`${compiled}\nprocessOnePendingMedirefJob`,{
+   console:{log(){},error(){}}, nowIso:()=>"fixture", isBrowserUiLoggedIn:async()=>true,validateSessionCookie:async()=>true,
+   claimNextPendingMedirefJob:async()=>({id:"fixture",job_type:"send_mediref_letter",payload:{retryMediref}}),
+   downloadStagedAttachments:async()=>({tempDir:"fixture-temp",files:[{localPath:"fixture.pdf"}]}),
+   sendMedirefLetterWithBrowser:async()=>{throw new MedirefRemoteDraftError("attachment_persistence_verification");},
+   completeMedirefJob:async()=>events.push("completed"),updateDraftAfterMedirefSuccess:async()=>events.push("workflow_completed"),
+   failMedirefJob:async()=>events.push("failed"),updateDraftAfterMedirefFailure:async()=>events.push("recoverable"),
+   fs:{rm:async()=>events.push("temp_cleanup")},
+  });
+  await run({}); assert.deepEqual(events,["failed","recoverable","temp_cleanup"]);
+ }
+});
+
+test("shared identity matching uses key, tolerates omitted persisted uploadId and rejects conflicts", async () => {
+ const {matches} = await import("./persisted-draft");
+ const expected = [{key:"private-key",uploadId:"private-id"}];
+ assert.equal(matches([{key:"private-key"}],expected),true);
+ assert.equal(matches([{key:"private-key",uploadId:"wrong"}],expected),false);
+ assert.equal(matches([{key:"private-key",uploadId:123}],expected),false);
+ assert.equal(matches([{key:"private-key",s3key:"other"}],expected),false);
+ assert.equal(matches([{originalName:"same.pdf"}],expected),false);
+ assert.equal(matches([{key:"private-key"}], [...expected,...expected]),false);
 });

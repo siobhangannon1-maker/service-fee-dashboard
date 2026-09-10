@@ -1,3 +1,4 @@
+import { inspectPersistedDraft, limit as pageDataLimit } from "./persisted-draft";
 import { randomInt } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -16,10 +17,12 @@ type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type PdfAttachment = { filename: string; pdf: Buffer };
 type Patient = { firstName?: unknown; lastName?: unknown; dob?: unknown };
 type Stage = "draft_ready" | "patient_save_started" | "patient_saved" | "upload_parameters_requested" | "upload_parameters_received" | "pdf_upload_started" | "pdf_upload_completed" | "attachment_save_started" | "attachment_saved" | "draft_prepared";
-type Logger = (message: string, fields: { attachmentCount: number; attachmentIndex?: number; httpStatus?: number; structuralSuccess?: boolean; allStructurallyComplete?: boolean }) => void;
+type Logger = (message: string, fields: { attachmentCount?: number; expectedCount?: number; matchedCount?: number; sameDraft?: boolean; filesCollectionPresent?: boolean; attachmentIndex?: number; httpStatus?: number; structuralSuccess?: boolean; allStructurallyComplete?: boolean }) => void;
 
 export class MedirefRemoteDraftError extends Error {
-  constructor(public readonly stage: string) { super(`Unable to prepare MediRef remote draft (stage: ${stage}).`); }
+  constructor(public readonly stage: string) { super(stage === "attachment_persistence_verification"
+    ? "MediRef attachment persistence could not be verified. The external outcome is uncertain; check MediRef before retrying (stage: attachment_persistence_verification)."
+    : `Unable to prepare MediRef remote draft (stage: ${stage}).`); }
 }
 
 // The captured wire format is an indexed value table, then base64 JSON. Shared
@@ -109,8 +112,57 @@ function validatePdfAttachment(attachment: PdfAttachment) {
   if (!attachment.filename || path.basename(attachment.filename) !== attachment.filename || !/\.pdf$/i.test(attachment.filename) || !Buffer.isBuffer(attachment.pdf) || attachment.pdf.subarray(0, 5).toString() !== "%PDF-") throw new Error("Invalid PDF.");
 }
 
+// Only GET is repeated. The overall deadline includes response/body inspection.
+const persistenceDeadlineMs = 10_000;
+const persistenceCadenceMs = 500;
+async function verifyPersistence(request: Pick<APIRequestContext, "get">, draftId: string, files: Json[], log: Logger) {
+  const deadline = Date.now() + persistenceDeadlineMs;
+  const url = `${origin}/compose/${draftId}/__data.json`;
+  log("[MediRef remote] attachment_persistence_started", { attachmentCount: files.length });
+  while (Date.now() < deadline) {
+    let expired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const remaining = deadline - Date.now();
+    const attempt = (async () => {
+      const response = await request.get(url, { headers: { accept: "application/json", "cache-control": "no-cache" },
+        timeout: Math.min(5000, remaining), maxRedirects: 0 });
+      try {
+        if (expired) return null;
+        // Login/redirect/malformed data are never authentication or persistence proof.
+        if (response.status() >= 300 && response.status() < 400 || response.status() === 401 || response.status() === 403) throw new MedirefRemoteDraftError("attachment_persistence_verification");
+        if (!response.ok()) return null;
+        if (response.url() !== url || (response.headers()["content-type"] ?? "").split(";")[0].trim().toLowerCase() !== "application/json") throw new MedirefRemoteDraftError("attachment_persistence_verification");
+        if (Number(response.headers()["content-length"]) > pageDataLimit) throw new MedirefRemoteDraftError("attachment_persistence_verification");
+        const body = await response.body();
+        if (expired) return null;
+        if (body.length > pageDataLimit) throw new MedirefRemoteDraftError("attachment_persistence_verification");
+        return inspectPersistedDraft(body.toString("utf8"), draftId, files);
+      } finally { await response.dispose().catch(() => undefined); }
+    })();
+    let sample: ReturnType<typeof inspectPersistedDraft> | null = null;
+    try {
+      sample = await Promise.race([attempt, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { expired = true; reject(new MedirefRemoteDraftError("attachment_persistence_verification")); }, remaining);
+      })]);
+    } catch (error) {
+      // Never replay any upload/save after an uncertain external outcome.
+      if (error instanceof MedirefRemoteDraftError || Date.now() >= deadline) throw new MedirefRemoteDraftError("attachment_persistence_verification");
+    } finally { clearTimeout(timer); }
+    log("[MediRef remote] attachment_persistence_sample", { expectedCount: files.length,
+      matchedCount: sample?.matchedCount ?? 0, sameDraft: sample?.currentDraftRepresented ?? false,
+      filesCollectionPresent: sample?.filesCollectionRepresented ?? false });
+    if (Date.now() >= deadline) break;
+    if (sample?.decodingSupported && sample.currentDraftRepresented && sample.filesCollectionRepresented && sample.attachmentPresent === true) {
+      log("[MediRef remote] attachment_persistence_verified", { attachmentCount: files.length }); return;
+    }
+    if (sample && (!sample.decodingSupported || !sample.currentDraftRepresented)) throw new MedirefRemoteDraftError("attachment_persistence_verification");
+    await new Promise(resolve => setTimeout(resolve, Math.min(persistenceCadenceMs, Math.max(0, deadline - Date.now()))));
+  }
+  throw new MedirefRemoteDraftError("attachment_persistence_verification");
+}
+
 export async function prepareRemoteDraft(options: {
-  request: Pick<APIRequestContext, "post" | "put">;
+  request: Pick<APIRequestContext, "post" | "put" | "get">;
   s3uuid: string; patient: Patient; attachments: PdfAttachment[]; log?: Logger;
 }) {
   const log = options.log ?? console.log;
@@ -173,6 +225,8 @@ export async function prepareRemoteDraft(options: {
     if (!allStructurallyComplete) throw new Error("Incomplete attachment metadata.");
     emit("attachment_save_started");
     const attachmentSave = await post(saveRoute, draft); emit("attachment_saved", attachmentSave.status);
+    stage = "attachment_persistence_verification";
+    await verifyPersistence(options.request, options.s3uuid, draft.files, log);
     emit("draft_prepared");
     return { prepared: true, sent: false, autoSend: false, recipientMatchingSkipped: true, attachmentCount, remoteDraftSaved: true, message: "MediRef draft prepared with patient details and PDF attachment. Recipient matching and final Send were skipped." };
   } catch {
