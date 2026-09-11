@@ -8,7 +8,7 @@ const MAX_PROBE_BYTES = 2 * 1024 * 1024;
 const PATH = "/php/json/db_reportingDataWarehouse.php";
 export type AuthenticationFailurePhase = "error" | "waiting_for_credentials" | "waiting_for_mfa";
 export type RedirectCategory = "login_redirect" | "same_origin_other_redirect" | "external_redirect" | "redirect_destination_unavailable";
-type RedirectDiagnostics = { destinationCategory: DestinationCategory; redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
+type RedirectDiagnostics = { phpTargetCategory?: PhpTargetCategory; destinationCategory: DestinationCategory; redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
 
 // Classify only; never return URL components or change authentication decisions.
 export function classifyPraktikaRedirect(location: string | undefined, expectedUrl: string): Pick<RedirectDiagnostics, "redirect_category" | "same_origin"> {
@@ -57,6 +57,27 @@ export function classifyPraktikaRedirectDestination(location: string | undefined
     if (category === "patient_directory" || category === "other_application") return "other_application_path";
     return category === "unknown" ? "other_same_origin" : category;
   } catch { return "location_malformed"; }
+}
+
+const PHP_TARGETS = {
+  "/php/json/db_reportingDataWarehouse.php": "reporting_data_warehouse",
+  "/php/json/db_gridPatientList.php": "patient_list",
+  "/php/json/db_getCustomerReferringParties.php": "referring_parties",
+  "/php/forms/db_getFormData.php": "form_get",
+  "/php/forms/db_commitFormData.php": "form_commit",
+  "/php/forms/db_updateFormData.php": "form_update",
+  "/php/onlineBookingV2/db_search.php": "online_booking_search",
+  "/php/onlineBookingV2/db_register.php": "online_booking_register",
+  "/php/onlineBookingV2/db_getCustomerDetails.php": "online_booking_customer_details",
+} as const;
+type PhpTargetCategory = typeof PHP_TARGETS[keyof typeof PHP_TARGETS] | "unrecognized_php_target";
+
+// Only labels leave this function. Exact requested-path classification takes precedence.
+export function classifyPraktikaPhpTarget(location: string | undefined, expectedUrl: string): PhpTargetCategory | undefined {
+  if (classifyPraktikaRedirectDestination(location, expectedUrl) !== "php_endpoint") return undefined;
+  const pathname = new URL(location!, expectedUrl).pathname;
+  return Object.prototype.hasOwnProperty.call(PHP_TARGETS, pathname)
+    ? PHP_TARGETS[pathname as keyof typeof PHP_TARGETS] : "unrecognized_php_target";
 }
 
 export function praktikaHelperToken(generation: string): string {
@@ -132,7 +153,7 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
             try { location = response.headers()["location"]; } catch { /* Metadata unavailable. */ }
             const redirect = classifyPraktikaRedirect(location, url);
             return { ...failed, phase: redirect.redirect_category === "login_redirect" ? "waiting_for_credentials" as const : "error" as const, httpStatus: response.status(), redirectDiagnostics: {
-              ...redirect, destinationCategory: classifyPraktikaRedirectDestination(location, url), responseReceived: true as const,
+              ...redirect, phpTargetCategory: classifyPraktikaPhpTarget(location, url), destinationCategory: classifyPraktikaRedirectDestination(location, url), responseReceived: true as const,
               elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
             } };
           }
@@ -193,6 +214,7 @@ export function createPraktikaAuthenticationGate(deps: {
             helperToken: deps.helperToken,
             httpStatus: result.httpStatus,
             destinationCategory: result.redirectDiagnostics.destinationCategory,
+            ...(result.redirectDiagnostics.phpTargetCategory ? { phpTargetCategory: result.redirectDiagnostics.phpTargetCategory } : {}),
             currentPageCategory,
             helperAlive: hasLivePraktikaHelper(session),
             proofStillFresh: hasFreshPraktikaAuthentication(session),

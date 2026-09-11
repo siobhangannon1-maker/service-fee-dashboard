@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserContext } from "playwright";
-import { classifyPraktikaRedirectDestination, classifyPraktikaPage, classifyPraktikaRedirect, probePraktikaAuthentication, createPraktikaAuthenticationGate, PraktikaAuthenticationUnverified } from "./authentication-probe";
+import { classifyPraktikaPhpTarget, classifyPraktikaRedirectDestination, classifyPraktikaPage, classifyPraktikaRedirect, probePraktikaAuthentication, createPraktikaAuthenticationGate, PraktikaAuthenticationUnverified } from "./authentication-probe";
 
 const expected = "https://fixture.invalid/php/json/db_reportingDataWarehouse.php";
 for (const [location, category, sameOrigin] of [
@@ -25,7 +25,7 @@ for (const [location, category, sameOrigin] of [
 
 test("307 diagnostics preserve background proof and strict job failure behavior, without following or reading body", async () => {
   let calls = 0, disposed = 0, successWrites = 0, failureWrites = 0;
-  let location = "/other?PRIVATE#PRIVATE";
+  let location = "/php/PRIVATE?PRIVATE#PRIVATE";
   const context = { request: { post: async (url: string, options: { maxRedirects: number }) => {
     calls++; assert.equal(options.maxRedirects, 0);
     return { url: () => url, ok: () => false, status: () => 307,
@@ -34,7 +34,7 @@ test("307 diagnostics preserve background proof and strict job failure behavior,
   } } } as unknown as BrowserContext;
   const row = { helper_instance_id: "owner", helper_heartbeat_at: new Date().toISOString(), authenticated_at: new Date().toISOString() as string | null };
   const proof = row.authenticated_at;
-  const gate = createPraktikaAuthenticationGate({ assertOwned: async () => {}, readOwnedSession: async () => row,
+  const gate = createPraktikaAuthenticationGate({ helperToken: "0123456789abcdef", assertOwned: async () => {}, readOwnedSession: async () => row,
     probe: () => probePraktikaAuthentication(context, "42", "https://fixture.invalid"),
     recordSuccess: async () => { successWrites++; }, recordFailure: async () => { failureWrites++; row.authenticated_at = null; },
   });
@@ -57,7 +57,7 @@ test("307 diagnostics preserve background proof and strict job failure behavior,
   assert.equal(fields.phase, "error"); assert.equal(fields.responseReceived, true);
   assert.equal(typeof fields.elapsed_ms, "number"); assert.equal(fields.proof_age_ms, undefined);
   const safe = logs.find(([event]) => event === "[Praktika auth] renewal_redirect")?.[1] as Record<string, unknown>;
-  assert.deepEqual(safe, { httpStatus: 307, helperToken: undefined, destinationCategory: "other_same_origin", currentPageCategory: "unknown", helperAlive: true, proofStillFresh: true, proofAgeBucket: "<1m" });
+  assert.deepEqual(safe, { httpStatus: 307, helperToken: "0123456789abcdef", destinationCategory: "php_endpoint", phpTargetCategory: "unrecognized_php_target", currentPageCategory: "unknown", helperAlive: true, proofStillFresh: true, proofAgeBucket: "<1m" });
 });
 
 for (const [path, category] of [
@@ -110,4 +110,28 @@ for (const [location, category] of [
   ["/php/json/PRIVATE.php?PRIVATE", "php_endpoint"], ["/login", "other_same_origin"],
 ] as const) test(`refined destination ${category}`, () => {
   assert.equal(classifyPraktikaRedirectDestination(location, expected), category);
+});
+
+for (const [path, label] of [
+  ["/php/json/db_reportingDataWarehouse.php", "reporting_data_warehouse"],
+  ["/php/json/db_gridPatientList.php", "patient_list"],
+  ["/php/json/db_getCustomerReferringParties.php", "referring_parties"],
+  ["/php/forms/db_getFormData.php", "form_get"],
+  ["/php/forms/db_commitFormData.php", "form_commit"],
+  ["/php/forms/db_updateFormData.php", "form_update"],
+  ["/php/onlineBookingV2/db_search.php", "online_booking_search"],
+  ["/php/onlineBookingV2/db_register.php", "online_booking_register"],
+  ["/php/onlineBookingV2/db_getCustomerDetails.php", "online_booking_customer_details"],
+  ["/php/PRIVATE", "unrecognized_php_target"],
+  ["/php/forms/db_getFormData.php/extra", "unrecognized_php_target"],
+] as const) test(`exact PHP label ${label}`, () => {
+  for (const suffix of ["", "?credential=PRIVATE#PRIVATE"]) {
+    assert.equal(classifyPraktikaPhpTarget(path + suffix, "https://fixture.invalid/another-request"), label);
+  }
+});
+test('PHP detail is omitted for exact GST request and non-PHP destinations', () => {
+  for (const location of [expected, expected + "?PRIVATE", "/v2/scheduler", "https://outside.invalid/php/forms/db_getFormData.php", undefined, "https://["]) {
+    assert.equal(classifyPraktikaPhpTarget(location, expected), undefined);
+  }
+  assert.equal(classifyPraktikaRedirectDestination(expected + "?PRIVATE", expected), "same_requested_path");
 });
