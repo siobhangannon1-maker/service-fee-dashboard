@@ -87,7 +87,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-type SessionRow = {
+type SessionRow = import("../lib/praktika/authentication").ExperimentalEvidence & {
   id: string;
   scope: "practice" | "user";
   app_user_id: string | null;
@@ -237,6 +237,12 @@ const ensureAuthenticated = createPraktikaAuthenticationGate({
   probe: async () => {
     if (!ownedContext) throw new PraktikaOwnershipLost();
     return probePraktikaAuthentication(ownedContext, String(process.env.PRAKTIKA_PRACTICE_ID || "").trim(), PRAKTIKA_BASE_URL);
+  },
+  recordExperimental: async (status) => {
+    const { data, error } = await supabase.rpc("record_praktika_experimental_auth", {
+      p_session_id: sessionId!, p_instance_id: helperInstanceId!, p_status: status,
+    }).abortSignal(AbortSignal.timeout(5000));
+    if (error || data !== true) throw new PraktikaOwnershipLost();
   },
   recordSuccess: async () => {
     await ownedWrite("authenticate");

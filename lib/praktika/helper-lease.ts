@@ -7,7 +7,7 @@ export const PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS = 5_000;
 export class PraktikaOwnershipLost extends Error {
   constructor() { super("Praktika helper ownership is unavailable or expired."); }
 }
-export type HelperHealth = { helper_instance_id?: string | null; helper_heartbeat_at?: string | null; authenticated_at?: string | null };
+export type HelperHealth = import("./authentication").ExperimentalEvidence & { helper_instance_id?: string | null; helper_heartbeat_at?: string | null; authenticated_at?: string | null };
 export function hasLivePraktikaHelper(row: HelperHealth, now = Date.now()) {
   const time = Date.parse(row.helper_heartbeat_at || "");
   return Boolean(row.helper_instance_id && Number.isFinite(time) && time <= now && now - time < PRAKTIKA_HELPER_LEASE_MS);

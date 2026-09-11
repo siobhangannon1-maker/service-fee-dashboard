@@ -7,7 +7,7 @@ export const praktikaConnectionRequired = "Praktika connection required. Please 
 export async function isUserPraktikaReady(db: SupabaseClient, appUserId: string) {
   if (!appUserId) return false;
   const { data, error } = await db.from("praktika_sessions")
-    .select("status,authenticated_at,helper_heartbeat_at,helper_instance_id,current_url")
+    .select("status,authenticated_at,helper_heartbeat_at,helper_instance_id,current_url,app_user_id,experimental_auth_status,experimental_auth_at,experimental_helper_instance_id")
     .eq("scope", "user").eq("app_user_id", appUserId)
     .abortSignal(AbortSignal.timeout(5000)).maybeSingle();
   return !error && !!data && derivePraktikaConnection(data).connected;
@@ -17,7 +17,7 @@ export async function isUserPraktikaReady(db: SupabaseClient, appUserId: string)
 export async function canQueueUserPraktikaWorkflow(db: SupabaseClient, appUserId: string, throwOnLookupFailure = false) {
   if (!appUserId) return false;
   const { data, error } = await db.from("praktika_sessions")
-    .select("status,authenticated_at,helper_heartbeat_at,helper_instance_id,current_url")
+    .select("status,authenticated_at,helper_heartbeat_at,helper_instance_id,current_url,app_user_id,experimental_auth_status,experimental_auth_at,experimental_helper_instance_id")
     .eq("scope", "user").eq("app_user_id", appUserId)
     .abortSignal(AbortSignal.timeout(5000)).maybeSingle();
   if (error && throwOnLookupFailure) throw new Error("Session lookup unavailable");

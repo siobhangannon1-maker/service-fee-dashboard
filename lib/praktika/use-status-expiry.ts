@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef } from "react";
 
 export type StatusProof = {
+  experimentalEligible?: boolean;
+  experimentalEligibilityExpiresAt?: string | null;
   status?: string;
   helperAlive?: boolean;
   storedStatus?: string;
@@ -16,6 +18,8 @@ export function connectionExpiry(data: StatusProof, now = Date.now()): number | 
   const heartbeat = Date.parse(data.helperHeartbeatAt || "");
   if (data.status !== "connected" || data.connected !== true ||
       data.helperAlive === false || !Number.isFinite(heartbeat) || heartbeat > now) return null;
+  const experimentalExpiry = Date.parse(data.experimentalEligibilityExpiresAt || "");
+  if (data.experimentalEligible === true && Number.isFinite(experimentalExpiry)) return Math.min(heartbeat + 90_000, experimentalExpiry);
   const authenticated = Date.parse(data.authenticatedAt || "");
   if (!Number.isFinite(authenticated) || authenticated > now) return null;
   const suppliedExpiry = Date.parse(data.authenticationExpiresAt || "");

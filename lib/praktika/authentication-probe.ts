@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { BrowserContext } from "playwright";
-import { hasFreshPraktikaAuthentication } from "./authentication";
+import { hasFreshPraktikaAuthentication, praktikaExperimentEnabled, hasPraktikaChallenge } from "./authentication";
 import { PraktikaOwnershipLost, hasLivePraktikaHelper, type HelperHealth } from "./helper-lease";
 
 export const PRAKTIKA_AUTH_PROBE_TIMEOUT_MS = 10_000;
@@ -8,7 +8,7 @@ const MAX_PROBE_BYTES = 2 * 1024 * 1024;
 const PATH = "/php/json/db_reportingDataWarehouse.php";
 export type AuthenticationFailurePhase = "error" | "waiting_for_credentials" | "waiting_for_mfa";
 export type RedirectCategory = "login_redirect" | "same_origin_other_redirect" | "external_redirect" | "redirect_destination_unavailable";
-type RedirectDiagnostics = { targetObservation?: RedirectTargetObservation; phpTargetFamily?: PhpTargetFamily; phpTargetFingerprint?: string; phpTargetCategory?: PhpTargetCategory; destinationCategory: DestinationCategory; redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
+type RedirectDiagnostics = { refreshTransition?: boolean; phpTargetFamily?: PhpTargetFamily; phpTargetFingerprint?: string; phpTargetCategory?: PhpTargetCategory; destinationCategory: DestinationCategory; redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
 
 // Classify only; never return URL components or change authentication decisions.
 export function classifyPraktikaRedirect(location: string | undefined, expectedUrl: string): Pick<RedirectDiagnostics, "redirect_category" | "same_origin"> {
@@ -103,21 +103,20 @@ export function praktikaHelperToken(generation: string): string {
   return createHash("sha256").update("praktika-auth-renewal-generation:v1\0").update(generation).digest("hex").slice(0, 16);
 }
 
-export type RedirectTargetObservation = { targetMatched: boolean; normalizedPath?: string; setCookiePresent: boolean };
-export function observePraktikaRedirectTarget(location: string | undefined, expectedUrl: string,
-  headers: Record<string, string>): RedirectTargetObservation {
-  const setCookiePresent = Object.keys(headers).some(key => key.toLowerCase() === "set-cookie");
-  const unmatched = { targetMatched: false, setCookiePresent };
+export function isPraktikaRefreshTransition(status: number, location: string | undefined, expectedUrl: string,
+  headers: Record<string, string>): boolean {
+  if (status !== 307 || !location || /[\u0000-\u001f\u007f]/.test(location)
+    || !Object.keys(headers).some(key => key.toLowerCase() === "set-cookie")) return false;
   try {
-    if (classifyPraktikaPhpTarget(location, expectedUrl) !== "unrecognized_php_target"
-      || praktikaPhpTargetFingerprint(location, expectedUrl) !== "e95d472b1948b4d2") return unmatched;
-    return { targetMatched: true, normalizedPath: new URL(location!, expectedUrl).pathname, setCookiePresent };
-  } catch { return unmatched; }
+    const expected = new URL(expectedUrl), destination = new URL(location, expected);
+    return destination.origin === expected.origin && destination.protocol === "https:"
+      && destination.pathname === "/php/security/db_refreshToken.php";
+  } catch { return false; }
 }
 
 export type ProbeResult = { redirectDiagnostics?: RedirectDiagnostics; verified: boolean; phase: AuthenticationFailurePhase; httpStatus: number | null; parsedArray: boolean };
 export class PraktikaAuthenticationUnverified extends Error {
-  constructor(readonly phase: AuthenticationFailurePhase = "error", readonly transient = false) { super(transient ? "Praktika verification is temporarily unavailable. Retry remains bounded." : "Praktika authentication could not be verified. Reconnect before retrying this job."); }
+  constructor(readonly phase: AuthenticationFailurePhase = "error", readonly transient = false, readonly refreshTransition = false) { super(transient ? "Praktika verification is temporarily unavailable. Retry remains bounded." : "Praktika authentication could not be verified. Reconnect before retrying this job."); }
 }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -181,15 +180,15 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
           if (response.status() >= 300 && response.status() < 400) {
             // Redirects never prove authentication; only the confirmed login path is a challenge.
             let location: string | undefined;
-            let targetObservation: RedirectTargetObservation | undefined;
+            let refreshTransition = false;
             try {
               const headers = response.headers();
               location = headers["location"];
-              if (response.status() === 307) targetObservation = observePraktikaRedirectTarget(location, url, headers);
+              refreshTransition = isPraktikaRefreshTransition(response.status(), location, url, headers);
             } catch { /* Metadata unavailable. */ }
             const redirect = classifyPraktikaRedirect(location, url);
             return { ...failed, phase: redirect.redirect_category === "login_redirect" ? "waiting_for_credentials" as const : "error" as const, httpStatus: response.status(), redirectDiagnostics: {
-              ...redirect, targetObservation, phpTargetFamily: classifyPraktikaPhpFamily(location, url), phpTargetFingerprint: praktikaPhpTargetFingerprint(location, url), phpTargetCategory: classifyPraktikaPhpTarget(location, url), destinationCategory: classifyPraktikaRedirectDestination(location, url), responseReceived: true as const,
+              ...redirect, refreshTransition, phpTargetFamily: classifyPraktikaPhpFamily(location, url), phpTargetFingerprint: praktikaPhpTargetFingerprint(location, url), phpTargetCategory: classifyPraktikaPhpTarget(location, url), destinationCategory: classifyPraktikaRedirectDestination(location, url), responseReceived: true as const,
               elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
             } };
           }
@@ -212,11 +211,11 @@ export function createPraktikaAuthenticationGate(deps: {
   currentPageCategory?(): PageCategory;
   assertOwned(): Promise<void>;
   probe(): Promise<ProbeResult>;
+  recordExperimental?(status: "eligible_307" | "ineligible" | "challenge"): Promise<void>;
   recordSuccess(): Promise<void>;
   recordFailure(phase: AuthenticationFailurePhase): Promise<void>;
 }) {
   // One gate and one transport per owning child generation.
-  let targetPathReported = false;
   let inFlight: Promise<void> | undefined;
   let epoch = 0;
   let suspended = false;
@@ -235,10 +234,26 @@ export function createPraktikaAuthenticationGate(deps: {
       await assertCurrent();
       const session = await deps.readOwnedSession();
       await assertCurrent();
+      if (praktikaExperimentEnabled(session) && hasPraktikaChallenge(session)) throw new PraktikaAuthenticationUnverified();
       if (!renew && hasFreshPraktikaAuthentication(session)) return;
       console.log(renew ? "[Praktika auth] renewal_started" : "[Praktika auth] probe_started", { helperToken: deps.helperToken });
       const result = await deps.probe();
       await assertCurrent();
+      if (praktikaExperimentEnabled(session)) {
+        const challenge = result.phase !== "error" && !result.verified;
+        const experimentalEligible = !challenge && result.httpStatus === 307;
+        if (!deps.recordExperimental) throw new PraktikaAuthenticationUnverified();
+        await deps.recordExperimental(challenge ? "challenge" : experimentalEligible ? "eligible_307" : "ineligible");
+        await assertCurrent();
+        console.log("[Praktika auth experiment] gst_200_307_eligibility", {
+          helperToken: deps.helperToken, httpStatus: result.httpStatus,
+          strictAuthenticated: result.verified, experimentalEligible, experimentEnabled: true,
+        });
+        // Renewal remains a strict failure, preserving its existing retry schedule.
+        // Only an explicit pre-write check may accept experimental evidence.
+        if (experimentalEligible && !renew) return;
+        if (result.verified && result.httpStatus !== 200) throw new PraktikaAuthenticationUnverified();
+      }
       if (!result.verified) {
         // Ambiguity never creates or destroys proof, regardless of the initiating
         // caller. Only explicit authentication negatives clear it.
@@ -246,16 +261,6 @@ export function createPraktikaAuthenticationGate(deps: {
         if (renew && result.phase === "error" && result.redirectDiagnostics) {
           let currentPageCategory: PageCategory = "unknown";
           try { currentPageCategory = deps.currentPageCategory?.() ?? "unknown"; } catch { /* Diagnostics must not affect verification. */ }
-          const observation = result.redirectDiagnostics.targetObservation;
-          if (result.httpStatus === 307 && observation) {
-            console.log("[Praktika auth diagnostic] redirect_target_observation", {
-              helperToken: deps.helperToken, httpStatus: 307,
-              targetMatched: observation.targetMatched,
-              ...(observation.targetMatched && !targetPathReported ? { normalizedPath: observation.normalizedPath } : {}),
-              setCookiePresent: observation.setCookiePresent,
-            });
-            if (observation.targetMatched) targetPathReported = true;
-          }
           const age = Date.now() - Date.parse(session.authenticated_at || "");
           console.log("[Praktika auth] renewal_redirect", {
             helperToken: deps.helperToken,
@@ -282,7 +287,7 @@ export function createPraktikaAuthenticationGate(deps: {
             elapsed_ms: result.redirectDiagnostics.elapsed_ms,
           } : {}),
         });
-        throw new PraktikaAuthenticationUnverified(result.phase, result.phase === "error");
+        throw new PraktikaAuthenticationUnverified(result.phase, result.phase === "error", result.httpStatus === 307 && result.redirectDiagnostics?.refreshTransition === true);
       }
       await deps.recordSuccess();
       await assertCurrent();
@@ -306,6 +311,8 @@ export function createPraktikaAuthenticationGate(deps: {
 
 export const PRAKTIKA_AUTH_RENEWAL_MS = 60_000;
 export const PRAKTIKA_AUTH_RETRY_MS = 15_000;
+export const PRAKTIKA_REFRESH_RETRY_MS = 2_000;
+export const PRAKTIKA_REFRESH_FAST_RETRIES = 2;
 
 export function startPraktikaAuthenticationRenewal(deps: {
   helperToken?: string;
@@ -319,6 +326,7 @@ export function startPraktikaAuthenticationRenewal(deps: {
   let pending = false;
   let nextAttempt = 0;
   let retried = false;
+  let fastRetries = 0;
   let lastProof: string | null | undefined;
   const now = deps.now || Date.now;
   const tick = async () => {
@@ -336,6 +344,7 @@ export function startPraktikaAuthenticationRenewal(deps: {
       if (stopped || now() < nextAttempt || (Number.isFinite(proof) && now() - proof < PRAKTIKA_AUTH_RENEWAL_MS)) return;
       try {
         await deps.renew();
+        fastRetries = 0;
         retried = false;
         nextAttempt = now() + PRAKTIKA_AUTH_RENEWAL_MS;
       } catch (error) {
@@ -344,6 +353,14 @@ export function startPraktikaAuthenticationRenewal(deps: {
           nextAttempt = now() + PRAKTIKA_AUTH_RENEWAL_MS;
           retried = false;
           return;
+        }
+        if (error instanceof PraktikaAuthenticationUnverified && error.refreshTransition) {
+          const fast = fastRetries < PRAKTIKA_REFRESH_FAST_RETRIES;
+          console.log("[Praktika auth] refresh_transition_detected", {
+            helperToken: deps.helperToken, httpStatus: 307, setCookiePresent: true,
+            retryDelayBucket: fast ? "2-4s" : "normal_transient",
+          });
+          if (fast) { fastRetries++; nextAttempt = now() + PRAKTIKA_REFRESH_RETRY_MS; return; }
         }
         nextAttempt = now() + (retried ? PRAKTIKA_AUTH_RENEWAL_MS : PRAKTIKA_AUTH_RETRY_MS);
         if (!retried) console.log("[Praktika auth] renewal_retry_scheduled", { helperToken: deps.helperToken });

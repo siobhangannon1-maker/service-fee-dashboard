@@ -23,7 +23,7 @@ export type PraktikaSessionMode =
   | { scope: "practice" }
   | { scope: "user"; appUserId: string };
 
-export type PraktikaSessionRow = {
+export type PraktikaSessionRow = import("./authentication").ExperimentalEvidence & {
   id: string;
   scope: PraktikaSessionScope;
   app_user_id: string | null;

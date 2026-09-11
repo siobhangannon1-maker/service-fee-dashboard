@@ -124,7 +124,7 @@ async function jobEligible(appUserId: string | null | undefined, job: { job_type
   await ownership.assertOwned();
   if (ownership.isShuttingDown?.()) return false;
   let query = supabase.from("praktika_sessions")
-    .select("status,authenticated_at,helper_heartbeat_at,helper_instance_id,current_url");
+    .select("status,authenticated_at,helper_heartbeat_at,helper_instance_id,current_url,app_user_id,experimental_auth_status,experimental_auth_at,experimental_helper_instance_id");
   query = appUserId ? query.eq("scope", "user").eq("app_user_id", appUserId)
     : query.eq("scope", "practice").is("app_user_id", null);
   const { data, error } = await query.abortSignal(AbortSignal.timeout(5000)).maybeSingle();
