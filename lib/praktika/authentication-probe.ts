@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { BrowserContext } from "playwright";
-import { hasFreshPraktikaAuthentication, praktikaExperimentEnabled, hasPraktikaChallenge } from "./authentication";
+import { hasFreshPraktikaAuthentication, praktikaExperimentEnabled, hasPraktikaChallenge, praktikaNoAuthGateEnabled, derivePraktikaConnection } from "./authentication";
 import { PraktikaOwnershipLost, hasLivePraktikaHelper, type HelperHealth } from "./helper-lease";
 
 export const PRAKTIKA_AUTH_PROBE_TIMEOUT_MS = 10_000;
@@ -299,7 +299,24 @@ export function createPraktikaAuthenticationGate(deps: {
     })().finally(() => { inFlight = undefined; });
     return inFlight;
   };
-  return Object.assign(() => verify(), {
+  const check = async () => {
+    if (process.env.PRAKTIKA_EXPERIMENT_NO_AUTH_GATE === "true") {
+      const checkEpoch = epoch;
+      await deps.assertOwned();
+      const row = await deps.readOwnedSession();
+      if (praktikaNoAuthGateEnabled(row)) {
+        if (stopped) throw new PraktikaOwnershipLost();
+        if (suspended || !derivePraktikaConnection({ ...row, status: row.status || "not_started" }).connected)
+          throw new PraktikaAuthenticationUnverified();
+        await deps.assertOwned();
+        if (stopped) throw new PraktikaOwnershipLost();
+        if (suspended || checkEpoch !== epoch) throw new PraktikaAuthenticationUnverified();
+        return;
+      }
+    }
+    return verify();
+  };
+  return Object.assign(check, {
     renew: () => verify(true),
     // Call before changing browser login state; drain any old transport before
     // starting a new login/probe, and suppress its late result.

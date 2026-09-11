@@ -31,6 +31,8 @@ type PraktikaToolsPopupProps = {
 };
 
 type SessionStatus = {
+  noAuthGateEnabled?: boolean;
+  operationalWithoutAuth?: boolean;
   status?: string;
   connected?: boolean;
   helperHeartbeatAt?: string | null;
@@ -86,7 +88,12 @@ function connectionState(
   return "disconnected";
 }
 
-function connectionLabel(state: ConnectionDisplayState) {
+function connectionLabel(state: ConnectionDisplayState, noAuthGateEnabled = false) {
+  if (noAuthGateEnabled) {
+    if (state === "connected") return "Available";
+    if (state === "login_required" || state === "mfa_required") return "Action required";
+    return "Recovering";
+  }
   if (state === "loading") return "Loading…";
   if (state === "rechecking") return "Rechecking connection";
   if (state === "checking") return "Checking connection";
@@ -451,7 +458,7 @@ function PraktikaToolsPopupContent({
                   )}`}
                 />
                 <h3 className="text-sm font-bold text-slate-950">
-                  Praktika: {currentStatus === "waiting_for_mfa" ? "MFA required" : connectionLabel(currentConnectionState)}
+                  Praktika: {currentStatus === "waiting_for_mfa" ? "MFA required" : connectionLabel(currentConnectionState, session?.noAuthGateEnabled)}
                 </h3>
               </div>
 

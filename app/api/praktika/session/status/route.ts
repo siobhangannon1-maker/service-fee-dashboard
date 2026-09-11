@@ -17,7 +17,7 @@ export async function GET(request: Request) {
     const session = await getPraktikaSession(mode);
 
     const hasCookie = Boolean(session.cookie);
-    const { status, message, connected, helperAlive, authenticationVerified, experimentalEligible } = derivePraktikaConnection(session);
+    const { status, message, connected, helperAlive, authenticationVerified, experimentalEligible, noAuthGateEnabled, operationalWithoutAuth } = derivePraktikaConnection(session);
 
     return NextResponse.json(
       {
@@ -30,6 +30,8 @@ export async function GET(request: Request) {
           ? new Date(Date.parse(session.authenticated_at) + PRAKTIKA_AUTH_FRESHNESS_MS).toISOString() : null,
         authenticationVerified,
         experimentalEligible,
+        noAuthGateEnabled,
+        operationalWithoutAuth,
         experimentalEligibilityExpiresAt: experimentalEligible && session.experimental_auth_at
           ? new Date(Date.parse(session.experimental_auth_at) + PRAKTIKA_AUTH_FRESHNESS_MS).toISOString() : null,
         storedStatus: session.status,

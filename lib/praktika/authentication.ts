@@ -23,6 +23,13 @@ export function praktikaExperimentEnabled(row: ExperimentalEvidence) {
   return process.env.PRAKTIKA_EXPERIMENT_ACCEPT_200_OR_307 === "true" &&
     (!scope || (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(scope) && row.app_user_id === scope));
 }
+// No global fallback: this temporary mode requires an explicit matching user.
+export function praktikaNoAuthGateEnabled(row: ExperimentalEvidence) {
+  const user = process.env.PRAKTIKA_EXPERIMENT_USER_ID?.trim();
+  return process.env.PRAKTIKA_EXPERIMENT_NO_AUTH_GATE === "true" && !!user &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(user) && row.app_user_id === user;
+}
+
 export function hasPraktikaChallenge(row: ExperimentalEvidence) {
   if (["waiting_for_credentials", "waiting_for_mfa"].includes(row.status || "")) return true;
   try { const url = new URL(row.current_url || ""); return url.origin === "https://praktika.praktika.net.au" && url.pathname === "/v2/login"; } catch { return false; }
@@ -45,10 +52,29 @@ export type PraktikaConnectionRow = HelperHealth & ExperimentalEvidence & {
 export type EffectivePraktikaStatus = "connected" | "checking_connection" | "refreshing" | "refresh_requested" | "idle" |
   "not_started" | "waiting_for_credentials" | "waiting_for_mfa" | "expired" | "error";
 
-// Connected requires both current ownership and fresh positive GST proof.
+// Scoped operating mode changes availability only; strict proof stays diagnostic.
 export function derivePraktikaConnection(row: PraktikaConnectionRow, now = Date.now()) {
   const helperAlive = hasLivePraktikaHelper(row, now);
   const authenticationVerified = hasFreshPraktikaAuthentication(row, now);
+  const noAuthGateEnabled = praktikaNoAuthGateEnabled(row);
+  if (noAuthGateEnabled) {
+    let logoutPage = false;
+    try {
+      const url = new URL(row.current_url || "");
+      logoutPage = url.origin === "https://praktika.praktika.net.au" &&
+        ["/v2/logout", "/logout", "/v2/login"].includes(url.pathname.replace(/\/$/, ""));
+    } catch { /* Browser challenge state is also checked below. */ }
+    const challenge = hasPraktikaChallenge(row) || logoutPage || ["login_required", "expired"].includes(row.status);
+    const available = helperAlive && !challenge && ["connected", "refreshing"].includes(row.status);
+    return {
+      noAuthGateEnabled: true, operationalWithoutAuth: available, experimentalEligible: false,
+      status: (challenge ? row.status === "waiting_for_mfa" ? "waiting_for_mfa" : "waiting_for_credentials"
+        : available ? "connected" : "refreshing") as EffectivePraktikaStatus,
+      message: challenge ? "Praktika needs login or MFA before work can continue."
+        : available ? "Praktika is available." : "Praktika helper is recovering. Work remains queued.",
+      connected: available, helperAlive, authenticationVerified,
+    };
+  }
   let status: EffectivePraktikaStatus;
   let message: string;
   let loginPage = false;
@@ -87,5 +113,5 @@ export function derivePraktikaConnection(row: PraktikaConnectionRow, now = Date.
     status = "connected";
     message = "Praktika is connected.";
   }
-  return { experimentalEligible: status === "connected" && !authenticationVerified && hasExperimentalPraktikaEligibility(row, now), status, message, connected: status === "connected", helperAlive, authenticationVerified };
+  return { noAuthGateEnabled: false, operationalWithoutAuth: false, experimentalEligible: status === "connected" && !authenticationVerified && hasExperimentalPraktikaEligibility(row, now), status, message, connected: status === "connected", helperAlive, authenticationVerified };
 }
