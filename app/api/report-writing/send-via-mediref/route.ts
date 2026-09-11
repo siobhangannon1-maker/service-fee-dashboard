@@ -721,9 +721,13 @@ export async function POST(req: Request) {
         }
 
 
+        if (currentWorkflowExecution() && attachPeriodontalChart && !periodontalChartStaged) {
+          throw new Error("Periodontal chart is temporarily unavailable.");
+        }
         signal.throwIfAborted();
         return { request: {
           action: "send_letter",
+          ...(currentWorkflowExecution() ? { workflowContinuationId: currentWorkflowExecution()!.intentId } : {}),
           draftId,
           patient: {
             firstName: splitName.firstName,

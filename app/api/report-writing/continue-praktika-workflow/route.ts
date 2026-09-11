@@ -53,6 +53,39 @@ export async function POST(req: Request) {
     if (account === 'inactive') return await finish('failed', stage, 'An active staff account is required. Queued work is retained.');
     const { data: draft, error: draftError } = await db.from('report_drafts').select('*').eq('id', draftId).is('deleted_at', null).single();
     if (draftError || !draft || !['approved', 'uploaded_to_praktika'].includes(draft.status)) return await finish('failed');
+    // Independent branch: use the existing preparation/claim path and reconcile
+    // every helper status before considering another insertion (including legacy intents).
+    const options = intent.request.options;
+    const findMediref = () => db.from('mediref_helper_jobs').select('id,status')
+      .eq('job_type', 'send_mediref_letter').eq('payload->>draftId', draftId).limit(1);
+    let { data: medirefJobs, error: medirefError } = await findMediref();
+    if (medirefError) throw new Error('MediRef lookup unavailable.');
+    let perioWaiting = false;
+    if (!medirefJobs?.length && draft.workflow_mediref_status !== 'completed') {
+      const prepared = await withWorkflowExecution<Response>({ intentId, actor: options.actor }, () => mediref(new Request(req.url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...options, draftId }),
+      })));
+      const preparedResult = await prepared.json();
+      const lookup = await findMediref();
+      if (lookup.error) throw new Error('MediRef enqueue acknowledgement unavailable.');
+      medirefJobs = lookup.data;
+      if (!medirefJobs?.length) {
+        if (preparedResult.stage === 'periodontal_preparation' && preparedResult.insertionOutcome === 'not_attempted') {
+          perioWaiting = true;
+          await db.from('report_drafts').update({ workflow_status: 'running', workflow_error: null,
+            workflow_mediref_status: 'waiting_for_periodontal', workflow_last_message: 'MediRef is waiting for the requested periodontal chart.' }).eq('id', draftId);
+        } else return await finish('failed', stage, 'MediRef preparation needs reconciliation. No replacement job was created.');
+      }
+    }
+    if (medirefJobs?.some(job => job.status === 'failed')) return await finish('failed', stage, 'MediRef needs reconciliation. No duplicate job was created.');
+    // Re-read because MediRef can finish concurrently. Do not overwrite its step state.
+    const { data: progress, error: progressError } = await db.from('report_drafts').select('workflow_mediref_status').eq('id', draftId).single();
+    if (progressError) throw new Error('Workflow progress unavailable.');
+    const medirefComplete = progress?.workflow_mediref_status === 'completed';
+    const praktikaStep = stage === 'icon' ? 'icon update' : 'upload';
+    const waitingMessage = perioWaiting ? 'MediRef is waiting for the requested periodontal chart.'
+      : medirefComplete ? `MediRef prepared. Praktika ${praktikaStep} is waiting for session verification and will continue automatically.`
+      : `MediRef preparation is underway. Praktika session refreshing — Praktika ${praktikaStep} queued.`;
     if (stage !== 'upload' || draft.uploaded_to_praktika) {
       const { data: confirmed, error: confirmationError } = await db.from('praktika_helper_jobs').select('status,response')
         .eq('id', continuationChildId(intentId, 'upload_report_to_praktika')).eq('app_user_id', intent.app_user_id)
@@ -65,16 +98,16 @@ export async function POST(req: Request) {
     if (stage !== 'upload' && (!draft.uploaded_to_praktika || draft.workflow_praktika_upload_status !== 'completed')) return await finish('failed');
     if (stage === 'mediref' && !['completed', 'skipped'].includes(draft.workflow_icon_update_status)) return await finish('failed');
     if (stage === 'mediref') {
-      // Include terminal jobs. A lost HTTP acknowledgement must not enqueue again.
-      const { data: existing, error: existingError } = await db.from('mediref_helper_jobs').select('id,status')
-        .eq('job_type', 'send_mediref_letter').eq('payload->>draftId', draftId).limit(1);
-      if (existingError) throw new Error('MediRef lookup unavailable.');
-      if (existing?.length) {
-        if (existing[0].status === 'failed' || (existing[0].status === 'completed' && draft.workflow_mediref_status !== 'completed')) {
-          return await finish('failed', stage, 'Existing MediRef work needs reconciliation. No duplicate job was created.');
-        }
-        return await finish('completed');
-      }
+      if (!medirefComplete) return await finish('waiting', stage,
+        perioWaiting ? 'MediRef is waiting for the requested periodontal chart.' : 'Praktika steps complete. Waiting for MediRef preparation.',
+        perioWaiting ? 'periodontal_unavailable' : undefined);
+      const { error: completeError } = await db.from('report_drafts').update({ workflow_status: 'completed',
+        workflow_completed_at: new Date().toISOString(), workflow_error: null,
+        workflow_last_message: 'All required workflow steps completed.' }).eq('id', draftId)
+        .eq('workflow_praktika_upload_status', 'completed').in('workflow_icon_update_status', ['completed', 'skipped'])
+        .eq('workflow_mediref_status', 'completed');
+      if (completeError) throw new Error('Workflow completion unavailable.');
+      return await finish('completed');
     } else {
       const jobType = stage === 'upload' ? 'upload_report_to_praktika' : 'update_praktika_letter_icons';
       const { data: child, error: childError } = await db.from('praktika_helper_jobs').select('status,locked_at,response')
@@ -87,25 +120,17 @@ export async function POST(req: Request) {
       if (child?.status === 'failed' || (child?.status === 'processing' && Date.parse(child.locked_at || '') < Date.now() - 300_000)) {
         return await finish('failed', stage, 'External outcome needs reconciliation. The approved letter and queued intent are retained.');
       }
-      if (child?.status === 'processing' || child?.status === 'pending') return await finish('waiting');
+      if (child?.status === 'processing' || child?.status === 'pending') return await finish('waiting', stage,
+        perioWaiting ? 'MediRef is waiting for the requested periodontal chart.' : 'Waiting for the confirmed Praktika result. Independent MediRef preparation continues.',
+        perioWaiting ? 'periodontal_unavailable' : undefined);
     }
-    if (!await isUserPraktikaReady(db, intent.app_user_id)) return await finish('waiting', stage, 'Waiting for Praktika verification. Queued work is retained.');
-    const options = intent.request.options;
-    const handler = stage === 'upload' ? upload : stage === 'icon' ? icon : mediref;
+    if (!await isUserPraktikaReady(db, intent.app_user_id)) return await finish('waiting', stage, waitingMessage, perioWaiting ? 'periodontal_unavailable' : undefined);
+    const handler = stage === 'upload' ? upload : icon;
     const response = await withWorkflowExecution<Response>({ intentId, actor: options.actor }, () => handler(new Request(req.url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...options, draftId }),
     })));
     const result = await response.json();
-    if (response.ok && result.success) return await finish(stage === 'mediref' ? 'completed' : 'waiting', stage === 'upload' ? 'icon' : 'mediref');
-    if (stage === 'mediref') {
-      const { data: enqueued, error: enqueueLookupError } = await db.from('mediref_helper_jobs').select('id,status')
-        .eq('job_type', 'send_mediref_letter').eq('payload->>draftId', draftId).limit(1);
-      if (enqueueLookupError) throw new Error('Enqueue acknowledgement unavailable.');
-      if (enqueued?.length && ['pending', 'processing', 'completed'].includes(enqueued[0].status)) return await finish('completed');
-      if (!enqueued?.length && result.stage === 'periodontal_preparation' && result.insertionOutcome === 'not_attempted') {
-        return await finish('waiting', stage, 'Periodontal chart is temporarily unavailable. Queued work is retained while Praktika verification recovers.', 'periodontal_unavailable');
-      }
-    }
+    if (response.ok && result.success) return await finish('waiting', stage === 'upload' ? 'icon' : 'mediref');
     // A queued helper can outlive the route's bounded wait. Reconcile its exact ID;
     // never insert a replacement or infer external success from HTTP alone.
     if (stage !== 'mediref') {

@@ -2,7 +2,6 @@ import type { PraktikaJobOwnership } from "../lib/praktika/helper-lease";
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { continuationToken, workflowAppOrigin, workflowConfigurationIssue } from '../lib/report-writing/workflow-continuation-token';
-import { isUserPraktikaReady } from '../lib/report-writing/praktika-readiness';
 const inFlight = new Set<string>();
 // Existing helper poll drives this. The HTTP request runs alongside the drain so
 // upload/periodontal helper jobs created by the server can actually be processed.
@@ -13,7 +12,6 @@ export async function pollPraktikaWorkflowContinuations(db: SupabaseClient, acto
   const origin = workflowAppOrigin();
   const configurationIssue = workflowConfigurationIssue();
   if (!actorId || inFlight.has(actorId)) return;
-  if (!configurationIssue && !await isUserPraktikaReady(db, actorId)) return;
   const stale = new Date(Date.now() - 300_000).toISOString();
   const { data, error } = await db.from('praktika_helper_jobs').select('*')
     .eq('job_type', 'complete_report_workflow').eq('app_user_id', actorId)

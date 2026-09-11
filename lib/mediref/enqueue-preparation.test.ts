@@ -37,3 +37,23 @@ test("enqueue deduplication remains draft scoped and insertion has no global act
   const insert = readFileSync("lib/mediref/helper-jobs.ts", "utf8");
   assert.doesNotMatch(insert, /\.in\("status"|\.eq\("status"/);
 });
+
+for (const scenario of ['not_requested','cached','live','null_chart','read_307','missing_patient'] as const) {
+  test(`continuation periodontal prerequisite: ${scenario}`, async () => {
+    const begin = source.indexOf('        let periodontalChartStaged = false;');
+    const end = source.indexOf('        signal.throwIfAborted();', begin);
+    const code = ts.transpileModule(source.slice(begin,end)+'\nreturn {periodontalChartStaged, attachments};', {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+    let reads=0;
+    const values: Record<string,unknown>={attachPeriodontalChart:scenario!=='not_requested',currentWorkflowExecution:()=>({intentId:'intent'}),
+      requestedPraktikaPatientId:scenario==='missing_patient'?'':'123',draft:{},draftId:'draft',patientName:'Fixture',actor:{},
+      nowMs:()=>0,logStep:()=>{},updatePerioStatus:async()=>{},stagedPaths:[],attachments:[],diagnostics:{},
+      generatePeriodontalChartPdf:async(options:any)=>{reads++;assert.equal(options.freshness,'prefer_cached');
+        if(scenario==='read_307')throw new Error('unavailable');return scenario==='null_chart'?null:{buffer:Buffer.from('fixture'),fileName:'fixture.pdf'};},
+      stagePdf:async()=>({storagePath:'fixture',fileName:'fixture.pdf'})};
+    const run=new Function(...Object.keys(values),`return (async()=>{${code}})();`);
+    const result=run(...Object.values(values));
+    if(['null_chart','read_307','missing_patient'].includes(scenario))await assert.rejects(result,/temporarily unavailable/);
+    else {const prepared=await result;assert.equal(prepared.periodontalChartStaged,scenario!=='not_requested');assert.equal(prepared.attachments.length,scenario==='not_requested'?0:1);}
+    if(scenario==='not_requested'||scenario==='missing_patient')assert.equal(reads,0);
+  });
+}

@@ -59,6 +59,7 @@ export function buildRetryRequest(draft: RetryDraft, job: RetryJob | null, bucke
   }
   return {
     action: "send_letter", draftId: draft.id, retryMediref: true,
+    ...(typeof payload.workflowContinuationId === "string" ? { workflowContinuationId: payload.workflowContinuationId } : {}),
     patient: { firstName: names[0], lastName: names.slice(1).join(" "), dob },
     recipient: { name: "", practiceName: "", email: "", providerNumber: "" },
     medirefAutoMatchRecipient: false, attachments,

@@ -165,3 +165,12 @@ test("retry logs expose counts and booleans only", async () => {
     ["[MediRef retry] helper_job_created", { jobId: "new-job", attachmentCount: 2 }],
   ]);
 });
+
+test('independent MediRef success never completes or overwrites the other workflow branch', async () => {
+  const { readFile } = await import('node:fs/promises'); const {runInNewContext}=await import('node:vm'); const ts=await import('typescript');
+  const source=await readFile('scripts/refresh-mediref-session.ts','utf8'); const start=source.indexOf('async function updateDraftAfterMedirefSuccess(');
+  const code=ts.transpileModule(source.slice(start,source.indexOf('\nasync function ',start+1)),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  const patches:any[]=[]; const supabase={from:()=>({update:(p:any)=>{patches.push(p);return{eq:async()=>({error:null})};}})};
+  await runInNewContext(code+'\nupdateDraftAfterMedirefSuccess',{supabase,nowIso:()=> 'now',console:{warn(){}}})({id:'job',payload:{draftId:'draft',workflowContinuationId:'intent'}},{});
+  assert.equal(patches[0].workflow_mediref_status,'completed');assert.equal(patches[0].workflow_status,undefined);assert.equal(patches[0].workflow_completed_at,undefined);
+});

@@ -16,7 +16,7 @@ test('continuation HTTP runs alongside helper drain, not blocking its child jobs
     update: () => query, maybeSingle: async () => ({ data: { id: 'intent' } }),
   };
   const poll = runInNewContext(code + '\npollPraktikaWorkflowContinuations', {
-    workflowConfigurationIssue: () => null, workflowAppOrigin: () => 'https://fixture.invalid', isUserPraktikaReady: async () => true, inFlight, Date, AbortSignal,
+    workflowConfigurationIssue: () => null, workflowAppOrigin: () => 'https://fixture.invalid', isUserPraktikaReady: async () => { throw new Error('global proof must not gate independent dispatch'); }, inFlight, Date, AbortSignal,
     randomUUID: () => 'lock', continuationToken, process: { env: { SUPABASE_SERVICE_ROLE_KEY: 'synthetic' } },
     fetch: (_url: string, options: RequestInit) => {
       requests++; assert.equal(options.redirect, 'error');

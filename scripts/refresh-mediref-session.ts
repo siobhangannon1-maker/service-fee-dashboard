@@ -839,16 +839,17 @@ async function updateDraftAfterMedirefSuccess(
   /*
    * Recipient matching has intentionally been removed from the helper.
    * Once the patient details and PDFs are prepared in MediRef, DocuDental
-   * considers the workflow complete and removes the letter from Approved.
-   * No separate manual confirmation is required.
+   * completes this branch. A durable Complete Workflow continuation joins the
+   * independent branches; standalone MediRef retains its existing completion.
    */
   const values: Record<string, unknown> = {
-    workflow_status: "completed",
+    ...(job.payload?.workflowContinuationId ? {} : { workflow_status: "completed", workflow_completed_at: completedAt }),
     workflow_mediref_status: "completed",
-    workflow_completed_at: completedAt,
     workflow_error: null,
     workflow_last_message:
-      "MediRef draft prepared with the PDF attached. Recipient matching was skipped.",
+      job.payload?.workflowContinuationId
+        ? "MediRef prepared. Remaining workflow steps will continue automatically."
+        : "MediRef draft prepared with the PDF attached. Recipient matching was skipped.",
     emailed_to_referrer_at: completedAt,
     emailed_to_referrer_email: recipientLabel || null,
     emailed_to_referrer_resend_id: `mediref:${job.id}`,

@@ -63,6 +63,7 @@ type Draft = {
   workflow_mediref_status?: string | null;
   workflow_periodontal_chart_status?: string | null;
   workflow_last_message?: string | null;
+  workflow_reconciliation_warning?: string | null;
 };
 
 type QueueItem = {
@@ -4930,6 +4931,9 @@ export default function TypistPage() {
                         </div>
                       ) : null}
 
+                      {draft.workflow_reconciliation_warning && (
+                        <div className="text-xs text-amber-700">{draft.workflow_reconciliation_warning}</div>
+                      )}
                       {draft.workflow_error &&
                       draft.workflow_status === "failed" ? (
                         <div className="mt-1 text-xs text-red-600">

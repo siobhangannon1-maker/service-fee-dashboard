@@ -9,6 +9,7 @@ const supabaseAdmin = createClient(
 );
 
 export type MedirefHelperRequest = {
+  workflowContinuationId?: string;
   action: "send_letter";
   retryMediref?: true;
   draftId: string;
