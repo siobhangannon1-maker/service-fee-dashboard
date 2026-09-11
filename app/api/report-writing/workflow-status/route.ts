@@ -48,6 +48,9 @@ function validOrNull(value: unknown, allowed: Set<string>) {
 }
 
 export async function POST(req: Request) {
+  let startRequested = false;
+  let reservationAttempted = false;
+  let preflightStage = "request_validation";
   // Only read-only preflight is raced. Never abandon a reservation transport and
   // infer rollback: the deterministic RPC reconciles an uncertain acknowledgement.
   async function boundedRead<T>(operation: Promise<T>): Promise<T> {
@@ -59,6 +62,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
 
+    startRequested = body.startWorkflow === true;
     const draftId = clean(body.draftId);
 
     if (!draftId) {
@@ -70,6 +74,7 @@ export async function POST(req: Request) {
 
     if (body.failMedirefEnqueue === true) {
       const actor = await boundedRead(getAuditActor());
+      preflightStage = "account_lookup";
       if (!actor.actorUserId || !await boundedRead(getUserStatus(actor.actorUserId))) {
         return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
       }
@@ -156,39 +161,44 @@ export async function POST(req: Request) {
     }
 
     if (body.startWorkflow === true) {
+      preflightStage = "actor_lookup";
       const actor = await boundedRead(getAuditActor());
+      preflightStage = "account_lookup";
       if (!actor.actorUserId || !await boundedRead(getUserStatus(actor.actorUserId))) {
         return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
       }
       if (workflowStatus !== "running") return NextResponse.json({ success: false, error: "Invalid workflow start." }, { status: 400 });
-      if (praktikaUploadStatus === "pending" && body.continuationOptions) {
+      if (praktikaUploadStatus === "pending" && Object.hasOwn(body, "continuationOptions")) {
         if (workflowConfigurationIssue()) return NextResponse.json({ success: false, error: "Workflow continuation is not configured." }, { status: 503 });
         const options = body.continuationOptions;
-        if (typeof options !== "object" || Array.isArray(options) || !/^\d+$/.test(String(options.praktikaPatientId || ""))) {
+        if (!options || typeof options !== "object" || Array.isArray(options) || !/^\d+$/.test(String(options.praktikaPatientId || ""))) {
           return NextResponse.json({ success: false, error: "Invalid workflow options." }, { status: 400 });
         }
         // Reconcile first even if a previously accepted workflow is now challenged.
         // The RPC alone reserves; the read below never creates or resets work.
+        preflightStage = "workflow_preflight";
         const [lookup, queueable] = await boundedRead(Promise.all([
           Promise.resolve(supabase.from("praktika_helper_jobs").select("id")
             .eq("job_type", "complete_report_workflow").eq("id", continuationIntentId(draftId)).limit(1)
             .abortSignal(AbortSignal.timeout(5000))),
-          canQueueUserPraktikaWorkflow(supabase, actor.actorUserId).catch(() => false),
+          canQueueUserPraktikaWorkflow(supabase, actor.actorUserId, true).then(allowed => ({ allowed, failed: false })).catch(() => ({ allowed: false, failed: true })),
         ]));
         if (lookup.error) return NextResponse.json({ success: false, code: "reservation_unavailable", stage: "workflow_preflight",
-          error: "Workflow start could not be confirmed. Please try Complete Workflow again; any existing intent will be reconciled." }, { status: 503 });
-        if (!lookup.data?.length && !queueable) {
+          reservationAttempted: false, error: "Workflow intent lookup is temporarily unavailable. No reservation was attempted. Please try again." }, { status: 503 });
+        if (!lookup.data?.length && queueable.failed) throw new Error("Session lookup unavailable");
+        if (!lookup.data?.length && !queueable.allowed) {
           return NextResponse.json({ success: false, reconnectRequired: true, error: praktikaConnectionRequired }, { status: 409 });
         }
         const optionKeys = ["referrerName", "referrerPracticeName", "referrerEmail", "referrerProviderNumber",
           "medirefAutoMatchRecipient", "patientEmail", "additionalRecipients", "additionalRecipientsText",
           "message", "attachPeriodontalChart", "praktikaPatientId", "queueId"];
         const authorizedOptions = { ...Object.fromEntries(optionKeys.filter(key => Object.hasOwn(options, key)).map(key => [key, options[key]])), actor };
+        reservationAttempted = true;
         const { data: reservation, error: reserveError } = await Promise.resolve(supabase.rpc("reserve_praktika_workflow", {
           p_draft_id: draftId, p_actor_user_id: actor.actorUserId,
           p_options: { ...authorizedOptions, authorization: workflowAuthorization(draftId, actor.actorUserId, authorizedOptions, process.env.SUPABASE_SERVICE_ROLE_KEY!) },
         }).abortSignal(AbortSignal.timeout(5000))).catch(() => ({ data: null, error: {} }));
-        if (reserveError) return NextResponse.json({ success: false, code: "lookup_failed", stage: "workflow_reservation",
+        if (reserveError) return NextResponse.json({ success: false, code: "lookup_failed", stage: "workflow_reservation", reservationAttempted: true,
           error: "Workflow start could not be confirmed. Please try Complete Workflow again; any existing intent will be reconciled." }, { status: 503 });
         if (!reservation?.ok) return NextResponse.json({ success: false, code: reservation?.code || "reservation_failed",
           error: "This workflow already exists or needs reconciliation. The approved letter is retained." }, { status: 409 });
@@ -245,7 +255,10 @@ export async function POST(req: Request) {
       draft: data,
     });
   } catch {
-
+    if (startRequested && !reservationAttempted) return NextResponse.json({ success: false,
+      code: "workflow_prerequisite_unavailable", stage: preflightStage, reservationAttempted: false,
+      error: "Workflow prerequisites could not be checked. No reservation was attempted. Please refresh and try again; contact an administrator if this persists.",
+    }, { status: 503 });
     return NextResponse.json(
       {
         success: false,

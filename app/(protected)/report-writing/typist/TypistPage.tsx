@@ -1,5 +1,7 @@
 "use client";
 
+import { WorkflowStartError, workflowStartAlert } from "@/lib/report-writing/workflow-start-error";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import { requestMedirefEnqueue } from "@/lib/mediref/enqueue-transition";
@@ -2467,7 +2469,7 @@ export default function TypistPage() {
       workflow_last_message: data.intentStatus === "completed" ? "Workflow already completed." : "Workflow started. Continuing in background.",
     };
     if (!response.ok || !data.success) {
-      if (values.startWorkflow) throw new Error(data.error || "Could not start workflow.");
+      if (values.startWorkflow) throw new WorkflowStartError(data);
       console.warn("Workflow status update failed:", data);
       return null;
     }
@@ -2583,7 +2585,7 @@ export default function TypistPage() {
       queueStatus: queueStatusSnapshot,
     });
     } catch (error) {
-      alert("Workflow start could not be confirmed. Please refresh and try Complete Workflow again; any existing workflow will be reconciled.");
+      alert(workflowStartAlert(error));
     } finally {
       workflowStartInFlight.current = false;
       setWorkflowStartPending(false);

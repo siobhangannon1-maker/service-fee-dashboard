@@ -14,12 +14,13 @@ export async function isUserPraktikaReady(db: SupabaseClient, appUserId: string)
 }
 
 // Queue acceptance is distinct from write readiness. It cannot authorize a request.
-export async function canQueueUserPraktikaWorkflow(db: SupabaseClient, appUserId: string) {
+export async function canQueueUserPraktikaWorkflow(db: SupabaseClient, appUserId: string, throwOnLookupFailure = false) {
   if (!appUserId) return false;
   const { data, error } = await db.from("praktika_sessions")
     .select("status,authenticated_at,helper_heartbeat_at,helper_instance_id,current_url")
     .eq("scope", "user").eq("app_user_id", appUserId)
     .abortSignal(AbortSignal.timeout(5000)).maybeSingle();
+  if (error && throwOnLookupFailure) throw new Error("Session lookup unavailable");
   if (error || !data || !["connected", "refreshing"].includes(data.status)) return false;
   const state = derivePraktikaConnection(data);
   return state.helperAlive && ["connected", "checking_connection", "refreshing"].includes(state.status);

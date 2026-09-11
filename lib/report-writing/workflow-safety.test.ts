@@ -334,3 +334,16 @@ test('client consumes accepted intent without requiring a returned draft row',as
     fetch:async()=>Response.json({success:true,accepted:true,intentId:'intent',workflowStatus:'running',uploadStatus:'waiting_for_authentication'},{status:202})});
   const result=await run('draft',{startWorkflow:true});assert.equal(result.id,'draft');assert.equal(result.workflow_status,'running');assert.match(result.workflow_last_message,/Continuing in background/);
 });
+
+for(const kind of ['reconnect','account','configuration','validation'] as const)test(`fast ${kind} rejection never calls reservation`,async()=>{
+  const f=fixture(kind==='reconnect'?'waiting_for_credentials':'connected');
+  if(kind==='account')f.mocks.getUserStatus=async()=>false;
+  if(kind==='configuration')f.mocks.workflowConfigurationIssue=()=> 'configuration_unavailable';
+  (f.db as any).rpc=()=>assert.fail('prerequisites must precede RPC');
+  const body=kind==='validation'?{...durableStartBody,continuationOptions:{}}:durableStartBody;
+  const response=await f.route(startPath)(request(body));
+  assert.equal(response.status,{reconnect:409,account:403,configuration:503,validation:400}[kind]);
+  const data=await response.json();assert.doesNotMatch(data.error,/could not be confirmed/);
+  if(kind==='reconnect')assert.equal(data.reconnectRequired,true);
+  assert.equal(f.tables.praktika_helper_jobs.length,0);assert.deepEqual(f.events,[]);
+});
