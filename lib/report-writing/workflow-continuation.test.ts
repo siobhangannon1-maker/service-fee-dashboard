@@ -23,7 +23,7 @@ function fixture(stage = 'upload') {
   intent.request.options.authorization = workflowAuthorization('draft', actor, intent.request.options, secret);
   const draft: Row = { id: 'draft', status: 'approved', deleted_at: null, workflow_status: 'running', uploaded_to_praktika: false,
     workflow_praktika_upload_status: 'waiting_for_authentication', workflow_icon_update_status: 'pending', edited_text: 'synthetic approved text' };
-  const rows: Record<string, Row[]> = { praktika_helper_jobs: [intent], report_drafts: [draft], mediref_helper_jobs: [] };
+  const rows: Record<string, Row[]> = { praktika_helper_jobs: [intent], report_drafts: [draft], mediref_helper_jobs: [{ id: 'existing', status: 'pending', job_type: 'send_mediref_letter', payload: { draftId: 'draft' } }] };
   const events: string[] = [];
   const db = { from(table: string) {
     const filters: Array<(row: Row) => boolean> = []; let patch: Row | null = null; let limit = Infinity;
@@ -90,15 +90,17 @@ test('icon cannot run without confirmed upload', async () => {
 for (const status of ['pending', 'processing', 'completed', 'failed']) test(`existing ${status} MediRef job is never duplicated`, async () => {
   const f = fixture('mediref'); f.child('completed'); Object.assign(f.draft, { uploaded_to_praktika: true, workflow_praktika_upload_status: 'completed', workflow_icon_update_status: 'completed' });
   if (status === 'completed') f.draft.workflow_mediref_status = 'completed';
+  f.rows.mediref_helper_jobs.length = 0;
   f.rows.mediref_helper_jobs.push({ id: 'existing', status, job_type: 'send_mediref_letter', payload: { draftId: 'draft' } });
-  await f.call(); assert.equal(f.intent.status, status === 'failed' ? 'failed' : 'completed'); assert.deepEqual(f.events, []);
+  await f.call(); assert.equal(f.intent.status, status === 'failed' ? 'failed' : status === 'completed' ? 'completed' : 'waiting'); assert.deepEqual(f.events, []);
 });
-test('normal upload, icon, MediRef ordering survives independent dispatches', async () => {
-  const f = fixture();
+test('independent MediRef then upload and icon complete across dispatches', async () => {
+  const f = fixture(); f.rows.mediref_helper_jobs.length = 0;
+  f.mocks.mediref = async () => { f.events.push('mediref'); f.rows.mediref_helper_jobs.push({ id: 'new', status: 'completed', job_type: 'send_mediref_letter', payload: { draftId: 'draft' } }); f.draft.workflow_mediref_status = 'completed'; return Response.json({success:true}); };
   f.mocks.upload = async () => { f.events.push('upload'); f.child('completed'); Object.assign(f.draft, { uploaded_to_praktika: true, workflow_praktika_upload_status: 'completed' }); return Response.json({ success: true }); };
   f.mocks.icon = async () => { f.events.push('icon'); f.draft.workflow_icon_update_status = 'completed'; return Response.json({ success: true }); };
   await f.call(); f.dispatchedAgain(); await f.call(); f.dispatchedAgain(); await f.call();
-  assert.deepEqual(f.events, ['upload', 'icon', 'mediref']); assert.equal(f.intent.status, 'completed');
+  assert.deepEqual(f.events, ['mediref', 'upload', 'icon']); assert.equal(f.intent.status, 'completed');
 });
 test('disabled actor cannot execute a continuation', async () => {
   const f = fixture(); f.setActive(false); await f.call(); assert.equal(f.intent.status, 'failed'); assert.deepEqual(f.events, []);
@@ -123,12 +125,13 @@ test('JSONB property order does not change server authorization', () => {
 test('lost MediRef enqueue acknowledgement observes new job instead of creating another', async () => {
   const f = fixture('mediref'); f.child('completed');
   Object.assign(f.draft, { uploaded_to_praktika: true, workflow_praktika_upload_status: 'completed', workflow_icon_update_status: 'completed' });
+  f.rows.mediref_helper_jobs.length = 0;
   f.mocks.mediref = async () => {
     f.events.push('mediref');
     f.rows.mediref_helper_jobs.push({ id: 'created', status: 'pending', job_type: 'send_mediref_letter', payload: { draftId: 'draft' } });
     return Response.json({ success: false }, { status: 503 });
   };
-  await f.call(); assert.equal(f.intent.status, 'completed'); assert.deepEqual(f.events, ['mediref']);
+  await f.call(); assert.equal(f.intent.status, 'waiting'); assert.deepEqual(f.events, ['mediref']);
 });
 
 test('durable helper failure survives failed draft update and refresh returns failed', async () => {
@@ -154,7 +157,32 @@ test('completed icon with unreconcilable target stops rather than re-enqueues', 
 test('periodontal uncertainty before insertion waits without MediRef enqueue', async () => {
   const f = fixture('mediref'); f.child('completed');
   Object.assign(f.draft,{uploaded_to_praktika:true,workflow_praktika_upload_status:'completed',workflow_icon_update_status:'completed'});
+  f.rows.mediref_helper_jobs.length = 0;
   f.mocks.mediref=async()=>Response.json({success:false,stage:'periodontal_preparation',insertionOutcome:'not_attempted'},{status:503});
   await f.call(); assert.equal(f.intent.status,'waiting'); assert.equal(f.intent.response.issue,'periodontal_unavailable');
   assert.equal(f.rows.mediref_helper_jobs.length,0);
+});
+
+for (const complete of [false, true]) test(`legacy upload intent with stale proof independently prepares MediRef (complete=${complete})`, async () => {
+  const f = fixture(); f.rows.mediref_helper_jobs.length = 0; f.setFresh(false);
+  f.mocks.mediref = async () => { f.events.push('mediref');
+    f.rows.mediref_helper_jobs.push({ id:'new',status:complete?'completed':'pending',job_type:'send_mediref_letter',payload:{draftId:'draft'} });
+    f.draft.workflow_mediref_status = complete ? 'completed' : 'running'; return Response.json({success:true}); };
+  await f.call(); f.dispatchedAgain(); await f.call();
+  assert.deepEqual(f.events,['mediref']); assert.equal(f.intent.status,'waiting');
+  assert.equal(f.draft.workflow_status,'running'); assert.equal(f.draft.workflow_praktika_upload_status,'waiting_for_authentication');
+  if (complete) assert.match(f.draft.workflow_last_message,/MediRef prepared/);
+  f.setFresh(true); f.dispatchedAgain(); await f.call(); assert.deepEqual(f.events,['mediref','upload']);
+});
+test('uncertain icon cannot be replayed after independent MediRef completion', async () => {
+  const f = fixture('icon'); f.child('completed'); f.child('failed','update_praktika_letter_icons');
+  Object.assign(f.draft,{uploaded_to_praktika:true,workflow_praktika_upload_status:'completed',workflow_mediref_status:'completed'});
+  await f.call(); assert.equal(f.intent.status,'failed'); assert.deepEqual(f.events,[]);
+});
+for (const thrown of [false,true]) test(`History preserves durable partial fields on projection failure (throw=${thrown})`,async()=>{
+  const draft={id:'draft',workflow_status:'running',workflow_praktika_upload_status:'waiting_for_authentication',workflow_mediref_status:'completed'};
+  const q:any={select:()=>q,eq:()=>q,in:()=>q,abortSignal:async()=>{if(thrown)throw new Error('SECRET');return{error:{message:'SECRET'},data:null};}};
+  const result=await projectWorkflowRecovery({from:()=>q} as any,[draft]);
+  for(const key of Object.keys(draft))assert.equal((result[0] as any)[key],(draft as any)[key]);
+  assert.match((result[0] as any).workflow_reconciliation_warning,/temporarily out of date/);assert.doesNotMatch(JSON.stringify(result),/SECRET/);
 });

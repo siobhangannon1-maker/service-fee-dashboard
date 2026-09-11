@@ -1,4 +1,4 @@
-import { projectWorkflowRecovery } from "@/lib/report-writing/workflow-recovery"
+import { projectWorkflowRecovery, staleWorkflowStatus } from "@/lib/report-writing/workflow-recovery"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -28,12 +28,16 @@ export async function GET(req: Request) {
 
     if (error) {
       return NextResponse.json(
-        { success: false, error: error.message },
+        { success: false, error: "Failed to load report drafts." },
         { status: 500 }
       )
     }
 
-    const recovered = await projectWorkflowRecovery(supabase, data || [])
+    const durableDrafts = data || []
+    // Auxiliary status enrichment must never discard successfully loaded History.
+    let recovered = durableDrafts
+    try { recovered = await projectWorkflowRecovery(supabase, durableDrafts) }
+    catch { recovered = durableDrafts.map(staleWorkflowStatus) }
     const drafts = recovered.map((draft: any) => ({
       ...draft,
       status: draft.status || "draft",
@@ -51,16 +55,12 @@ export async function GET(req: Request) {
     }))
 
     return NextResponse.json({ success: true, drafts })
-  } catch (error) {
-    console.error("Get report drafts failed:", error)
+  } catch {
 
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to load report drafts.",
+        error: "Failed to load report drafts.",
       },
       { status: 500 }
     )
