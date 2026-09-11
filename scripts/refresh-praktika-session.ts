@@ -1,3 +1,4 @@
+import { pollSchedulerDiagnostic } from "./praktika-scheduler-diagnostic";
 import { pollPraktikaWorkflowContinuations } from "./praktika-workflow-continuations";
 import { createCookieSnapshotStore } from "../lib/praktika/cookie-snapshot";
 import { createShutdownCoordinator, type SkipReason } from "../lib/praktika/shutdown-coordinator";
@@ -1012,6 +1013,16 @@ async function refreshOnce() {
   ownedContext = context;
   const stopHeartbeat = startHeartbeat(context);
 
+  let diagnosticPending = false;
+  const diagnosticTimer = setInterval(() => {
+    if (diagnosticPending || shuttingDown || ownershipLost || loginTransition || jobActive) return;
+    diagnosticPending = true;
+    void pollSchedulerDiagnostic(supabase, context, {
+      sessionId: sessionId!, generation: helperInstanceId!, assertOwned,
+      busy: () => shuttingDown || ownershipLost || loginTransition || jobActive,
+    }).catch(() => { /* No raw diagnostic errors; never change session state. */ })
+      .finally(() => { diagnosticPending = false; });
+  }, 5000);
   let page: Page | undefined;
   try {
     if (shuttingDown || (isWarmRestoration && remainingUsefulWorkMs() <= 0)) return;
@@ -1030,6 +1041,7 @@ async function refreshOnce() {
       stopGate: ensureAuthenticated.stop,
     });
     context.once("close", () => { if (!shuttingDown) operationalThisGeneration = false; renewal?.stop(); });
+    context.once("close", () => clearInterval(diagnosticTimer));
     page.once("close", () => { if (!shuttingDown) operationalThisGeneration = false; renewal?.stop(); });
     if (await hasExistingBrowserSession(page)) {
       const saved = await saveCookies(context, page);
@@ -1164,6 +1176,7 @@ async function refreshOnce() {
 
     throw error;
   } finally {
+    clearInterval(diagnosticTimer);
     renewal?.stop();
     shutdownCoordinator.drained();
     // Stop heartbeat and close together so a pending heartbeat cannot spend the close budget twice.
