@@ -8,7 +8,7 @@ const MAX_PROBE_BYTES = 2 * 1024 * 1024;
 const PATH = "/php/json/db_reportingDataWarehouse.php";
 export type AuthenticationFailurePhase = "error" | "waiting_for_credentials" | "waiting_for_mfa";
 export type RedirectCategory = "login_redirect" | "same_origin_other_redirect" | "external_redirect" | "redirect_destination_unavailable";
-type RedirectDiagnostics = { phpTargetFingerprint?: string; phpTargetCategory?: PhpTargetCategory; destinationCategory: DestinationCategory; redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
+type RedirectDiagnostics = { phpTargetFamily?: PhpTargetFamily; phpTargetFingerprint?: string; phpTargetCategory?: PhpTargetCategory; destinationCategory: DestinationCategory; redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
 
 // Classify only; never return URL components or change authentication decisions.
 export function classifyPraktikaRedirect(location: string | undefined, expectedUrl: string): Pick<RedirectDiagnostics, "redirect_category" | "same_origin"> {
@@ -78,6 +78,18 @@ export function classifyPraktikaPhpTarget(location: string | undefined, expected
   const pathname = new URL(location!, expectedUrl).pathname;
   return Object.prototype.hasOwnProperty.call(PHP_TARGETS, pathname)
     ? PHP_TARGETS[pathname as keyof typeof PHP_TARGETS] : "unrecognized_php_target";
+}
+
+type PhpTargetFamily = "php_json" | "php_forms" | "php_online_booking" | "php_other";
+
+// Directory labels only, never authentication evidence or a raw path.
+export function classifyPraktikaPhpFamily(location: string | undefined, expectedUrl: string): PhpTargetFamily | undefined {
+  if (classifyPraktikaPhpTarget(location, expectedUrl) !== "unrecognized_php_target") return undefined;
+  const pathname = new URL(location!, expectedUrl).pathname;
+  if (pathname.startsWith("/php/json/")) return "php_json";
+  if (pathname.startsWith("/php/forms/")) return "php_forms";
+  if (pathname.startsWith("/php/onlineBookingV2/")) return "php_online_booking";
+  return "php_other";
 }
 
 // URL parsing supplies normalization; preserve pathname case and exclude all other URL components.
@@ -160,7 +172,7 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
             try { location = response.headers()["location"]; } catch { /* Metadata unavailable. */ }
             const redirect = classifyPraktikaRedirect(location, url);
             return { ...failed, phase: redirect.redirect_category === "login_redirect" ? "waiting_for_credentials" as const : "error" as const, httpStatus: response.status(), redirectDiagnostics: {
-              ...redirect, phpTargetFingerprint: praktikaPhpTargetFingerprint(location, url), phpTargetCategory: classifyPraktikaPhpTarget(location, url), destinationCategory: classifyPraktikaRedirectDestination(location, url), responseReceived: true as const,
+              ...redirect, phpTargetFamily: classifyPraktikaPhpFamily(location, url), phpTargetFingerprint: praktikaPhpTargetFingerprint(location, url), phpTargetCategory: classifyPraktikaPhpTarget(location, url), destinationCategory: classifyPraktikaRedirectDestination(location, url), responseReceived: true as const,
               elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
             } };
           }
@@ -224,6 +236,8 @@ export function createPraktikaAuthenticationGate(deps: {
             ...(result.redirectDiagnostics.phpTargetCategory ? { phpTargetCategory: result.redirectDiagnostics.phpTargetCategory } : {}),
             ...(result.redirectDiagnostics.destinationCategory === "php_endpoint" && result.redirectDiagnostics.phpTargetCategory === "unrecognized_php_target" && result.redirectDiagnostics.phpTargetFingerprint
               ? { phpTargetFingerprint: result.redirectDiagnostics.phpTargetFingerprint } : {}),
+            ...(result.redirectDiagnostics.destinationCategory === "php_endpoint" && result.redirectDiagnostics.phpTargetCategory === "unrecognized_php_target" && result.redirectDiagnostics.phpTargetFamily
+              ? { phpTargetFamily: result.redirectDiagnostics.phpTargetFamily } : {}),
             currentPageCategory,
             helperAlive: hasLivePraktikaHelper(session),
             proofStillFresh: hasFreshPraktikaAuthentication(session),

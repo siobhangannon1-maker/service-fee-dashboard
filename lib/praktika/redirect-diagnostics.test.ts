@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserContext } from "playwright";
-import { praktikaPhpTargetFingerprint, classifyPraktikaPhpTarget, classifyPraktikaRedirectDestination, classifyPraktikaPage, classifyPraktikaRedirect, probePraktikaAuthentication, createPraktikaAuthenticationGate, PraktikaAuthenticationUnverified } from "./authentication-probe";
+import { classifyPraktikaPhpFamily, praktikaPhpTargetFingerprint, classifyPraktikaPhpTarget, classifyPraktikaRedirectDestination, classifyPraktikaPage, classifyPraktikaRedirect, probePraktikaAuthentication, createPraktikaAuthenticationGate, PraktikaAuthenticationUnverified } from "./authentication-probe";
 
 const expected = "https://fixture.invalid/php/json/db_reportingDataWarehouse.php";
 for (const [location, category, sameOrigin] of [
@@ -60,7 +60,8 @@ test("307 diagnostics preserve background proof and strict job failure behavior,
   const safe = logs.find(([event]) => event === "[Praktika auth] renewal_redirect")?.[1] as Record<string, unknown>;
   const redirects = logs.filter(([event]) => event === "[Praktika auth] renewal_redirect");
   assert.equal((redirects[1][1] as Record<string, unknown>).phpTargetFingerprint, undefined);
-  assert.deepEqual(safe, { httpStatus: 307, helperToken: "0123456789abcdef", destinationCategory: "php_endpoint", phpTargetCategory: "unrecognized_php_target", phpTargetFingerprint: praktikaPhpTargetFingerprint("/php/PRIVATE", expected), currentPageCategory: "unknown", helperAlive: true, proofStillFresh: true, proofAgeBucket: "<1m" });
+  assert.equal((redirects[1][1] as Record<string, unknown>).phpTargetFamily, undefined);
+  assert.deepEqual(safe, { httpStatus: 307, helperToken: "0123456789abcdef", destinationCategory: "php_endpoint", phpTargetCategory: "unrecognized_php_target", phpTargetFamily: "php_other", phpTargetFingerprint: praktikaPhpTargetFingerprint("/php/PRIVATE", expected), currentPageCategory: "unknown", helperAlive: true, proofStillFresh: true, proofAgeBucket: "<1m" });
 });
 
 for (const [path, category] of [
@@ -154,4 +155,24 @@ test('fingerprint is absent outside unrecognized same-origin PHP destinations', 
     'https://outside.invalid/php/PRIVATE', undefined, 'https://[']) {
     assert.equal(praktikaPhpTargetFingerprint(path, expected), undefined);
   }
+});
+
+for (const [pathname, family] of [
+  ["/php/json/unknown.php", "php_json"],
+  ["/php/forms/unknown.php", "php_forms"],
+  ["/php/onlineBookingV2/unknown.php", "php_online_booking"],
+  ["/php/other/unknown.php", "php_other"],
+  ["/php/jsonish/unknown.php", "php_other"],
+  ["/php/JSON/unknown.php", "php_other"],
+] as const) test(`unknown PHP family ${family}`, () => {
+  const fingerprint = praktikaPhpTargetFingerprint(pathname, expected);
+  assert.equal(classifyPraktikaPhpFamily(pathname + "?PRIVATE#PRIVATE", expected), family);
+  assert.equal(praktikaPhpTargetFingerprint(pathname + "?PRIVATE#PRIVATE", expected), fingerprint);
+});
+test('family omitted for known PHP endpoints and non-PHP redirects', () => {
+  for (const pathname of [expected, "/php/forms/db_getFormData.php", "/v2/scheduler", "/",
+    "https://external.invalid/php/json/unknown.php", undefined, "https://["]) {
+    assert.equal(classifyPraktikaPhpFamily(pathname, expected), undefined);
+  }
+  assert.equal(classifyPraktikaPhpTarget('/php/forms/db_getFormData.php', expected), 'form_get');
 });
