@@ -1,3 +1,4 @@
+import { currentWorkflowExecution } from "../report-writing/workflow-execution-context";
 import "server-only";
 import { hasFreshPraktikaAuthentication } from "./authentication";
 import { hasLivePraktikaHelper } from "./helper-lease";
@@ -87,6 +88,8 @@ async function getCurrentAppUserId() {
 }
 
 export async function getCurrentUserPraktikaSessionMode(): Promise<PraktikaSessionMode> {
+  const workflow = currentWorkflowExecution();
+  if (workflow?.actor.actorUserId) return { scope: "user", appUserId: workflow.actor.actorUserId };
   return { scope: "user", appUserId: await getCurrentAppUserId() };
 }
 

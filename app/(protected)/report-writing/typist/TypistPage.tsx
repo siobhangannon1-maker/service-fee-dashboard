@@ -2412,6 +2412,7 @@ export default function TypistPage() {
     draftId: string,
     values: {
       startWorkflow?: boolean;
+      continuationOptions?: Record<string, unknown>;
       workflowStatus?: "running" | "completed" | "failed";
       praktikaUploadStatus?:
         | "not_requested"
@@ -2532,6 +2533,7 @@ export default function TypistPage() {
 
     const runningDraft = await updateWorkflowStatus(draftSnapshot.id, {
       startWorkflow: true,
+      ...(completeWorkflow ? { continuationOptions: { ...workflowPayload, queueId: activeQueueItemIdSnapshot } } : {}),
       workflowStatus: "running",
       praktikaUploadStatus: completeWorkflow ? "pending" : "not_requested",
       iconUpdateStatus: completeWorkflow ? "pending" : "not_requested",
@@ -2562,11 +2564,11 @@ export default function TypistPage() {
 
     alert(
       completeWorkflow
-        ? "Workflow queued. The letter will stay visible as Completing until all steps finish."
+        ? (nextDraft.workflow_last_message || "Workflow queued — waiting for Praktika verification. This workflow will continue automatically when verified.")
         : "MediRef send queued.",
     );
 
-    runMedirefWorkflowInBackground({
+    if (!completeWorkflow) runMedirefWorkflowInBackground({
       draft: draftSnapshot,
       payload: workflowPayload,
       completeWorkflow,
@@ -2824,6 +2826,28 @@ export default function TypistPage() {
       setPreferredExamples([]);
     }
   }
+
+  const hasRunningWorkflows = drafts.some(draft => draft.workflow_status === "running");
+  useEffect(() => {
+    if (!selectedProviderId || !hasRunningWorkflows) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/report-writing/get-drafts?providerId=${encodeURIComponent(selectedProviderId)}`, {
+          cache: "no-store", signal: AbortSignal.timeout(10000),
+        });
+        const data = await response.json();
+        if (!cancelled && response.ok && Array.isArray(data.drafts)) {
+          setDrafts(data.drafts);
+          setSelectedDraft(current => current ? data.drafts.find((draft: Draft) => draft.id === current.id) || current : current);
+        }
+      } catch { /* Keep the last known state; this poll never controls execution. */ }
+      if (!cancelled) timer = setTimeout(poll, 5000);
+    };
+    timer = setTimeout(poll, 5000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [selectedProviderId, hasRunningWorkflows]);
 
   async function loadDrafts(providerId: string, requestToken?: number) {
     const activeRequestToken = requestToken ?? providerDataRequestRef.current;

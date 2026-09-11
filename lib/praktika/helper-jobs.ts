@@ -1,4 +1,7 @@
+import { sameIconHelperTarget } from "./icon-helper-target";
 import "server-only";
+import { currentWorkflowExecution } from "../report-writing/workflow-execution-context";
+import { continuationChildId } from "../report-writing/workflow-continuation-token";
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -46,12 +49,16 @@ export async function createPraktikaHelperJob({
   request,
   priority = 100,
 }: CreatePraktikaHelperJobInput) {
+  const workflow = currentWorkflowExecution();
+  const durableWrite = workflow && ["upload_report_to_praktika", "update_praktika_letter_icons"].includes(jobType);
+  const id = durableWrite ? continuationChildId(workflow.intentId, jobType) : undefined;
   const { data, error } = await supabaseAdmin
     .from("praktika_helper_jobs")
     .insert({
+      ...(id ? { id } : {}),
       app_user_id: appUserId || null,
       job_type: jobType,
-      request,
+      request: durableWrite ? { ...request, continuationId: workflow.intentId } : request,
       priority,
       status: "pending",
       available_at: new Date().toISOString(),
@@ -59,6 +66,16 @@ export async function createPraktikaHelperJob({
     .select("*")
     .single();
 
+  if (error?.code === "23505" && id && workflow) {
+    const existing = await supabaseAdmin.from("praktika_helper_jobs").select("*").eq("id", id)
+      .eq("app_user_id", appUserId).eq("job_type", jobType).eq("request->>continuationId", workflow.intentId).single();
+    if (!existing.error && existing.data) {
+      if (jobType === "update_praktika_letter_icons" && !sameIconHelperTarget(existing.data.request, request)) {
+        throw new Error("Existing icon target could not be reconciled. No new icon action was created.");
+      }
+      return existing.data;
+    }
+  }
   if (error || !data) {
     throw new Error(
       `Could not create Praktika helper job: ${error?.message || "No job returned."}`,

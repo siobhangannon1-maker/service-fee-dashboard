@@ -1,3 +1,4 @@
+import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
 import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
 import { isConfirmedPraktikaUpload } from "@/lib/report-writing/praktika-upload-result";
 import { NextResponse } from "next/server";
@@ -349,7 +350,7 @@ export async function POST(req: Request) {
       .update({ workflow_icon_update_status: "running", updated_at: new Date().toISOString() })
       .eq("id", draftId).eq("uploaded_to_praktika", true).eq("workflow_praktika_upload_status", "completed")
       .is("deleted_at", null)
-      .or("workflow_icon_update_status.is.null,workflow_icon_update_status.in.(pending,not_requested)")
+      .or(currentWorkflowExecution() ? "workflow_icon_update_status.in.(pending,running,failed)" : "workflow_icon_update_status.is.null,workflow_icon_update_status.in.(pending,not_requested)")
       .select("id").maybeSingle();
     if (claimError || !claimed) return NextResponse.json({ success: false,
       error: "The icon step is already running or needs reconciliation." }, { status: 409 });

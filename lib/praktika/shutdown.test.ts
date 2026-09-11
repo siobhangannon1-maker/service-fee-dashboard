@@ -39,8 +39,9 @@ test('active job completes once during drain; interrupted external request is ne
  let stopping=false, complete=0, retry=0, operations=0;
  const ownership={assertOwned:async()=>{},ensureAuthenticated:async()=>{},isShuttingDown:()=>stopping};
  const process=runInNewContext(extract('scripts/praktika-helper-job-processor.ts',['processOnePraktikaHelperJob'])+'\nprocessOnePraktikaHelperJob',{
+ verifiedReadOperation:()=>false,allowedPraktikaRead:()=>false,jobEligible:async()=>true,
  console:{log(){},error(){}},PraktikaOwnershipLost,claimNextJob:async()=>({id:'fixture',job_type:'fixture',request:{}}),
- runPraktikaRequest:async()=>{operations++;stopping=true;if(fails)throw Error('interrupted');return {};},
+ runPraktikaRequest:async(_c:unknown,_r:unknown,before:()=>Promise<void>)=>{await before();operations++;stopping=true;if(fails)throw Error('interrupted');return {};},
  completeJob:async()=>{complete++;},markSessionConnectedForJob:async()=>{},failJob:async()=>{retry++;},
  });
  if(fails)await assert.rejects(process({},'fixture',ownership));else await process({},'fixture',ownership);

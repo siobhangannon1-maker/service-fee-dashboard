@@ -1,3 +1,4 @@
+import { selectPeriodontalData } from "./periodontal-data";
 import { drawPraktikaToothWithClinicalMarkers } from "@/lib/praktika/praktika-perio-tooth-renderer";
 import {
   PDFDocument,
@@ -27,6 +28,8 @@ type PerioExam = {
 };
 
 type GeneratePeriodontalChartParams = {
+  freshness?: "live" | "cached" | "prefer_cached";
+  cachedExams?: PerioExam[];
   patientId: string | number;
   appointmentDate?: string | null;
   patientName?: string | null;
@@ -946,15 +949,27 @@ async function renderPerioChartPdf(params: {
 }
 
 export async function generatePeriodontalChartPdf({
+  freshness = "live",
+  cachedExams,
   patientId,
   appointmentDate,
   patientName,
   providerName,
 }: GeneratePeriodontalChartParams): Promise<PeriodontalChartResult | null> {
-  const ids = await getPatientPerioExamIds(patientId);
-  if (ids.length === 0) return null;
-
-  const exams = await getPerioExams(ids);
+  if (freshness === "prefer_cached") {
+    const [{ cachedPeriodontalExams }, { supabaseAdmin }, { getCurrentUserPraktikaSessionMode }] = await Promise.all([
+      import("./periodontal-cache"), import("../supabase/admin"), import("./hybrid-session-store"),
+    ]);
+    const mode = await getCurrentUserPraktikaSessionMode();
+    cachedExams = mode.scope === "user" ? await cachedPeriodontalExams(supabaseAdmin, mode.appUserId, Number(patientId), PRAKTIKA_PRACTICE_ID) as PerioExam[] | undefined : undefined;
+  }
+  const exams = await selectPeriodontalData({ freshness, cached: cachedExams, live: async () => {
+    const ids = await getPatientPerioExamIds(patientId);
+    return ids.length ? getPerioExams(ids) : [];
+  } });
+  if (exams.some(exam => Number(exam.perioexam_patientid) !== Number(patientId))) {
+    throw new Error("Periodontal data does not match the requested patient.");
+  }
   if (exams.length === 0) return null;
 
   const exam = pickExamForDate(exams, appointmentDate);

@@ -1,3 +1,4 @@
+import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createSendMedirefLetterJob } from "@/lib/mediref/helper-job-client";
@@ -640,6 +641,7 @@ export async function POST(req: Request) {
             try {
               const perioChart =
                 await generatePeriodontalChartPdf({
+                  freshness: "prefer_cached", // Existing completed exams are permitted for this attachment.
                   patientId: finalPraktikaPatientId,
                   appointmentDate: null,
                   patientName,
@@ -688,6 +690,9 @@ export async function POST(req: Request) {
                 });
               }
             } catch (error) {
+              // Queued Complete Workflow must retain a requested attachment on read uncertainty.
+              // Existing non-continuation preparation behavior remains unchanged.
+              if (currentWorkflowExecution()) throw new Error("Periodontal chart is temporarily unavailable.");
               periodontalChartError =
                 error instanceof Error
                   ? error.message

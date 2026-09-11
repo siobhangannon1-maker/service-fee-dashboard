@@ -136,18 +136,19 @@ test("browser liveness failure releases as error and closes browser without auth
 });
 
 test("ownership loss during a job never requeues an ambiguous external operation", async () => {
-  for (const lostAt of [1, 2, 3, 4]) {
+  for (const lostAt of [1, 2, 3, 4, 5]) {
     let checks = 0; let requests = 0; let failed = 0; let completed = 0;
     const ownership = { assertOwned: async () => { if (++checks === lostAt) throw new PraktikaOwnershipLost(); }, updateSession: async () => {}, ensureAuthenticated: async () => {} };
     const { processOnePraktikaHelperJob } = await functionsFrom("scripts/praktika-helper-job-processor.ts", ["processOnePraktikaHelperJob"], {
+      verifiedReadOperation: () => false, allowedPraktikaRead: () => false, jobEligible: async () => true,
       console: quiet, PraktikaOwnershipLost,
       claimNextJob: async () => ({ id: "fixture", job_type: "fixture", request: {} }),
-      runPraktikaRequest: async () => { requests++; return {}; },
+      runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => { await before(); requests++; return {}; },
       completeJob: async () => { completed++; }, markSessionConnectedForJob: async () => {},
       failJob: async () => { failed++; },
     });
     await assert.rejects(processOnePraktikaHelperJob({}, "user", ownership), PraktikaOwnershipLost);
-    assert.equal(requests, lostAt === 4 ? 1 : 0); assert.equal(failed, 0); assert.equal(completed, 0);
+    assert.equal(requests, lostAt === 5 ? 1 : 0); assert.equal(failed, 0); assert.equal(completed, 0);
   }
 });
 
@@ -188,19 +189,19 @@ test("production consumers gate saved Connected on liveness, and idle does not p
   }
 });
 
-test("failed authentication stops the claimed job before any Praktika operation and prevents retry", async () => {
-  let requests = 0; let completed = 0; let failed = 0;
+test("unverified authentication leaves job unclaimed rather than permanently failing queued work", async () => {
+  let requests = 0;
   const { processOnePraktikaHelperJob } = await functionsFrom("scripts/praktika-helper-job-processor.ts", ["processOnePraktikaHelperJob"], {
     console: quiet, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
-    claimNextJob: async () => ({ id: "fixture", job_type: "fixture", request: {} }),
+    claimNextJob: async () => null,
     runPraktikaRequest: async () => { requests++; },
-    completeJob: async () => { completed++; },
-    failJob: async (_job: unknown, _message: string, permanent: boolean) => { assert.equal(permanent, true); failed++; },
+    completeJob: async () => assert.fail("unclaimed job cannot complete"),
+    failJob: async () => assert.fail("unclaimed job cannot fail"),
   });
   const result = await processOnePraktikaHelperJob({}, "user", {
     assertOwned: async () => {}, updateSession: async () => {},
     ensureAuthenticated: async () => { throw new PraktikaAuthenticationUnverified(); },
   });
-  assert.equal(result.outcome, "needs_reconnect");
-  assert.equal(requests, 0); assert.equal(completed, 0); assert.equal(failed, 1);
+  assert.equal(result.outcome, "none");
+  assert.equal(requests, 0);
 });

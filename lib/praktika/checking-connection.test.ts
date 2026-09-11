@@ -59,7 +59,7 @@ test("same-origin 307 preserves proof, shows checking after proof expiry, and la
   assert.equal(row.status, "waiting_for_mfa");
 });
 
-test("processor retries transient verification before any external operation; later verified attempt executes", async () => {
+test("processor leaves unverified work unclaimed; later verified attempt executes", async () => {
   const path = "scripts/praktika-helper-job-processor.ts";
   const source = readFileSync(path, "utf8"), ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
   const declaration = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === "processOnePraktikaHelperJob")!;
@@ -68,20 +68,21 @@ test("processor retries transient verification before any external operation; la
   const permanent: boolean[] = [];
   const process = runInNewContext(code + "\nprocessOnePraktikaHelperJob", {
     PraktikaAuthenticationUnverified, PraktikaOwnershipLost, console: { log() {}, error() {} },
-    claimNextJob: async () => ({ id: "synthetic", job_type: "synthetic", request: {} }),
+    verifiedReadOperation: () => false, allowedPraktikaRead: () => false, jobEligible: async () => verified && !challenged,
+    claimNextJob: async () => verified && !challenged ? ({ id: "synthetic", job_type: "synthetic", request: {} }) : null,
     failJob: async (_j: unknown, _m: unknown, force: boolean) => { permanent.push(force); },
-    runPraktikaRequest: async () => { operations++; return {}; }, completeJob: async () => {}, markSessionConnectedForJob: async () => {},
+    runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => { await before(); operations++; return {}; }, completeJob: async () => {}, markSessionConnectedForJob: async () => {},
   });
   const ownership = { assertOwned: async () => {}, ensureAuthenticated: async () => { if (challenged) throw new PraktikaAuthenticationUnverified("waiting_for_credentials"); if (!verified) throw new PraktikaAuthenticationUnverified("error", true); } };
-  assert.equal((await process({}, "user", ownership)).outcome, "failed");
-  assert.deepEqual(permanent, [false]); assert.equal(operations, 0);
+  assert.equal((await process({}, "user", ownership)).outcome, "none");
+  assert.deepEqual(permanent, []); assert.equal(operations, 0);
   verified = true;
   assert.equal((await process({}, "user", ownership)).outcome, "completed");
   assert.equal(operations, 1);
   challenged = true;
-  assert.equal((await process({}, "user", ownership)).outcome, "needs_reconnect");
+  assert.equal((await process({}, "user", ownership)).outcome, "none");
   assert.equal(operations, 1);
-  assert.deepEqual(permanent, [false, true]);
+  assert.deepEqual(permanent, []);
 });
 
 test("credential UI is limited to explicit credentials state", () => {

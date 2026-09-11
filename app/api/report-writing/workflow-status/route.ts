@@ -1,3 +1,5 @@
+import { canQueueUserPraktikaWorkflow } from "@/lib/report-writing/praktika-readiness";
+import { workflowConfigurationIssue, continuationIntentId, workflowAuthorization } from "@/lib/report-writing/workflow-continuation-token";
 import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
@@ -151,6 +153,37 @@ export async function POST(req: Request) {
         return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
       }
       if (workflowStatus !== "running") return NextResponse.json({ success: false, error: "Invalid workflow start." }, { status: 400 });
+      if (praktikaUploadStatus === "pending" && body.continuationOptions) {
+        if (workflowConfigurationIssue()) return NextResponse.json({ success: false, error: "Workflow continuation is not configured." }, { status: 503 });
+        const options = body.continuationOptions;
+        if (typeof options !== "object" || Array.isArray(options) || !/^\d+$/.test(String(options.praktikaPatientId || ""))) {
+          return NextResponse.json({ success: false, error: "Invalid workflow options." }, { status: 400 });
+        }
+        // Reconcile first even if a previously accepted workflow is now challenged.
+        // The RPC alone reserves; the read below never creates or resets work.
+        const { data: existing, error: lookupError } = await supabase.from("praktika_helper_jobs").select("id")
+          .eq("job_type", "complete_report_workflow").eq("id", continuationIntentId(draftId)).limit(1)
+          .abortSignal(AbortSignal.timeout(5000));
+        if (lookupError) return NextResponse.json({ success: false, error: "Workflow intent could not be verified." }, { status: 503 });
+        if (!existing?.length && !await canQueueUserPraktikaWorkflow(supabase, actor.actorUserId)) {
+          return NextResponse.json({ success: false, reconnectRequired: true, error: praktikaConnectionRequired }, { status: 409 });
+        }
+        const optionKeys = ["referrerName", "referrerPracticeName", "referrerEmail", "referrerProviderNumber",
+          "medirefAutoMatchRecipient", "patientEmail", "additionalRecipients", "additionalRecipientsText",
+          "message", "attachPeriodontalChart", "praktikaPatientId", "queueId"];
+        const authorizedOptions = { ...Object.fromEntries(optionKeys.filter(key => Object.hasOwn(options, key)).map(key => [key, options[key]])), actor };
+        const { data: reservation, error: reserveError } = await Promise.resolve(supabase.rpc("reserve_praktika_workflow", {
+          p_draft_id: draftId, p_actor_user_id: actor.actorUserId,
+          p_options: { ...authorizedOptions, authorization: workflowAuthorization(draftId, actor.actorUserId, authorizedOptions, process.env.SUPABASE_SERVICE_ROLE_KEY!) },
+        }).abortSignal(AbortSignal.timeout(5000))).catch(() => ({ data: null, error: {} }));
+        if (reserveError) return NextResponse.json({ success: false, code: "lookup_failed", stage: "workflow_reservation",
+          error: "Workflow reservation could not be verified. The approved letter is retained." }, { status: 503 });
+        if (!reservation?.ok) return NextResponse.json({ success: false, code: reservation?.code || "reservation_failed",
+          error: "This workflow already exists or needs reconciliation. The approved letter is retained." }, { status: 409 });
+        const { data: reservedDraft, error: draftError } = await supabase.from("report_drafts").select("*").eq("id", draftId).single();
+        if (draftError) return NextResponse.json({ success: false, error: "Workflow is reserved; its status could not be read." }, { status: 503 });
+        return NextResponse.json({ success: true, draft: reservedDraft, intentId: reservation.intentId, reconciled: reservation.reconciled });
+      }
       if (praktikaUploadStatus === "pending") {
         if (!await isUserPraktikaReady(supabase, actor.actorUserId)) {
           return NextResponse.json({ success: false, reconnectRequired: true, error: praktikaConnectionRequired }, { status: 409 });

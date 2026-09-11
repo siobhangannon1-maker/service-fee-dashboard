@@ -1,3 +1,4 @@
+import { projectWorkflowRecovery } from "@/lib/report-writing/workflow-recovery"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -32,7 +33,8 @@ export async function GET(req: Request) {
       )
     }
 
-    const drafts = (data || []).map((draft: any) => ({
+    const recovered = await projectWorkflowRecovery(supabase, data || [])
+    const drafts = recovered.map((draft: any) => ({
       ...draft,
       status: draft.status || "draft",
       clinical_notes:

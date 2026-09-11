@@ -1,3 +1,5 @@
+import { praktikaJobEligibility } from "../lib/praktika/job-eligibility";
+import { allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from "../lib/praktika/read-operations";
 import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
 import { PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
 import { PraktikaOwnershipLost, type PraktikaJobOwnership } from "../lib/praktika/helper-lease";
@@ -118,15 +120,28 @@ function looksLikeHtml(text: string) {
   return lower.startsWith("<!doctype") || lower.startsWith("<html");
 }
 
-async function claimNextJob(appUserId?: string | null) {
+async function jobEligible(appUserId: string | null | undefined, job: { job_type: string; request: unknown }, ownership: PraktikaJobOwnership) {
+  await ownership.assertOwned();
+  if (ownership.isShuttingDown?.()) return false;
+  let query = supabase.from("praktika_sessions")
+    .select("status,authenticated_at,helper_heartbeat_at,helper_instance_id,current_url");
+  query = appUserId ? query.eq("scope", "user").eq("app_user_id", appUserId)
+    : query.eq("scope", "practice").is("app_user_id", null);
+  const { data, error } = await query.abortSignal(AbortSignal.timeout(5000)).maybeSingle();
+  await ownership.assertOwned();
+  return !error && praktikaJobEligibility(data, job.job_type, job.request).eligible;
+}
+
+async function claimNextJob(appUserId: string | null | undefined, ownership: PraktikaJobOwnership) {
   let query = supabase
     .from("praktika_helper_jobs")
     .select("*")
     .eq("status", "pending")
+    .neq("job_type", "complete_report_workflow")
     .lte("available_at", nowIso())
     .order("priority", { ascending: true })
     .order("created_at", { ascending: true })
-    .limit(1);
+    .limit(20);
 
   if (appUserId) {
     query = query.eq("app_user_id", appUserId);
@@ -134,12 +149,20 @@ async function claimNextJob(appUserId?: string | null) {
     query = query.is("app_user_id", null);
   }
 
+  if (!await jobEligible(appUserId, { job_type: "write_gate", request: {} }, ownership)) {
+    query = query.in("job_type", Object.keys(PERIO_READ_FIELDS));
+  }
   const { data: jobs, error } = await query;
 
   if (error) throw new Error(error.message);
   if (!jobs || jobs.length === 0) return null;
 
-  const job = jobs[0];
+  // Skip blocked writes without changing their attempts; eligible reads may pass them.
+  let job = null;
+  for (const candidate of jobs) {
+    if (await jobEligible(appUserId, candidate, ownership)) { job = candidate; break; }
+  }
+  if (!job) return null;
 
   const { data: claimed, error: claimError } = await supabase
     .from("praktika_helper_jobs")
@@ -213,7 +236,7 @@ function parsePraktikaResponse(text: string, status: number) {
   }
 }
 
-async function runJsonOrFormRequest(context: BrowserContext, request: any) {
+async function runJsonOrFormRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>) {
   const method = request.method || "POST";
   const contentType = request.contentType || "json";
   const referer =
@@ -251,12 +274,14 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any) {
     data = request.body;
   }
 
+  await beforeRequest?.();
   const response = await context.request.post(
     `${PRAKTIKA_BASE_URL}${request.path}`,
     {
       headers,
       data,
       timeout: 120_000,
+      maxRedirects: 0, // Never replay an external action through a redirect.
     },
   );
 
@@ -269,7 +294,7 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any) {
   return parsePraktikaResponse(text, response.status());
 }
 
-async function runMultipartStorageRequest(context: BrowserContext, request: any) {
+async function runMultipartStorageRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>) {
   const referer =
     request.referer || `${PRAKTIKA_BASE_URL}/v2/patient-directory/patient-search`;
 
@@ -310,6 +335,7 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any)
     buffer: fileBuffer,
   };
 
+  await beforeRequest?.();
   const response = await context.request.post(
     `${PRAKTIKA_BASE_URL}${request.path}`,
     {
@@ -321,6 +347,7 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any)
       },
       multipart,
       timeout: 120_000,
+      maxRedirects: 0, // Never replay an external action through a redirect.
     },
   );
 
@@ -358,12 +385,12 @@ async function markSessionWaitingForCredentialsForJob(job: any, ownership: Prakt
   });
 }
 
-async function runPraktikaRequest(context: BrowserContext, request: any) {
+async function runPraktikaRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>) {
   if (request.contentType === "multipart_storage") {
-    return await runMultipartStorageRequest(context, request);
+    return await runMultipartStorageRequest(context, request, beforeRequest);
   }
 
-  return await runJsonOrFormRequest(context, request);
+  return await runJsonOrFormRequest(context, request, beforeRequest);
 }
 
 function isoDateOnly(value: unknown) {
@@ -1317,7 +1344,7 @@ export async function processOnePraktikaHelperJob(
 ): Promise<PraktikaJobResult> {
   await ownership.assertOwned();
   if (ownership.isShuttingDown?.()) return { outcome: "none" };
-  const job = await claimNextJob(appUserId || null);
+  const job = await claimNextJob(appUserId || null, ownership);
 
   if (!job) return { outcome: "none" };
 
@@ -1328,24 +1355,41 @@ export async function processOnePraktikaHelperJob(
   );
 
   let reportUploadStarted = false;
+  let externalStarted = false;
+  const readOnly = allowedPraktikaRead(job.job_type, job.request);
+  const retrieval = readOnly || verifiedReadOperation(job.job_type, job.request) || job.job_type === "hydrate_report_letter_queue_item";
   try {
     await ownership.assertOwned();
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
-    await ownership.ensureAuthenticated();
+    const beforeRequest = async () => {
+      if (!await jobEligible(appUserId, job, ownership)) throw new PraktikaAuthenticationUnverified("error", true);
+      await ownership.assertOwned();
+      externalStarted = true;
+    };
     await ownership.assertOwned();
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
     reportUploadStarted = job.job_type === "upload_report_to_praktika";
-    const response =
-      job.job_type === "hydrate_report_letter_queue_item"
-        ? await hydrateReportLetterQueueItem(context, job)
-        : await runPraktikaRequest(context, job.request);
+    let response: unknown;
+    if (readOnly) {
+      await beforeRequest();
+      const readResponse = await context.request.post(`${PRAKTIKA_BASE_URL}${job.request.path}`, {
+        headers: { Origin: PRAKTIKA_BASE_URL, Referer: `${PRAKTIKA_BASE_URL}/v2/scheduler`, "Content-Type": "application/json" },
+        data: job.request.body, maxRedirects: 0, timeout: 120_000,
+      });
+      response = validatePraktikaRead(job.job_type, job.request, readResponse.status(), readResponse.url(), await readResponse.text());
+    } else if (job.job_type === "hydrate_report_letter_queue_item") {
+      await beforeRequest();
+      response = await hydrateReportLetterQueueItem(context, job);
+    } else {
+      response = await runPraktikaRequest(context, job.request, beforeRequest);
+    }
 
     await ownership.assertOwned();
     if (reportUploadStarted && !isConfirmedPraktikaUpload(response)) {
       throw new Error("Praktika report upload result could not be confirmed; reconciliation required.");
     }
     await completeJob(job.id, response);
-    await markSessionConnectedForJob(job, ownership);
+    if (!retrieval) await markSessionConnectedForJob(job, ownership);
     console.log(`Completed Praktika helper job ${job.id}`);
     return { outcome: "completed", jobId: job.id };
   } catch (error: any) {
@@ -1354,13 +1398,23 @@ export async function processOnePraktikaHelperJob(
     if (ownership.isShuttingDown?.() || error instanceof PraktikaOwnershipLost) throw error;
     await ownership.assertOwned();
     if (error instanceof PraktikaAuthenticationUnverified) {
-      await failJob(job, error.message, !error.transient);
-      return { outcome: error.transient ? "failed" : "needs_reconnect", jobId: job.id };
+      // No external action occurred: preserve the job and its original attempt count.
+      const { error: releaseError } = await supabase.from("praktika_helper_jobs").update({
+        status: "pending", attempts: Math.max(0, job.attempts - 1), locked_at: null, locked_by: null,
+        updated_at: nowIso(),
+      }).eq("id", job.id).eq("status", "processing").eq("locked_by", WORKER_ID);
+      if (releaseError) throw new Error("Could not preserve waiting Praktika job.");
+      return { outcome: "none" };
     }
-    if (reportUploadStarted) {
+    if (externalStarted && !retrieval) {
       // The server may have saved the PDF even if its response/DB acknowledgement
       // was lost. Never automatically replay this external write.
-      await failJob(job, "Report upload outcome is unconfirmed. Reconcile before retrying.", true);
+      await failJob(job, reportUploadStarted ? "Report upload outcome is unconfirmed. Reconcile before retrying."
+        : "Praktika write outcome is unconfirmed. Reconcile before retrying.", true);
+      return { outcome: "failed", jobId: job.id };
+    }
+    if (readOnly) {
+      await failJob(job, "Praktika read is temporarily unavailable.");
       return { outcome: "failed", jobId: job.id };
     }
     const message = error?.message || "Praktika helper job failed.";

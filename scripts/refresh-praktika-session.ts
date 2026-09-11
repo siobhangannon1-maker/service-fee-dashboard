@@ -1,3 +1,4 @@
+import { pollPraktikaWorkflowContinuations } from "./praktika-workflow-continuations";
 import { createCookieSnapshotStore } from "../lib/praktika/cookie-snapshot";
 import { createShutdownCoordinator, type SkipReason } from "../lib/praktika/shutdown-coordinator";
 import { requestPlannedRestoration } from "../lib/praktika/planned-restoration";
@@ -746,6 +747,7 @@ async function drainAvailableHelperJobs(
   context: BrowserContext,
   appUserId: string | null,
 ): Promise<{ completedCount: number; failedCount: number; needsReconnect: boolean }> {
+  await pollPraktikaWorkflowContinuations(supabase, appUserId, { assertOwned, isShuttingDown: () => shuttingDown });
   let completedCount = 0;
   let failedCount = 0;
   let needsReconnect = false;

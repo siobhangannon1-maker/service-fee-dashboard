@@ -1,10 +1,11 @@
+import { continuationIntentId, workflowAuthorization } from "./workflow-continuation-token";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { isUserPraktikaReady, praktikaConnectionRequired } from "./praktika-readiness";
+import { isUserPraktikaReady, praktikaConnectionRequired, canQueueUserPraktikaWorkflow } from "./praktika-readiness";
 import { isConfirmedPraktikaUpload } from "./praktika-upload-result";
 import { claimWorkflowStart } from "./complete-workflow";
 import { PraktikaAuthenticationUnverified } from "../praktika/authentication-probe";
@@ -66,6 +67,7 @@ function fixture(status = "connected", lookupError?: unknown, throws = false) {
   };
   const db = database(tables, events, lookupError, throws);
   const mocks: Row = {
+    currentWorkflowExecution: () => undefined, canQueueUserPraktikaWorkflow, continuationIntentId, workflowAuthorization, process: { env: { SUPABASE_SERVICE_ROLE_KEY: "synthetic" } }, workflowConfigurationIssue: () => null,
     supabase: db, isUserPraktikaReady, praktikaConnectionRequired, isConfirmedPraktikaUpload,
     claimWorkflowStart, AbortSignal, Date, URL, Buffer, console: { log() {}, error() {}, warn() {} },
     NextResponse: { json: (data: unknown, options?: { status: number }) => Response.json(data, options) },
@@ -148,9 +150,10 @@ test("upload result contract rejects empty, error and non-positive IDs", () => {
 test("worker never replays a report upload after an ambiguous external write", async () => {
   const failures: boolean[] = []; let operations = 0;
   const process = runInNewContext(extract("scripts/praktika-helper-job-processor.ts", "processOnePraktikaHelperJob") + "\nprocessOnePraktikaHelperJob", {
+    verifiedReadOperation: () => false, allowedPraktikaRead: () => false, jobEligible: async () => true,
     PraktikaOwnershipLost, PraktikaAuthenticationUnverified, isConfirmedPraktikaUpload,
     console: { log() {}, error() {} }, claimNextJob: async () => ({ id: "synthetic", job_type: "upload_report_to_praktika", request: {} }),
-    runPraktikaRequest: async () => { operations++; throw new Error("response lost"); },
+    runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => { await before(); operations++; throw new Error("response lost"); },
     failJob: async (_job: unknown, _message: unknown, permanent: boolean) => { failures.push(permanent); },
     completeJob: async () => assert.fail("must not complete"),
   });
@@ -262,4 +265,35 @@ test("fresh approved draft with null workflow fields starts and confirms exactly
   assert.equal((await f.route(uploadPath)(request())).status, 200);
   assert.equal(draft.uploaded_to_praktika, true); assert.equal(draft.workflow_praktika_upload_status, "completed");
   assert.equal(f.events.filter(e => e === "upload-job").length, 1);
+});
+
+for (const fresh of [true, false]) test(`durable start with ${fresh ? "fresh" : "stale"} proof reserves only intent, without PDF/write`, async () => {
+  const f = fixture();
+  if (!fresh) f.tables.praktika_sessions[0].authenticated_at = null;
+  let calls = 0;
+  (f.db as any).rpc = (name: string, args: Row) => ({ abortSignal: async () => {
+    assert.equal(name, "reserve_praktika_workflow"); assert.equal(args.p_actor_user_id, "current-user");
+    calls++;
+    Object.assign(f.tables.report_drafts[0], { workflow_status: "running", workflow_praktika_upload_status: "waiting_for_authentication" });
+    return { data: { ok: true, intentId: "intent", reconciled: calls > 1 }, error: null };
+  } });
+  const body = { startWorkflow: true, workflowStatus: "running", praktikaUploadStatus: "pending", continuationOptions: { praktikaPatientId: "123" } };
+  const response = await f.route(startPath)(request(body));
+  assert.equal(response.status, 200); assert.equal((await response.json()).intentId, "intent");
+  assert.deepEqual(f.events, []); assert.equal(f.tables.praktika_helper_jobs.length, 0);
+  assert.equal(f.tables.report_drafts[0].edited_text, "Synthetic approved text");
+});
+test("durable start never substitutes provider/creator session for authenticated actor", async () => {
+  const f = fixture(); f.tables.praktika_sessions[0].app_user_id = "provider";
+  f.tables.report_drafts[0].created_by = "provider"; f.tables.report_drafts[0].provider_id = "provider";
+  (f.db as any).rpc = () => assert.fail("must not reserve using another person's session");
+  const response = await f.route(startPath)(request({ startWorkflow: true, workflowStatus: "running", praktikaUploadStatus: "pending", continuationOptions: { praktikaPatientId: "123" } }));
+  assert.equal(response.status, 409); assert.deepEqual(f.events, []);
+});
+test("new complete workflow is server continued, while client poll is read only", () => {
+  const source = readFileSync("app/(protected)/report-writing/typist/TypistPage.tsx", "utf8");
+  assert.match(source, /if \(!completeWorkflow\) runMedirefWorkflowInBackground/);
+  assert.match(source, /continuationOptions: \{ \.\.\.workflowPayload/);
+  assert.match(source, /Workflow queued — waiting for Praktika verification/);
+  assert.match(source, /workflowStartPending \|\| selectedDraft\?\.workflow_status === "running"/);
 });

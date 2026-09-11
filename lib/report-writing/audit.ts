@@ -1,3 +1,4 @@
+import { currentWorkflowExecution } from "./workflow-execution-context"
 import { cookies } from "next/headers"
 import { createServerClient } from "@supabase/ssr"
 import { createClient } from "@supabase/supabase-js"
@@ -75,6 +76,8 @@ export function normaliseAuditActorRole(value: unknown): AuditActorRole {
 }
 
 export async function getAuditActor(): Promise<AuditActor> {
+  const workflow = currentWorkflowExecution();
+  if (workflow) return workflow.actor;
   try {
     const cookieStore = await cookies()
 

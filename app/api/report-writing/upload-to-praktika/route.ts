@@ -1,3 +1,5 @@
+import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
+import { continuationChildId } from "@/lib/report-writing/workflow-continuation-token";
 import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
 import { isConfirmedPraktikaUpload } from "@/lib/report-writing/praktika-upload-result";
 import { NextResponse } from "next/server";
@@ -238,6 +240,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, reconnectRequired: true, error: praktikaConnectionRequired }, { status: 409 });
     }
     const actor = await getAuditActor();
+    const workflow = currentWorkflowExecution();
 
     const { data: draft, error: draftError } = await supabase
       .from("report_drafts")
@@ -263,7 +266,7 @@ export async function POST(req: Request) {
     }
 
     const { data: attempts, error: attemptError } = await Promise.resolve(supabase.from("praktika_helper_jobs")
-      .select("id").eq("job_type", "upload_report_to_praktika").eq("request->>reportDraftId", draftId).limit(1)).catch((error: unknown) => ({ data: null, error: error || {} }));
+      .select("*").eq("job_type", "upload_report_to_praktika").eq("request->>reportDraftId", draftId).limit(workflow ? 2 : 1)).catch((error: unknown) => ({ data: null, error: error || {} }));
     if (attemptError) {
       const reason = typeof attemptError === "object" && attemptError !== null
         && "name" in attemptError && attemptError.name === "TimeoutError" ? "lookup_timeout" : "lookup_failed";
@@ -271,15 +274,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, code: reason, stage: "upload_attempt_lookup",
         error: "Previous Praktika upload attempts could not be verified. No new upload was started; the approved letter is retained." }, { status: 503 });
     }
-    if (attempts?.length || draft.uploaded_to_praktika) {
+    const existing = workflow ? attempts?.find(job => job.id === continuationChildId(workflow.intentId, "upload_report_to_praktika")
+      && job.request?.continuationId === workflow.intentId && job.app_user_id === actor.actorUserId) : null;
+    if ((attempts?.length && (!existing || attempts.length !== 1)) || draft.uploaded_to_praktika) {
       console.warn("praktika_upload_attempt", { stage: "upload_attempt_lookup", reason: "existing_attempt" });
       return NextResponse.json({ success: false, code: "existing_attempt", stage: "upload_attempt_lookup", error: "An upload already exists or needs reconciliation. The approved letter is retained." }, { status: 409 });
     }
+    let helperJob = existing;
+    if (!helperJob) {
     // Atomic per-draft reservation also protects direct/concurrent route calls.
     const { data: claimed, error: claimError } = await supabase.from("report_drafts")
       .update({ workflow_praktika_upload_status: "running", updated_at: new Date().toISOString() })
       .eq("id", draftId).is("deleted_at", null).eq("status", "approved")
-      .or("workflow_praktika_upload_status.is.null,workflow_praktika_upload_status.in.(pending,not_requested,failed)")
+      .or(workflow ? "workflow_praktika_upload_status.in.(waiting_for_authentication,pending,running,failed)" : "workflow_praktika_upload_status.is.null,workflow_praktika_upload_status.in.(pending,not_requested,failed)")
       .select("id").maybeSingle();
     if (claimError || !claimed) return NextResponse.json({ success: false, error: "An upload is already in progress or needs reconciliation." }, { status: 409 });
     claimedDraftId = draftId;
@@ -328,7 +335,7 @@ export async function POST(req: Request) {
     await verifyStagedUploadExists(storagePath);
 
     enqueueStarted = true;
-    const helperJob = await createPraktikaHelperJob({
+    helperJob = await createPraktikaHelperJob({
       appUserId: appUserIdFromMode(mode),
       jobType: "upload_report_to_praktika",
       priority: 20,
@@ -362,7 +369,16 @@ export async function POST(req: Request) {
       },
     });
 
+    // Concurrent local preparation may lose the deterministic helper insert.
+    if (workflow && helperJob.request?.body?.file?.path !== storagePath) {
+      await supabase.storage.from(HELPER_UPLOAD_BUCKET).remove([storagePath]);
+      storagePath = null;
+    }
+    }
+    const fileName = helperJob.request.body.file.fileName;
+    storagePath = helperJob.request.body.file.path;
     helperJobId = helperJob.id;
+    enqueueStarted = true;
     const completed = await waitForPraktikaHelperJob(helperJob.id, { timeoutMs: 90000, intervalMs: 2000 });
     if (completed.status !== "completed" || !isConfirmedPraktikaUpload(completed.response)) {
       throw new Error("Praktika upload result could not be confirmed. Check the helper result before retrying.");

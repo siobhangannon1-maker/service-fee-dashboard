@@ -20,6 +20,7 @@ export async function POST(req: Request) {
     }
 
     const result = await generatePeriodontalChartPdf({
+      freshness: body.allowCached === true ? "prefer_cached" : "live",
       patientId,
       appointmentDate,
       patientName,
@@ -46,17 +47,15 @@ export async function POST(req: Request) {
       },
     });
   } catch (error) {
-    console.error("Generate periodontal chart failed:", error);
+    console.error("Generate periodontal chart temporarily unavailable.");
 
     return NextResponse.json(
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to generate periodontal chart.",
+          "Periodontal chart is temporarily unavailable. Please try again after Praktika verification.",
       },
-      { status: 500 }
+      { status: 503 }
     );
   }
 }
