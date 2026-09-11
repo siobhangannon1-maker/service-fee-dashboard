@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import type { BrowserContext } from 'playwright';
-import { createPraktikaAuthenticationGate, startPraktikaAuthenticationRenewal, validateGstResponse, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from './authentication-probe';
+import { praktikaHelperToken, createPraktikaAuthenticationGate, startPraktikaAuthenticationRenewal, validateGstResponse, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from './authentication-probe';
 import { PraktikaOwnershipLost } from './helper-lease';
 import { derivePraktikaConnection } from './authentication';
 
@@ -123,4 +123,42 @@ test('successful periodic proof keeps effective connection beyond original expir
     assert.equal(derivePraktikaConnection(f.row).connected, true);
   }
   assert.equal(f.stats().successes, 4);
+});
+
+test('generation token correlates redirect, failure, retry and later success without identity leakage', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 2000000 });
+  const generation = 'PRIVATE-GENERATION';
+  const token = praktikaHelperToken(generation);
+  assert.match(token, /^[0-9a-f]{16}$/);
+  assert.equal(praktikaHelperToken(generation), token);
+  assert.notEqual(praktikaHelperToken('SECOND-GENERATION'), token);
+  const row = { helper_instance_id: generation, helper_heartbeat_at: new Date().toISOString(), authenticated_at: new Date(Date.now()-60000).toISOString() };
+  let succeeds = false;
+  const context = { request: { post: async (url: string) => ({
+    url: () => url, ok: () => succeeds, status: () => succeeds ? 200 : 307,
+    headers: () => ({location: '/php/PRIVATE?cookie=PRIVATE#PRIVATE'}),
+    body: async () => Buffer.from('[]'), dispose: async () => {},
+  }) } } as unknown as BrowserContext;
+  const gate = createPraktikaAuthenticationGate({ helperToken: token,
+    assertOwned: async () => {}, readOwnedSession: async () => row,
+    probe: () => probePraktikaAuthentication(context, '42', 'https://fixture.invalid'),
+    recordSuccess: async () => { row.authenticated_at = new Date().toISOString(); },
+    recordFailure: async () => assert.fail('307 must remain transient'),
+  });
+  const scheduler = startPraktikaAuthenticationRenewal({ helperToken: token,
+    readSession: async () => row, eligible: async () => true, renew: gate.renew, stopGate: gate.stop });
+  const logs: unknown[][] = []; const original = console.log;
+  console.log = (...args) => { logs.push(args); };
+  try {
+    const proof = row.authenticated_at;
+    await scheduler.tick(); assert.equal(row.authenticated_at, proof);
+    succeeds = true; t.mock.timers.tick(15000); await scheduler.tick();
+    assert.notEqual(row.authenticated_at, proof);
+  } finally { scheduler.stop(); console.log = original; }
+  for (const event of ['renewal_started','renewal_redirect','renewal_transient_failure','renewal_retry_scheduled','renewal_succeeded']) {
+    const entries = logs.filter(([name]) => name === '[Praktika auth] ' + event);
+    assert.ok(entries.length > 0, event);
+    for (const [, fields] of entries) assert.equal((fields as {helperToken: string}).helperToken, token);
+  }
+  assert.doesNotMatch(JSON.stringify(logs), /PRIVATE|SECOND-GENERATION|fixture.invalid|\/php\/|cookie=/);
 });

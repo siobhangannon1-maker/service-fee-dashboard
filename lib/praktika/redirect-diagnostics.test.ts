@@ -57,7 +57,7 @@ test("307 diagnostics preserve background proof and strict job failure behavior,
   assert.equal(fields.phase, "error"); assert.equal(fields.responseReceived, true);
   assert.equal(typeof fields.elapsed_ms, "number"); assert.equal(fields.proof_age_ms, undefined);
   const safe = logs.find(([event]) => event === "[Praktika auth] renewal_redirect")?.[1] as Record<string, unknown>;
-  assert.deepEqual(safe, { httpStatus: 307, destinationCategory: "unknown", currentPageCategory: "unknown", helperAlive: true, proofStillFresh: true, proofAgeBucket: "<1m" });
+  assert.deepEqual(safe, { httpStatus: 307, helperToken: undefined, destinationCategory: "other_same_origin", currentPageCategory: "unknown", helperAlive: true, proofStillFresh: true, proofAgeBucket: "<1m" });
 });
 
 for (const [path, category] of [
@@ -66,8 +66,8 @@ for (const [path, category] of [
   ["/php/json/db_reportingDataWarehouse.php", "same_requested_path"],
   ["/v2/unrecognized", "other_application_path"],
   ["/v2/mfa", "other_application_path"], // No verified MFA URL in repository.
-  ["https://outside.invalid/secret", "external"], [undefined, "unknown"],
-  ["https://[", "unknown"],
+  ["https://outside.invalid/secret", "external"], [undefined, "location_missing"],
+  ["https://[", "location_malformed"],
 ] as const) test(`safe destination category ${category}`, () => {
   assert.equal(classifyPraktikaRedirectDestination(path && path + "?credential=PRIVATE#PRIVATE", expected), category);
 });
@@ -102,4 +102,12 @@ test("repeated redirects expire proof independently; later GST restores only its
   a.recover(); await a.gate.renew();
   assert.equal(derivePraktikaConnection(a.row).connected, true);
   assert.equal(b.row.authenticated_at, original);
+});
+
+for (const [location, category] of [
+  ["   ", "location_missing"], ["/bad\npath", "location_malformed"],
+  ["javascript:PRIVATE", "location_unsupported_scheme"], ["/", "same_origin_root"],
+  ["/php/json/PRIVATE.php?PRIVATE", "php_endpoint"], ["/login", "other_same_origin"],
+] as const) test(`refined destination ${category}`, () => {
+  assert.equal(classifyPraktikaRedirectDestination(location, expected), category);
 });

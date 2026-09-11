@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { BrowserContext } from "playwright";
 import { hasFreshPraktikaAuthentication } from "./authentication";
 import { PraktikaOwnershipLost, hasLivePraktikaHelper, type HelperHealth } from "./helper-lease";
@@ -26,7 +27,7 @@ export function classifyPraktikaRedirect(location: string | undefined, expectedU
 }
 
 export type PageCategory = "login" | "mfa" | "scheduler" | "reports" | "patient_directory" | "other_application" | "unknown";
-export type DestinationCategory = "login" | "mfa" | "scheduler" | "reports" | "same_requested_path" | "other_application_path" | "external" | "unknown";
+export type DestinationCategory = "location_missing" | "location_malformed" | "location_unsupported_scheme" | "same_origin_root" | "php_endpoint" | "other_same_origin" | "login" | "mfa" | "scheduler" | "reports" | "same_requested_path" | "other_application_path" | "external" | "unknown";
 
 // Diagnostic labels only. No inferred MFA pathname: the helper detects MFA inputs.
 export function classifyPraktikaPage(value: string, baseUrl: string): PageCategory {
@@ -42,16 +43,24 @@ export function classifyPraktikaPage(value: string, baseUrl: string): PageCatego
   } catch { return "unknown"; }
 }
 export function classifyPraktikaRedirectDestination(location: string | undefined, expectedUrl: string): DestinationCategory {
-  const legacy = classifyPraktikaRedirect(location, expectedUrl);
-  if (legacy.same_origin === null) return "unknown";
-  if (!legacy.same_origin) return "external";
+  if (!location?.trim()) return "location_missing";
+  if (/[\u0000-\u001f\u007f]/.test(location)) return "location_malformed";
   try {
-    const destination = new URL(location!, expectedUrl);
-    if (destination.pathname === new URL(expectedUrl).pathname) return "same_requested_path";
+    const expected = new URL(expectedUrl);
+    const destination = new URL(location, expected);
+    if (!["https:", "http:"].includes(destination.protocol)) return "location_unsupported_scheme";
+    if (destination.origin !== expected.origin) return "external";
+    if (destination.pathname === expected.pathname) return "same_requested_path";
+    if (destination.pathname === "/") return "same_origin_root";
+    if (destination.pathname.startsWith("/php/")) return "php_endpoint";
     const category = classifyPraktikaPage(destination.href, expectedUrl);
     if (category === "patient_directory" || category === "other_application") return "other_application_path";
-    return category;
-  } catch { return "unknown"; }
+    return category === "unknown" ? "other_same_origin" : category;
+  } catch { return "location_malformed"; }
+}
+
+export function praktikaHelperToken(generation: string): string {
+  return createHash("sha256").update("praktika-auth-renewal-generation:v1\0").update(generation).digest("hex").slice(0, 16);
 }
 
 export type ProbeResult = { redirectDiagnostics?: RedirectDiagnostics; verified: boolean; phase: AuthenticationFailurePhase; httpStatus: number | null; parsedArray: boolean };
@@ -141,6 +150,7 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
 }
 
 export function createPraktikaAuthenticationGate(deps: {
+  helperToken?: string;
   readOwnedSession(): Promise<HelperHealth>;
   currentPageCategory?(): PageCategory;
   assertOwned(): Promise<void>;
@@ -168,7 +178,7 @@ export function createPraktikaAuthenticationGate(deps: {
       const session = await deps.readOwnedSession();
       await assertCurrent();
       if (!renew && hasFreshPraktikaAuthentication(session)) return;
-      console.log(renew ? "[Praktika auth] renewal_started" : "[Praktika auth] probe_started");
+      console.log(renew ? "[Praktika auth] renewal_started" : "[Praktika auth] probe_started", { helperToken: deps.helperToken });
       const result = await deps.probe();
       await assertCurrent();
       if (!result.verified) {
@@ -180,6 +190,7 @@ export function createPraktikaAuthenticationGate(deps: {
           try { currentPageCategory = deps.currentPageCategory?.() ?? "unknown"; } catch { /* Diagnostics must not affect verification. */ }
           const age = Date.now() - Date.parse(session.authenticated_at || "");
           console.log("[Praktika auth] renewal_redirect", {
+            helperToken: deps.helperToken,
             httpStatus: result.httpStatus,
             destinationCategory: result.redirectDiagnostics.destinationCategory,
             currentPageCategory,
@@ -189,6 +200,7 @@ export function createPraktikaAuthenticationGate(deps: {
           });
         }
         console.log(renew && result.phase === "error" ? "[Praktika auth] renewal_transient_failure" : "[Praktika auth] probe_failed", {
+          helperToken: deps.helperToken,
           httpStatus: result.httpStatus, parsedArray: result.parsedArray, phase: result.phase,
           ...(result.redirectDiagnostics ? {
             redirect_category: result.redirectDiagnostics.redirect_category,
@@ -203,6 +215,7 @@ export function createPraktikaAuthenticationGate(deps: {
       await assertCurrent();
       if (!hasFreshPraktikaAuthentication(await deps.readOwnedSession())) throw new PraktikaOwnershipLost();
       console.log(renew ? "[Praktika auth] renewal_succeeded" : "[Praktika auth] probe_succeeded", {
+        helperToken: deps.helperToken,
         httpStatus: result.httpStatus, parsedArray: result.parsedArray,
       });
     })().finally(() => { inFlight = undefined; });
@@ -222,6 +235,7 @@ export const PRAKTIKA_AUTH_RENEWAL_MS = 60_000;
 export const PRAKTIKA_AUTH_RETRY_MS = 15_000;
 
 export function startPraktikaAuthenticationRenewal(deps: {
+  helperToken?: string;
   readSession(): Promise<HelperHealth>;
   eligible(): Promise<boolean>;
   renew(): Promise<void>;
@@ -259,7 +273,7 @@ export function startPraktikaAuthenticationRenewal(deps: {
           return;
         }
         nextAttempt = now() + (retried ? PRAKTIKA_AUTH_RENEWAL_MS : PRAKTIKA_AUTH_RETRY_MS);
-        if (!retried) console.log("[Praktika auth] renewal_retry_scheduled");
+        if (!retried) console.log("[Praktika auth] renewal_retry_scheduled", { helperToken: deps.helperToken });
         retried = !retried;
       }
     } catch { stop(); }
