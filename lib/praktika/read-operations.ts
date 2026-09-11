@@ -1,3 +1,13 @@
+export type PraktikaReadFailureCategory =
+  | 'http_307' | 'http_other' | 'transport_failure' | 'response_url_mismatch'
+  | 'response_too_large' | 'invalid_json' | 'error_envelope' | 'invalid_structure'
+  | 'missing_exam_id' | 'result_persistence_failure';
+export class PraktikaReadFailure extends Error {
+  constructor(readonly failureCategory: PraktikaReadFailureCategory) {
+    super('Praktika read is temporarily unavailable.');
+  }
+}
+
 // Semantic allowlist, not an HTTP-method inference. All other jobs keep the write gate.
 export const PERIO_READ_FIELDS = {
   periodontal_chart_patient_perio_exam_ids: ['patient_perioexamids', 'patient_medicalhistory', 'patient_images'],
@@ -23,14 +33,17 @@ export function allowedPraktikaRead(jobType: string, request: unknown): request 
       && positiveId(p.practice_id) && positiveId(p[idKey]));
 }
 export function validatePraktikaRead(jobType: string, request: unknown, status: number, url: string, text: string): unknown {
-  const unavailable = () => { throw new Error('Praktika read is temporarily unavailable.'); };
-  if (!allowedPraktikaRead(jobType, request) || status < 200 || status >= 300
-    || url !== 'https://praktika.praktika.net.au/php/forms/db_getFormData.php' || text.length > 8_000_000) return unavailable();
+  const unavailable = (category: PraktikaReadFailureCategory = 'invalid_structure'): never => { throw new PraktikaReadFailure(category); };
+  if (!allowedPraktikaRead(jobType, request)) return unavailable();
+  if (status < 200 || status >= 300) return unavailable(status === 307 ? 'http_307' : 'http_other');
+  if (url !== 'https://praktika.praktika.net.au/php/forms/db_getFormData.php') return unavailable('response_url_mismatch');
+  if (text.length > 8_000_000) return unavailable('response_too_large');
   let data: unknown;
-  try { data = JSON.parse(text); } catch { return unavailable(); }
+  try { data = JSON.parse(text); } catch { return unavailable('invalid_json'); }
   const rows = Array.isArray(data) ? data : [data];
   const errorKeys = ['error', 'errors', 'error_message', 'errorMessage', 'exception', 'login', 'mfa', 'redirect', 'success', 'authenticationRequired', 'requiresLogin', 'requiresMfa'];
-  if (!rows.every(row => record(row) && !errorKeys.some(k => Object.hasOwn(row, k)))) return unavailable();
+  if (!rows.every(record)) return unavailable();
+  if (rows.some(row => errorKeys.some(k => Object.hasOwn(row as object, k)))) return unavailable('error_envelope');
   if (jobType === 'periodontal_chart_patient_perio_exam_ids') {
     if (rows.length !== 1 || !record(rows[0]) || !Array.isArray(rows[0].patient_perioexamids)
       || !rows[0].patient_perioexamids.every(positiveId)) return unavailable();
@@ -44,7 +57,8 @@ export function validatePraktikaRead(jobType: string, request: unknown, status: 
         || typeof row.perioexam_date !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(row.perioexam_date)
         || !Array.isArray(row.perioexam_toothdata) || !row.perioexam_toothdata.every(record)) return false;
       seen.add(String(row.perioexam_id)); return true;
-    }) || seen.size !== expected.size) return unavailable();
+    })) return unavailable();
+    if (seen.size !== expected.size) return unavailable('missing_exam_id');
   }
   return data;
 }

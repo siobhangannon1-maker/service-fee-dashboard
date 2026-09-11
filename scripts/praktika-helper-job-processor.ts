@@ -1,5 +1,5 @@
 import { praktikaJobEligibility } from "../lib/praktika/job-eligibility";
-import { allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from "../lib/praktika/read-operations";
+import { PraktikaReadFailure, type PraktikaReadFailureCategory, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from "../lib/praktika/read-operations";
 import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
 import { PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
 import { PraktikaOwnershipLost, type PraktikaJobOwnership } from "../lib/praktika/helper-lease";
@@ -197,7 +197,7 @@ async function completeJob(jobId: string, response: unknown) {
   if (error) throw new Error(error.message);
 }
 
-async function failJob(job: any, message: string, forcePermanent = false) {
+async function failJob(job: any, message: string, forcePermanent = false, readFailure?: { jobType: string; attempt: number; failureCategory: PraktikaReadFailureCategory; httpStatus?: number }) {
   const attempts = Number(job.attempts || 0);
   const permanent = forcePermanent || attempts >= 3;
 
@@ -206,6 +206,7 @@ async function failJob(job: any, message: string, forcePermanent = false) {
     .update({
       status: permanent ? "failed" : "pending",
       error_message: message,
+      ...(readFailure ? { response: { readFailure } } : {}),
       failed_at: permanent ? nowIso() : null,
       available_at: permanent
         ? nowIso()
@@ -1356,6 +1357,8 @@ export async function processOnePraktikaHelperJob(
 
   let reportUploadStarted = false;
   let externalStarted = false;
+  let readStage: "transport_failure" | "invalid_structure" | "result_persistence_failure" = "transport_failure";
+  let readHttpStatus: number | undefined;
   const readOnly = allowedPraktikaRead(job.job_type, job.request);
   const retrieval = readOnly || verifiedReadOperation(job.job_type, job.request) || job.job_type === "hydrate_report_letter_queue_item";
   try {
@@ -1376,7 +1379,10 @@ export async function processOnePraktikaHelperJob(
         headers: { Origin: PRAKTIKA_BASE_URL, Referer: `${PRAKTIKA_BASE_URL}/v2/scheduler`, "Content-Type": "application/json" },
         data: job.request.body, maxRedirects: 0, timeout: 120_000,
       });
-      response = validatePraktikaRead(job.job_type, job.request, readResponse.status(), readResponse.url(), await readResponse.text());
+      readHttpStatus = readResponse.status();
+      const text = await readResponse.text();
+      readStage = "invalid_structure";
+      response = validatePraktikaRead(job.job_type, job.request, readHttpStatus, readResponse.url(), text);
     } else if (job.job_type === "hydrate_report_letter_queue_item") {
       await beforeRequest();
       response = await hydrateReportLetterQueueItem(context, job);
@@ -1388,6 +1394,7 @@ export async function processOnePraktikaHelperJob(
     if (reportUploadStarted && !isConfirmedPraktikaUpload(response)) {
       throw new Error("Praktika report upload result could not be confirmed; reconciliation required.");
     }
+    readStage = "result_persistence_failure";
     await completeJob(job.id, response);
     if (!retrieval) await markSessionConnectedForJob(job, ownership);
     console.log(`Completed Praktika helper job ${job.id}`);
@@ -1395,8 +1402,14 @@ export async function processOnePraktikaHelperJob(
   } catch (error: any) {
     // A request may already have reached Praktika. Leave it for reconciliation,
     // rather than converting ownership loss into an automatic operation retry.
-    if (ownership.isShuttingDown?.() || error instanceof PraktikaOwnershipLost) throw error;
-    await ownership.assertOwned();
+    if (ownership.isShuttingDown?.() || error instanceof PraktikaOwnershipLost) {
+      if (readOnly && error instanceof PraktikaOwnershipLost) console.log("[Praktika read] failure", { jobType: job.job_type, attempt: job.attempts, failureCategory: "ownership_unavailable" });
+      throw error;
+    }
+    try { await ownership.assertOwned(); } catch (ownershipError) {
+      if (readOnly) console.log("[Praktika read] failure", { jobType: job.job_type, attempt: job.attempts, failureCategory: "ownership_unavailable" });
+      throw ownershipError;
+    }
     if (error instanceof PraktikaAuthenticationUnverified) {
       // No external action occurred: preserve the job and its original attempt count.
       const { error: releaseError } = await supabase.from("praktika_helper_jobs").update({
@@ -1414,7 +1427,13 @@ export async function processOnePraktikaHelperJob(
       return { outcome: "failed", jobId: job.id };
     }
     if (readOnly) {
-      await failJob(job, "Praktika read is temporarily unavailable.");
+      const diagnostic = {
+        jobType: job.job_type, attempt: job.attempts,
+        failureCategory: error instanceof PraktikaReadFailure ? error.failureCategory : readStage,
+        ...(readHttpStatus !== undefined ? { httpStatus: readHttpStatus } : {}),
+      };
+      console.log("[Praktika read] failure", diagnostic);
+      await failJob(job, "Praktika read is temporarily unavailable.", false, diagnostic);
       return { outcome: "failed", jobId: job.id };
     }
     const message = error?.message || "Praktika helper job failed.";
