@@ -2449,7 +2449,7 @@ export default function TypistPage() {
   ) {
     const response = await fetch("/api/report-writing/workflow-status", {
       method: "POST",
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(values.startWorkflow ? 30000 : 15000),
       headers: {
         "Content-Type": "application/json",
       },
@@ -2461,6 +2461,11 @@ export default function TypistPage() {
 
     const data = await response.json().catch(() => ({}));
 
+    if (data.accepted === true && response.ok && data.success) return {
+      id: draftId, workflow_status: data.workflowStatus,
+      workflow_praktika_upload_status: data.uploadStatus,
+      workflow_last_message: data.intentStatus === "completed" ? "Workflow already completed." : "Workflow started. Continuing in background.",
+    };
     if (!response.ok || !data.success) {
       if (values.startWorkflow) throw new Error(data.error || "Could not start workflow.");
       console.warn("Workflow status update failed:", data);
@@ -2548,7 +2553,7 @@ export default function TypistPage() {
     });
 
     if (!runningDraft) throw new Error("Workflow start could not be confirmed. No upload was queued.");
-    const nextDraft: Draft = runningDraft;
+    const nextDraft: Draft = { ...draftSnapshot, ...runningDraft };
 
     setSelectedDraft(nextDraft);
     setDrafts((current) =>
@@ -2578,7 +2583,7 @@ export default function TypistPage() {
       queueStatus: queueStatusSnapshot,
     });
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Could not start workflow.");
+      alert("Workflow start could not be confirmed. Please refresh and try Complete Workflow again; any existing workflow will be reconciled.");
     } finally {
       workflowStartInFlight.current = false;
       setWorkflowStartPending(false);

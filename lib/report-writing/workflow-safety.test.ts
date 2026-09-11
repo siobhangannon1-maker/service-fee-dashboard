@@ -69,7 +69,7 @@ function fixture(status = "connected", lookupError?: unknown, throws = false) {
   const mocks: Row = {
     currentWorkflowExecution: () => undefined, canQueueUserPraktikaWorkflow, continuationIntentId, workflowAuthorization, process: { env: { SUPABASE_SERVICE_ROLE_KEY: "synthetic" } }, workflowConfigurationIssue: () => null,
     supabase: db, isUserPraktikaReady, praktikaConnectionRequired, isConfirmedPraktikaUpload,
-    claimWorkflowStart, AbortSignal, Date, URL, Buffer, console: { log() {}, error() {}, warn() {} },
+    claimWorkflowStart, AbortSignal, setTimeout, clearTimeout, Date, URL, Buffer, console: { log() {}, error() {}, warn() {} },
     NextResponse: { json: (data: unknown, options?: { status: number }) => Response.json(data, options) },
     getAuditActor: async () => ({ actorUserId: "current-user", actorInitials: "T" }), getUserStatus: async () => true,
     getCurrentUserPraktikaSessionMode: async () => ({ scope: "user", appUserId: "current-user" }),
@@ -279,7 +279,7 @@ for (const fresh of [true, false]) test(`durable start with ${fresh ? "fresh" : 
   } });
   const body = { startWorkflow: true, workflowStatus: "running", praktikaUploadStatus: "pending", continuationOptions: { praktikaPatientId: "123" } };
   const response = await f.route(startPath)(request(body));
-  assert.equal(response.status, 200); assert.equal((await response.json()).intentId, "intent");
+  assert.equal(response.status, 202); assert.equal((await response.json()).intentId, "intent");
   assert.deepEqual(f.events, []); assert.equal(f.tables.praktika_helper_jobs.length, 0);
   assert.equal(f.tables.report_drafts[0].edited_text, "Synthetic approved text");
 });
@@ -296,4 +296,41 @@ test("new complete workflow is server continued, while client poll is read only"
   assert.match(source, /continuationOptions: \{ \.\.\.workflowPayload/);
   assert.match(source, /Workflow queued — waiting for Praktika verification/);
   assert.match(source, /workflowStartPending \|\| selectedDraft\?\.workflow_status === "running"/);
+});
+
+const durableStartBody = { startWorkflow: true, workflowStatus: 'running', praktikaUploadStatus: 'pending', continuationOptions: { praktikaPatientId: '123' } };
+test('reservation abort is sanitized and fixture commits no intent or children', async () => {
+  const f = fixture(); const before = structuredClone(f.tables);
+  (f.db as any).rpc = () => ({ abortSignal: async () => { throw new DOMException('signal timed out SECRET', 'TimeoutError'); } });
+  const response = await f.route(startPath)(request(durableStartBody));
+  assert.equal(response.status,503); const body=await response.json(); assert.equal(body.stage,'workflow_reservation');
+  assert.doesNotMatch(JSON.stringify(body),/signal timed out|SECRET|AbortError/);assert.match(body.error,/try Complete Workflow again/);
+  assert.deepEqual(f.tables,before);assert.deepEqual(f.events,[]);
+});
+test('accepted reservation needs no draft reread and repeated calls reconcile same intent',async()=>{
+  const f=fixture(); let calls=0;
+  const from=f.db.from.bind(f.db);
+  (f.db as any).from=(table:string)=>{if(table==='report_drafts')throw new Error('No post-reservation reads');return from(table);};
+  (f.db as any).rpc=()=>({abortSignal:async()=>({data:{ok:true,intentId:'same-intent',reconciled:calls++>0,intentStatus:'waiting',workflowStatus:'running',uploadStatus:'waiting_for_authentication'},error:null})});
+  for(let i=0;i<2;i++){
+    const response=await f.route(startPath)(request(durableStartBody));assert.equal(response.status,202);
+    const body=await response.json();assert.equal(body.accepted,true);assert.equal(body.intentId,'same-intent');assert.equal(body.reconciled,i>0);assert.equal(body.draft,undefined);
+  }
+  assert.deepEqual(f.events,[]);
+});
+test('authorization read rejection cannot reserve or expose raw abort text',async()=>{
+  const f=fixture();f.mocks.getAuditActor=async()=>{throw new Error('signal timed out SECRET');};
+  (f.db as any).rpc=()=>assert.fail('must not reserve without authorization');
+  const response=await f.route(startPath)(request(durableStartBody));assert.equal(response.status,503);
+  assert.doesNotMatch(JSON.stringify(await response.json()),/SECRET|signal timed out/);
+});
+
+test('client consumes accepted intent without requiring a returned draft row',async()=>{
+  const source=readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx','utf8');
+  const start=source.indexOf('  async function updateWorkflowStatus(');
+  const end=source.indexOf('\n  async function ',start+1);
+  const code=ts.transpileModule(source.slice(start,end),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  const run=runInNewContext(code+'\nupdateWorkflowStatus',{AbortSignal,console,
+    fetch:async()=>Response.json({success:true,accepted:true,intentId:'intent',workflowStatus:'running',uploadStatus:'waiting_for_authentication'},{status:202})});
+  const result=await run('draft',{startWorkflow:true});assert.equal(result.id,'draft');assert.equal(result.workflow_status,'running');assert.match(result.workflow_last_message,/Continuing in background/);
 });

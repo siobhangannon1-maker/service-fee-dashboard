@@ -48,6 +48,14 @@ function validOrNull(value: unknown, allowed: Set<string>) {
 }
 
 export async function POST(req: Request) {
+  // Only read-only preflight is raced. Never abandon a reservation transport and
+  // infer rollback: the deterministic RPC reconciles an uncertain acknowledgement.
+  async function boundedRead<T>(operation: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([operation, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Workflow preflight unavailable")), 5000);
+    })]); } finally { if (timer) clearTimeout(timer); }
+  }
   try {
     const body = await req.json().catch(() => ({}));
 
@@ -61,8 +69,8 @@ export async function POST(req: Request) {
     }
 
     if (body.failMedirefEnqueue === true) {
-      const actor = await getAuditActor();
-      if (!actor.actorUserId || !await getUserStatus(actor.actorUserId)) {
+      const actor = await boundedRead(getAuditActor());
+      if (!actor.actorUserId || !await boundedRead(getUserStatus(actor.actorUserId))) {
         return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
       }
       const { data: active, error: activeError } = await supabase.from("mediref_helper_jobs").select("id")
@@ -148,8 +156,8 @@ export async function POST(req: Request) {
     }
 
     if (body.startWorkflow === true) {
-      const actor = await getAuditActor();
-      if (!actor.actorUserId || !await getUserStatus(actor.actorUserId)) {
+      const actor = await boundedRead(getAuditActor());
+      if (!actor.actorUserId || !await boundedRead(getUserStatus(actor.actorUserId))) {
         return NextResponse.json({ success: false, error: "An active login is required." }, { status: 403 });
       }
       if (workflowStatus !== "running") return NextResponse.json({ success: false, error: "Invalid workflow start." }, { status: 400 });
@@ -161,11 +169,15 @@ export async function POST(req: Request) {
         }
         // Reconcile first even if a previously accepted workflow is now challenged.
         // The RPC alone reserves; the read below never creates or resets work.
-        const { data: existing, error: lookupError } = await supabase.from("praktika_helper_jobs").select("id")
-          .eq("job_type", "complete_report_workflow").eq("id", continuationIntentId(draftId)).limit(1)
-          .abortSignal(AbortSignal.timeout(5000));
-        if (lookupError) return NextResponse.json({ success: false, error: "Workflow intent could not be verified." }, { status: 503 });
-        if (!existing?.length && !await canQueueUserPraktikaWorkflow(supabase, actor.actorUserId)) {
+        const [lookup, queueable] = await boundedRead(Promise.all([
+          Promise.resolve(supabase.from("praktika_helper_jobs").select("id")
+            .eq("job_type", "complete_report_workflow").eq("id", continuationIntentId(draftId)).limit(1)
+            .abortSignal(AbortSignal.timeout(5000))),
+          canQueueUserPraktikaWorkflow(supabase, actor.actorUserId).catch(() => false),
+        ]));
+        if (lookup.error) return NextResponse.json({ success: false, code: "reservation_unavailable", stage: "workflow_preflight",
+          error: "Workflow start could not be confirmed. Please try Complete Workflow again; any existing intent will be reconciled." }, { status: 503 });
+        if (!lookup.data?.length && !queueable) {
           return NextResponse.json({ success: false, reconnectRequired: true, error: praktikaConnectionRequired }, { status: 409 });
         }
         const optionKeys = ["referrerName", "referrerPracticeName", "referrerEmail", "referrerProviderNumber",
@@ -177,12 +189,12 @@ export async function POST(req: Request) {
           p_options: { ...authorizedOptions, authorization: workflowAuthorization(draftId, actor.actorUserId, authorizedOptions, process.env.SUPABASE_SERVICE_ROLE_KEY!) },
         }).abortSignal(AbortSignal.timeout(5000))).catch(() => ({ data: null, error: {} }));
         if (reserveError) return NextResponse.json({ success: false, code: "lookup_failed", stage: "workflow_reservation",
-          error: "Workflow reservation could not be verified. The approved letter is retained." }, { status: 503 });
+          error: "Workflow start could not be confirmed. Please try Complete Workflow again; any existing intent will be reconciled." }, { status: 503 });
         if (!reservation?.ok) return NextResponse.json({ success: false, code: reservation?.code || "reservation_failed",
           error: "This workflow already exists or needs reconciliation. The approved letter is retained." }, { status: 409 });
-        const { data: reservedDraft, error: draftError } = await supabase.from("report_drafts").select("*").eq("id", draftId).single();
-        if (draftError) return NextResponse.json({ success: false, error: "Workflow is reserved; its status could not be read." }, { status: 503 });
-        return NextResponse.json({ success: true, draft: reservedDraft, intentId: reservation.intentId, reconciled: reservation.reconciled });
+        return NextResponse.json({ success: true, accepted: true, intentId: reservation.intentId,
+          reconciled: reservation.reconciled, intentStatus: reservation.intentStatus,
+          workflowStatus: reservation.workflowStatus, uploadStatus: reservation.uploadStatus }, { status: 202 });
       }
       if (praktikaUploadStatus === "pending") {
         if (!await isUserPraktikaReady(supabase, actor.actorUserId)) {
@@ -232,18 +244,15 @@ export async function POST(req: Request) {
       success: true,
       draft: data,
     });
-  } catch (error) {
-    console.error("Workflow status update failed:", error);
+  } catch {
 
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to update workflow status.",
+        code: "workflow_status_unavailable",
+        error: "Workflow status could not be confirmed. Please refresh and try again; any existing workflow will be reconciled.",
       },
-      { status: 500 },
+      { status: 503 },
     );
   }
 }
