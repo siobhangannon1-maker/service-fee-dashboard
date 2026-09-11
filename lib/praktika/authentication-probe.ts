@@ -8,7 +8,7 @@ const MAX_PROBE_BYTES = 2 * 1024 * 1024;
 const PATH = "/php/json/db_reportingDataWarehouse.php";
 export type AuthenticationFailurePhase = "error" | "waiting_for_credentials" | "waiting_for_mfa";
 export type RedirectCategory = "login_redirect" | "same_origin_other_redirect" | "external_redirect" | "redirect_destination_unavailable";
-type RedirectDiagnostics = { phpTargetFamily?: PhpTargetFamily; phpTargetFingerprint?: string; phpTargetCategory?: PhpTargetCategory; destinationCategory: DestinationCategory; redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
+type RedirectDiagnostics = { targetObservation?: RedirectTargetObservation; phpTargetFamily?: PhpTargetFamily; phpTargetFingerprint?: string; phpTargetCategory?: PhpTargetCategory; destinationCategory: DestinationCategory; redirect_category: RedirectCategory; same_origin: boolean | null; responseReceived: true; elapsed_ms: number };
 
 // Classify only; never return URL components or change authentication decisions.
 export function classifyPraktikaRedirect(location: string | undefined, expectedUrl: string): Pick<RedirectDiagnostics, "redirect_category" | "same_origin"> {
@@ -103,6 +103,18 @@ export function praktikaHelperToken(generation: string): string {
   return createHash("sha256").update("praktika-auth-renewal-generation:v1\0").update(generation).digest("hex").slice(0, 16);
 }
 
+export type RedirectTargetObservation = { targetMatched: boolean; normalizedPath?: string; setCookiePresent: boolean };
+export function observePraktikaRedirectTarget(location: string | undefined, expectedUrl: string,
+  headers: Record<string, string>): RedirectTargetObservation {
+  const setCookiePresent = Object.keys(headers).some(key => key.toLowerCase() === "set-cookie");
+  const unmatched = { targetMatched: false, setCookiePresent };
+  try {
+    if (classifyPraktikaPhpTarget(location, expectedUrl) !== "unrecognized_php_target"
+      || praktikaPhpTargetFingerprint(location, expectedUrl) !== "e95d472b1948b4d2") return unmatched;
+    return { targetMatched: true, normalizedPath: new URL(location!, expectedUrl).pathname, setCookiePresent };
+  } catch { return unmatched; }
+}
+
 export type ProbeResult = { redirectDiagnostics?: RedirectDiagnostics; verified: boolean; phase: AuthenticationFailurePhase; httpStatus: number | null; parsedArray: boolean };
 export class PraktikaAuthenticationUnverified extends Error {
   constructor(readonly phase: AuthenticationFailurePhase = "error", readonly transient = false) { super(transient ? "Praktika verification is temporarily unavailable. Retry remains bounded." : "Praktika authentication could not be verified. Reconnect before retrying this job."); }
@@ -169,10 +181,15 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
           if (response.status() >= 300 && response.status() < 400) {
             // Redirects never prove authentication; only the confirmed login path is a challenge.
             let location: string | undefined;
-            try { location = response.headers()["location"]; } catch { /* Metadata unavailable. */ }
+            let targetObservation: RedirectTargetObservation | undefined;
+            try {
+              const headers = response.headers();
+              location = headers["location"];
+              if (response.status() === 307) targetObservation = observePraktikaRedirectTarget(location, url, headers);
+            } catch { /* Metadata unavailable. */ }
             const redirect = classifyPraktikaRedirect(location, url);
             return { ...failed, phase: redirect.redirect_category === "login_redirect" ? "waiting_for_credentials" as const : "error" as const, httpStatus: response.status(), redirectDiagnostics: {
-              ...redirect, phpTargetFamily: classifyPraktikaPhpFamily(location, url), phpTargetFingerprint: praktikaPhpTargetFingerprint(location, url), phpTargetCategory: classifyPraktikaPhpTarget(location, url), destinationCategory: classifyPraktikaRedirectDestination(location, url), responseReceived: true as const,
+              ...redirect, targetObservation, phpTargetFamily: classifyPraktikaPhpFamily(location, url), phpTargetFingerprint: praktikaPhpTargetFingerprint(location, url), phpTargetCategory: classifyPraktikaPhpTarget(location, url), destinationCategory: classifyPraktikaRedirectDestination(location, url), responseReceived: true as const,
               elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
             } };
           }
@@ -199,6 +216,7 @@ export function createPraktikaAuthenticationGate(deps: {
   recordFailure(phase: AuthenticationFailurePhase): Promise<void>;
 }) {
   // One gate and one transport per owning child generation.
+  let targetPathReported = false;
   let inFlight: Promise<void> | undefined;
   let epoch = 0;
   let suspended = false;
@@ -228,6 +246,16 @@ export function createPraktikaAuthenticationGate(deps: {
         if (renew && result.phase === "error" && result.redirectDiagnostics) {
           let currentPageCategory: PageCategory = "unknown";
           try { currentPageCategory = deps.currentPageCategory?.() ?? "unknown"; } catch { /* Diagnostics must not affect verification. */ }
+          const observation = result.redirectDiagnostics.targetObservation;
+          if (result.httpStatus === 307 && observation) {
+            console.log("[Praktika auth diagnostic] redirect_target_observation", {
+              helperToken: deps.helperToken, httpStatus: 307,
+              targetMatched: observation.targetMatched,
+              ...(observation.targetMatched && !targetPathReported ? { normalizedPath: observation.normalizedPath } : {}),
+              setCookiePresent: observation.setCookiePresent,
+            });
+            if (observation.targetMatched) targetPathReported = true;
+          }
           const age = Date.now() - Date.parse(session.authenticated_at || "");
           console.log("[Praktika auth] renewal_redirect", {
             helperToken: deps.helperToken,

@@ -176,3 +176,69 @@ test('family omitted for known PHP endpoints and non-PHP redirects', () => {
   }
   assert.equal(classifyPraktikaPhpTarget('/php/forms/db_getFormData.php', expected), 'form_get');
 });
+
+// The real target is still unknown. Exercise its positive branch with a synthetic
+// hash match in an isolated function context; production fingerprint is immutable.
+test('target observation exposes only pathname on the pinned hash branch', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { runInNewContext } = await import('node:vm');
+  const ts = await import('typescript');
+  const source = readFileSync('lib/praktika/authentication-probe.ts', 'utf8');
+  const ast = ts.createSourceFile('probe.ts', source, ts.ScriptTarget.Latest, true);
+  const fn = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'observePraktikaRedirectTarget')!;
+  const code = ts.transpileModule(fn.getText(ast).replace('export ', ''), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  let match = true;
+  const observe = runInNewContext(code + '\nobservePraktikaRedirectTarget', { URL, classifyPraktikaPhpTarget,
+    praktikaPhpTargetFingerprint: () => match ? 'e95d472b1948b4d2' : 'different' });
+  const location = '/php/synthetic-target.php?SECRET_QUERY#SECRET_FRAGMENT';
+  const result = observe(location, expected, { 'Set-Cookie': 'SECRET_NAME=SECRET_VALUE' });
+  assert.equal(result.targetMatched, true);
+  assert.equal(result.normalizedPath, '/php/synthetic-target.php');
+  assert.equal(result.setCookiePresent, true);
+  assert.doesNotMatch(JSON.stringify(result), /SECRET|fixture/);
+  match = false;
+  assert.equal(observe(location, expected, {}).normalizedPath, undefined);
+  assert.equal(observe(location, expected, {}).setCookiePresent, false);
+  match = true;
+  for (const value of [undefined, 'https://[', 'https://external.invalid/php/other', '/v2/login']) {
+    assert.equal(observe(value, expected, {}).normalizedPath, undefined);
+  }
+});
+
+test('real fingerprint does not expose an unrelated path or cookie metadata', async () => {
+  const { observePraktikaRedirectTarget } = await import('./authentication-probe');
+  assert.deepEqual(observePraktikaRedirectTarget('/php/unknown?SECRET#SECRET', expected, { 'set-cookie': 'SECRET=SECRET' }),
+    { targetMatched: false, setCookiePresent: true });
+});
+
+test('307 observation uses received headers only and keeps POST single-shot', async () => {
+  let calls = 0;
+  const context = { request: { post: async (_url: string, options: { maxRedirects: number }) => {
+    calls++; assert.equal(options.maxRedirects, 0);
+    return { status: () => 307, url: () => expected, ok: () => false,
+      headers: () => ({ location: '/php/unknown?SECRET', 'set-cookie': 'SECRET=SECRET' }),
+      dispose: async () => {}, body: async () => { assert.fail('redirect body must not be read'); } };
+  } } } as unknown as BrowserContext;
+  const result = await probePraktikaAuthentication(context, '1181', 'https://fixture.invalid');
+  assert.equal(calls, 1); assert.equal(result.verified, false);
+  assert.deepEqual(result.redirectDiagnostics?.targetObservation, { targetMatched: false, setCookiePresent: true });
+  assert.doesNotMatch(JSON.stringify(result), /SECRET/);
+});
+
+test('matched pathname logged once per gate, token retained, no proof write on repeated 307', async t => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'log', (...args: unknown[]) => logs.push(args));
+  const row = { helper_instance_id: 'owner', helper_heartbeat_at: new Date().toISOString(), authenticated_at: new Date().toISOString() };
+  const before = { ...row };
+  const gate = createPraktikaAuthenticationGate({ helperToken: '0123456789abcdef', assertOwned: async () => {}, readOwnedSession: async () => row,
+    probe: async () => ({ verified: false, phase: 'error', httpStatus: 307, parsedArray: false,
+      redirectDiagnostics: { redirect_category: 'same_origin_other_redirect', same_origin: true, destinationCategory: 'php_endpoint',
+        responseReceived: true, elapsed_ms: 1, targetObservation: { targetMatched: true, normalizedPath: '/php/synthetic.php', setCookiePresent: true } } }),
+    recordSuccess: async () => assert.fail('no authentication write'), recordFailure: async () => assert.fail('no session write') });
+  await assert.rejects(gate.renew()); await assert.rejects(gate.renew());
+  assert.deepEqual(row, before);
+  const events = logs.filter(([name]) => name === '[Praktika auth diagnostic] redirect_target_observation').map(([, fields]) => fields as Record<string, unknown>);
+  assert.equal(events.length, 2); assert.equal(events[0].normalizedPath, '/php/synthetic.php');
+  assert.equal(events[1].normalizedPath, undefined);
+  assert.equal(events[1].helperToken, '0123456789abcdef'); assert.equal(events[1].setCookiePresent, true);
+});
