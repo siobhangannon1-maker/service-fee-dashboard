@@ -43,7 +43,7 @@ type SessionStatus = {
   has_cookie?: boolean;
 };
 
-type ConnectionDisplayState = "loading" | "checking" | "connected" | "connecting" | "idle" | "disconnected" | "login_required" | "mfa_required";
+type ConnectionDisplayState = "loading" | "checking" | "rechecking" | "connected" | "connecting" | "idle" | "disconnected" | "login_required" | "mfa_required";
 
 function addDays(dateString: string, days: number) {
   const date = new Date(`${dateString}T00:00:00`);
@@ -69,6 +69,7 @@ function connectionState(
 ): ConnectionDisplayState {
   if (busy) return "connecting";
   if (status === "loading") return "loading";
+  if (status === "rechecking_connection") return "rechecking";
   if (status === "checking_connection") return "checking";
   if (status === "waiting_for_credentials") return "login_required";
   if (status === "waiting_for_mfa") return "mfa_required";
@@ -87,6 +88,7 @@ function connectionState(
 
 function connectionLabel(state: ConnectionDisplayState) {
   if (state === "loading") return "Loading…";
+  if (state === "rechecking") return "Rechecking connection";
   if (state === "checking") return "Checking connection";
   if (state === "login_required") return "Login required";
   if (state === "mfa_required") return "Waiting for MFA";
@@ -98,7 +100,7 @@ function connectionLabel(state: ConnectionDisplayState) {
 
 function dotClass(state: ConnectionDisplayState) {
   if (state === "connected") return "bg-emerald-500";
-  if (state === "connecting") return "bg-orange-500";
+  if (state === "connecting" || state === "rechecking") return "bg-orange-500";
   if (state === "idle") return "bg-slate-400";
   return "bg-slate-400";
 }
@@ -232,7 +234,7 @@ function PraktikaToolsPopupContent({
     }
   }
 
-  const armStatusExpiry = useStatusExpiry(status => { setDisplayStatus(current => ["connected", "checking_connection"].includes(current) ? status : current); }, true);
+  const armStatusExpiry = useStatusExpiry(status => { setDisplayStatus(current => ["connected", "checking_connection", "rechecking_connection"].includes(current) ? status : current); }, true, true);
   const statusRequest = useRef(0);
 
   async function loadStatus() {
@@ -459,6 +461,10 @@ function PraktikaToolsPopupContent({
                 </p>
               ) : null}
             </div>
+
+            {currentConnectionState === "rechecking" && (
+              <p className="text-sm text-amber-700">Praktika is still running. Authentication is being rechecked automatically.</p>
+            )}
 
             {["disconnected", "idle"].includes(currentConnectionState) && currentStatus !== "waiting_for_mfa" && !shouldShowCredentialForm ? (
               <button

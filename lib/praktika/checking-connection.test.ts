@@ -194,24 +194,32 @@ test("Checking budget is independent of continually renewed heartbeat and stale 
   assert.equal(window("checking_connection", start + 90002).status, "checking_connection");
 });
 
-test("popup bounds live unverified checking, exposes Connect, and preserves login/MFA controls", async () => {
+test("popup bounds checking then rechecks live helper without Connect, preserving login/MFA controls", async () => {
   const { chromium } = await import("playwright"); const { build } = await import("esbuild");
   const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import Popup from './components/report-writing/PraktikaToolsPopup'; createRoot(document.getElementById('root')).render(<Popup open={true}/>);`, resolveDir: process.cwd(), loader: "tsx" }, bundle: true, write: false, platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"production"' } });
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage(); await page.clock.install();
     let status = "checking_connection";
+    let helperAlive = true;
     await page.route("**/*", async route => {
       if (new URL(route.request().url()).pathname === "/") return route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' });
       assert.equal(new URL(route.request().url()).search, "?scope=user");
       const now = await page.evaluate(() => Date.now());
-      return route.fulfill({ json: { status, connected: status === "connected", helperAlive: true, helperHeartbeatAt: new Date(now).toISOString(), authenticatedAt: status === "connected" ? new Date(now).toISOString() : null } });
+      return route.fulfill({ json: { status, storedStatus: status === "checking_connection" ? "connected" : status, connected: status === "connected", helperAlive, helperHeartbeatAt: new Date(now).toISOString(), authenticatedAt: status === "connected" ? new Date(now).toISOString() : null } });
     });
     await page.goto("http://praktika-ui.test/"); await page.addScriptTag({ content: bundle.outputFiles[0].text });
     await page.getByText("Praktika: Checking connection", { exact: true }).waitFor();
     for (let n = 0; n < 7; n++) { await page.clock.runFor(5000); await page.waitForTimeout(20); }
+    await page.getByText("Praktika: Rechecking connection", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Connect", exact: true }).count(), 0);
+    for (let n = 0; n < 20; n++) { await page.clock.runFor(5000); await page.waitForTimeout(20); }
+    await page.getByText("Praktika: Rechecking connection", { exact: true }).waitFor();
+    helperAlive = false;
+    await page.clock.runFor(5000); await page.waitForTimeout(20);
     await page.getByText("Praktika: Not connected", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Connect", exact: true }).isVisible(), true);
+    helperAlive = true;
     for (const state of ["not_started", "error", "waiting_for_credentials", "waiting_for_mfa", "connected"]) {
       status = state; await page.clock.runFor(5000); await page.waitForTimeout(20);
       if (state === "connected") await page.getByText("Praktika: Connected", { exact: true }).waitFor();

@@ -189,3 +189,18 @@ test("popup timeout is actionable and a late positive response cannot restore Co
     await load(); assert.equal(status, "error");
   }
 });
+
+test("recovery presentation requires live explicit backend evidence and never grants readiness", async () => {
+  const { recoveryStatus, currentStatus, createCheckingWindow } = await import("./use-status-expiry");
+  const { derivePraktikaConnection } = await import("./authentication");
+  const now = Date.now();
+  const data = {status:"checking_connection", storedStatus:"connected", helperAlive:true, helperHeartbeatAt:new Date(now).toISOString()};
+  const window = createCheckingWindow();
+  assert.equal(recoveryStatus(data, window(currentStatus(data,now),now).status,now),"checking_connection");
+  assert.equal(recoveryStatus(data, window(currentStatus(data,now+30000),now+30000).status,now+30000),"rechecking_connection");
+  assert.equal(recoveryStatus(data,"not_started",now+90000),"not_started");
+  for(const patch of [{helperAlive:false},{storedStatus:"error"},{storedStatus:"waiting_for_credentials"},{storedStatus:"waiting_for_mfa"},{status:"not_started"},{storedStatus:undefined}]) {
+    assert.equal(recoveryStatus({...data,...patch},"not_started",now),"not_started");
+  }
+  assert.equal(derivePraktikaConnection({status:"connected",helper_instance_id:"owner",helper_heartbeat_at:data.helperHeartbeatAt,authenticated_at:null},now).connected,false);
+});

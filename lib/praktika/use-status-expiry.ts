@@ -53,7 +53,14 @@ export function createCheckingWindow() {
   };
 }
 
-export function useStatusExpiry(onExpire: (status: string) => void, boundChecking = false) {
+// Presentation only: never used as workflow authentication evidence.
+export function recoveryStatus(data: StatusProof, boundedStatus: string, now = Date.now()): string {
+  return boundedStatus === "not_started" && data.helperAlive === true &&
+    ["connected", "refreshing"].includes(data.storedStatus || "") &&
+    currentStatus(data, now) === "checking_connection" ? "rechecking_connection" : boundedStatus;
+}
+
+export function useStatusExpiry(onExpire: (status: string) => void, boundChecking = false, showRecovery = false) {
   const callback = useRef(onExpire);
   callback.current = onExpire;
   const latest = useRef<StatusProof | null>(null);
@@ -65,15 +72,15 @@ export function useStatusExpiry(onExpire: (status: string) => void, boundCheckin
     if (!data) return;
     const rawStatus = currentStatus(data);
     const checking = boundChecking ? checkingWindow.current(rawStatus, Date.now()) : { status: rawStatus, deadline: null };
-    const status = checking.status;
+    const status = showRecovery ? recoveryStatus(data, checking.status) : checking.status;
     if (status !== data.status) callback.current(status);
     const deadline = status === "connected" ? connectionExpiry(data) :
-      status === "checking_connection" ? Math.min(Date.parse(data.helperHeartbeatAt || "") + 90_000, checking.deadline ?? Infinity) : null;
+      ["checking_connection", "rechecking_connection"].includes(status) ? Math.min(Date.parse(data.helperHeartbeatAt || "") + 90_000, status === "rechecking_connection" ? Infinity : checking.deadline ?? Infinity) : null;
     if (deadline !== null && Number.isFinite(deadline) && deadline > Date.now()) {
       timer.current = setTimeout(check, deadline - Date.now());
     }
     return status;
-  }, [boundChecking]);
+  }, [boundChecking, showRecovery]);
   useEffect(() => {
     window.addEventListener("focus", check);
     document.addEventListener("visibilitychange", check);
