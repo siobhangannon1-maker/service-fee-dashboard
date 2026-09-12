@@ -67,7 +67,7 @@ test("watcher prioritises staff/jobs, scans only intents, and restoration consum
  assert.match(source, /\.is\("consumed_at", null\)\.gt\("expires_at", nowIso\(\)\)/);
  let consumed = false, launches = 0;
  const make = () => functions(file,["helperCapacityAvailable","startHelperForSession"], {
-   shuttingDown:false,running:new Set(),children:new Map(),MAX_CONCURRENT_HELPERS:1,
+   recovering:new Map(),praktikaNoAuthGateEnabled:()=>false,shuttingDown:false,running:new Set(),children:new Map(),MAX_CONCURRENT_HELPERS:1,
    performance,console:{log(){},warn(){},error(){}},supabase:{},process:{execPath:"node",cwd:()=>".",platform:"linux"},
    claimPlannedRestoration:async()=>{if(consumed)return null;consumed=true;return {instance_id:"owner",idle_remaining_ms:720000};},
    spawn:(_cmd:string,args:string[])=>{launches++;assert.ok(args.some(v=>v.startsWith("--restore-idle-remaining-ms=")));return {on(){}};},
@@ -80,7 +80,7 @@ test("watcher prioritises staff/jobs, scans only intents, and restoration consum
 });
 test("helper preserves restored idle budget; only useful work resets it; shutdown RPC follows browser close", () => {
  let now=1000;
- const globals={usefulWorkDeadline:721000,performance:{now:()=>now},HELPER_IDLE_SHUTDOWN_MS:5400000};
+ const globals={scopedNoAuth:false,usefulWorkDeadline:721000,performance:{now:()=>now},HELPER_IDLE_SHUTDOWN_MS:5400000};
  const api=functions("scripts/refresh-praktika-session.ts",["remainingUsefulWorkMs","noteUsefulWork"],globals);
  assert.equal(api.remainingUsefulWorkMs(),720000);now+=60000;assert.equal(api.remainingUsefulWorkMs(),660000);
  now=721000;assert.equal(api.remainingUsefulWorkMs(),0);
@@ -97,7 +97,7 @@ test("queued work consumes an existing warm intent without resetting the idle bu
  let claimed=0,launched=0;
  const lookup = { select(){return this;},eq(){return this;},is(){return this;},gt(){return this;},maybeSingle:async()=>({data:{source_instance_id:"source"},error:null}) };
  const api=functions("scripts/watch-praktika-refresh.ts",["helperCapacityAvailable","startHelperForSession"],{
-   shuttingDown:false,running:new Set(),children:new Map(),MAX_CONCURRENT_HELPERS:1,performance,nowIso:()=>new Date().toISOString(),
+   recovering:new Map(),praktikaNoAuthGateEnabled:()=>false,shuttingDown:false,running:new Set(),children:new Map(),MAX_CONCURRENT_HELPERS:1,performance,nowIso:()=>new Date().toISOString(),
    console:{log(){},warn(){},error(){}},supabase:{from:()=>lookup},process:{execPath:"node",cwd:()=>".",platform:"linux"},
    claimPlannedRestoration:async()=>{claimed++;return {instance_id:"new",idle_remaining_ms:720000};},
    claimPraktikaHelper:async()=>{assert.fail("normal claim would discard idle budget");},

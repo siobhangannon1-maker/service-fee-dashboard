@@ -56,7 +56,7 @@ test('production cleanup decision: eligible, ineligible and RPC outcomes are saf
   const events:{event:string,reason?:string}[]=[];let closed=false,releases=0,requests=0;
   const query={select(){return this;},eq(){return this;},is(){return this;},abortSignal(){return this;},single:async()=>({data:{status:scenario==='session_status_ineligible'?'error':'connected',helper_instance_id:'owner',app_user_id:null},error:null}),then(resolve:(v:unknown)=>void){resolve({count:scenario==='processing_job_present'?1:0,error:null});}};
   const globals={renewal:{stop(){}},shutdownCoordinator:{drained(){},close:async()=>{closed=scenario!=='browser_close_failed';return closed;},decision(){},emit:(event:string,reason?:string)=>events.push({event,reason}),finish(){}},
-   stopHeartbeat:async()=>{},ownershipLost:scenario==='ownership_lost',shuttingDown:scenario!=='not_planned',operationalThisGeneration:scenario!=='no_operational_history',unresolvedShutdownWork:scenario==='unresolved_shutdown_work',remainingUsefulWorkMs:()=>scenario==='idle_deadline_expired'?0:100000,
+   recoverableExit:false,stopHeartbeat:async()=>{},ownershipLost:scenario==='ownership_lost',shuttingDown:scenario!=='not_planned',operationalThisGeneration:scenario!=='no_operational_history',unresolvedShutdownWork:scenario==='unresolved_shutdown_work',remainingUsefulWorkMs:()=>scenario==='idle_deadline_expired'?0:100000,
    supabase:{from:()=>query},sessionId:'synthetic',helperInstanceId:'owner',hasLivePraktikaHelper:()=>true,AbortSignal,process:{exitCode:0},
    requestPlannedRestoration:async()=>{assert.equal(closed,true);requests++;if(scenario==='rpc_transport_failure')throw Error('SECRET');return scenario!=='rpc_rejected';},
    releaseOwnership:async()=>{assert.equal(closed,true);releases++;},

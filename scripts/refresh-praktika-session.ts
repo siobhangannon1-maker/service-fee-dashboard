@@ -1,3 +1,5 @@
+import { createPraktikaOwnershipRecovery, isPraktikaTransientInfrastructureError } from "../lib/praktika/ownership-recovery";
+import { praktikaNoAuthGateEnabled } from "../lib/praktika/authentication";
 import { pollSchedulerDiagnostic } from "./praktika-scheduler-diagnostic";
 import { pollPraktikaWorkflowContinuations } from "./praktika-workflow-continuations";
 import { createCookieSnapshotStore } from "../lib/praktika/cookie-snapshot";
@@ -5,7 +7,7 @@ import { createShutdownCoordinator, type SkipReason } from "../lib/praktika/shut
 import { requestPlannedRestoration } from "../lib/praktika/planned-restoration";
 import { praktikaHelperToken, startPraktikaAuthenticationRenewal, classifyPraktikaPage, createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
 import {
-  writePraktikaHelper, PraktikaOwnershipLost, PRAKTIKA_HELPER_HEARTBEAT_MS,
+  writePraktikaHelper, PraktikaOwnershipLost, PraktikaOwnershipUnavailable, PraktikaOwnershipRejected, PRAKTIKA_HELPER_HEARTBEAT_MS,
   PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS,
 } from "../lib/praktika/helper-lease";
 import path from "node:path";
@@ -14,7 +16,7 @@ import dotenv from "dotenv";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 import {
-  processOnePraktikaHelperJob,
+  processOnePraktikaHelperJob, PraktikaJobQueueUnavailable,
   type PraktikaJobResult,
 } from "./praktika-helper-job-processor";
 
@@ -171,6 +173,9 @@ if (!sessionId) {
 const helperInstanceId = argValue("helper-instance-id");
 if (!helperInstanceId) throw new Error("Missing --helper-instance-id; start through the owning watcher.");
 let ownershipLost = false;
+let scopedNoAuth = false;
+let browserReady = false;
+let recoverableExit = false;
 let verificationRequested = false;
 let ownedContext: BrowserContext | undefined;
 let browserLaunch: Promise<BrowserContext> | undefined;
@@ -187,6 +192,7 @@ let snapshotRestoreAttempted = false;
 let operationalThisGeneration = false;
 let unresolvedShutdownWork = false;
 function remainingUsefulWorkMs() {
+  if (scopedNoAuth) return HELPER_IDLE_SHUTDOWN_MS;
   return usefulWorkDeadline === null ? 0 : Math.max(0, usefulWorkDeadline - performance.now());
 }
 function noteUsefulWork() { usefulWorkDeadline = performance.now() + HELPER_IDLE_SHUTDOWN_MS; }
@@ -207,11 +213,15 @@ function shutdown() {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
+const ownershipRecovery = createPraktikaOwnershipRecovery({ stopping: () => ownershipLost });
+
 async function ownedWrite(action: "check" | "heartbeat" | "update" | "authenticate" | "authentication_failed", values: Record<string, unknown> = {}) {
   if (ownershipLost) throw new PraktikaOwnershipLost();
   try {
-    await writePraktikaHelper(supabase, sessionId!, helperInstanceId!, action, values);
-  } catch {
+    await ownershipRecovery.run(() => writePraktikaHelper(supabase, sessionId!, helperInstanceId!, action, values), action === "heartbeat");
+    if (ownershipLost) throw new PraktikaOwnershipRejected();
+  } catch (error) {
+    if (!(error instanceof PraktikaOwnershipLost)) throw error;
     ownershipLost = true;
     renewal?.stop();
     await shutdownCoordinator.close();
@@ -242,7 +252,9 @@ const ensureAuthenticated = createPraktikaAuthenticationGate({
     const { data, error } = await supabase.rpc("record_praktika_experimental_auth", {
       p_session_id: sessionId!, p_instance_id: helperInstanceId!, p_status: status,
     }).abortSignal(AbortSignal.timeout(5000));
-    if (error || data !== true) throw new PraktikaOwnershipLost();
+    if (error) throw new PraktikaOwnershipUnavailable();
+    if (data === false) throw new PraktikaOwnershipRejected();
+    if (data !== true) throw new PraktikaOwnershipUnavailable();
   },
   recordSuccess: async () => {
     await ownedWrite("authenticate");
@@ -259,6 +271,7 @@ const ensureAuthenticated = createPraktikaAuthenticationGate({
     } catch { console.log("[Praktika snapshot]", JSON.stringify({ event: "snapshot_capture_failed", reason: ownershipLost ? "ownership_lost" : "cookie_read_unavailable" })); }
   },
   recordFailure: async (status) => {
+    if (scopedNoAuth) return; // GST diagnostics cannot change browser availability.
     operationalThisGeneration = false;
     await ownedWrite("authentication_failed", { status });
     cookieSnapshots?.invalidate();
@@ -269,6 +282,7 @@ const ensureAuthenticated = createPraktikaAuthenticationGate({
 async function verifyRequestedConnection() {
   verificationRequested = false;
   ensureAuthenticated.resume();
+  if (scopedNoAuth) { loginTransition = false; return; }
   try { await ensureAuthenticated(); loginTransition = false; }
   catch (error) {
     if (!(error instanceof PraktikaAuthenticationUnverified)) throw error;
@@ -295,7 +309,8 @@ function startHeartbeat(context: BrowserContext) {
       stopped = true;
       clearInterval(timer);
       ownershipLost = true;
-      if (await shutdownCoordinator.close()) await releaseOwnership(true);
+      recoverableExit = true;
+      if (await shutdownCoordinator.close()) await releaseOwnership(false);
       else process.exitCode = 75;
     } finally {
       if (deadline) clearTimeout(deadline);
@@ -309,15 +324,14 @@ function startHeartbeat(context: BrowserContext) {
 
 async function getSession() {
   await assertOwned();
-  const { data, error } = await supabase
-    .from("praktika_sessions")
-    .select("*")
-    .eq("id", sessionId)
-    .single();
-
-  if (error || !data) {
-    throw new Error(error?.message || "Session not found.");
-  }
+  const data = await ownershipRecovery.run(async () => {
+    try {
+      const result = await supabase.from("praktika_sessions").select("*").eq("id", sessionId)
+        .abortSignal(AbortSignal.timeout(5000)).single();
+      if (result.error || !result.data) throw new PraktikaOwnershipUnavailable();
+      return result.data;
+    } catch { throw new PraktikaOwnershipUnavailable(); }
+  });
 
   if (data.helper_instance_id !== helperInstanceId) {
     ownershipLost = true;
@@ -330,13 +344,15 @@ async function getSession() {
 
 async function updateSession(values: Record<string, unknown>) {
   if (["waiting_for_credentials", "waiting_for_mfa", "error", "expired"].includes(String(values.status || ""))) {
+    browserReady = false;
     operationalThisGeneration = false;
     if (isWarmRestoration && values.status === "waiting_for_credentials") console.log("[Praktika lifecycle] restoration_credentials_required");
     if (isWarmRestoration && values.status === "waiting_for_mfa") console.log("[Praktika lifecycle] restoration_mfa_required");
   }
   if (["refreshing", "refresh_requested", "waiting_for_credentials", "waiting_for_mfa", "expired", "error"].includes(String(values.status || ""))) {
+    browserReady = false;
     loginTransition = true;
-    await ensureAuthenticated.invalidate();
+    await ensureAuthenticated.invalidate(!scopedNoAuth);
   }
   await ownedWrite("update", values);
   if (["waiting_for_credentials", "waiting_for_mfa"].includes(String(values.status))) cookieSnapshots?.invalidate();
@@ -673,6 +689,11 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
     last_used_at: now,
   });
 
+  // Called only after the startup/browser UI check; never derived from claim heartbeat.
+  if (markConnected && await isBrowserUiLoggedIn(page)) {
+    browserReady = true;
+    if (scopedNoAuth) { operationalThisGeneration = true; loginTransition = false; }
+  }
   return true;
 }
 
@@ -754,6 +775,7 @@ async function drainAvailableHelperJobs(
   context: BrowserContext,
   appUserId: string | null,
 ): Promise<{ completedCount: number; failedCount: number; needsReconnect: boolean }> {
+  if (scopedNoAuth && !browserReady) return { completedCount: 0, failedCount: 0, needsReconnect: false };
   await pollPraktikaWorkflowContinuations(supabase, appUserId, { assertOwned, isShuttingDown: () => shuttingDown });
   let completedCount = 0;
   let failedCount = 0;
@@ -766,7 +788,7 @@ async function drainAvailableHelperJobs(
       result = await processOnePraktikaHelperJob(
         context,
         appUserId,
-        { assertOwned, updateSession, ensureAuthenticated, isShuttingDown: () => shuttingDown },
+        { assertOwned, updateSession, ensureAuthenticated, isBrowserReady: () => !scopedNoAuth || browserReady, isShuttingDown: () => shuttingDown },
       );
     } catch (error) {
       if (shuttingDown) unresolvedShutdownWork = true;
@@ -894,9 +916,11 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           return;
         }
       } else if (await pageHasMfaInput(page)) {
+        browserReady = false;
         await submitMfaCodeIfAvailable(page);
         noteUsefulWork();
       } else if (await pageHasVisiblePasswordInput(page)) {
+        browserReady = false;
         const hasNewCredentials = Boolean(
           session.pending_praktika_username && session.pending_praktika_password,
         );
@@ -913,6 +937,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           });
         }
       } else {
+        browserReady = false;
         if (pageIsLogoutUrl(page)) {
           await updateSession({
             status: "waiting_for_credentials",
@@ -941,21 +966,18 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
     } catch (error: any) {
       if (shuttingDown) return;
     if (ownershipLost || error instanceof PraktikaOwnershipLost) throw new PraktikaOwnershipLost();
+      if (error instanceof PraktikaJobQueueUnavailable || (scopedNoAuth && isPraktikaTransientInfrastructureError(error))) { await sleep(HELPER_IDLE_POLL_INTERVAL_MS); continue; }
       const message = String(error?.message || "");
 
       if (
+        page.isClosed() ||
         message.includes("Target page, context or browser has been closed") ||
         message.includes("browser has been closed") ||
         message.includes("context or browser has been closed") ||
         message.includes("Target closed")
       ) {
-        await updateSession({
-          status: "error",
-          message:
-            "The Praktika cloud helper browser was closed. Start the helper again to reconnect.",
-          refresh_requested_at: null,
-          last_used_at: nowIso(),
-        });
+        browserReady = false;
+        recoverableExit = true;
 
         console.warn("Praktika helper browser/context closed. Exiting helper.");
         return;
@@ -975,6 +997,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
 
 async function refreshOnce() {
   const session = await getSession();
+  scopedNoAuth = praktikaNoAuthGateEnabled(session);
 
   const profileName =
     session.scope === "practice"
@@ -1046,9 +1069,9 @@ async function refreshOnce() {
       renew: ensureAuthenticated.renew,
       stopGate: ensureAuthenticated.stop,
     });
-    context.once("close", () => { if (!shuttingDown) operationalThisGeneration = false; renewal?.stop(); });
+    context.once("close", () => { if (!shuttingDown) { browserReady = false; operationalThisGeneration = false; } renewal?.stop(); });
     context.once("close", () => clearInterval(diagnosticTimer));
-    page.once("close", () => { if (!shuttingDown) operationalThisGeneration = false; renewal?.stop(); });
+    page.once("close", () => { if (!shuttingDown) { browserReady = false; operationalThisGeneration = false; } renewal?.stop(); });
     if (await hasExistingBrowserSession(page)) {
       const saved = await saveCookies(context, page);
 
@@ -1174,6 +1197,7 @@ async function refreshOnce() {
   } catch (error: any) {
     if (shuttingDown) return;
     if (ownershipLost || error instanceof PraktikaOwnershipLost) throw new PraktikaOwnershipLost();
+    if (page?.isClosed() || (scopedNoAuth && isPraktikaTransientInfrastructureError(error))) { recoverableExit = true; return; }
     await clearTemporaryPassword({
       status: "error",
       message: error?.message || "Praktika session refresh failed.",
@@ -1232,6 +1256,7 @@ async function refreshOnce() {
       if (!shuttingDown) process.exit(75);
       return;
     }
+    if (recoverableExit) process.exitCode = 75;
     shutdownCoordinator.finish();
     logProcessMemory(`session=${session.id} after-context-close`);
   }
@@ -1245,5 +1270,5 @@ refreshOnce().catch((error) => {
   }
   console.error("Failed to refresh Praktika session:");
   console.error(error);
-  process.exit(1);
+  process.exit(ownershipLost || recoverableExit || error instanceof PraktikaOwnershipLost ? 75 : 1);
 });

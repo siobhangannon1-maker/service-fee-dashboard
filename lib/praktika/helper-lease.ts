@@ -7,6 +7,12 @@ export const PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS = 5_000;
 export class PraktikaOwnershipLost extends Error {
   constructor() { super("Praktika helper ownership is unavailable or expired."); }
 }
+export class PraktikaOwnershipRejected extends PraktikaOwnershipLost {
+  constructor() { super(); this.name = "PraktikaOwnershipRejected"; }
+}
+export class PraktikaOwnershipUnavailable extends Error {
+  constructor() { super("Praktika ownership verification is temporarily unavailable."); this.name = "PraktikaOwnershipUnavailable"; }
+}
 export type HelperHealth = import("./authentication").ExperimentalEvidence & { helper_instance_id?: string | null; helper_heartbeat_at?: string | null; authenticated_at?: string | null };
 export function hasLivePraktikaHelper(row: HelperHealth, now = Date.now()) {
   const time = Date.parse(row.helper_heartbeat_at || "");
@@ -20,12 +26,18 @@ export async function claimPraktikaHelper(db: SupabaseClient, sessionId: string)
 }
 export async function writePraktikaHelper(db: SupabaseClient, sessionId: string, instanceId: string,
   action: "check" | "heartbeat" | "update" | "release" | "authenticate" | "authentication_failed", values: Record<string, unknown> = {}) {
-  const { data, error } = await db.rpc("praktika_helper_write", {
-    p_session_id: sessionId, p_instance_id: instanceId, p_action: action, p_values: values,
-  }).abortSignal(AbortSignal.timeout(PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS));
-  if (error || data !== true) throw new PraktikaOwnershipLost();
+  let result;
+  try {
+    result = await db.rpc("praktika_helper_write", {
+      p_session_id: sessionId, p_instance_id: instanceId, p_action: action, p_values: values,
+    }).abortSignal(AbortSignal.timeout(PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS));
+  } catch { throw new PraktikaOwnershipUnavailable(); }
+  if (result.error) throw new PraktikaOwnershipUnavailable();
+  if (result.data === false) throw new PraktikaOwnershipRejected();
+  if (result.data !== true) throw new PraktikaOwnershipUnavailable();
 }
 export interface PraktikaJobOwnership {
+  isBrowserReady?(): boolean;
   isShuttingDown?(): boolean;
   assertOwned(): Promise<void>;
   ensureAuthenticated(): Promise<void>;

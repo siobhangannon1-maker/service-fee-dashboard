@@ -1,3 +1,4 @@
+import { createPraktikaOwnershipRecovery } from "./ownership-recovery";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
@@ -7,7 +8,7 @@ import { PraktikaAuthenticationUnverified } from "./authentication-probe";
 import { createClient } from "@supabase/supabase-js";
 import {
   hasLivePraktikaHelper, claimPraktikaHelper, writePraktikaHelper,
-  PraktikaOwnershipLost, PRAKTIKA_HELPER_LEASE_MS,
+  PraktikaOwnershipLost, PraktikaOwnershipUnavailable, PraktikaOwnershipRejected, PRAKTIKA_HELPER_LEASE_MS,
 } from "./helper-lease";
 
 const root = new URL("../../", import.meta.url);
@@ -38,7 +39,7 @@ test("historical, missing, stale and future health never count as live; checking
   assert.equal(hasLivePraktikaHelper({ helper_heartbeat_at: live.helper_heartbeat_at }, now), false);
 });
 
-test("RPC client carries exact generation, treats zero rows/errors as lost and never sends proof", async () => {
+test("RPC client carries exact generation, distinguishes rejected ownership from unavailable verification and never sends proof", async () => {
   let answer: unknown = "owner-a";
   let responseStatus = 200;
   const calls: { path: string; body: Record<string, unknown> }[] = [];
@@ -58,7 +59,7 @@ test("RPC client carries exact generation, treats zero rows/errors as lost and n
   answer = false;
   await assert.rejects(writePraktikaHelper(db, "session", "old-owner", "update", { status: "connected" }), PraktikaOwnershipLost);
   answer = { message: "fixture database error" }; responseStatus = 500;
-  await assert.rejects(writePraktikaHelper(db, "session", "owner-a", "heartbeat"), PraktikaOwnershipLost);
+  await assert.rejects(writePraktikaHelper(db, "session", "owner-a", "heartbeat"), PraktikaOwnershipUnavailable);
   assert.ok(calls.every((call) => !JSON.stringify(call.body).includes("authenticated_at")));
 });
 
@@ -66,14 +67,15 @@ async function watcher(claim: () => Promise<string | null>, writes: unknown[]) {
   const handlers: Record<string, (...args: unknown[]) => void> = {};
   const spawns: string[][] = [];
   const running = new Set<string>();
+  const recovering = new Map<string, { at: number; attempts: number }>();
   const result = await functionsFrom("scripts/watch-praktika-refresh.ts", ["startHelperForSession"], {
-    shuttingDown: false, children: new Map(), running, console: quiet, helperCapacityAvailable: () => true,
+    shuttingDown: false, recovering, praktikaNoAuthGateEnabled: () => false, children: new Map(), running, console: quiet, helperCapacityAvailable: () => true,
     claimPraktikaHelper: claim, supabase: {}, MAX_CONCURRENT_HELPERS: 3,
     writePraktikaHelper: async (...args: unknown[]) => { writes.push(args.slice(1)); },
     process: { cwd: () => ".", platform: "linux" },
     spawn: (_cmd: string, args: string[]) => { spawns.push(args); return { on: (event: string, cb: (...args: unknown[]) => void) => { handlers[event] = cb; } }; },
   });
-  return { start: () => result.startHelperForSession({ id: "session" }, "refresh_requested"), handlers, spawns, running };
+  return { start: () => result.startHelperForSession({ id: "session" }, "refresh_requested"), handlers, spawns, running, recovering };
 }
 
 test("separate watchers only spawn for successful atomic claim; pass both identifiers", async () => {
@@ -107,7 +109,7 @@ test("clean exit only releases captured generation; never promotes Connected; du
 
 test("helper session writes fail closed, close old browser, and refuse subsequent writes", async () => {
   const globals = {
-    ownershipLost: false, sessionId: "session", helperInstanceId: "old-owner",
+    ownershipRecovery: createPraktikaOwnershipRecovery(), PraktikaOwnershipRejected, ownershipLost: false, sessionId: "session", helperInstanceId: "old-owner",
     renewal: { stop: () => { stopped++; } },
     shutdownCoordinator: { close: async () => { closed++; return true; } }, supabase: {}, PraktikaOwnershipLost,
     writePraktikaHelper: async () => { attempts++; throw new PraktikaOwnershipLost(); },
@@ -119,15 +121,15 @@ test("helper session writes fail closed, close old browser, and refuse subsequen
   assert.equal(closed, 1); assert.equal(attempts, 1); assert.equal(stopped, 1);
 });
 
-test("browser liveness failure releases as error and closes browser without authentication write", async () => {
+test("browser liveness failure releases nonterminal for recovery and closes browser without authentication write", async () => {
   let tick: (() => void) | undefined; const events: string[] = [];
   const globals = {
-    shuttingDown: false, ownershipLost: false, PRAKTIKA_HELPER_HEARTBEAT_MS: 15_000, PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS: 5_000,
+    recoverableExit: false, shuttingDown: false, ownershipLost: false, PRAKTIKA_HELPER_HEARTBEAT_MS: 15_000, PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS: 5_000,
     shutdownCoordinator: { close: async () => { events.push("close"); return true; } },
     setTimeout, clearTimeout,
     setInterval: (callback: () => void) => { tick = callback; return 1; }, clearInterval() {},
     ownedWrite: async (action: string) => { events.push(action); },
-    releaseOwnership: async (failed: boolean) => { assert.equal(failed, true); events.push("release"); },
+    releaseOwnership: async (failed: boolean) => { assert.equal(failed, false); events.push("release"); },
   };
   const { startHeartbeat } = await functionsFrom("scripts/refresh-praktika-session.ts", ["startHeartbeat"], globals);
   const stop = startHeartbeat({ cookies: async () => { throw new Error("browser closed"); }, close: async () => { events.push("close"); } });
@@ -204,4 +206,77 @@ test("unverified authentication leaves job unclaimed rather than permanently fai
   });
   assert.equal(result.outcome, "none");
   assert.equal(requests, 0);
+});
+
+test('owned writes retain browser during unavailable verification and resume after recovery', async () => {
+  let time = 0, calls = 0, closed = 0;
+  const {ownedWrite} = await functionsFrom('scripts/refresh-praktika-session.ts', ['ownedWrite'], {
+    ownershipLost: false, PraktikaOwnershipLost, PraktikaOwnershipRejected,
+    sessionId: 'session', helperInstanceId: 'owner', supabase: {}, renewal: {stop() { assert.fail('not rejected'); }},
+    shutdownCoordinator: {close() { closed++; }},
+    ownershipRecovery: createPraktikaOwnershipRecovery({now: () => time, sleep: async ms => { time += ms; assert.equal(closed, 0); }}),
+    writePraktikaHelper: async () => { if (++calls < 3) throw new PraktikaOwnershipUnavailable(); },
+  });
+  await ownedWrite('check'); assert.equal(calls, 3); assert.equal(closed, 0);
+});
+
+test('scoped idle budget remains long lived; ordinary mode preserves deadline', async () => {
+  for (const scopedNoAuth of [true, false]) {
+    const {remainingUsefulWorkMs} = await functionsFrom('scripts/refresh-praktika-session.ts', ['remainingUsefulWorkMs'], {
+      scopedNoAuth, HELPER_IDLE_SHUTDOWN_MS: 90 * 60_000, usefulWorkDeadline: 1, performance: {now: () => 9_000_000},
+    });
+    assert.equal(remainingUsefulWorkMs(), scopedNoAuth ? 90 * 60_000 : 0);
+  }
+});
+
+test('startup heartbeat cannot claim a job before browser readiness', async () => {
+  const {processOnePraktikaHelperJob} = await functionsFrom('scripts/praktika-helper-job-processor.ts', ['processOnePraktikaHelperJob'], {
+    claimNextJob: async () => assert.fail('startup cannot claim'),
+  });
+  const result = await processOnePraktikaHelperJob({}, 'user', {assertOwned: async () => {}, isBrowserReady: () => false});
+  assert.equal(result.outcome, 'none');
+});
+
+for (const job_type of ['patient_match_search', 'upload_report_to_praktika']) test(`${job_type}: final unavailable check recovers before one dispatch`, async () => {
+  let now = 0, attempts = 0, dispatched = 0, completed = 0;
+  const recovery = createPraktikaOwnershipRecovery({now: () => now, sleep: async ms => { now += ms; assert.equal(dispatched, 0); }});
+  const ownership = {isBrowserReady: () => true, assertOwned: () => recovery.run(async () => {
+    attempts++; if (attempts === 4 || attempts === 5) throw new PraktikaOwnershipUnavailable();
+  })};
+  const {processOnePraktikaHelperJob} = await functionsFrom('scripts/praktika-helper-job-processor.ts', ['processOnePraktikaHelperJob'], {
+    console: quiet, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
+    allowedPraktikaRead: () => false, verifiedReadOperation: () => job_type === 'patient_match_search', jobEligible: async () => true,
+    claimNextJob: async () => ({id: 'fixture', job_type, request: {}}),
+    runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => {await before(); dispatched++; return {};},
+    isConfirmedPraktikaUpload: () => true, completeJob: async () => {completed++;}, markSessionConnectedForJob: async () => {},
+    failJob: async () => assert.fail('must not retry or fail'),
+  });
+  await processOnePraktikaHelperJob({}, 'user', ownership);
+  assert.equal(dispatched, 1); assert.equal(completed, 1);
+});
+
+test('recoverable child exit schedules bounded reacquisition without rewriting jobs or terminal error', async () => {
+  const writes: unknown[] = [];
+  const w = await watcher(async () => 'generation', writes);
+  await w.start(); w.handlers.exit(75);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(writes.length, 0);
+  assert.equal(w.recovering.get('session')?.attempts, 1);
+  assert.equal(await w.start(), false);
+  w.recovering.get('session')!.at = 0;
+  assert.equal(await w.start(), true);
+  assert.equal(w.spawns.length, 2);
+});
+
+test('scoped GST failure callback does not alter session/browser readiness', async () => {
+  const source = await read('scripts/refresh-praktika-session.ts');
+  const section = source.slice(source.indexOf('const ensureAuthenticated ='), source.indexOf('async function verifyRequestedConnection'));
+  const code = ts.transpileModule(section, {compilerOptions: {target: ts.ScriptTarget.ES2022}}).outputText;
+  const callbacks = runInNewContext(code + '\nensureAuthenticated', {
+    createPraktikaAuthenticationGate: (callbacks: unknown) => callbacks,
+    renewalHelperToken: 'fixture', assertOwned: async () => {}, getSession: async () => {}, scopedNoAuth: true,
+    ownedWrite: async () => assert.fail('diagnostic cannot alter lifecycle'),
+  });
+  await callbacks.recordFailure('waiting_for_credentials');
+  await callbacks.recordFailure('waiting_for_mfa');
 });

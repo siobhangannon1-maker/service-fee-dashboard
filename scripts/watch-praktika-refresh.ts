@@ -1,3 +1,4 @@
+import { praktikaNoAuthGateEnabled } from "../lib/praktika/authentication";
 import { claimPlannedRestoration } from "../lib/praktika/planned-restoration";
 import { claimPraktikaHelper, writePraktikaHelper } from "../lib/praktika/helper-lease";
 import dotenv from "dotenv";
@@ -34,6 +35,8 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 });
 
 const running = new Set<string>();
+// Only children observed failing recoverably by this watcher enter this map.
+const recovering = new Map<string, { at: number; attempts: number }>();
 const children = new Map<string, { child: ChildProcess; owner: string }>();
 let shuttingDown = false;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -83,6 +86,7 @@ function helperCapacityAvailable() {
 }
 
 async function startHelperForSession(session: any, reason: string) {
+  if ((recovering.get(session.id)?.at ?? 0) > Date.now()) return false;
   if (running.has(session.id)) {
     console.log(`Helper already running for ${session.id}. Reason: ${reason}`);
     return false;
@@ -138,6 +142,7 @@ async function startHelperForSession(session: any, reason: string) {
     running.delete(session.id);
     return false;
   }
+  const childStartedAt = Date.now();
   let cleanedUp = false;
   const cleanup = async (failed: boolean, leaseFallback = false) => {
     if (cleanedUp) return;
@@ -165,7 +170,14 @@ async function startHelperForSession(session: any, reason: string) {
     );
     if (restoring) console.log("[Praktika lifecycle] restoration_started");
     children.set(session.id, { child, owner });
-    child.on("exit", (code) => { void cleanup(code !== 0, code === 75); });
+    child.on("exit", (code) => {
+      const recover = !shuttingDown && (code === 75 || (code === null && praktikaNoAuthGateEnabled(session)));
+      if (recover) {
+        const attempts = Date.now() - childStartedAt > 300_000 ? 1 : (recovering.get(session.id)?.attempts ?? 0) + 1;
+        recovering.set(session.id, { attempts, at: Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(attempts - 1, 4)) });
+      } else recovering.delete(session.id);
+      void cleanup(code !== 0, recover || code === 75);
+    });
     child.on("error", () => { void cleanup(true); });
   } catch {
     await cleanup(true);
@@ -329,6 +341,17 @@ async function check() {
 
     await checkRefreshRequests();
     await checkPendingJobs();
+    for (const [id, recovery] of recovering) {
+      if (recovery.at > Date.now() || running.has(id) || !helperCapacityAvailable()) continue;
+      const { data, error } = await supabase.from("praktika_sessions").select("*").eq("id", id)
+        .abortSignal(AbortSignal.timeout(5000)).maybeSingle();
+      if (error) continue;
+      if (!data || ["error", "expired", "waiting_for_credentials", "waiting_for_mfa"].includes(data.status)) {
+        recovering.delete(id); continue;
+      }
+      // Claim RPC remains authoritative; no forced takeover or job recycling.
+      await startHelperForSession(data, "recovery");
+    }
     await checkRestorationRequests();
   } finally {
     checkInProgress = false;

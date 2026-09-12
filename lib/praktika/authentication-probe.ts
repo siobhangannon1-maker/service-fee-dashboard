@@ -320,7 +320,7 @@ export function createPraktikaAuthenticationGate(deps: {
     renew: () => verify(true),
     // Call before changing browser login state; drain any old transport before
     // starting a new login/probe, and suppress its late result.
-    invalidate: async () => { suspended = true; epoch++; await inFlight?.catch(() => {}); },
+    invalidate: async (waitForProbe = true) => { suspended = true; epoch++; if (waitForProbe) await inFlight?.catch(() => {}); },
     resume: () => { suspended = false; },
     stop: () => { stopped = true; epoch++; },
   });

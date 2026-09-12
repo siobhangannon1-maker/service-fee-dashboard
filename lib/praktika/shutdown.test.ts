@@ -13,7 +13,7 @@ const watcher = 'scripts/watch-praktika-refresh.ts';
 const helper = 'scripts/refresh-praktika-session.ts';
 test('watcher stops claims and releases late claim without spawning; repeated signals are harmless', async () => {
  let resolve!: (v:string)=>void; let spawns=0, releases=0, signals=0;
- const scope = {shuttingDown:false, pollTimer:0, children:new Map([['old',{child:{kill(){signals++;}},owner:'old'}]]),
+ const scope = {recovering:new Map(), praktikaNoAuthGateEnabled:()=>false, shuttingDown:false, pollTimer:0, children:new Map([['old',{child:{kill(){signals++;}},owner:'old'}]]),
  running:new Set(), MAX_CONCURRENT_HELPERS:3, checkInProgress:false, console,
  clearInterval(){},setInterval(){return 1;},setTimeout(){return 1;},clearTimeout(){},process:{exit(){},execPath:'node',cwd:()=>'.',platform:'linux'},
  supabase:{},claimPraktikaHelper:()=>new Promise<string>(r=>resolve=r),writePraktikaHelper:async()=>{releases++;},spawn:()=>{spawns++;},

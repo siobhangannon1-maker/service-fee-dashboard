@@ -44,7 +44,7 @@ test('production GST callbacks capture only positive verification; challenges in
  for(const [body,status] of [['[]',200],['',307],['',500],['<input type="password">',200],['<input name="otp">',200]] as const){
   const store=createCookieSnapshotStore(fixture(t),binding);store.capture(cookies,'source');let writes=0;const logs:string[]=[];
   const gate=runInNewContext(code+'\nensureAuthenticated',{
-   createPraktikaAuthenticationGate,assertOwned:async()=>{},getSession:async()=>({helper_instance_id:"new",helper_heartbeat_at:new Date().toISOString(),authenticated_at:writes?new Date().toISOString():null}),ownedContext:{cookies:async()=>cookies},cookieSnapshots:store,helperInstanceId:'new',shuttingDown:false,isWarmRestoration:true,operationalThisGeneration:false,
+   renewalHelperToken:'fixture',renewalPage:undefined,scopedNoAuth:false,ownershipLost:false,createPraktikaAuthenticationGate,assertOwned:async()=>{},getSession:async()=>({helper_instance_id:"new",helper_heartbeat_at:new Date().toISOString(),authenticated_at:writes?new Date().toISOString():null}),ownedContext:{cookies:async()=>cookies},cookieSnapshots:store,helperInstanceId:'new',shuttingDown:false,isWarmRestoration:true,operationalThisGeneration:false,
    ownedWrite:async()=>{writes++;},probePraktikaAuthentication:async()=>validateGstResponse(status,true,body),process:{env:{PRAKTIKA_PRACTICE_ID:'1'}},PRAKTIKA_BASE_URL:binding.origin,console:{log:(...args:unknown[])=>logs.push(JSON.stringify(args))},
   });
   if(status===200&&body==='[]'){await gate();assert.deepEqual(store.load('new').cookies,cookies);assert.equal(writes,1);}

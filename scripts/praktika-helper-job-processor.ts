@@ -133,6 +133,10 @@ async function jobEligible(appUserId: string | null | undefined, job: { job_type
   return !error && praktikaJobEligibility(data, job.job_type, job.request).eligible;
 }
 
+export class PraktikaJobQueueUnavailable extends Error {
+  constructor() { super("Praktika job queue is temporarily unavailable."); }
+}
+
 async function claimNextJob(appUserId: string | null | undefined, ownership: PraktikaJobOwnership) {
   let query = supabase
     .from("praktika_helper_jobs")
@@ -155,7 +159,7 @@ async function claimNextJob(appUserId: string | null | undefined, ownership: Pra
   }
   const { data: jobs, error } = await query;
 
-  if (error) throw new Error(error.message);
+  if (error) throw new PraktikaJobQueueUnavailable();
   if (!jobs || jobs.length === 0) return null;
 
   // Skip blocked writes without changing their attempts; eligible reads may pass them.
@@ -179,7 +183,7 @@ async function claimNextJob(appUserId: string | null | undefined, ownership: Pra
     .select("*")
     .maybeSingle();
 
-  if (claimError) throw new Error(claimError.message);
+  if (claimError) throw new PraktikaJobQueueUnavailable();
 
   return claimed;
 }
@@ -1346,6 +1350,7 @@ export async function processOnePraktikaHelperJob(
 ): Promise<PraktikaJobResult> {
   await ownership.assertOwned();
   if (ownership.isShuttingDown?.()) return { outcome: "none" };
+  if (ownership.isBrowserReady && !ownership.isBrowserReady()) return { outcome: "none" };
   const job = await claimNextJob(appUserId || null, ownership);
 
   if (!job) return { outcome: "none" };
@@ -1366,8 +1371,11 @@ export async function processOnePraktikaHelperJob(
     await ownership.assertOwned();
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
     const beforeRequest = async () => {
+      if (ownership.isBrowserReady && !ownership.isBrowserReady()) throw new PraktikaAuthenticationUnverified("error", true);
       if (!await jobEligible(appUserId, job, ownership)) throw new PraktikaAuthenticationUnverified("error", true);
       await ownership.assertOwned();
+      if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
+      if (ownership.isBrowserReady && !ownership.isBrowserReady()) throw new PraktikaAuthenticationUnverified("error", true);
       externalStarted = true;
     };
     await ownership.assertOwned();
