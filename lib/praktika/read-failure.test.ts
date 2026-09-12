@@ -12,7 +12,7 @@ const cases: Array<[PraktikaReadFailureCategory,number,string,string]>=[
  ['response_too_large',200,url,' '.repeat(8000001)],
  ['invalid_json',200,url,'private-secret'],
  ['error_envelope',200,url,JSON.stringify([{...exam,error:'private-secret'}])],
- ['invalid_structure',200,url,JSON.stringify(exam)],
+ ['invalid_structure',200,url,JSON.stringify({data:exam})],
  ['missing_exam_id',200,url,'[]'],
 ];
 for(const [category,status,path,text] of cases)test(category+' has fixed safe category and unchanged public message',()=>{
@@ -28,4 +28,24 @@ for(const patch of [{perioexam_id:4},{perioexam_patientid:0},{perioexam_date:'in
 test('duplicate exam remains rejected and valid exam remains unchanged',()=>{
  assert.throws(()=>validatePraktikaRead(type,request,200,url,JSON.stringify([exam,exam])),PraktikaReadFailure);
  assert.deepEqual(validatePraktikaRead(type,request,200,url,valid),[exam]);
+});
+
+test('single exam object normalizes to the same validated array',()=>{
+ assert.deepEqual(validatePraktikaRead(type,request,200,url,JSON.stringify(exam)),[exam]);
+ assert.deepEqual(validatePraktikaRead(type,request,200,url,valid),[exam]);
+});
+test('multiple requested exams cannot accept a single object',()=>{
+ const multi={...request,body:[{...request.body[0],parameters:[...request.body[0].parameters,{practice_id:1,perioexam_id:4}]}]};
+ assert.throws(()=>validatePraktikaRead(type,multi,200,url,JSON.stringify(exam)),PraktikaReadFailure);
+ assert.deepEqual(validatePraktikaRead(type,multi,200,url,JSON.stringify([exam,{...exam,perioexam_id:4}])),[exam,{...exam,perioexam_id:4}]);
+ assert.throws(()=>validatePraktikaRead(type,multi,200,url,valid),PraktikaReadFailure);
+});
+for(const patch of [{perioexam_id:4},{perioexam_patientid:0},{perioexam_date:'invalid'},{perioexam_toothdata:null},{perioexam_toothdata:[null]},{error:'private'},{success:true}])test('single object retains strict checks',()=>{
+ assert.throws(()=>validatePraktikaRead(type,request,200,url,JSON.stringify({...exam,...patch})),PraktikaReadFailure);
+});
+for(const status of [307,401,500])test('single object cannot bypass HTTP '+status,()=>{
+ assert.throws(()=>validatePraktikaRead(type,request,status,url,JSON.stringify(exam)),PraktikaReadFailure);
+});
+test('single object cannot bypass exact response URL',()=>{
+ assert.throws(()=>validatePraktikaRead(type,request,200,url+'?other',JSON.stringify(exam)),PraktikaReadFailure);
 });

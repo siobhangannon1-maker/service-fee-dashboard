@@ -49,6 +49,9 @@ export function validatePraktikaRead(jobType: string, request: unknown, status: 
       || !rows[0].patient_perioexamids.every(positiveId)) return unavailable();
   } else {
     const body = (request.body as Array<{ parameters: Array<{ perioexam_id: unknown }> }>)[0];
+    // Live single-exam responses may be an object. Wrappers and multi-exam
+    // object responses are not accepted; all existing record checks still apply.
+    if (body.parameters.length === 1 && record(data) && Object.hasOwn(data, 'perioexam_id')) data = rows;
     const expected = new Set(body.parameters.map(p => String(p.perioexam_id)));
     const seen = new Set<string>();
     if (!Array.isArray(data) || !rows.every(row => {

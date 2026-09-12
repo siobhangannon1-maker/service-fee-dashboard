@@ -182,3 +182,13 @@ for(const status of [200,307,500])test('no structural observation for other fail
  const f=fixture(true);f.setHttp(status);f.setResponse('invalid');await f.run();
  assert.equal(f.logs.filter(e=>e[0]==='[Praktika read] perio_structure').length,0);
 });
+
+test('valid single exam object completes normalized without structural diagnostic',async()=>{
+ const f=fixture(true); f.job.job_type='periodontal_chart_perio_exams';
+ f.job.request.body=[{parameters:[{practice_id:1181,perioexam_id:12}],fields:[...PERIO_READ_FIELDS.periodontal_chart_perio_exams]}];
+ const exam={perioexam_id:12,perioexam_patientid:123,perioexam_date:'2026-01-01',perioexam_toothdata:Array.from({length:32},()=>({}))};
+ f.setResponse(JSON.stringify(exam));await f.run();
+ assert.equal(f.job.status,'completed');assert.deepEqual(f.job.response,[exam]);
+ assert.equal(f.logs.filter(e=>e[0]==='[Praktika read] perio_structure').length,0);
+ assert.equal(f.job.attempts,1);assert.equal(f.session.authenticated_at,null);
+});
