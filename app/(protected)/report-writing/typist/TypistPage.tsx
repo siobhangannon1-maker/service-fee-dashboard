@@ -1,5 +1,7 @@
 "use client";
 
+import { DEFAULT_PDF_BODY_FONT_SIZE, extractPdfBodyFontSize, pdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
+
 import { WorkflowStartError, workflowStartAlert } from "@/lib/report-writing/workflow-start-error";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -1085,7 +1087,7 @@ function extractPdfDateText(text: string) {
 }
 
 function stripPdfMarkers(text: string) {
-  return String(text || "")
+  return stripPdfFontSize(text)
     .replace(/\n?\[\[PDF_CC:[\s\S]*?\]\]/g, "")
     .replace(/\n?\[\[PDF_DATE:[\s\S]*?\]\]/g, "")
     .trimEnd();
@@ -1095,12 +1097,14 @@ function buildLetterTextForSave(
   letterBody: string,
   pdfCcText: string,
   pdfLetterDate: string,
+  bodyFontSize = DEFAULT_PDF_BODY_FONT_SIZE,
 ) {
   const cleanBody = stripPdfMarkers(letterBody);
   const cleanCc = String(pdfCcText || "").trim();
   const cleanDate = String(pdfLetterDate || "").trim();
 
   const markers = [
+    pdfBodyFontSize(bodyFontSize) !== DEFAULT_PDF_BODY_FONT_SIZE ? `[[PDF_FONT_SIZE:${pdfBodyFontSize(bodyFontSize)}]]` : "",
     cleanCc ? `[[PDF_CC:${cleanCc}]]` : "",
     cleanDate ? `[[PDF_DATE:${cleanDate}]]` : "",
   ].filter(Boolean);
@@ -1192,6 +1196,7 @@ export default function TypistPage() {
   const [typistQueries, setTypistQueries] = useState("");
   const [letterText, setLetterText] = useState("");
   const [generatedAiLetterText, setGeneratedAiLetterText] = useState("");
+  const [pdfFontSize, setPdfFontSize] = useState(DEFAULT_PDF_BODY_FONT_SIZE);
   const [pdfCcText, setPdfCcText] = useState("");
   const [pdfLetterDate, setPdfLetterDate] = useState(
     new Date().toISOString().slice(0, 10),
@@ -1472,7 +1477,7 @@ export default function TypistPage() {
       const response = await fetch("/api/report-writing/generate-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draftId: selectedDraft.id }),
+        body: JSON.stringify({ draftId: selectedDraft.id, previewLetterText: getLetterTextForSave() }),
       });
 
       if (!response.ok) {
@@ -1680,7 +1685,7 @@ export default function TypistPage() {
   }
 
   function getLetterTextForSave() {
-    return buildLetterTextForSave(letterText, pdfCcText, pdfLetterDate);
+    return buildLetterTextForSave(letterText, pdfCcText, pdfLetterDate, pdfFontSize);
   }
 
   async function ensureImageDraftForCurrentWork(options?: { quiet?: boolean }) {
@@ -3026,7 +3031,7 @@ export default function TypistPage() {
         clearTimeout(autosaveTimerRef.current);
       }
     };
-  }, [letterText, pdfCcText, pdfLetterDate, typistQueries, selectedDraft]);
+  }, [letterText, pdfCcText, pdfLetterDate, pdfFontSize, typistQueries, selectedDraft]);
 
   useEffect(() => {
     if (!selectedDraft) return;
@@ -3113,6 +3118,7 @@ export default function TypistPage() {
     setLetterText("");
     setGeneratedAiLetterText("");
     setPdfCcText("");
+    setPdfFontSize(DEFAULT_PDF_BODY_FONT_SIZE);
     setPdfLetterDate(new Date().toISOString().slice(0, 10));
     setAutoGenerateStatus("idle");
     setSaveStatus("idle");
@@ -3157,6 +3163,7 @@ export default function TypistPage() {
 
     const savedLetterText = draft.edited_text || draft.ai_generated_text || "";
     setPdfCcText(extractPdfCcText(savedLetterText));
+    setPdfFontSize(extractPdfBodyFontSize(savedLetterText));
     setPdfLetterDate(
       extractPdfDateText(savedLetterText) ||
         new Date().toISOString().slice(0, 10),
@@ -3405,6 +3412,7 @@ export default function TypistPage() {
     setLetterText("");
     setGeneratedAiLetterText("");
     setPdfCcText("");
+    setPdfFontSize(DEFAULT_PDF_BODY_FONT_SIZE);
     setPdfLetterDate(
       item.appointment_time?.slice(0, 10) ||
         new Date().toISOString().slice(0, 10),
@@ -3989,6 +3997,7 @@ export default function TypistPage() {
       }
 
       setPdfCcText("");
+      setPdfFontSize(DEFAULT_PDF_BODY_FONT_SIZE);
       setLetterText(data.report);
       setGeneratedAiLetterText(data.report);
       setAutoGenerateStatus("ready");
@@ -4321,7 +4330,10 @@ export default function TypistPage() {
       const response = await fetch("/api/report-writing/generate-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draftId: draft.id }),
+        body: JSON.stringify({
+          draftId: draft.id,
+          previewLetterText: selectedDraft?.id === draft.id ? getLetterTextForSave() : undefined,
+        }),
       });
 
       if (!response.ok) {
@@ -4380,7 +4392,7 @@ export default function TypistPage() {
       const response = await fetch("/api/report-writing/generate-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draftId: draft.id }),
+        body: JSON.stringify({ draftId: draft.id, previewLetterText: selectedDraft?.id === draft.id ? getLetterTextForSave() : undefined }),
       });
 
       if (!response.ok) {
@@ -5309,6 +5321,8 @@ export default function TypistPage() {
 
               <div className="[&_*]:!font-sans">
                 <RichTextLetterEditor
+                  bodyFontSize={pdfFontSize}
+                  onBodyFontSizeChange={setPdfFontSize}
                   ref={letterEditorRef}
                   value={letterText}
                   onChange={handleLetterTextChange}

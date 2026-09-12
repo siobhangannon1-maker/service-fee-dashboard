@@ -12,6 +12,10 @@ const routePath = path.resolve('app/api/report-writing/generate-pdf/route.ts');
 const compiled = ts.transpileModule(fs.readFileSync(routePath, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
+const fontSettings = {};
+new Function('exports', ts.transpileModule(fs.readFileSync('lib/report-writing/pdf-font-size.ts', 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS },
+}).outputText)(fontSettings);
 const image = { id: 'fixture-image', storage_path: 'fixture.png', display_width_percent: 45,
   display_alignment: 'left', crop_aspect: 'square', caption: null };
 const filler = (n) => Array(n).fill('Earlier body paragraph.').join('\n');
@@ -42,7 +46,7 @@ async function render(body, images = [], options = {}) {
         const original = p[method].bind(p);
         p[method] = (...params) => {
           const opts = method === 'drawLine' ? params[0] : params[1];
-          events.push({ method, page: pageIndex, ...(method === 'drawText' ? { text: params[0], font: opts.font?.name } : {}),
+          events.push({ method, page: pageIndex, ...(method === 'drawText' ? { text: params[0], font: opts.font?.name, size: opts.size } : {}),
             x: opts.x, y: opts.y, width: opts.width, start: opts.start, end: opts.end });
           return original(...params);
         };
@@ -55,6 +59,7 @@ async function render(body, images = [], options = {}) {
   const errors = [];
   const fixtureRequire = (name) => {
       if (name === '@supabase/supabase-js') return { createClient: () => db };
+      if (name === '@/lib/report-writing/pdf-font-size') return fontSettings;
       if (name === 'pdf-lib') return instrumented;
       if (name === 'next/server') return { NextResponse: Response };
       return require(name);
@@ -63,7 +68,7 @@ async function render(body, images = [], options = {}) {
     fixtureRequire, exports, { cwd: () => process.cwd(), env: {} },
     { error(error) { errors.push(error.message); } },
   );
-  const response = await exports.POST({ json: async () => ({ draftId: 'fixture' }) });
+  const response = await exports.POST({ json: async () => ({ draftId: 'fixture', previewLetterText: options.previewLetterText }) });
   if (response.status !== 200) return { events, error: (await response.json()).error, errors };
   assert.ok((await response.arrayBuffer()).byteLength > 0);
   return { events };
@@ -159,4 +164,143 @@ test('ordinary and buffered wrapped lines retain 14-point spacing', async () => 
   const gaps = lines.slice(1).map((y, i) => lines[i] - y);
   assert.equal(gaps.filter(g => g === 22).length, 1);
   assert.ok(gaps.every(g => g === 14 || g === 22));
+});
+
+test('font size settings default safely and strip persisted metadata', () => {
+  assert.equal(fontSettings.extractPdfBodyFontSize('Body'), 10);
+  for (const size of [10, 11, 12, 13, 14, 15, 16]) {
+    assert.equal(fontSettings.extractPdfBodyFontSize('Body\n[[PDF_FONT_SIZE:' + size + ']]'), size);
+  }
+  for (const value of ['9', '17', '12.5', 'invalid']) {
+    assert.equal(fontSettings.extractPdfBodyFontSize('[[PDF_FONT_SIZE:' + value + ']]'), 10);
+  }
+  assert.equal(fontSettings.stripPdfFontSize('Body\n[[PDF_FONT_SIZE:16]]'), 'Body\n');
+});
+
+test('selected sizes affect actual PDF body and pagination, preserving signature size', async () => {
+  let defaultPages;
+  for (const size of [10, 12, 16]) {
+    const r = await render(prose(900) + '\n[[PDF_FONT_SIZE:' + size + ']]');
+    assertSignatureTogether(r);
+    const body = r.events.filter(e => /^word\d+$/.test(e.text || ''));
+    assert.equal(body.length, 900);
+    assert.ok(body.every(e => e.size === size && e.y >= 140));
+    assert.equal(signature(r).size, 10);
+    assert.equal(r.events.find(e => e.text === 'Fixture Provider').size, 10);
+    assert.ok(!r.events.some(e => (e.text || '').includes('PDF_FONT_SIZE')));
+    const pages = Math.max(...r.events.map(e => e.page)) + 1;
+    if (size === 10) defaultPages = pages;
+    if (size === 16) assert.ok(pages > defaultPages);
+  }
+});
+
+test('preview uses current editor settings instead of stale saved settings', async () => {
+  for (const size of [10, 16, 12]) {
+    const r = await render('Saved body\n[[PDF_FONT_SIZE:10]]', [], {
+      previewLetterText: 'Current body\n[[PDF_FONT_SIZE:' + size + ']]',
+    });
+    signature(r);
+    assert.equal(r.events.find(e => e.text === 'Current').size, size);
+    assert.ok(!r.events.some(e => e.text === 'Saved'));
+  }
+});
+
+test('editor toolbar and visible text use the same restored font size', () => {
+  const React = require('react');
+  const { renderToStaticMarkup } = require('react-dom/server');
+  const editorExports = {};
+  const source = ts.transpileModule(fs.readFileSync('components/report-writing/RichTextLetterEditor.tsx', 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  new Function('require', 'exports', source)(
+    name => name === '@/lib/report-writing/pdf-font-size' ? fontSettings : require(name), editorExports,
+  );
+  for (const marker of ['', '[[PDF_FONT_SIZE:16]]', '[[PDF_FONT_SIZE:12]]']) {
+    const size = fontSettings.extractPdfBodyFontSize(marker);
+    const html = renderToStaticMarkup(React.createElement(editorExports.default, {
+      value: '**Bold** _italic_ __underline__', bodyFontSize: size, onBodyFontSizeChange() {},
+    }));
+    assert.ok(html.includes('font-size:' + size + 'pt'));
+    assert.ok(html.includes('value="' + size + '" selected=""'));
+    assert.ok(html.includes('Letter body font size'));
+    assert.ok(html.includes('**Bold** _italic_ __underline__'));
+    assert.ok(html.includes('Table'));
+  }
+});
+
+test('leading and repeated internal blank lines retain one body line of space each in saved PDFs and previews', async () => {
+  for (const size of [10, 16, 12]) {
+    for (const preview of [false, true]) {
+      const positions = [];
+      for (const count of [0, 1, 2]) {
+        const body = '\n'.repeat(count) + 'Alpha\n' + '\n'.repeat(count) + 'Beta';
+        const text = body + '\n\n[[PDF_FONT_SIZE:' + size + ']]';
+        const r = await render(preview ? 'Stale body' : text, [], preview ? { previewLetterText: text } : {});
+        signature(r);
+        positions.push({
+          alpha: r.events.find(e => e.text === 'Alpha').y,
+          beta: r.events.find(e => e.text === 'Beta').y,
+        });
+      }
+      for (const count of [1, 2]) {
+        assert.ok(Math.abs(positions[0].alpha - positions[count].alpha - count * size * 1.4) < 0.001);
+        const gap = positions[count].alpha - positions[count].beta;
+        const baseGap = positions[0].alpha - positions[0].beta;
+        assert.ok(Math.abs(gap - baseGap - count * size * 1.4) < 0.001);
+      }
+    }
+  }
+});
+
+test('Typist serialization and reopening preserve body blank lines with PDF settings', () => {
+  const source = fs.readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx', 'utf8');
+  const ast = ts.createSourceFile('TypistPage.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const names = ['stripPdfMarkers', 'buildLetterTextForSave'];
+  const functions = ast.statements.filter(n => ts.isFunctionDeclaration(n) && names.includes(n.name?.text)).map(n => n.getText(ast)).join('\n');
+  const code = ts.transpileModule(functions, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const helpers = new Function('stripPdfFontSize', 'pdfBodyFontSize', 'DEFAULT_PDF_BODY_FONT_SIZE', code + ';return {stripPdfMarkers, buildLetterTextForSave};')(
+    fontSettings.stripPdfFontSize, fontSettings.pdfBodyFontSize, fontSettings.DEFAULT_PDF_BODY_FONT_SIZE,
+  );
+  for (const size of [10, 16, 12]) {
+    const body = '\n\n**Alpha**\n\n\nBeta';
+    const saved = helpers.buildLetterTextForSave(body, 'Fixture CC', '2026-09-12', size);
+    assert.equal(helpers.stripPdfMarkers(saved), body);
+    assert.equal(fontSettings.extractPdfBodyFontSize(saved), size);
+  }
+  assert.equal(fontSettings.stripPdfFontSize('\n[[PDF_FONT_SIZE:12]]\nAlpha'), '\n\nAlpha');
+});
+
+test('new-draft save retains leading and internal whitespace in persisted edited_text', async () => {
+  const source = fs.readFileSync('app/api/report-writing/save-draft/route.ts', 'utf8');
+  const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const exports = {};
+  let inserted;
+  const db = { from() { return {
+    insert(payload) { inserted = payload; return this; },
+    select() { return this; },
+    async single() { return { data: { id: 'fixture', ...inserted }, error: null }; },
+  }; } };
+  new Function('require', 'exports', 'process', code)(name => {
+    if (name === 'next/server') return { NextResponse: Response };
+    if (name === '@supabase/supabase-js') return { createClient: () => db };
+    if (name.endsWith('/audit')) return { getAuditActor: async () => ({}), createReportAuditEvent: async () => {} };
+    if (name.endsWith('/edit-learning')) return { noLearningRequested: () => ({}) };
+    throw new Error('Unexpected fixture dependency');
+  }, exports, { env: {} });
+  const body = '\n\nAlpha\n\n\nBeta\n\n[[PDF_FONT_SIZE:16]]';
+  const response = await exports.POST({ json: async () => ({ providerId: 'fixture', editedText: body }) });
+  assert.equal(response.status, 200);
+  assert.equal(inserted.edited_text, body);
+});
+
+test('blank-line letters retain rich formatting, lists and tables', async () => {
+  const r = await render('\n\n**Boldword** _Italicword_ __Underlineword__\n\n- Bulletword\n1. Numberword\n\n| Heading |\n| --- |\n| Cellword |\nFinal paragraph.');
+  signature(r);
+  assert.match(r.events.find(e => e.text === 'Boldword').font, /Bold/);
+  assert.match(r.events.find(e => e.text === 'Italicword').font, /Italic/);
+  const under = r.events.find(e => e.text === 'Underlineword');
+  assert.ok(r.events.some(e => e.method === 'drawLine' && e.start.y === under.y - 2));
+  for (const word of ['Bulletword', 'Numberword', 'Heading', 'Cellword']) {
+    assert.ok(r.events.some(e => e.text === word));
+  }
 });

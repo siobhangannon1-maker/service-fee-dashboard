@@ -1,3 +1,4 @@
+import { extractPdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
 import {
   PDFDocument,
   rgb,
@@ -76,7 +77,7 @@ function extractPdfDateText(text: string) {
 }
 
 function stripPdfMarkers(text: string) {
-  return String(text || "")
+  return stripPdfFontSize(text)
     .replace(/\n?\[\[PDF_CC:[\s\S]*?\]\]/g, "")
     .replace(/\n?\[\[PDF_DATE:[\s\S]*?\]\]/g, "")
     .trimEnd();
@@ -726,7 +727,7 @@ async function embedStorageImage(pdfDoc: PDFDocument, image: DraftImage) {
 
 export async function POST(req: Request) {
   try {
-    const { draftId } = await req.json();
+    const { draftId, previewLetterText } = await req.json();
 
     const { data: draft, error: draftError } = await supabase
       .from("report_drafts")
@@ -837,9 +838,9 @@ export async function POST(req: Request) {
     */
     const bottomLimit = 140;
 
-    const fontSize = 10;
-    const lineHeight = 14;
-    const maxChars = 82;
+    let fontSize = 10;
+    let lineHeight = 14;
+    let maxChars = 82;
 
     let page = pdfDoc.addPage([pageWidth, pageHeight]);
     let y = pageHeight - topMarginFirstPage;
@@ -1641,7 +1642,10 @@ export async function POST(req: Request) {
 
     drawLetterhead();
 
-    const rawLetterText = draft.edited_text || draft.ai_generated_text || "";
+    // Preview uses the current editor snapshot without changing the saved draft.
+    const rawLetterText = typeof previewLetterText === "string"
+      ? previewLetterText
+      : draft.edited_text || draft.ai_generated_text || "";
 
     const appointmentDate =
       draft.appointment_date ||
@@ -1693,6 +1697,10 @@ export async function POST(req: Request) {
     const pdfCcLine = formatPdfCcLine(extractPdfCcText(rawLetterText));
     const letterText = cleanLetterText(rawLetterText);
 
+    // Body layout uses the selected point size; header and signature stay at 10pt.
+    fontSize = extractPdfBodyFontSize(rawLetterText);
+    lineHeight = fontSize * 1.4;
+    maxChars = Math.floor(82 * 10 / fontSize);
     const paragraphs = letterText.split(/\n/);
 
     // (temporary diagnostics removed)
@@ -1881,7 +1889,7 @@ export async function POST(req: Request) {
       h += 10;
 
       // Warm Regards line consumes one lineHeight via drawLine
-      h += lineHeight;
+      h += 14;
 
       // y -= 45 after Warm Regards
       h += 45;
@@ -1894,7 +1902,7 @@ export async function POST(req: Request) {
       h += 26;
 
       // Provider name line
-      h += lineHeight;
+      h += 14;
 
       // Provider qualifications may wrap; measure using same text-wrapping
       if (opts.providerQualifications) {
@@ -1902,10 +1910,10 @@ export async function POST(req: Request) {
           text: String(opts.providerQualifications || ""),
           maxWidth: contentWidth,
           textFont: font,
-          size: fontSize,
+          size: 10,
         });
 
-        h += qualLines.length * lineHeight;
+        h += qualLines.length * 14;
       }
 
       return h;
@@ -1939,6 +1947,8 @@ export async function POST(req: Request) {
       flushAllTailLines();
     }
 
+    fontSize = 10;
+    lineHeight = 14;
     // Now render the signature block (kept together)
     y -= 10;
 

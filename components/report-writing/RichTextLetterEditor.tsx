@@ -1,5 +1,7 @@
 "use client";
 
+import { PDF_BODY_FONT_SIZES, pdfBodyFontSize } from "@/lib/report-writing/pdf-font-size";
+
 import { forwardRef, useImperativeHandle, useRef } from "react";
 
 export type RichTextLetterEditorHandle = {
@@ -14,6 +16,8 @@ type Props = {
   className?: string;
   minHeightClassName?: string;
   showToolbar?: boolean;
+  bodyFontSize?: number;
+  onBodyFontSizeChange?: (size: number) => void;
 };
 
 const RichTextLetterEditor = forwardRef<RichTextLetterEditorHandle, Props>(
@@ -26,6 +30,8 @@ const RichTextLetterEditor = forwardRef<RichTextLetterEditorHandle, Props>(
       className = "",
       minHeightClassName = "min-h-96",
       showToolbar = true,
+      bodyFontSize,
+      onBodyFontSizeChange,
     },
     ref,
   ) {
@@ -168,6 +174,18 @@ const RichTextLetterEditor = forwardRef<RichTextLetterEditorHandle, Props>(
       <div className={className}>
         {showToolbar && !readOnly ? (
           <div className="mb-3 flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
+            {onBodyFontSizeChange ? (
+              <select
+                aria-label="Letter body font size"
+                className="rounded-lg border bg-white px-2 py-1 text-sm"
+                value={pdfBodyFontSize(bodyFontSize)}
+                onChange={(event) => onBodyFontSizeChange(pdfBodyFontSize(event.target.value))}
+              >
+                {PDF_BODY_FONT_SIZES.map(size => (
+                  <option key={size} value={size}>{size} pt</option>
+                ))}
+              </select>
+            ) : null}
             <button
               type="button"
               onClick={() => wrapSelection("**")}
@@ -220,6 +238,7 @@ const RichTextLetterEditor = forwardRef<RichTextLetterEditorHandle, Props>(
         ) : null}
 
         <textarea
+          style={bodyFontSize === undefined ? undefined : { fontSize: `${pdfBodyFontSize(bodyFontSize)}pt`, lineHeight: 1.4 }}
           ref={textareaRef}
           value={value}
           readOnly={readOnly}

@@ -101,7 +101,9 @@ export async function POST(req: Request) {
 
     const aiText = clean(originalAiText) || clean(generatedReport)
     const finalText =
-      clean(finalApprovedText) || clean(editedText) || clean(generatedReport)
+      String(finalApprovedText ?? "").trimEnd() ||
+      String(editedText ?? "").trimEnd() ||
+      String(generatedReport ?? "").trimEnd()
 
     const insertPayload: Record<string, unknown> = {
       provider_id: providerId,
