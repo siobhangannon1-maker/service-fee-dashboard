@@ -71,8 +71,8 @@ function connectionState(
 ): ConnectionDisplayState {
   if (busy) return "connecting";
   if (status === "loading") return "loading";
-  if (status === "rechecking_connection") return "rechecking";
-  if (status === "checking_connection") return "checking";
+  if (status === "rechecking_connection") return "disconnected";
+  if (status === "checking_connection") return "disconnected";
   if (status === "waiting_for_credentials") return "login_required";
   if (status === "waiting_for_mfa") return "mfa_required";
   if (status === "idle") return "idle";
@@ -88,12 +88,7 @@ function connectionState(
   return "disconnected";
 }
 
-function connectionLabel(state: ConnectionDisplayState, noAuthGateEnabled = false) {
-  if (noAuthGateEnabled) {
-    if (state === "connected") return "Available";
-    if (state === "login_required" || state === "mfa_required") return "Action required";
-    return "Recovering";
-  }
+function connectionLabel(state: ConnectionDisplayState) {
   if (state === "loading") return "Loading…";
   if (state === "rechecking") return "Rechecking connection";
   if (state === "checking") return "Checking connection";
@@ -241,7 +236,7 @@ function PraktikaToolsPopupContent({
     }
   }
 
-  const armStatusExpiry = useStatusExpiry(status => { setDisplayStatus(current => ["connected", "checking_connection", "rechecking_connection"].includes(current) ? status : current); }, true, true);
+  const armStatusExpiry = useStatusExpiry(status => { setDisplayStatus(current => ["connected", "refreshing", "refresh_requested", "checking_connection", "rechecking_connection"].includes(current) ? status : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {
@@ -458,7 +453,7 @@ function PraktikaToolsPopupContent({
                   )}`}
                 />
                 <h3 className="text-sm font-bold text-slate-950">
-                  Praktika: {currentStatus === "waiting_for_mfa" ? "MFA required" : connectionLabel(currentConnectionState, session?.noAuthGateEnabled)}
+                  Praktika: {currentStatus === "waiting_for_mfa" ? "MFA required" : connectionLabel(currentConnectionState)}
                 </h3>
               </div>
 

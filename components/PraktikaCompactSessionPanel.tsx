@@ -47,9 +47,9 @@ function statusLabel(status: SessionStatus) {
   if (status === "checking_connection") return "Loading status…";
   if (status === "connected") return "Connected";
   if (["idle", "not_started", "expired"].includes(status)) return "Not connected";
-  if (status === "waiting_for_mfa") return "MFA needed";
-  if (status === "refresh_requested" || status === "refreshing") return "Reconnecting";
-  if (needsLogin(status)) return "Login needed";
+  if (status === "waiting_for_mfa") return "Login required";
+  if (status === "refresh_requested" || status === "refreshing") return "Connecting";
+  if (needsLogin(status)) return "Login required";
   return "Not connected";
 }
 
@@ -69,7 +69,7 @@ export default function PraktikaCompactSessionPanel({
   const [mfaCode, setMfaCode] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const armStatusExpiry = useStatusExpiry(status => { setState(current => ["connected", "checking_connection"].includes(current.status) ? { ...current, status: status as typeof current.status } : current); });
+  const armStatusExpiry = useStatusExpiry(status => { setState(current => ["connected", "refreshing", "refresh_requested", "checking_connection"].includes(current.status) ? { ...current, status: status as typeof current.status } : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {

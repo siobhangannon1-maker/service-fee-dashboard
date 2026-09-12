@@ -2,7 +2,7 @@ import { perioStructureDiagnostic } from "../lib/praktika/perio-structure-diagno
 import { praktikaJobEligibility } from "../lib/praktika/job-eligibility";
 import { PraktikaReadFailure, type PraktikaReadFailureCategory, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from "../lib/praktika/read-operations";
 import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
-import { PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
+import { PraktikaHelperUnavailable } from "../lib/praktika/helper-lease";
 import { PraktikaOwnershipLost, type PraktikaJobOwnership } from "../lib/praktika/helper-lease";
 import { type BrowserContext } from "playwright";
 import { createClient } from "@supabase/supabase-js";
@@ -371,24 +371,6 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any,
   await supabase.storage.from(fileSpec.bucket).remove([fileSpec.path]).catch(() => null);
 
   return parsed;
-}
-
-async function markSessionConnectedForJob(job: any, ownership: PraktikaJobOwnership) {
-  if (!job.app_user_id) return;
-  await ownership.updateSession({
-    status: "connected",
-    message: "Praktika helper browser is connected. Helper jobs can run for this user.",
-    refreshed_at: nowIso(), last_used_at: nowIso(), refresh_requested_at: null,
-  });
-}
-
-async function markSessionWaitingForCredentialsForJob(job: any, ownership: PraktikaJobOwnership) {
-  if (!job.app_user_id) return;
-  await ownership.updateSession({
-    status: "waiting_for_credentials",
-    message: "Enter your Praktika username and password in DocuDental.",
-    refresh_requested_at: null,
-  });
 }
 
 async function runPraktikaRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>) {
@@ -1350,7 +1332,7 @@ export async function processOnePraktikaHelperJob(
 ): Promise<PraktikaJobResult> {
   await ownership.assertOwned();
   if (ownership.isShuttingDown?.()) return { outcome: "none" };
-  if (ownership.isBrowserReady && !ownership.isBrowserReady()) return { outcome: "none" };
+  if (ownership.isBrowserReady && !await ownership.isBrowserReady()) return { outcome: "none" };
   const job = await claimNextJob(appUserId || null, ownership);
 
   if (!job) return { outcome: "none" };
@@ -1371,11 +1353,11 @@ export async function processOnePraktikaHelperJob(
     await ownership.assertOwned();
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
     const beforeRequest = async () => {
-      if (ownership.isBrowserReady && !ownership.isBrowserReady()) throw new PraktikaAuthenticationUnverified("error", true);
-      if (!await jobEligible(appUserId, job, ownership)) throw new PraktikaAuthenticationUnverified("error", true);
+      if (ownership.isBrowserReady && !await ownership.isBrowserReady()) throw new PraktikaHelperUnavailable();
+      if (!await jobEligible(appUserId, job, ownership)) throw new PraktikaHelperUnavailable();
+      if (ownership.isBrowserReady && !await ownership.isBrowserReady()) throw new PraktikaHelperUnavailable();
       await ownership.assertOwned();
       if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
-      if (ownership.isBrowserReady && !ownership.isBrowserReady()) throw new PraktikaAuthenticationUnverified("error", true);
       externalStarted = true;
     };
     await ownership.assertOwned();
@@ -1416,7 +1398,6 @@ export async function processOnePraktikaHelperJob(
     }
     readStage = "result_persistence_failure";
     await completeJob(job.id, response);
-    if (!retrieval) await markSessionConnectedForJob(job, ownership);
     console.log(`Completed Praktika helper job ${job.id}`);
     return { outcome: "completed", jobId: job.id };
   } catch (error: any) {
@@ -1430,7 +1411,7 @@ export async function processOnePraktikaHelperJob(
       if (readOnly) console.log("[Praktika read] failure", { jobType: job.job_type, attempt: job.attempts, failureCategory: "ownership_unavailable" });
       throw ownershipError;
     }
-    if (error instanceof PraktikaAuthenticationUnverified) {
+    if (error instanceof PraktikaHelperUnavailable) {
       // No external action occurred: preserve the job and its original attempt count.
       const { error: releaseError } = await supabase.from("praktika_helper_jobs").update({
         status: "pending", attempts: Math.max(0, job.attempts - 1), locked_at: null, locked_by: null,
@@ -1458,20 +1439,6 @@ export async function processOnePraktikaHelperJob(
     }
     const message = error?.message || "Praktika helper job failed.";
     console.error(`Failed Praktika helper job ${job.id}:`, message);
-
-    const isLoggedOutOrExpired =
-      message.toLowerCase().includes("logged out") ||
-      message.toLowerCase().includes("expired session") ||
-      message.toLowerCase().includes("session is logged out") ||
-      message.toLowerCase().includes("logged-out") ||
-      message.toLowerCase().includes("not logged in") ||
-      message.toLowerCase().includes("hijacked or expired session");
-
-    if (isLoggedOutOrExpired) {
-      await markSessionWaitingForCredentialsForJob(job, ownership);
-      await failJob(job, message);
-      return { outcome: "needs_reconnect", jobId: job.id };
-    }
 
     await failJob(job, message);
     return { outcome: "failed", jobId: job.id };

@@ -8,9 +8,9 @@ const type = 'periodontal_chart_patient_perio_exam_ids';
 const request = { method: 'POST', path: '/php/forms/db_getFormData.php', contentType: 'json', body: [{ parameters: [{ practice_id: 1181, patient_id: 123 }], fields: [...PERIO_READ_FIELDS[type]] }] };
 const url = 'https://praktika.praktika.net.au/php/forms/db_getFormData.php';
 for (const jobType of ['upload_report_to_praktika', 'update_praktika_letter_icons', 'add_clinical_note', 'unknown']) {
-  test(`${jobType} cannot use read bypass or stale proof`, () => {
+  test(`${jobType} uses browser availability without proof`, () => {
     assert.equal(allowedPraktikaRead(jobType, request), false);
-    assert.equal(praktikaJobEligibility(live, jobType, request, now).eligible, false);
+    assert.equal(praktikaJobEligibility(live, jobType, request, now).eligible, true);
     assert.equal(praktikaJobEligibility({ ...live, authenticated_at: new Date(now).toISOString() }, jobType, request, now).eligible, true);
   });
 }

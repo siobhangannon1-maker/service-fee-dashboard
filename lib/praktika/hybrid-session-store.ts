@@ -1,6 +1,5 @@
 import { currentWorkflowExecution } from "../report-writing/workflow-execution-context";
 import "server-only";
-import { hasFreshPraktikaAuthentication } from "./authentication";
 import { hasLivePraktikaHelper } from "./helper-lease";
 
 import { cookies } from "next/headers";
@@ -235,8 +234,6 @@ export async function savePraktikaCookie({
     pending_praktika_username: null,
     pending_praktika_password: null,
     current_url: currentUrl || null,
-    status: "connected",
-    message: "Praktika connection is active.",
     mfa_code: null,
     mfa_code_updated_at: null,
     refreshed_at: new Date().toISOString(),
@@ -252,7 +249,7 @@ export async function markPraktikaRefreshRequested(
   if (
     current.status === "refresh_requested" ||
     (hasLivePraktikaHelper(current) &&
-      ((current.status === "refreshing" && hasFreshPraktikaAuthentication(current)) || current.status === "waiting_for_mfa"))
+      (current.status === "refreshing" || current.status === "waiting_for_mfa"))
   ) {
     return;
   }

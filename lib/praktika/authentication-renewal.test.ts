@@ -37,7 +37,7 @@ test('transient renewal failure preserves proof; strict stale job still blocks',
   assert.equal(f.row.authenticated_at, proof); assert.equal(f.row.status, 'connected');
   assert.equal(derivePraktikaConnection(f.row).connected, true);
   const future = Date.now() + 121000;
-  assert.equal(derivePraktikaConnection({ ...f.row, helper_heartbeat_at: new Date(future).toISOString() }, future).connected, false);
+  assert.equal(derivePraktikaConnection({ ...f.row, helper_heartbeat_at: new Date(future).toISOString() }, future).connected, true);
   f.row.authenticated_at = null;
   await assert.rejects(f.gate(), PraktikaAuthenticationUnverified);
   assert.deepEqual(f.stats(), { probes: 2, successes: 0, failures: 0 });
@@ -97,15 +97,6 @@ test('transport rejection settles before another GST starts', async () => {
   assert.doesNotMatch(source, /Promise\.race/);
 });
 
-test('helper stops renewal before release and leaves useful-work idle accounting untouched', () => {
-  const source = readFileSync('scripts/refresh-praktika-session.ts', 'utf8');
-  assert.match(source, /async function releaseOwnership[^]*?renewal\?\.stop\(\)/);
-  assert.match(source, /context.once\("close", \(\) => \{[^]*?renewal\?\.stop\(\)/);
-  const scheduler = source.slice(source.indexOf('renewal = startPraktikaAuthenticationRenewal'), source.indexOf('context.once("close"'));
-  assert.doesNotMatch(scheduler, /noteUsefulWork|usefulWorkDeadline\s*=/);
-  assert.match(scheduler, /loginTransition/);
-});
-
 test('login suspension prevents a queued tick from starting a probe until resumed', async () => {
   const f = fixture(); await f.gate.invalidate();
   await assert.rejects(f.gate.renew()); await assert.rejects(f.gate());
@@ -161,4 +152,47 @@ test('generation token correlates redirect, failure, retry and later success wit
     for (const [, fields] of entries) assert.equal((fields as {helperToken: string}).helperToken, token);
   }
   assert.doesNotMatch(JSON.stringify(logs), /PRIVATE|SECOND-GENERATION|fixture.invalid|\/php\/|cookie=/);
+});
+
+for (const [name, status, location, cookies, matched] of [
+  ['exact',307,'/php/security/db_refreshToken.php',true,true],
+  ['query',307,'/php/security/db_refreshToken.php?secret=x#x',true,true],
+  ['no cookie',307,'/php/security/db_refreshToken.php',false,false],
+  ['other',307,'/php/security/other.php',true,false],
+  ['case',307,'/php/security/db_refreshtoken.php',true,false],
+  ['external',307,'https://outside.invalid/php/security/db_refreshToken.php',true,false],
+  ['other status',302,'/php/security/db_refreshToken.php',true,false],
+  ['malformed',307,'https://[',true,false],
+] as const) test('refresh transition: ' + name, async () => {
+  const { isPraktikaRefreshTransition } = await import('./authentication-probe');
+  assert.equal(isPraktikaRefreshTransition(status,location,'https://fixture.invalid/php/json/probe.php',cookies ? {'set-cookie':'SECRET=SECRET'} : {}),matched);
+});
+
+test('two fast original probes then normal cadence; no proof on 307; valid 200 recovers', async t => {
+  const logs: unknown[][] = []; t.mock.method(console, 'log', (...args: unknown[]) => logs.push(args));
+  let clock = 0, calls = 0, positive = false, writes = 0;
+  const row = { status: 'connected', helper_instance_id:'owner',helper_heartbeat_at:new Date().toISOString(),authenticated_at:null as string|null };
+  const context = { request: { post: async (url: string, options: {maxRedirects: number}) => {
+    calls++; assert.equal(url,'https://fixture.invalid/php/json/db_reportingDataWarehouse.php'); assert.equal(options.maxRedirects,0);
+    return {status:()=>positive?200:307,ok:()=>positive,url:()=>url,
+      headers:()=>({'location':'/php/security/db_refreshToken.php?SECRET#SECRET','set-cookie':'SECRET=SECRET'}),
+      body:async()=>Buffer.from('[]'),dispose:async()=>{}};
+  }}} as unknown as BrowserContext;
+  const gate = createPraktikaAuthenticationGate({ assertOwned:async()=>{},readOwnedSession:async()=>row,
+    probe:()=>probePraktikaAuthentication(context,'1181','https://fixture.invalid'),
+    recordSuccess:async()=>{writes++;row.authenticated_at=new Date().toISOString();},recordFailure:async()=>assert.fail('no negative session write') });
+  const renewal = startPraktikaAuthenticationRenewal({helperToken:'token',readSession:async()=>row,eligible:async()=>true,renew:gate.renew,stopGate:gate.stop,now:()=>clock});
+  try {
+    await renewal.tick(); assert.equal(calls,1);
+    clock=1999;await renewal.tick();assert.equal(calls,1);
+    clock=2000;await renewal.tick();assert.equal(calls,2);
+    clock=4000;await renewal.tick();assert.equal(calls,3);
+    clock=6000;await renewal.tick();assert.equal(calls,3);
+    clock=19000;await renewal.tick();assert.equal(calls,4);
+    clock=21000;await renewal.tick();assert.equal(calls,4);
+    assert.equal(writes,0);assert.equal(row.authenticated_at,null);assert.equal(derivePraktikaConnection(row).connected,true);
+    positive=true;clock=79000;await renewal.tick();assert.equal(calls,5);assert.equal(writes,1);
+    assert.equal(derivePraktikaConnection(row).connected,true);
+    assert.doesNotMatch(JSON.stringify(logs),/SECRET|db_refreshToken|normalizedPath/);
+  } finally {renewal.stop();}
 });

@@ -103,7 +103,7 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
   if (state.status === "checking_connection") return { label: "Loading status…", headline: "Loading status…", message: "Loading status…", tone: "border-slate-200 bg-slate-50 text-slate-950", dot: "bg-slate-400" };
   if (isReconnectStatus(state.status)) {
     return {
-      label: "Reconnecting",
+      label: "Connecting",
       tone: "border-blue-200 bg-blue-50 text-blue-950",
       dot: "bg-blue-500",
       headline: "Reconnecting to Praktika",
@@ -115,7 +115,7 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
 
   if (state.status === "waiting_for_mfa") {
     return {
-      label: "MFA needed",
+      label: "Login required",
       tone: "border-amber-200 bg-amber-50 text-amber-950",
       dot: "bg-amber-500",
       headline: "Praktika needs an MFA code",
@@ -128,7 +128,7 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
     state.status === "waiting_for_credentials"
   ) {
     return {
-      label: "Login needed",
+      label: "Login required",
       tone: "border-amber-200 bg-amber-50 text-amber-950",
       dot: "bg-amber-500",
       headline: "Praktika login needed",
@@ -138,7 +138,7 @@ function getDisplayState(state: SessionState, liveStatus: LiveStatus) {
 
   if (state.status === "error" || liveStatus === "error" || liveStatus === "expired") {
     return {
-      label: "Attention needed",
+      label: "Not connected",
       tone: "border-red-200 bg-red-50 text-red-950",
       dot: "bg-red-500",
       headline: "Praktika needs attention",
@@ -193,7 +193,7 @@ export default function PraktikaSessionPanel({
   const [validating, setValidating] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const armStatusExpiry = useStatusExpiry(status => { setState(current => ["connected", "checking_connection"].includes(current.status) ? { ...current, status: status as typeof current.status } : current); });
+  const armStatusExpiry = useStatusExpiry(status => { setState(current => ["connected", "refreshing", "refresh_requested", "checking_connection"].includes(current.status) ? { ...current, status: status as typeof current.status } : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {

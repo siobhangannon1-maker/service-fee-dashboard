@@ -32,7 +32,7 @@ export function praktikaNoAuthGateEnabled(row: ExperimentalEvidence) {
 
 export function hasPraktikaChallenge(row: ExperimentalEvidence) {
   if (["waiting_for_credentials", "waiting_for_mfa"].includes(row.status || "")) return true;
-  try { const url = new URL(row.current_url || ""); return url.origin === "https://praktika.praktika.net.au" && url.pathname === "/v2/login"; } catch { return false; }
+  try { const url = new URL(row.current_url || ""); return url.origin === "https://praktika.praktika.net.au" && ["/v2/login", "/v2/logout", "/logout"].includes(url.pathname.replace(/\/$/, "")); } catch { return false; }
 }
 export function hasExperimentalPraktikaEligibility(row: HelperHealth & ExperimentalEvidence, now = Date.now()) {
   const at = Date.parse(row.experimental_auth_at || "");
@@ -52,66 +52,21 @@ export type PraktikaConnectionRow = HelperHealth & ExperimentalEvidence & {
 export type EffectivePraktikaStatus = "connected" | "checking_connection" | "refreshing" | "refresh_requested" | "idle" |
   "not_started" | "waiting_for_credentials" | "waiting_for_mfa" | "expired" | "error";
 
-// Scoped operating mode changes availability only; strict proof stays diagnostic.
+// Connected is written only by the owning helper after browser readiness checks.
+// Historical proof and experiment fields are deliberately not consulted here.
 export function derivePraktikaConnection(row: PraktikaConnectionRow, now = Date.now()) {
   const helperAlive = hasLivePraktikaHelper(row, now);
-  const authenticationVerified = hasFreshPraktikaAuthentication(row, now);
-  const noAuthGateEnabled = praktikaNoAuthGateEnabled(row);
-  if (noAuthGateEnabled) {
-    let logoutPage = false;
-    try {
-      const url = new URL(row.current_url || "");
-      logoutPage = url.origin === "https://praktika.praktika.net.au" &&
-        ["/v2/logout", "/logout", "/v2/login"].includes(url.pathname.replace(/\/$/, ""));
-    } catch { /* Browser challenge state is also checked below. */ }
-    const challenge = hasPraktikaChallenge(row) || logoutPage || ["login_required", "expired"].includes(row.status);
-    const available = helperAlive && !challenge && ["connected", "refreshing"].includes(row.status);
-    return {
-      noAuthGateEnabled: true, operationalWithoutAuth: available, experimentalEligible: false,
-      status: (challenge ? row.status === "waiting_for_mfa" ? "waiting_for_mfa" : "waiting_for_credentials"
-        : available ? "connected" : "refreshing") as EffectivePraktikaStatus,
-      message: challenge ? "Praktika needs login or MFA before work can continue."
-        : available ? "Praktika is available." : "Praktika helper is recovering. Work remains queued.",
-      connected: available, helperAlive, authenticationVerified,
-    };
-  }
   let status: EffectivePraktikaStatus;
-  let message: string;
-  let loginPage = false;
-  try {
-    const url = new URL(row.current_url || "");
-    loginPage = url.origin === "https://praktika.praktika.net.au" && url.pathname === "/v2/login";
-  } catch { /* Missing URL is not positive or negative authentication evidence. */ }
-  if (loginPage && row.status !== "waiting_for_mfa") {
-    status = "waiting_for_credentials";
-    message = "Please connect to Praktika.";
-  } else if (row.status === "waiting_for_credentials" || row.status === "waiting_for_mfa" || row.status === "error" || row.status === "expired") {
-    status = row.status;
-    message = row.message || "Praktika needs attention before work can continue.";
-  } else if (praktikaExperimentEnabled(row) && row.experimental_auth_status === "challenge" && row.experimental_helper_instance_id === row.helper_instance_id) {
-    status = "waiting_for_credentials";
-    message = "Please connect to Praktika.";
-  } else if (row.status === "refresh_requested") {
-    status = "refresh_requested";
-    message = "Praktika connection verification has been requested.";
-  } else if (!helperAlive) {
-    status = row.cookie || row.current_url ? "idle" : "not_started";
-    message = status === "idle" ? "Praktika helper is idle. Reconnect or queue work to verify the saved session." : "No live Praktika helper is available.";
-  } else if (praktikaExperimentEnabled(row) && authenticationVerified) {
-    status = "connected";
-    message = "Praktika is connected.";
-  } else if (hasExperimentalPraktikaEligibility(row, now)) {
-    status = "connected";
-    message = "Praktika is available under the temporary authentication experiment.";
-  } else if (row.status === "refreshing") {
-    status = "refreshing";
-    message = "Praktika authentication is unverified. Reconnect or queue work to check it.";
-  } else if (!authenticationVerified || row.status !== "connected") {
-    status = "checking_connection";
-    message = "Checking Praktika connection.";
-  } else {
-    status = "connected";
-    message = "Praktika is connected.";
-  }
-  return { noAuthGateEnabled: false, operationalWithoutAuth: false, experimentalEligible: status === "connected" && !authenticationVerified && hasExperimentalPraktikaEligibility(row, now), status, message, connected: status === "connected", helperAlive, authenticationVerified };
+  if (hasPraktikaChallenge(row)) {
+    status = row.status === "waiting_for_mfa" ? "waiting_for_mfa" : "waiting_for_credentials";
+  } else if (!helperAlive) status = "not_started";
+  else if (row.status === "connected") status = "connected";
+  else if (["refreshing", "refresh_requested"].includes(row.status)) status = "refreshing";
+  else status = "not_started";
+  const message = status === "connected" ? "Praktika is connected."
+    : status === "refreshing" ? "Praktika helper is connecting."
+    : status === "waiting_for_mfa" ? "Praktika requires an MFA code."
+    : status === "waiting_for_credentials" ? "Please log in to Praktika."
+    : "Praktika is not connected.";
+  return { status, message, connected: status === "connected", helperAlive };
 }

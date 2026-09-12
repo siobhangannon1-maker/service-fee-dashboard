@@ -179,7 +179,7 @@ function praktikaSessionStatusLabel(status: PraktikaSessionState["status"]) {
     case "expired": return "Not connected";
     case "refreshing":
     case "refresh_requested": return "Connecting";
-    case "error": return "Connection failed";
+    case "error": return "Not connected";
     case "idle": return "Not connected";
     default: return "Not connected";
   }
@@ -390,7 +390,7 @@ function PraktikaWorkbenchPanel({
   const [code, setCode] = useState("");
   const [sessionBusy, setSessionBusy] = useState(false);
 
-  const armStatusExpiry = useStatusExpiry(status => { setState(current => ["connected", "checking_connection"].includes(current.status) ? { ...current, status: status as typeof current.status } : current); });
+  const armStatusExpiry = useStatusExpiry(status => { setState(current => ["connected", "refreshing", "refresh_requested", "checking_connection"].includes(current.status) ? { ...current, status: status as typeof current.status } : current); });
   const statusRequest = useRef(0);
 
   async function loadStatus() {

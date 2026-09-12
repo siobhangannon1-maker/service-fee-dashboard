@@ -97,8 +97,8 @@ test("session panel display matrix: green only for connected, actionable credent
   const result=display({status,message:""},status==="connected"?"connected":"not_checked");
   assert.equal(result.dot.includes("emerald"),status==="connected");
   if(status==="idle")assert.equal(result.label,"Not connected");
-  if(status==="waiting_for_credentials")assert.equal(result.label,"Login needed");
-  if(status==="waiting_for_mfa")assert.equal(result.label,"MFA needed");
+  if(status==="waiting_for_credentials")assert.equal(result.label,"Login required");
+  if(status==="waiting_for_mfa")assert.equal(result.label,"Login required");
  }
 });
 test("compact panel and Tools display matrix",async()=>{
@@ -111,7 +111,7 @@ test("compact panel and Tools display matrix",async()=>{
   assert.equal(label(status)==="Connected",status==="connected");
  }
  assert.equal(label("idle"),"Not connected");
- assert.equal(label("waiting_for_mfa"),"MFA needed");
+ assert.equal(label("waiting_for_mfa"),"Login required");
 });
 test("Workbench understands current API status vocabulary",async()=>{
  const source=await read(paths[4]);
@@ -127,15 +127,15 @@ test("lease timer expires without a completed poll and checks again on visibilit
  let now=1_000_000; let expired=0; let scheduled: (()=>void)|undefined;
  const listeners: Record<string,()=>void>={};
  const target={addEventListener:(key:string,fn:()=>void)=>{listeners[key]=fn;},removeEventListener:()=>{}};
- const arm=runInNewContext(extract(source,"connectionExpiry")+extract(source,"currentStatus")+extract(source,"createCheckingWindow")+extract(source,"useStatusExpiry")+"\nuseStatusExpiry(onExpire)",{
+ const arm=runInNewContext(extract(source,"connectionExpiry")+extract(source,"currentStatus")+extract(source,"useStatusExpiry")+"\nuseStatusExpiry(onExpire)",{
   CHECKING_WINDOW_MS: 30000, Date: {now:()=>now,parse:Date.parse},onExpire:()=>{expired++;},
   useRef:(current:unknown)=>({current}),useCallback:(fn:unknown)=>fn,useEffect:(fn:()=>void)=>fn(),
   window:target,document:target,setTimeout:(fn:()=>void)=>{scheduled=fn;return 1;},clearTimeout:()=>{scheduled=undefined;},
  });
- const proof={status:"connected",connected:true,authenticatedAt:new Date(now-119000).toISOString(),helperHeartbeatAt:new Date(now).toISOString()};
+ const proof={status:"connected",connected:true,helperAlive:true,authenticatedAt:new Date(now-119000).toISOString(),helperHeartbeatAt:new Date(now).toISOString()};
  assert.equal(arm(proof),"connected");assert.equal(expired,0);
- now+=1000;scheduled!();assert.equal(expired,1);
- assert.equal(arm(proof),"checking_connection");
+ now+=90000;scheduled!();assert.equal(expired,1);
+ assert.equal(arm(proof),"not_started");
  assert.equal(arm({...proof,authenticatedAt:new Date(now).toISOString(),helperHeartbeatAt:new Date(now).toISOString()}),"connected");
  now+=90000;listeners.visibilitychange();assert.equal(expired,3);
  assert.equal(arm({status:"connected",connected:true}),"not_started");
@@ -144,7 +144,7 @@ test("lease timer expires without a completed poll and checks again on visibilit
  assert.equal(arm({status:"refreshing",helperAlive:false}),"not_started");
  assert.equal(arm({status:"refreshing",helperAlive:true,storedStatus:"connected"}),"not_started");
  assert.equal(arm({status:"refreshing",helperHeartbeatAt:new Date(now).toISOString(),helperAlive:true,storedStatus:"refreshing"}),"refreshing");
- assert.equal(arm({status:"refresh_requested"}),"refresh_requested");
+ assert.equal(arm({status:"refresh_requested"}),"not_started");
  assert.equal(arm({status:"waiting_for_credentials"}),"waiting_for_credentials");
  assert.equal(arm({status:"waiting_for_mfa"}),"waiting_for_mfa");
 });
@@ -188,19 +188,4 @@ test("popup timeout is actionable and a late positive response cannot restore Co
     });
     await load(); assert.equal(status, "error");
   }
-});
-
-test("recovery presentation requires live explicit backend evidence and never grants readiness", async () => {
-  const { recoveryStatus, currentStatus, createCheckingWindow } = await import("./use-status-expiry");
-  const { derivePraktikaConnection } = await import("./authentication");
-  const now = Date.now();
-  const data = {status:"checking_connection", storedStatus:"connected", helperAlive:true, helperHeartbeatAt:new Date(now).toISOString()};
-  const window = createCheckingWindow();
-  assert.equal(recoveryStatus(data, window(currentStatus(data,now),now).status,now),"checking_connection");
-  assert.equal(recoveryStatus(data, window(currentStatus(data,now+30000),now+30000).status,now+30000),"rechecking_connection");
-  assert.equal(recoveryStatus(data,"not_started",now+90000),"not_started");
-  for(const patch of [{helperAlive:false},{storedStatus:"error"},{storedStatus:"waiting_for_credentials"},{storedStatus:"waiting_for_mfa"},{status:"not_started"},{storedStatus:undefined}]) {
-    assert.equal(recoveryStatus({...data,...patch},"not_started",now),"not_started");
-  }
-  assert.equal(derivePraktikaConnection({status:"connected",helper_instance_id:"owner",helper_heartbeat_at:data.helperHeartbeatAt,authenticated_at:null},now).connected,false);
 });

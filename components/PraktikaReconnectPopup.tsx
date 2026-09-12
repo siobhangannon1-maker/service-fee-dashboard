@@ -32,9 +32,7 @@ async function safeJson(res: Response) {
 function shouldShowNotification(status: PraktikaStatus) {
   return (
     status === "waiting_for_credentials" ||
-    status === "waiting_for_mfa" ||
-    status === "expired" ||
-    status === "error"
+    status === "waiting_for_mfa"
   );
 }
 

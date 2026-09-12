@@ -1,5 +1,5 @@
 import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
-import { derivePraktikaConnection, PRAKTIKA_AUTH_FRESHNESS_MS } from "@/lib/praktika/authentication";
+import { derivePraktikaConnection } from "@/lib/praktika/authentication";
 import { NextResponse } from "next/server";
 
 import {
@@ -17,23 +17,13 @@ export async function GET(request: Request) {
     const session = await getPraktikaSession(mode);
 
     const hasCookie = Boolean(session.cookie);
-    const { status, message, connected, helperAlive, authenticationVerified, experimentalEligible, noAuthGateEnabled, operationalWithoutAuth } = derivePraktikaConnection(session);
+    const { status, message, connected, helperAlive } = derivePraktikaConnection(session);
 
     return NextResponse.json(
       {
         connected,
         helperAlive,
         helperHeartbeatAt: session.helper_heartbeat_at ?? null,
-        // Liveness and authentication proof are independently required.
-        authenticatedAt: session.authenticated_at ?? null,
-        authenticationExpiresAt: authenticationVerified && session.authenticated_at
-          ? new Date(Date.parse(session.authenticated_at) + PRAKTIKA_AUTH_FRESHNESS_MS).toISOString() : null,
-        authenticationVerified,
-        experimentalEligible,
-        noAuthGateEnabled,
-        operationalWithoutAuth,
-        experimentalEligibilityExpiresAt: experimentalEligible && session.experimental_auth_at
-          ? new Date(Date.parse(session.experimental_auth_at) + PRAKTIKA_AUTH_FRESHNESS_MS).toISOString() : null,
         storedStatus: session.status,
         status,
         message,
@@ -75,7 +65,6 @@ export async function GET(request: Request) {
         helperAlive: false,
         helperHeartbeatAt: null,
         authenticatedAt: null,
-        authenticationVerified: false,
         status: "error",
         message,
 

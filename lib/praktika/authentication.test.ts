@@ -103,24 +103,6 @@ test("ownership lost in flight prevents authentication write", async () => {
   assert.equal(fixture.stats().writes, 0);
 });
 
-test("effective connection requires fresh lease and proof; stale history and idle fail closed", () => {
-  const now = Date.now();
-  const row = { status: "connected", cookie: "fixture", helper_instance_id: "owner",
-    helper_heartbeat_at: new Date(now).toISOString(), authenticated_at: new Date(now).toISOString() };
-  assert.equal(derivePraktikaConnection(row, now).connected, true);
-  for (const change of [
-    { authenticated_at: null },
-    { authenticated_at: new Date(now - PRAKTIKA_AUTH_FRESHNESS_MS).toISOString() },
-    { helper_heartbeat_at: new Date(now - 90_000).toISOString() },
-    { helper_instance_id: null },
-  ]) assert.equal(derivePraktikaConnection({ ...row, ...change }, now).connected, false);
-  assert.equal(derivePraktikaConnection({ status: "connected", cookie: "fixture" }).status, "idle");
-  for (const status of ["waiting_for_credentials", "waiting_for_mfa", "error"]) {
-    assert.equal(derivePraktikaConnection({ ...row, status }, now).status, status);
-    assert.equal(derivePraktikaConnection({ ...row, status }, now).connected, false);
-  }
-});
-
 test("RPC proof actions are behind owner/lease fence and only authenticate sets DB proof time", async () => {
   const sql = await readFile(new URL("../../supabase/migrations/202609090001_praktika_helper_lease.sql", import.meta.url), "utf8");
   assert.ok(sql.indexOf("helper_instance_id is distinct from p_instance_id") < sql.indexOf("if p_action = 'authenticate'"));
@@ -147,9 +129,10 @@ test("status route exposes derived truth without probing or persisting proof", a
   assert.equal((await get(new Request("https://fixture.invalid/api"))).connected, true);
   row = { ...row, authenticated_at: null };
   const unverified = await get(new Request("https://fixture.invalid/api"));
-  assert.equal(unverified.connected, false); assert.equal(unverified.status, "checking_connection");
+  assert.equal(unverified.connected, true); assert.equal(unverified.status, "connected");
+  assert.equal("authenticationVerified" in unverified, false);
   assert.equal(unverified.storedStatus, "connected");
   row = { ...row, helper_heartbeat_at: new Date(0).toISOString() };
   const idle = await get(new Request("https://fixture.invalid/api"));
-  assert.equal(idle.connected, false); assert.equal(idle.status, "idle");
+  assert.equal(idle.connected, false); assert.equal(idle.status, "not_started");
 });

@@ -1,3 +1,4 @@
+import { PraktikaHelperUnavailable } from "./helper-lease";
 import { perioStructureDiagnostic } from "./perio-structure-diagnostic";
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -46,7 +47,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   } };
   let owned = true, operations = 0, connectedWrites = 0, httpStatus = 200;
   let responseUrl = "https://praktika.praktika.net.au/php/forms/db_getFormData.php", responseText = '{"patient_perioexamids":[12]}';
-  const globals = { perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
+  const globals = { PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
     isConfirmedPraktikaUpload, Date, AbortSignal, URLSearchParams, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
     console: { log(...args: unknown[]) { logs.push(args); }, error() {} },
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => { if(realTransport) return api.runJsonOrFormRequest(_c, _r, before); await before(); operations++; return { patient_communication: { iFileId: 12 } }; },
@@ -62,19 +63,19 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   return { job, session, logs, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
     connectedWrites: () => connectedWrites, loseOwnership: () => { owned = false; }, onClaim: (fn: () => void) => { afterClaim = fn; }, setHttp: (v: number) => { httpStatus = v; } };
 }
-test('waiting write stays pending with attempts unchanged, then resumes once after proof', async () => {
-  const f = fixture();
+test('waiting write stays pending with attempts unchanged, then resumes once after browser startup', async () => {
+  const f = fixture(); f.session.status = "refreshing";
   for (let i = 0; i < 3; i++) assert.equal((await f.run()).outcome, 'none');
   assert.equal(f.job.attempts, 0); assert.equal(f.job.status, 'pending'); assert.equal(f.operations(), 0);
-  f.session.authenticated_at = new Date().toISOString();
+  f.session.status = "connected";
   assert.equal((await f.run()).outcome, 'completed'); assert.equal(f.operations(), 1); assert.equal(f.job.attempts, 1);
   assert.equal((await f.run()).outcome, 'none'); assert.equal(f.operations(), 1);
 });
 for (const status of ['waiting_for_credentials', 'waiting_for_mfa', 'error']) test(`${status} preserves queued intent`, async () => {
   const f = fixture(); f.session.status = status; await f.run(); assert.equal(f.job.status, 'pending'); assert.equal(f.job.attempts, 0); assert.equal(f.operations(), 0);
 });
-test('proof lost between claim and dispatch restores original attempt and never sends', async () => {
-  const f = fixture(); f.session.authenticated_at = new Date().toISOString(); f.onClaim(() => { f.session.authenticated_at = null; });
+test('browser challenge between claim and dispatch restores original attempt and never sends', async () => {
+  const f = fixture(); f.session.authenticated_at = new Date().toISOString(); f.onClaim(() => { f.session.status = "waiting_for_mfa"; });
   assert.equal((await f.run()).outcome, 'none'); assert.equal(f.job.attempts, 0); assert.equal(f.job.status, 'pending'); assert.equal(f.operations(), 0);
 });
 test('old generation cannot claim or dispatch', async () => {

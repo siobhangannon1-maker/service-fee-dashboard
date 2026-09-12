@@ -48,7 +48,7 @@ for(const signal of ['SIGTERM','SIGINT'] as const) test(`real ${signal} invokes 
 
 test('production cleanup decision: eligible, ineligible and RPC outcomes are safe and observable',async()=>{
  const source=readFileSync('scripts/refresh-praktika-session.ts','utf8');
- const start=source.indexOf('    renewal?.stop();\n    shutdownCoordinator.drained();',source.indexOf('async function refreshOnce'));
+ const start=source.indexOf('  shutdownCoordinator.drained();',source.indexOf('async function refreshOnce'));
  const end=source.indexOf('    logProcessMemory(',start);
  const code=ts.transpileModule(`async function cleanup(){${source.slice(start,end)}}`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
  const {runInNewContext}=await import('node:vm');

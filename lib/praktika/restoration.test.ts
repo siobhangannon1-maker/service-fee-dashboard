@@ -24,7 +24,7 @@ test('hidden controls do not count as login or MFA; visible challenges do',async
  assert.equal(await api.pageHasMfaInput(page('/v2/login','',false,true)),false);
 });
 test('startup preserves challenges at deadline and only probes through the existing verifier',()=>{
- assert.match(source,/if \(await hasExistingBrowserSession\(page\)\)[\s\S]*await verifyRequestedConnection\(\)/);
+ assert.match(source,/if \(await hasExistingBrowserSession\(page\)\)[\s\S]*await markBrowserReady\(page\)/);
  assert.match(source,/if \(\["waiting_for_credentials", "waiting_for_mfa"\]\.includes\(finalSession.status\)\) return;/);
  assert.match(source,/throw new Error\("Timed out waiting for Praktika login\/MFA completion\."\)/);
  assert.match(source,/`user_\$\{session.app_user_id \|\| session.id\}`/);

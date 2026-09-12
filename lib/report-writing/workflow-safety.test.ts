@@ -1,3 +1,4 @@
+import { PraktikaHelperUnavailable } from "../praktika/helper-lease";
 import { continuationIntentId, workflowAuthorization } from "./workflow-continuation-token";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -95,9 +96,9 @@ const uploadPath = "app/api/report-writing/upload-to-praktika/route.ts";
 const startPath = "app/api/report-writing/workflow-status/route.ts";
 const request = (extra: Row = {}) => new Request("https://fixture.invalid/api", { method: "POST", body: JSON.stringify({ draftId: "synthetic-draft", praktikaPatientId: "synthetic-patient", ...extra }) });
 
-for (const state of ["waiting_for_credentials", "waiting_for_mfa", "error", "stale", "missing-proof", "login-url", "other-user"]) {
+for (const state of ["waiting_for_credentials", "waiting_for_mfa", "error", "stale", "login-url", "other-user"]) {
   test(`preflight ${state}: no workflow mutation, PDF, upload, icon or MediRef; approved letter retained`, async () => {
-    const f = fixture(["stale", "missing-proof", "login-url", "other-user"].includes(state) ? "connected" : state);
+    const f = fixture(["stale", "login-url", "other-user"].includes(state) ? "connected" : state);
     const row = f.tables.praktika_sessions[0];
     if (state === "stale") row.helper_heartbeat_at = new Date(Date.now() - 90000).toISOString();
     if (state === "missing-proof") row.authenticated_at = null;
@@ -151,7 +152,7 @@ test("worker never replays a report upload after an ambiguous external write", a
   const failures: boolean[] = []; let operations = 0;
   const process = runInNewContext(extract("scripts/praktika-helper-job-processor.ts", "processOnePraktikaHelperJob") + "\nprocessOnePraktikaHelperJob", {
     verifiedReadOperation: () => false, allowedPraktikaRead: () => false, jobEligible: async () => true,
-    PraktikaOwnershipLost, PraktikaAuthenticationUnverified, isConfirmedPraktikaUpload,
+    PraktikaHelperUnavailable, PraktikaOwnershipLost, PraktikaAuthenticationUnverified, isConfirmedPraktikaUpload,
     console: { log() {}, error() {} }, claimNextJob: async () => ({ id: "synthetic", job_type: "upload_report_to_praktika", request: {} }),
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => { await before(); operations++; throw new Error("response lost"); },
     failJob: async (_job: unknown, _message: unknown, permanent: boolean) => { failures.push(permanent); },

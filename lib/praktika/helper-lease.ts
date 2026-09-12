@@ -37,9 +37,12 @@ export async function writePraktikaHelper(db: SupabaseClient, sessionId: string,
   if (result.data !== true) throw new PraktikaOwnershipUnavailable();
 }
 export interface PraktikaJobOwnership {
-  isBrowserReady?(): boolean;
+  isBrowserReady?(): boolean | Promise<boolean>;
   isShuttingDown?(): boolean;
   assertOwned(): Promise<void>;
-  ensureAuthenticated(): Promise<void>;
   updateSession(values: Record<string, unknown>): Promise<void>;
+}
+
+export class PraktikaHelperUnavailable extends Error {
+  constructor() { super("Praktika helper is not ready. Work remains queued."); }
 }

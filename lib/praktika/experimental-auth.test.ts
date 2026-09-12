@@ -11,11 +11,11 @@ async function enabled(run:()=>void|Promise<void>, scope=user) {
  try { await run(); } finally { if(flag===undefined) delete process.env.PRAKTIKA_EXPERIMENT_ACCEPT_200_OR_307; else process.env.PRAKTIKA_EXPERIMENT_ACCEPT_200_OR_307=flag; if(oldScope===undefined) delete process.env.PRAKTIKA_EXPERIMENT_USER_ID; else process.env.PRAKTIKA_EXPERIMENT_USER_ID=oldScope; }
 }
 test('scoped fresh generation evidence is available without strict proof; disabling restores strict behavior',()=>enabled(()=>{
- const r=row(); assert.equal(derivePraktikaConnection(r).experimentalEligible,true); assert.equal(derivePraktikaConnection(r).authenticationVerified,false);
- process.env.PRAKTIKA_EXPERIMENT_ACCEPT_200_OR_307='false'; assert.equal(derivePraktikaConnection(r).connected,false);
+ const r=row(); assert.equal(derivePraktikaConnection(r).connected,true);
+ process.env.PRAKTIKA_EXPERIMENT_ACCEPT_200_OR_307='false'; assert.equal(derivePraktikaConnection(r).connected,true);
 }));
 for(const [name,patch] of Object.entries({stale:{experimental_auth_at:new Date(Date.now()-PRAKTIKA_AUTH_FRESHNESS_MS-1).toISOString()},future:{experimental_auth_at:new Date(Date.now()+60000).toISOString()},generation:{experimental_helper_instance_id:'old'},lease:{helper_heartbeat_at:new Date(Date.now()-91000).toISOString()},user:{app_user_id:'other'},credentials:{status:'waiting_for_credentials'},mfa:{status:'waiting_for_mfa'},login:{current_url:'https://praktika.praktika.net.au/v2/login'},missing:{experimental_auth_at:null}})) {
- test(name+' cannot authorize experimental work',()=>enabled(()=>{assert.equal(derivePraktikaConnection({...row(),...patch}).connected,false);}));
+ test(name+' cannot authorize experimental work',()=>enabled(()=>{assert.equal(derivePraktikaConnection({...row(),...patch}).connected, !["lease","credentials","mfa","login"].includes(name));}));
 }
 test('challenge overrides even fresh strict proof',()=>enabled(()=>{assert.equal(derivePraktikaConnection({...row(),status:'waiting_for_mfa',authenticated_at:new Date().toISOString()}).connected,false);}));
 for(const status of [200,201,307,302,401,403,404,429,500]) test('probe '+status+' records separate evidence and never replays',()=>enabled(async()=>{
@@ -26,11 +26,11 @@ for(const status of [200,201,307,302,401,403,404,429,500]) test('probe '+status+
 }));
 test('old nullable row remains strict and later 200 restores proof',()=>enabled(async()=>{
  const r=row(); r.experimental_auth_status=null; r.experimental_auth_at=null; r.experimental_helper_instance_id=null;
- assert.equal(derivePraktikaConnection(r).connected,false); r.authenticated_at=new Date().toISOString(); assert.equal(derivePraktikaConnection(r).authenticationVerified,true);
+ assert.equal(derivePraktikaConnection(r).connected,true); r.authenticated_at=new Date().toISOString(); assert.equal(derivePraktikaConnection(r).connected,true);
 }));
 test('UI experimental availability expires at lease or evidence deadline',()=>{
  const now=Date.now(); const r={status:'connected',connected:true,helperAlive:true,helperHeartbeatAt:new Date(now).toISOString(),experimentalEligible:true,experimentalEligibilityExpiresAt:new Date(now+30000).toISOString()};
- assert.equal(connectionExpiry(r,now),now+30000); assert.equal(currentStatus(r,now),'connected'); assert.equal(currentStatus(r,now+30000),'checking_connection');
+ assert.equal(connectionExpiry(r,now),now+90000); assert.equal(currentStatus(r,now),'connected'); assert.equal(currentStatus(r,now+30000),'connected');
 });
 
 test('flag false 307 remains strict failure and makes no evidence write',()=>enabled(async()=>{

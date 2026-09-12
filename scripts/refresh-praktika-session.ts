@@ -1,11 +1,9 @@
 import { createPraktikaOwnershipRecovery, isPraktikaTransientInfrastructureError } from "../lib/praktika/ownership-recovery";
 import { praktikaNoAuthGateEnabled } from "../lib/praktika/authentication";
-import { pollSchedulerDiagnostic } from "./praktika-scheduler-diagnostic";
 import { pollPraktikaWorkflowContinuations } from "./praktika-workflow-continuations";
 import { createCookieSnapshotStore } from "../lib/praktika/cookie-snapshot";
 import { createShutdownCoordinator, type SkipReason } from "../lib/praktika/shutdown-coordinator";
 import { requestPlannedRestoration } from "../lib/praktika/planned-restoration";
-import { praktikaHelperToken, startPraktikaAuthenticationRenewal, classifyPraktikaPage, createPraktikaAuthenticationGate, probePraktikaAuthentication, PraktikaAuthenticationUnverified } from "../lib/praktika/authentication-probe";
 import {
   writePraktikaHelper, PraktikaOwnershipLost, PraktikaOwnershipUnavailable, PraktikaOwnershipRejected, PRAKTIKA_HELPER_HEARTBEAT_MS,
   PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS,
@@ -179,7 +177,6 @@ let recoverableExit = false;
 let verificationRequested = false;
 let ownedContext: BrowserContext | undefined;
 let browserLaunch: Promise<BrowserContext> | undefined;
-let renewal: ReturnType<typeof startPraktikaAuthenticationRenewal> | undefined;
 let loginTransition = true;
 let shuttingDown = false;
 let jobActive = false;
@@ -207,7 +204,6 @@ const shutdownCoordinator = createShutdownCoordinator({
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  renewal?.stop();
   shutdownCoordinator.start();
 }
 process.on("SIGTERM", shutdown);
@@ -215,7 +211,7 @@ process.on("SIGINT", shutdown);
 
 const ownershipRecovery = createPraktikaOwnershipRecovery({ stopping: () => ownershipLost });
 
-async function ownedWrite(action: "check" | "heartbeat" | "update" | "authenticate" | "authentication_failed", values: Record<string, unknown> = {}) {
+async function ownedWrite(action: "check" | "heartbeat" | "update", values: Record<string, unknown> = {}) {
   if (ownershipLost) throw new PraktikaOwnershipLost();
   try {
     await ownershipRecovery.run(() => writePraktikaHelper(supabase, sessionId!, helperInstanceId!, action, values), action === "heartbeat");
@@ -223,71 +219,44 @@ async function ownedWrite(action: "check" | "heartbeat" | "update" | "authentica
   } catch (error) {
     if (!(error instanceof PraktikaOwnershipLost)) throw error;
     ownershipLost = true;
-    renewal?.stop();
     await shutdownCoordinator.close();
     throw new PraktikaOwnershipLost();
   }
 }
 async function assertOwned() { await ownedWrite("check"); }
 async function releaseOwnership(failed = false) {
-  renewal?.stop();
-  ensureAuthenticated.stop();
   await writePraktikaHelper(supabase, sessionId!, helperInstanceId!, "release", {
     status: failed ? "error" : "not_started",
   }).catch(() => {});
 }
 
-const renewalHelperToken = praktikaHelperToken(helperInstanceId!);
-let renewalPage: Page | undefined;
-const ensureAuthenticated = createPraktikaAuthenticationGate({
-  helperToken: renewalHelperToken,
-  currentPageCategory: () => classifyPraktikaPage(renewalPage?.url() || "", PRAKTIKA_BASE_URL),
-  assertOwned,
-  readOwnedSession: getSession,
-  probe: async () => {
-    if (!ownedContext) throw new PraktikaOwnershipLost();
-    return probePraktikaAuthentication(ownedContext, String(process.env.PRAKTIKA_PRACTICE_ID || "").trim(), PRAKTIKA_BASE_URL);
-  },
-  recordExperimental: async (status) => {
-    const { data, error } = await supabase.rpc("record_praktika_experimental_auth", {
-      p_session_id: sessionId!, p_instance_id: helperInstanceId!, p_status: status,
-    }).abortSignal(AbortSignal.timeout(5000));
-    if (error) throw new PraktikaOwnershipUnavailable();
-    if (data === false) throw new PraktikaOwnershipRejected();
-    if (data !== true) throw new PraktikaOwnershipUnavailable();
-  },
-  recordSuccess: async () => {
-    await ownedWrite("authenticate");
-    if (isWarmRestoration && !operationalThisGeneration) console.log("[Praktika lifecycle] restoration_succeeded");
-    operationalThisGeneration = true;
-    // Capture only after the positive GST write. No background cookie refresh can capture proof.
-    try {
-      if (!shuttingDown && ownedContext && cookieSnapshots) {
-        const verifiedCookies = await ownedContext.cookies(PRAKTIKA_BASE_URL);
-        await assertOwned();
-        if (!shuttingDown) cookieSnapshots.capture(verifiedCookies, helperInstanceId!);
-        else console.log("[Praktika snapshot]", JSON.stringify({event:"snapshot_capture_skipped",reason:"shutdown_started"}));
-      } else console.log("[Praktika snapshot]", JSON.stringify({event:"snapshot_capture_skipped",reason:shuttingDown?"shutdown_started":!ownedContext?"context_unavailable":"store_unavailable"}));
-    } catch { console.log("[Praktika snapshot]", JSON.stringify({ event: "snapshot_capture_failed", reason: ownershipLost ? "ownership_lost" : "cookie_read_unavailable" })); }
-  },
-  recordFailure: async (status) => {
-    if (scopedNoAuth) return; // GST diagnostics cannot change browser availability.
-    operationalThisGeneration = false;
-    await ownedWrite("authentication_failed", { status });
-    cookieSnapshots?.invalidate();
-    if (isWarmRestoration) console.log(status === "waiting_for_mfa"
-      ? "[Praktika lifecycle] restoration_mfa_required" : "[Praktika lifecycle] restoration_credentials_required");
-  },
-});
-async function verifyRequestedConnection() {
+async function checkBrowserAvailability(page: Page) {
+  if (shuttingDown || page.isClosed()) { browserReady = false; return false; }
+  if (await isBrowserUiLoggedIn(page)) return true;
+  browserReady = false;
+  const mfa = await pageHasMfaInput(page);
+  const credentials = pageIsLoginUrl(page) || pageIsLogoutUrl(page) || await pageHasVisiblePasswordInput(page)
+    || looksLikeLoggedOutText(await page.locator("body").innerText().catch(() => ""));
+  await updateSession({ status: mfa ? "waiting_for_mfa" : credentials ? "waiting_for_credentials" : "refreshing",
+    message: mfa ? "Praktika requires an MFA code." : credentials ? "Please log in to Praktika." : "Praktika browser is connecting.",
+    current_url: await safePageUrl(page) });
+  return false;
+}
+
+// Only this path promotes the current generation to connected. Cookies and
+// completed jobs never do so. Browser checks are repeated before resuming work.
+async function markBrowserReady(page: Page) {
+  browserReady = false;
+  if (shuttingDown || page.isClosed() || !await checkBrowserAvailability(page)) return false;
+  await assertOwned();
+  if (shuttingDown || page.isClosed()) return false;
+  await ownedWrite("update", { status: "connected", current_url: await safePageUrl(page),
+    message: "Praktika helper browser is connected.", refreshed_at: nowIso() });
+  browserReady = true;
+  operationalThisGeneration = true;
+  loginTransition = false;
   verificationRequested = false;
-  ensureAuthenticated.resume();
-  if (scopedNoAuth) { loginTransition = false; return; }
-  try { await ensureAuthenticated(); loginTransition = false; }
-  catch (error) {
-    if (!(error instanceof PraktikaAuthenticationUnverified)) throw error;
-    if (error.transient) loginTransition = false;
-  }
+  return true;
 }
 
 // Chromium responsiveness only: no Praktika request and no authentication proof.
@@ -335,7 +304,6 @@ async function getSession() {
 
   if (data.helper_instance_id !== helperInstanceId) {
     ownershipLost = true;
-    renewal?.stop();
     await shutdownCoordinator.close();
     throw new PraktikaOwnershipLost();
   }
@@ -352,7 +320,6 @@ async function updateSession(values: Record<string, unknown>) {
   if (["refreshing", "refresh_requested", "waiting_for_credentials", "waiting_for_mfa", "expired", "error"].includes(String(values.status || ""))) {
     browserReady = false;
     loginTransition = true;
-    await ensureAuthenticated.invalidate(!scopedNoAuth);
   }
   await ownedWrite("update", values);
   if (["waiting_for_credentials", "waiting_for_mfa"].includes(String(values.status))) cookieSnapshots?.invalidate();
@@ -504,9 +471,9 @@ async function isBrowserUiLoggedIn(page: Page) {
   const pathname = praktikaPagePath(page);
   if (!pathname || pageIsLoginUrl(page) || pageIsLogoutUrl(page)) return false;
   if (await pageHasVisiblePasswordInput(page) || await pageHasMfaInput(page)) return false;
-  const bodyText = await page.locator("body").innerText().catch(() => "");
-  if (looksLikeLoggedOutText(bodyText)) return false;
-  // Application-page eligibility only; GST remains the positive auth proof.
+  const bodyText = await page.locator("body").innerText().catch(() => null);
+  if (!bodyText?.trim() || looksLikeLoggedOutText(bodyText)) return false;
+  // Browser readiness is independent of operation-specific response validation.
   return pathname === "/v2" || pathname.startsWith("/v2/");
 }
 
@@ -573,7 +540,7 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
   }
 
   loginTransition = true;
-  await ensureAuthenticated.invalidate();
+  browserReady = false;
   verificationRequested = true;
   console.log("Submitting Praktika credentials from saved pending credentials.");
 
@@ -605,7 +572,7 @@ async function fillLoginIfCredentialsAvailable(page: Page) {
 async function submitMfaCodeIfAvailable(page: Page) {
   if (!(await pageHasMfaInput(page))) return false;
   loginTransition = true;
-  await ensureAuthenticated.invalidate();
+  browserReady = false;
 
   const code = await getAndClearMfaCode();
 
@@ -674,7 +641,6 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
 
   await clearTemporaryCredentialsAfterSuccess({
     cookie: cookieHeader,
-    ...(markConnected && !["error", "waiting_for_credentials", "waiting_for_mfa"].includes(session.status) ? { status: "connected" } : {}),
     message:
       (["error", "waiting_for_credentials", "waiting_for_mfa"].includes(session.status) ? session.message : null) || message ||
       (KEEP_BROWSER_OPEN
@@ -689,10 +655,12 @@ async function saveCookies(context: BrowserContext, page: Page, message?: string
     last_used_at: now,
   });
 
-  // Called only after the startup/browser UI check; never derived from claim heartbeat.
-  if (markConnected && await isBrowserUiLoggedIn(page)) {
-    browserReady = true;
-    if (scopedNoAuth) { operationalThisGeneration = true; loginTransition = false; }
+  // Capture reusable cookies only for a browser-ready generation. Capture itself
+  // neither changes readiness nor supplies authentication proof.
+  if (browserReady && markConnected && cookieSnapshots && !shuttingDown) {
+    const cookies = await context.cookies(PRAKTIKA_BASE_URL);
+    await assertOwned();
+    if (browserReady && !shuttingDown) cookieSnapshots.capture(cookies, helperInstanceId!);
   }
   return true;
 }
@@ -730,7 +698,7 @@ async function performRealBrowserActivity(page: Page) {
         method: "GET",
         credentials: "include",
         cache: "no-store",
-        redirect: "follow",
+        redirect: "error",
       });
 
       return {
@@ -774,8 +742,9 @@ async function performRealBrowserActivity(page: Page) {
 async function drainAvailableHelperJobs(
   context: BrowserContext,
   appUserId: string | null,
+  page: Page,
 ): Promise<{ completedCount: number; failedCount: number; needsReconnect: boolean }> {
-  if (scopedNoAuth && !browserReady) return { completedCount: 0, failedCount: 0, needsReconnect: false };
+  if (!browserReady) return { completedCount: 0, failedCount: 0, needsReconnect: false };
   await pollPraktikaWorkflowContinuations(supabase, appUserId, { assertOwned, isShuttingDown: () => shuttingDown });
   let completedCount = 0;
   let failedCount = 0;
@@ -788,7 +757,7 @@ async function drainAvailableHelperJobs(
       result = await processOnePraktikaHelperJob(
         context,
         appUserId,
-        { assertOwned, updateSession, ensureAuthenticated, isBrowserReady: () => !scopedNoAuth || browserReady, isShuttingDown: () => shuttingDown },
+        { assertOwned, updateSession, isBrowserReady: async () => browserReady && await checkBrowserAvailability(page), isShuttingDown: () => shuttingDown },
       );
     } catch (error) {
       if (shuttingDown) unresolvedShutdownWork = true;
@@ -851,9 +820,9 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
       }
 
       if (await isBrowserUiLoggedIn(page)) {
-        if (verificationRequested || session.status === "refresh_requested") {
+        if (!browserReady || verificationRequested || session.status === "refresh_requested") {
           await updateSession({ status: "refreshing", refresh_requested_at: null });
-          await verifyRequestedConnection();
+          await markBrowserReady(page);
         }
         if (now - lastCookieRefreshAt >= KEEP_ALIVE_INTERVAL_MS) {
           await saveCookies(
@@ -867,6 +836,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
         const jobSummary = await drainAvailableHelperJobs(
           context,
           session.app_user_id,
+          page,
         );
 
         if (jobSummary.completedCount > 0) {
@@ -937,7 +907,7 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
           });
         }
       } else {
-        browserReady = false;
+        await checkBrowserAvailability(page);
         if (pageIsLogoutUrl(page)) {
           await updateSession({
             status: "waiting_for_credentials",
@@ -1042,41 +1012,17 @@ async function refreshOnce() {
   ownedContext = context;
   const stopHeartbeat = startHeartbeat(context);
 
-  let diagnosticPending = false;
-  const diagnosticTimer = setInterval(() => {
-    if (diagnosticPending || shuttingDown || ownershipLost || loginTransition || jobActive) return;
-    diagnosticPending = true;
-    void pollSchedulerDiagnostic(supabase, context, {
-      sessionId: sessionId!, generation: helperInstanceId!, assertOwned,
-      busy: () => shuttingDown || ownershipLost || loginTransition || jobActive,
-    }).catch(() => { /* No raw diagnostic errors; never change session state. */ })
-      .finally(() => { diagnosticPending = false; });
-  }, 5000);
   let page: Page | undefined;
   try {
     if (shuttingDown || (isWarmRestoration && remainingUsefulWorkMs() <= 0)) return;
     await assertOwned();
     page = await context.newPage();
-    renewalPage = page;
-    renewal = startPraktikaAuthenticationRenewal({
-      helperToken: renewalHelperToken,
-      readSession: getSession,
-      eligible: async () => {
-        if (shuttingDown || loginTransition || ownershipLost || !page || page.isClosed()) return false;
-        const current = await getSession();
-        return ["connected", "refreshing"].includes(current.status) && await isBrowserUiLoggedIn(page);
-      },
-      renew: ensureAuthenticated.renew,
-      stopGate: ensureAuthenticated.stop,
-    });
-    context.once("close", () => { if (!shuttingDown) { browserReady = false; operationalThisGeneration = false; } renewal?.stop(); });
-    context.once("close", () => clearInterval(diagnosticTimer));
-    page.once("close", () => { if (!shuttingDown) { browserReady = false; operationalThisGeneration = false; } renewal?.stop(); });
+    context.once("close", () => { browserReady = false; operationalThisGeneration = false; });
+    page.once("close", () => { browserReady = false; operationalThisGeneration = false; });
     if (await hasExistingBrowserSession(page)) {
-      const saved = await saveCookies(context, page);
+      const saved = await markBrowserReady(page) && await saveCookies(context, page);
 
       if (saved) {
-        await verifyRequestedConnection();
         if (KEEP_BROWSER_OPEN) {
           await keepBrowserOpenForever(context, page);
         }
@@ -1110,17 +1056,9 @@ async function refreshOnce() {
           }
           console.log("[Praktika snapshot]", JSON.stringify({ snapshot_injected: true }));
           await page.goto(`${PRAKTIKA_BASE_URL}/v2/`, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-          ensureAuthenticated.resume();
-          try {
-            await ensureAuthenticated();
-            loginTransition = false;
-            console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_succeeded: true }));
-          } catch (error) {
-            if (!(error instanceof PraktikaAuthenticationUnverified)) throw error;
-            console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_failed: true, reason: error.transient ? "transient_verification" : "authentication_challenge" }));
-            if (!error.transient) cookieSnapshots.invalidate();
-            else loginTransition = false;
-          }
+          const ready = await markBrowserReady(page);
+          if (ready) await saveCookies(context, page);
+          console.log("[Praktika snapshot]", JSON.stringify({ snapshot_restore_succeeded: ready }));
           // Continue the existing recovery/challenge loop, never reinject in that loop.
           if (KEEP_BROWSER_OPEN) await keepBrowserOpenForever(context, page);
           return;
@@ -1151,10 +1089,9 @@ async function refreshOnce() {
     while (!shuttingDown && (!isWarmRestoration || remainingUsefulWorkMs() > 0) && Date.now() - startedAt < LOGIN_TIMEOUT_MS) {
       if (await isBrowserUiLoggedIn(page)) {
         await page.waitForTimeout(3000);
-        const saved = await saveCookies(context, page);
+        const saved = await markBrowserReady(page) && await saveCookies(context, page);
 
         if (saved) {
-          await verifyRequestedConnection();
           if (KEEP_BROWSER_OPEN) {
             await keepBrowserOpenForever(context, page);
           }
@@ -1206,8 +1143,6 @@ async function refreshOnce() {
 
     throw error;
   } finally {
-    clearInterval(diagnosticTimer);
-    renewal?.stop();
     shutdownCoordinator.drained();
     // Stop heartbeat and close together so a pending heartbeat cannot spend the close budget twice.
     // A timed-out close never permits release.

@@ -4,7 +4,5 @@ export function praktikaJobEligibility(row: PraktikaConnectionRow | null, jobTyp
   if (!row) return { eligible: false, readOnly: false };
   const connection = derivePraktikaConnection(row, now);
   const readOnly = allowedPraktikaRead(jobType, request);
-  const liveUnchallenged = connection.helperAlive && ['connected', 'refreshing'].includes(row.status)
-    && ['connected', 'checking_connection', 'refreshing'].includes(connection.status);
-  return { readOnly, eligible: readOnly ? liveUnchallenged : connection.connected };
+  return { readOnly, eligible: connection.connected };
 }

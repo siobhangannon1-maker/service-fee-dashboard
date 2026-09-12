@@ -35,42 +35,6 @@ test('unsafe domain, expiry, duplicates and missing auth cookies are rejected',t
  store.capture(cookies.map(c=>({...c,expires:1})),'source');assert.equal(store.load('source').reason,'invalid');
 });
 
-test('production GST callbacks capture only positive verification; challenges invalidate and transient failure preserves',async t=>{
- const ts=await import('typescript');const {runInNewContext}=await import('node:vm');
- const {createPraktikaAuthenticationGate,validateGstResponse}=await import('./authentication-probe');
- const source=readFileSync('scripts/refresh-praktika-session.ts','utf8');
- const section=source.slice(source.indexOf('const ensureAuthenticated ='),source.indexOf('async function verifyRequestedConnection'));
- const code=ts.transpileModule(section,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
- for(const [body,status] of [['[]',200],['',307],['',500],['<input type="password">',200],['<input name="otp">',200]] as const){
-  const store=createCookieSnapshotStore(fixture(t),binding);store.capture(cookies,'source');let writes=0;const logs:string[]=[];
-  const gate=runInNewContext(code+'\nensureAuthenticated',{
-   renewalHelperToken:'fixture',renewalPage:undefined,scopedNoAuth:false,ownershipLost:false,createPraktikaAuthenticationGate,assertOwned:async()=>{},getSession:async()=>({helper_instance_id:"new",helper_heartbeat_at:new Date().toISOString(),authenticated_at:writes?new Date().toISOString():null}),ownedContext:{cookies:async()=>cookies},cookieSnapshots:store,helperInstanceId:'new',shuttingDown:false,isWarmRestoration:true,operationalThisGeneration:false,
-   ownedWrite:async()=>{writes++;},probePraktikaAuthentication:async()=>validateGstResponse(status,true,body),process:{env:{PRAKTIKA_PRACTICE_ID:'1'}},PRAKTIKA_BASE_URL:binding.origin,console:{log:(...args:unknown[])=>logs.push(JSON.stringify(args))},
-  });
-  if(status===200&&body==='[]'){await gate();assert.deepEqual(store.load('new').cookies,cookies);assert.equal(writes,1);}
-  else {await assert.rejects(gate());if(status===307||status===500){assert.deepEqual(store.load('source').cookies,cookies);assert.equal(writes,0);}else assert.equal(store.load('source').reason,'missing');}
-  assert.doesNotMatch(logs.join(),/SYNTHETIC_SECRET/);
- }
-});
-
-test('production one-shot restore uses consumed source binding and GST, never repeated injection',async()=>{
- const ts=await import('typescript');const {runInNewContext}=await import('node:vm');const {PraktikaAuthenticationUnverified}=await import('./authentication-probe');
- const source=readFileSync('scripts/refresh-praktika-session.ts','utf8');
- const start=source.indexOf('    if (isWarmRestoration && !snapshotRestoreAttempted');
- const end=source.indexOf('    await updateSession({',start);
- const code=ts.transpileModule('async function restore(){'+source.slice(start,end)+'}',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
- for(const outcome of ['success','transient','credentials','mfa','missing','wrong_owner','normal','existing_cookies','visible_mfa']){
-  let injections=0,proofs=0,invalidations=0,recoveries=0;const logs:string[]=[];
-  const query={select(){return this;},eq(key:string,value:string){if(key==='consumed_instance_id')assert.equal(value,'new');return this;},abortSignal(){return this;},maybeSingle:async()=>({data:outcome==='wrong_owner'?null:{source_instance_id:'source'},error:null})};
-  const verify=Object.assign(async()=>{if(outcome==='success'){proofs++;return;}throw new PraktikaAuthenticationUnverified(outcome==='mfa'?'waiting_for_mfa':outcome==='credentials'?'waiting_for_credentials':'error',outcome==='transient');},{resume(){}});
-  const globals={isWarmRestoration:outcome!=='normal',snapshotRestoreAttempted:false,pageIsLoginUrl:()=>true,pageHasMfaInput:async()=>outcome==='visible_mfa',pageHasVisiblePasswordInput:async()=>false,context:{cookies:async()=>outcome==='existing_cookies'?cookies:[],addCookies:async(value:Cookie[])=>{assert.deepEqual(value,cookies);injections++;}},assertOwned:async()=>{},supabase:{from:()=>query},session:{id:'synthetic'},helperInstanceId:'new',AbortSignal,cookieSnapshots:{load:(owner:string)=>{assert.equal(owner,'source');return outcome==='missing'?{cookies:null,reason:'missing'}:{cookies};},invalidate(){invalidations++;}},console:{log:(...args:unknown[])=>logs.push(JSON.stringify(args))},shuttingDown:false,page:{goto:async()=>{}},PRAKTIKA_BASE_URL:binding.origin,ensureAuthenticated:verify,loginTransition:true,PraktikaAuthenticationUnverified,KEEP_BROWSER_OPEN:true,keepBrowserOpenForever:async()=>{recoveries++;}};
-  const restore=runInNewContext(code+'\nrestore',globals);await restore();await restore();
-  assert.equal(injections,['missing','wrong_owner','normal','existing_cookies','visible_mfa'].includes(outcome)?0:1);assert.equal(proofs,outcome==='success'?1:0);
-  assert.equal(invalidations,['credentials','mfa'].includes(outcome)?1:0);assert.doesNotMatch(logs.join(),/SYNTHETIC_SECRET/);
-  if(injections)assert.equal(recoveries,1);
- }
-});
-
 test('capture diagnostics distinguish success, validation skip, deletion and filesystem failure without secrets',t=>{
  const root=fixture(t),events:unknown[]=[];
  const store=createCookieSnapshotStore(root,binding,event=>events.push(event));

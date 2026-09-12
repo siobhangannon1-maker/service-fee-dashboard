@@ -108,8 +108,12 @@ async function makeRequest({
     },
     body,
     cache: "no-store",
+    redirect: "manual",
   });
 
+  if (response.status >= 300 && response.status < 400) {
+    return { ok: false, reason: "http_error", data: null, message: "Praktika request redirected; operation was not confirmed." };
+  }
   const text = await response.text();
 
   if (looksLikeLoginResponse(text)) {
@@ -213,21 +217,13 @@ export async function requestPraktikaJson({
 
   if (result.ok) {
     await updatePraktikaSession(mode, {
-      status: "connected",
-      message: "Praktika connection is active.",
-      last_used_at: new Date().toISOString(),
+          last_used_at: new Date().toISOString(),
     });
 
     return result.data;
   }
 
   if (result.reason === "auth") {
-    await updatePraktikaSession(mode, {
-      status: "expired",
-      message:
-        "Praktika cookie appears expired. Refresh requested from local helper machine.",
-    });
-
     throw new Error("Praktika session expired or returned login page.");
   }
 
