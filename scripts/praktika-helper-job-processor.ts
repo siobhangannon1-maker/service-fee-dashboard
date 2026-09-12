@@ -1,3 +1,4 @@
+import { perioStructureDiagnostic } from "../lib/praktika/perio-structure-diagnostic";
 import { praktikaJobEligibility } from "../lib/praktika/job-eligibility";
 import { PraktikaReadFailure, type PraktikaReadFailureCategory, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from "../lib/praktika/read-operations";
 import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
@@ -1382,7 +1383,18 @@ export async function processOnePraktikaHelperJob(
       readHttpStatus = readResponse.status();
       const text = await readResponse.text();
       readStage = "invalid_structure";
-      response = validatePraktikaRead(job.job_type, job.request, readHttpStatus, readResponse.url(), text);
+      try {
+        response = validatePraktikaRead(job.job_type, job.request, readHttpStatus, readResponse.url(), text);
+      } catch (error) {
+        if (job.job_type === "periodontal_chart_perio_exams" && readHttpStatus === 200 &&
+          error instanceof PraktikaReadFailure && error.failureCategory === "invalid_structure") {
+          try {
+            const observation = perioStructureDiagnostic(job.request, text);
+            if (observation) console.log("[Praktika read] perio_structure", observation);
+          } catch { /* Observation must never change the original failure or retry behavior. */ }
+        }
+        throw error;
+      }
     } else if (job.job_type === "hydrate_report_letter_queue_item") {
       await beforeRequest();
       response = await hydrateReportLetterQueueItem(context, job);

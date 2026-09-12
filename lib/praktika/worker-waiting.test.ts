@@ -1,3 +1,4 @@
+import { perioStructureDiagnostic } from "./perio-structure-diagnostic";
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -45,7 +46,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   } };
   let owned = true, operations = 0, connectedWrites = 0, httpStatus = 200;
   let responseUrl = "https://praktika.praktika.net.au/php/forms/db_getFormData.php", responseText = '{"patient_perioexamids":[12]}';
-  const globals = { PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
+  const globals = { perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
     isConfirmedPraktikaUpload, Date, AbortSignal, URLSearchParams, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
     console: { log(...args: unknown[]) { logs.push(args); }, error() {} },
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => { if(realTransport) return api.runJsonOrFormRequest(_c, _r, before); await before(); operations++; return { patient_communication: { iFileId: 12 } }; },
@@ -168,3 +169,16 @@ test('concurrent scoped drains claim at most one copy of a job',()=>noAuth(async
  const f=fixture(false,scopedUser,true);f.setResponse('{"patient_communication":{"iFileId":12}}');
  await Promise.all([f.run(),f.run()]);assert.equal(f.operations(),1);assert.equal(f.job.attempts,1);
 }));
+
+test('one structural observation per HTTP 200 invalid exam attempt; retries/proof unchanged',async()=>{
+ const f=fixture(true); f.job.job_type='periodontal_chart_perio_exams';
+ f.job.request.body=[{parameters:[{practice_id:1181,perioexam_id:12}],fields:[...PERIO_READ_FIELDS.periodontal_chart_perio_exams]}];
+ f.setResponse('[{"perioexam_id":12,"perioexam_patientid":123,"perioexam_date":"2026-01-01","perioexam_toothdata":null}]');
+ for(let attempt=1;attempt<=3;attempt++) { await f.run(); assert.equal(f.logs.filter(e=>e[0]==='[Praktika read] perio_structure').length,attempt); }
+ assert.equal(f.job.status,'failed');assert.equal(f.job.attempts,3);assert.equal(f.session.authenticated_at,null);
+ assert.equal(f.job.response.readFailure.failureCategory,'invalid_structure');
+});
+for(const status of [200,307,500])test('no structural observation for other failures/status '+status,async()=>{
+ const f=fixture(true);f.setHttp(status);f.setResponse('invalid');await f.run();
+ assert.equal(f.logs.filter(e=>e[0]==='[Praktika read] perio_structure').length,0);
+});
