@@ -51,6 +51,22 @@ export async function createPraktikaHelperJob({
 }: CreatePraktikaHelperJobInput) {
   const workflow = currentWorkflowExecution();
   const durableWrite = workflow && ["upload_report_to_praktika", "update_praktika_letter_icons"].includes(jobType);
+  if (workflow?.retryUploadId && jobType === "upload_report_to_praktika") {
+    // Only activate the waiting reservation. Never reset a runnable/terminal job.
+    const existing = await supabaseAdmin.from("praktika_helper_jobs").select("*").eq("id", workflow.retryUploadId)
+      .eq("app_user_id", appUserId).eq("job_type", jobType).eq("request->>continuationId", workflow.intentId).single();
+    if (existing.error || !existing.data?.request?.manualRetry?.verifiedAbsent) throw new Error("Retry reservation unavailable.");
+    if (existing.data.status !== "waiting") return existing.data;
+    const activated = await supabaseAdmin.from("praktika_helper_jobs").update({ status: "pending",
+      request: { ...request, continuationId: workflow.intentId, manualRetry: existing.data.request.manualRetry },
+      available_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    }).eq("id", workflow.retryUploadId).eq("status", "waiting").select("*").maybeSingle();
+    if (activated.error) throw new Error("Retry activation unavailable.");
+    if (activated.data) return activated.data;
+    const reconciled = await supabaseAdmin.from("praktika_helper_jobs").select("*").eq("id", workflow.retryUploadId).single();
+    if (reconciled.error || !reconciled.data) throw new Error("Retry activation unavailable.");
+    return reconciled.data;
+  }
   const id = durableWrite ? continuationChildId(workflow.intentId, jobType) : undefined;
   const { data, error } = await supabaseAdmin
     .from("praktika_helper_jobs")

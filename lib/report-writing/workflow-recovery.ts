@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { continuationIntentId } from './workflow-continuation-token';
+import { continuationChildId, continuationIntentId } from './workflow-continuation-token';
 export const workflowFailureMessage = 'Workflow needs reconciliation. The approved letter and queued intent are retained.';
 export const workflowConfigurationMessage = 'Workflow continuation is unavailable. Ask an administrator to check the web/Praktika worker URL and signing configuration. Queued work is retained.';
 export const workflowAccountMessage = 'Staff account status could not be verified. Queued work is paused; contact an administrator if this persists.';
@@ -25,12 +25,22 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     .abortSignal(AbortSignal.timeout(5000));
   if (error) throw new Error('Workflow status is temporarily unavailable.');
   const intents = new Map((data || []).map(j => [j.id, j]));
-  return drafts.map(draft => {
+  return await Promise.all(drafts.map(async draft => {
     try {
     const intent = intents.get(continuationIntentId(draft.id));
     if (!intent) return draft;
     if (typeof intent.status !== 'string' || (intent.response != null &&
       (typeof intent.response !== 'object' || Array.isArray(intent.response)))) throw new Error('Invalid workflow projection');
+    if (intent.response?.stage === 'upload') {
+      const uploadId = intent.response?.retryUploadId || continuationChildId(intent.id, 'upload_report_to_praktika');
+      const { data: child, error: childError } = await db.from('praktika_helper_jobs').select('id,status')
+        .eq('id', uploadId).eq('job_type', 'upload_report_to_praktika')
+        .abortSignal(AbortSignal.timeout(5000)).maybeSingle();
+      if (childError) throw new Error('Upload projection unavailable');
+      if (child?.status === 'failed') return { ...draft, workflow_status: 'failed', workflow_praktika_upload_status: 'failed',
+        workflow_error: 'Praktika upload needs verification.', workflow_last_message: 'Praktika upload needs verification.',
+        praktikaFailedUploadId: child.id };
+    }
     if (intent.status === 'failed') return { ...draft, workflow_status: 'failed', workflow_error: workflowFailureMessage, workflow_last_message: workflowFailureMessage };
     if (['waiting', 'processing'].includes(intent.status)) {
       const issue = intent.response?.issue;
@@ -43,7 +53,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     }
     return draft;
     } catch { return staleWorkflowStatus(draft); }
-  });
+  }));
   } catch {
     return drafts.map(staleWorkflowStatus);
   }

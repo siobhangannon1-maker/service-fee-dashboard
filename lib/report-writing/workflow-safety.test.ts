@@ -350,3 +350,19 @@ for(const kind of ['reconnect','account','configuration','validation'] as const)
   if(kind==='reconnect')assert.equal(data.reconnectRequired,true);
   assert.equal(f.tables.praktika_helper_jobs.length,0);assert.deepEqual(f.events,[]);
 });
+
+for (const status of ['waiting','pending','completed','failed']) test(`manual reserved ${status} upload uses only replacement and preserves prior`,async()=>{
+  const f=fixture();const prior={id:'old',job_type:'upload_report_to_praktika',app_user_id:'current-user',status:'failed',error_message:'Unconfirmed',request:{reportDraftId:'synthetic-draft'}};
+  const replacement={id:'replacement',job_type:'upload_report_to_praktika',app_user_id:'current-user',status,request:{reportDraftId:'synthetic-draft',continuationId:'intent',manualRetry:{verifiedAbsent:true,priorJobId:'old'},body:{file:{fileName:'synthetic.pdf',path:'synthetic/path'}}}};
+  f.tables.praktika_helper_jobs.push(prior,replacement);const original=JSON.stringify(prior);
+  f.mocks.currentWorkflowExecution=()=>({intentId:'intent',retryUploadId:'replacement'});
+  f.mocks.createPraktikaHelperJob=async(input:Row)=>{f.events.push('activate');replacement.request={...input.request,continuationId:'intent',manualRetry:{verifiedAbsent:true,priorJobId:'old'}};replacement.status='pending';return replacement;};
+  f.mocks.waitForPraktikaHelperJob=async(id:string)=>{assert.equal(id,'replacement');return{status:'completed',response:{patient_communication:{iFileId:42}}};};
+  const r=await f.route(uploadPath)(request());assert.equal(r.status,status==='failed'?409:200);
+  assert.equal(JSON.stringify(prior),original);assert.equal(f.tables.praktika_helper_jobs.length,2);
+  assert.equal(f.events.includes('pdf'),status==='waiting');assert.equal(f.events.includes('activate'),status==='waiting');
+});
+test('browser cannot select a replacement through request body',async()=>{
+  const f=fixture();f.tables.praktika_helper_jobs.push({id:'old',job_type:'upload_report_to_praktika',status:'failed',request:{reportDraftId:'synthetic-draft'}});
+  const r=await f.route(uploadPath)(request({retryUploadId:'forged',verifiedAbsent:true}));assert.equal(r.status,409);assert.deepEqual(f.events,[]);
+});

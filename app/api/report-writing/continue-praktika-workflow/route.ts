@@ -26,24 +26,27 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: false }, { status: 403 });
   }
   const stage = intent.response?.stage;
+  const retryUploadId = intent.response?.retryUploadId;
+  const uploadId = retryUploadId || continuationChildId(intentId, 'upload_report_to_praktika');
+  const childId = (type: string) => type === 'upload_report_to_praktika' ? uploadId : continuationChildId(intentId, type);
   if (!['upload', 'icon', 'mediref'].includes(stage)) return NextResponse.json({ success: false }, { status: 409 });
   // Consume this dispatch token exactly once, even if the HTTP call is duplicated.
   const { data: dispatched, error: dispatchError } = await db.from('praktika_helper_jobs')
-    .update({ response: { stage, dispatched: true } }).eq('id', intentId).eq('locked_by', lock)
+    .update({ response: { ...intent.response, stage, dispatched: true } }).eq('id', intentId).eq('locked_by', lock)
     .eq('response->>dispatched', 'false').select('id').maybeSingle();
   if (dispatchError || !dispatched) return NextResponse.json({ success: true, pending: true });
   const draftId = intent.request.reportDraftId;
   async function finish(status: string, nextStage = stage, message?: string, issue?: string) {
     if (status === 'failed' && !message) message = 'Workflow needs reconciliation. The approved letter and intent are retained.';
     const { data: finished, error: finishError } = await db.from('praktika_helper_jobs').update({
-      status, response: { stage: nextStage, ...(issue ? { issue } : {}) }, locked_by: null, locked_at: null,
+      status, response: { stage: nextStage, ...(retryUploadId ? { retryUploadId } : {}), ...(issue ? { issue } : {}) }, locked_by: null, locked_at: null,
       ...(status === 'completed' ? { completed_at: new Date().toISOString() } : {}),
       ...(status === 'failed' ? { error_message: 'Workflow needs reconciliation.', failed_at: new Date().toISOString() } : {}),
       updated_at: new Date().toISOString(),
     }).eq('id', intentId).eq('locked_by', lock).select('id').maybeSingle();
     if (finishError || !finished) throw new Error('Could not save continuation state.');
     if (message) await db.from('report_drafts').update({ workflow_last_message: message,
-      ...(status === 'failed' ? { workflow_status: 'failed', workflow_error: message } : status === 'waiting' ? { workflow_status: 'running', workflow_error: null } : {}),
+      ...(status === 'failed' ? { workflow_status: 'failed', workflow_error: message, ...(issue === 'upload_verification' ? { workflow_praktika_upload_status: 'failed' } : {}) } : status === 'waiting' ? { workflow_status: 'running', workflow_error: null } : {}),
       updated_at: new Date().toISOString() }).eq('id', draftId);
     return NextResponse.json({ success: status !== 'failed', pending: status === 'waiting' });
   }
@@ -58,10 +61,11 @@ export async function POST(req: Request) {
     const options = intent.request.options;
     const findMediref = () => db.from('mediref_helper_jobs').select('id,status')
       .eq('job_type', 'send_mediref_letter').eq('payload->>draftId', draftId).limit(1);
-    let { data: medirefJobs, error: medirefError } = await findMediref();
+    let { data: medirefJobs, error: medirefError } = retryUploadId || draft.workflow_mediref_status === 'completed'
+      ? { data: [] as { id: string; status: string }[], error: null } : await findMediref();
     if (medirefError) throw new Error('MediRef lookup unavailable.');
     let perioWaiting = false;
-    if (!medirefJobs?.length && draft.workflow_mediref_status !== 'completed') {
+    if (!retryUploadId && !medirefJobs?.length && draft.workflow_mediref_status !== 'completed') {
       const prepared = await withWorkflowExecution<Response>({ intentId, actor: options.actor }, () => mediref(new Request(req.url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...options, draftId }),
       })));
@@ -88,7 +92,7 @@ export async function POST(req: Request) {
       : `MediRef preparation is underway. Praktika session refreshing — Praktika ${praktikaStep} queued.`;
     if (stage !== 'upload' || draft.uploaded_to_praktika) {
       const { data: confirmed, error: confirmationError } = await db.from('praktika_helper_jobs').select('status,response')
-        .eq('id', continuationChildId(intentId, 'upload_report_to_praktika')).eq('app_user_id', intent.app_user_id)
+        .eq('id', uploadId).eq('app_user_id', intent.app_user_id)
         .eq('request->>continuationId', intentId).maybeSingle();
       if (confirmationError) throw new Error('Confirmation lookup unavailable.');
       if (confirmed?.status !== 'completed' || !isConfirmedPraktikaUpload(confirmed.response)) return await finish('failed');
@@ -111,14 +115,14 @@ export async function POST(req: Request) {
     } else {
       const jobType = stage === 'upload' ? 'upload_report_to_praktika' : 'update_praktika_letter_icons';
       const { data: child, error: childError } = await db.from('praktika_helper_jobs').select('status,locked_at,response')
-        .eq('id', continuationChildId(intentId, jobType)).maybeSingle();
+        .eq('id', childId(jobType)).maybeSingle();
       if (childError) throw new Error('Helper lookup unavailable.');
       if (child?.status === 'completed' && (stage === 'upload' ? !isConfirmedPraktikaUpload(child.response)
         : !child.response || typeof child.response !== 'object' || child.response.error || child.response.success === false || child.response.empty === true)) {
-        return await finish('failed', stage, 'The Praktika result could not be confirmed. Reconciliation is required.');
+        return await finish('failed', stage, stage === 'upload' ? 'Praktika upload needs verification.' : 'The Praktika result could not be confirmed. Reconciliation is required.', stage === 'upload' ? 'upload_verification' : undefined);
       }
       if (child?.status === 'failed' || (child?.status === 'processing' && Date.parse(child.locked_at || '') < Date.now() - 300_000)) {
-        return await finish('failed', stage, 'External outcome needs reconciliation. The approved letter and queued intent are retained.');
+        return await finish('failed', stage, stage === 'upload' ? 'Praktika upload needs verification.' : 'External outcome needs reconciliation. The approved letter and queued intent are retained.', stage === 'upload' ? 'upload_verification' : undefined);
       }
       if (child?.status === 'processing' || child?.status === 'pending') return await finish('waiting', stage,
         perioWaiting ? 'MediRef is waiting for the requested periodontal chart.' : 'Waiting for the confirmed Praktika result. Independent MediRef preparation continues.',
@@ -126,7 +130,7 @@ export async function POST(req: Request) {
     }
     if (!await isUserPraktikaReady(db, intent.app_user_id)) return await finish('waiting', stage, waitingMessage, perioWaiting ? 'periodontal_unavailable' : undefined);
     const handler = stage === 'upload' ? upload : icon;
-    const response = await withWorkflowExecution<Response>({ intentId, actor: options.actor }, () => handler(new Request(req.url, {
+    const response = await withWorkflowExecution<Response>({ intentId, actor: options.actor, ...(retryUploadId ? { retryUploadId } : {}) }, () => handler(new Request(req.url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...options, draftId }),
     })));
     const result = await response.json();
@@ -136,9 +140,10 @@ export async function POST(req: Request) {
     if (stage !== 'mediref') {
       const jobType = stage === 'upload' ? 'upload_report_to_praktika' : 'update_praktika_letter_icons';
       const { data: child } = await db.from('praktika_helper_jobs').select('status')
-        .eq('id', continuationChildId(intentId, jobType)).maybeSingle();
+        .eq('id', childId(jobType)).maybeSingle();
+      if (stage === 'upload' && child?.status === 'failed') return await finish('failed', stage, 'Praktika upload needs verification.', 'upload_verification');
       if (stage === 'icon' && child?.status === 'completed') return await finish('failed', stage, 'The completed icon target or result needs reconciliation. No new icon action was created.');
-      if (child && ['pending', 'processing', 'completed'].includes(child.status)) {
+      if (child && ['waiting', 'pending', 'processing', 'completed'].includes(child.status)) {
         await db.from('report_drafts').update({ workflow_status: 'running', workflow_error: null,
           ...(stage === 'upload' ? { workflow_praktika_upload_status: 'waiting_for_authentication' } : {}),
         }).eq('id', draftId);

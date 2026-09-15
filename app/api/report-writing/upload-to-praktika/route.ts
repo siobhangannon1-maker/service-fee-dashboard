@@ -271,8 +271,10 @@ export async function POST(req: Request) {
       );
     }
 
-    const { data: attempts, error: attemptError } = await Promise.resolve(supabase.from("praktika_helper_jobs")
-      .select("*").eq("job_type", "upload_report_to_praktika").eq("request->>reportDraftId", draftId).limit(workflow ? 2 : 1)).catch((error: unknown) => ({ data: null, error: error || {} }));
+    const attemptQuery = supabase.from("praktika_helper_jobs").select("*")
+      .eq("job_type", "upload_report_to_praktika").eq("request->>reportDraftId", draftId);
+    const { data: attempts, error: attemptError } = await Promise.resolve(workflow?.retryUploadId
+      ? attemptQuery.eq("id", workflow.retryUploadId) : attemptQuery.limit(workflow ? 2 : 1)).catch((error: unknown) => ({ data: null, error: error || {} }));
     if (attemptError) {
       const reason = typeof attemptError === "object" && attemptError !== null
         && "name" in attemptError && attemptError.name === "TimeoutError" ? "lookup_timeout" : "lookup_failed";
@@ -280,13 +282,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, code: reason, stage: "upload_attempt_lookup",
         error: "Previous Praktika upload attempts could not be verified. No new upload was started; the approved letter is retained." }, { status: 503 });
     }
-    const existing = workflow ? attempts?.find(job => job.id === continuationChildId(workflow.intentId, "upload_report_to_praktika")
+    const existing = workflow ? attempts?.find(job => job.id === (workflow.retryUploadId || continuationChildId(workflow.intentId, "upload_report_to_praktika"))
       && job.request?.continuationId === workflow.intentId && job.app_user_id === actor.actorUserId) : null;
     if ((attempts?.length && (!existing || attempts.length !== 1)) || draft.uploaded_to_praktika) {
       console.warn("praktika_upload_attempt", { stage: "upload_attempt_lookup", reason: "existing_attempt" });
       return NextResponse.json({ success: false, code: "existing_attempt", stage: "upload_attempt_lookup", error: "An upload already exists or needs reconciliation. The approved letter is retained." }, { status: 409 });
     }
-    let helperJob = existing;
+    if (workflow?.retryUploadId && (!existing?.request?.manualRetry?.verifiedAbsent || existing.status === "failed")) {
+      return NextResponse.json({ success: false, error: "Praktika upload needs verification." }, { status: 409 });
+    }
+    // Historical staged files have no complete revision of the PDF's draft,
+    // referrer, images and provider assets. Do not assume they are the current
+    // approved PDF. Prepare once for this waiting reservation; pending/completed
+    // replacements below reuse their existing staged artifact without regeneration.
+    let helperJob = existing?.status === "waiting" && workflow?.retryUploadId ? null : existing;
     if (!helperJob) {
     // Atomic per-draft reservation also protects direct/concurrent route calls.
     const { data: claimed, error: claimError } = await supabase.from("report_drafts")

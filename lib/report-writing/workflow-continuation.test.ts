@@ -138,7 +138,8 @@ test('durable helper failure survives failed draft update and refresh returns fa
   const f = fixture(); f.child('failed'); f.events.push('fail-draft-update');
   await f.call(); assert.equal(f.intent.status, 'failed'); assert.equal(f.draft.workflow_status, 'running');
   const db = { from: () => { const q: any = { select: () => q, eq: () => q, in: () => q,
-    abortSignal: async () => ({ data: [{ ...f.intent, id: continuationIntentId(f.draft.id) }], error: null }) }; return q; } };
+    abortSignal: () => q, maybeSingle: async () => ({ data: { id: 'failed-upload', status: 'failed' }, error: null }),
+    then: (resolve: (value: unknown) => void) => Promise.resolve({ data: [{ ...f.intent, id: continuationIntentId(f.draft.id) }], error: null }).then(resolve) }; return q; } };
   for (let refresh = 0; refresh < 2; refresh++) {
     const projected: { id: string; workflow_status: string; edited_text: string } = (await projectWorkflowRecovery(db as any, [{ id: String(f.draft.id), workflow_status: String(f.draft.workflow_status), edited_text: String(f.draft.edited_text) }]))[0];
     assert.equal(projected.workflow_status, 'failed'); assert.equal(projected.edited_text, 'synthetic approved text');
@@ -185,4 +186,36 @@ for (const thrown of [false,true]) test(`History preserves durable partial field
   const result=await projectWorkflowRecovery({from:()=>q} as any,[draft]);
   for(const key of Object.keys(draft))assert.equal((result[0] as any)[key],(draft as any)[key]);
   assert.match((result[0] as any).workflow_reconciliation_warning,/temporarily out of date/);assert.doesNotMatch(JSON.stringify(result),/SECRET/);
+});
+
+for (const medirefStatus of ['completed','failed','pending']) test(`manual retry never invokes MediRef (${medirefStatus})`, async () => {
+  const f = fixture(); f.intent.response.retryUploadId = 'replacement';
+  f.draft.workflow_mediref_status = medirefStatus; f.rows.mediref_helper_jobs.length = 0;
+  f.mocks.withWorkflowExecution = async (ctx: Row, run: () => Promise<unknown>) => { assert.equal(ctx.retryUploadId,'replacement'); return run(); };
+  await f.call(); assert.deepEqual(f.events,['upload']); assert.equal(f.intent.response.retryUploadId,'replacement');
+  assert.equal(f.draft.workflow_mediref_status,medirefStatus);
+});
+test('failed replacement requires new explicit verification, not automatic replay', async () => {
+  const f = fixture(); f.intent.response.retryUploadId='replacement'; f.draft.workflow_mediref_status='completed';
+  f.rows.praktika_helper_jobs.push({id:'replacement',status:'failed'});
+  await f.call(); assert.equal(f.intent.status,'failed'); assert.deepEqual(f.events,[]);
+  assert.equal(f.draft.workflow_praktika_upload_status,'failed'); assert.equal(f.draft.workflow_last_message,'Praktika upload needs verification.');
+  assert.equal(f.draft.workflow_mediref_status,'completed');
+});
+test('replacement pending remains waiting without generation or repeated write',async()=>{
+  const f=fixture();f.intent.response.retryUploadId='replacement';f.rows.praktika_helper_jobs.push({id:'replacement',status:'pending'});
+  await f.call();assert.equal(f.intent.status,'waiting');assert.deepEqual(f.events,[]);
+});
+test('manual replacement success continues icon and completes without MediRef replay',async()=>{
+  const f=fixture();f.intent.response.retryUploadId='replacement';f.draft.workflow_mediref_status='completed';f.rows.mediref_helper_jobs.length=0;
+  f.mocks.upload=async()=>{f.events.push('upload');f.rows.praktika_helper_jobs.push({id:'replacement',status:'completed',app_user_id:f.intent.app_user_id,request:{continuationId:f.intent.id},response:{patient_communication:{iFileId:42}}});Object.assign(f.draft,{uploaded_to_praktika:true,workflow_praktika_upload_status:'completed'});return Response.json({success:true});};
+  f.mocks.icon=async()=>{f.events.push('icon');f.draft.workflow_icon_update_status='completed';return Response.json({success:true});};
+  await f.call();f.dispatchedAgain();await f.call();f.dispatchedAgain();await f.call();
+  assert.deepEqual(f.events,['upload','icon']);assert.equal(f.intent.status,'completed');assert.equal(f.intent.response.retryUploadId,'replacement');
+});
+test('manual retry preserves completed icon without creating another',async()=>{
+  const f=fixture('icon');f.intent.response.retryUploadId='replacement';f.draft.workflow_mediref_status='completed';
+  Object.assign(f.draft,{uploaded_to_praktika:true,workflow_praktika_upload_status:'completed',workflow_icon_update_status:'completed'});
+  f.rows.praktika_helper_jobs.push({id:'replacement',status:'completed',app_user_id:f.intent.app_user_id,request:{continuationId:f.intent.id},response:{patient_communication:{iFileId:42}}});
+  await f.call();f.dispatchedAgain();await f.call();assert.equal(f.intent.status,'completed');assert.deepEqual(f.events,[]);
 });

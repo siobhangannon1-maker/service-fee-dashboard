@@ -1,4 +1,6 @@
 "use client";
+import { RetryPraktikaButton } from "@/components/report-writing/RetryPraktikaButton";
+import { remainsInApproved } from "@/lib/report-writing/praktika-retry";
 
 import { DEFAULT_PDF_BODY_FONT_SIZE, extractPdfBodyFontSize, pdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
 
@@ -1348,7 +1350,7 @@ export default function TypistPage() {
     if (listTab === "completed") {
       return drafts.filter(
         (draft) =>
-          draft.status === "approved" && !Boolean(draft.emailed_to_referrer_at),
+          remainsInApproved(draft),
       );
     }
 
@@ -1386,7 +1388,7 @@ export default function TypistPage() {
 
   const countCompleted = drafts.filter(
     (draft) =>
-      draft.status === "approved" && !Boolean(draft.emailed_to_referrer_at),
+      remainsInApproved(draft),
   ).length;
 
   const selectedDraftHasPraktikaPatient = Boolean(
@@ -5079,6 +5081,10 @@ export default function TypistPage() {
                       ) : null}
                     </button>
                   </div>
+                  {draft.workflow_praktika_upload_status === "failed" && <>
+                    <p className="mt-1 text-xs text-slate-500">Check the patient's file in Praktika before retrying. The letter has been retained in Approved.</p>
+                    <RetryPraktikaButton key={`${draft.id}:${draft.workflow_last_message}`} draftId={draft.id} onQueued={() => { void loadDrafts(selectedProviderId); }} />
+                  </>}
                 </div>
               ))}
             </div>
