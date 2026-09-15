@@ -1277,6 +1277,37 @@ export default function TypistPage() {
   const [imageDraftError, setImageDraftError] = useState<string | null>(null);
   const autoImageDraftQueueIdRef = useRef<string | null>(null);
   const queueSelectionTokenRef = useRef(0);
+  const pendingPatientSavesRef = useRef<Partial<Record<"letter" | "patient" | "referrer", () => void>>>({});
+  const localDraftEditsRef = useRef(new Map<string, Partial<Draft>>());
+  const patientSaveChainsRef = useRef(new Map<string, Promise<unknown>>());
+
+  function savePatientDraft(draftId: string, request: RequestInit) {
+    // Returning to A and editing again must not let an older A save arrive last.
+    // B has its own chain and selection never waits for either request.
+    const previous = patientSaveChainsRef.current.get(draftId) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(() => fetch("/api/report-writing/update-draft", request));
+    patientSaveChainsRef.current.set(draftId, next);
+    void next.finally(() => {
+      if (patientSaveChainsRef.current.get(draftId) === next) patientSaveChainsRef.current.delete(draftId);
+    }).catch(() => {});
+    return next;
+  }
+
+  function beginPatientSelection() {
+    // Keep the latest local edit available if this draft is reopened before its
+    // captured save finishes. Never overlay identity/status fields from another row.
+    if (selectedDraft) localDraftEditsRef.current.set(selectedDraft.id, {
+      edited_text: getLetterTextForSave(), typist_queries: typistQueries || null,
+      patient_name: patientName || null, patient_dob: patientDob || null,
+      referrer_name: referrerName || null, referrer_address: referrerAddress || null,
+    });
+    const pending = Object.values(pendingPatientSavesRef.current);
+    pendingPatientSavesRef.current = {};
+    queueSelectionTokenRef.current += 1;
+    // Start captured saves without awaiting them or delaying selection.
+    pending.forEach(save => save());
+  }
+
 
   // Keeps provider-specific async reloads from overwriting the currently
   // selected provider. This fixes queue/draft counters flashing to another
@@ -1502,8 +1533,10 @@ export default function TypistPage() {
     }
   }
 
-  async function persistCurrentReferrerDetails(options?: { quiet?: boolean }) {
+  async function persistCurrentReferrerDetails(options?: { quiet?: boolean; selectionToken?: number }) {
     if (!selectedDraft) return true;
+    const selectionToken = options?.selectionToken ?? queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
 
     const currentReferrerName = cleanString(referrerName);
     const currentReferrerAddress = cleanString(referrerAddress);
@@ -1519,11 +1552,11 @@ export default function TypistPage() {
     }
 
     try {
-      if (!options?.quiet) {
+      if (isCurrentSelection() && !options?.quiet) {
         setSaveStatus("saving");
       }
 
-      const response = await fetch("/api/report-writing/update-draft", {
+      const response = await savePatientDraft(selectedDraft.id, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1541,20 +1574,20 @@ export default function TypistPage() {
 
       if (!data.success) {
         console.error("Failed to save referrer details:", data);
-        if (!options?.quiet) {
+        if (isCurrentSelection() && !options?.quiet) {
           setSaveStatus("error");
         }
         return false;
       }
 
-      setSelectedDraft((current) =>
+      if (isCurrentSelection()) setSelectedDraft((current) =>
         current && current.id === selectedDraft.id
           ? {
               ...current,
               referrer_name: currentReferrerName || null,
               referrer_address: currentReferrerAddress || null,
-              patient_name: patientName || current.patient_name,
-              patient_dob: patientDob || current.patient_dob,
+              patient_name: patientName || null,
+              patient_dob: patientDob || null,
               report_type: reportType || current.report_type,
             }
           : current,
@@ -1572,20 +1605,24 @@ export default function TypistPage() {
         ),
       );
 
-      setLastSavedAt(new Date().toISOString());
-      setSaveStatus("saved");
+      if (isCurrentSelection()) {
+        setLastSavedAt(new Date().toISOString());
+        setSaveStatus("saved");
+      }
       return true;
     } catch (error) {
       console.error("Failed to persist referrer details:", error);
-      if (!options?.quiet) {
+      if (isCurrentSelection() && !options?.quiet) {
         setSaveStatus("error");
       }
       return false;
     }
   }
 
-  async function persistCurrentPatientDetails(options?: { quiet?: boolean }) {
+  async function persistCurrentPatientDetails(options?: { quiet?: boolean; selectionToken?: number }) {
     if (!selectedDraft) return true;
+    const selectionToken = options?.selectionToken ?? queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
 
     const currentPatientName = cleanString(patientName);
     const currentPatientDob = cleanString(patientDob);
@@ -1601,11 +1638,11 @@ export default function TypistPage() {
     }
 
     try {
-      if (!options?.quiet) {
+      if (isCurrentSelection() && !options?.quiet) {
         setSaveStatus("saving");
       }
 
-      const response = await fetch("/api/report-writing/update-draft", {
+      const response = await savePatientDraft(selectedDraft.id, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1623,20 +1660,20 @@ export default function TypistPage() {
 
       if (!response.ok || !data.success) {
         console.error("Failed to save patient details:", data);
-        if (!options?.quiet) {
+        if (isCurrentSelection() && !options?.quiet) {
           setSaveStatus("error");
         }
         return false;
       }
 
-      setSelectedDraft((current) =>
+      if (isCurrentSelection()) setSelectedDraft((current) =>
         current && current.id === selectedDraft.id
           ? {
               ...current,
               patient_name: currentPatientName || null,
               patient_dob: currentPatientDob || null,
-              referrer_name: referrerName || current.referrer_name,
-              referrer_address: referrerAddress || current.referrer_address,
+              referrer_name: referrerName || null,
+              referrer_address: referrerAddress || null,
               report_type: reportType || current.report_type,
             }
           : current,
@@ -1654,12 +1691,14 @@ export default function TypistPage() {
         ),
       );
 
-      setLastSavedAt(new Date().toISOString());
-      setSaveStatus("saved");
+      if (isCurrentSelection()) {
+        setLastSavedAt(new Date().toISOString());
+        setSaveStatus("saved");
+      }
       return true;
     } catch (error) {
       console.error("Failed to persist patient details:", error);
-      if (!options?.quiet) {
+      if (isCurrentSelection() && !options?.quiet) {
         setSaveStatus("error");
       }
       return false;
@@ -1689,6 +1728,8 @@ export default function TypistPage() {
   }
 
   async function ensureImageDraftForCurrentWork(options?: { quiet?: boolean }) {
+    const selectionToken = queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (selectedDraft?.id) {
       setImageDraftId(selectedDraft.id);
       setImageDraftError(null);
@@ -1781,10 +1822,12 @@ export default function TypistPage() {
         );
       }
 
+      if (!isCurrentSelection()) return createdDraftId;
       setImageDraftId(createdDraftId);
       await loadDrafts(selectedProviderId);
       return createdDraftId;
     } catch (error) {
+      if (!isCurrentSelection()) return null;
       const message =
         error instanceof Error
           ? error.message
@@ -1795,7 +1838,7 @@ export default function TypistPage() {
       if (!options?.quiet) alert(message);
       return null;
     } finally {
-      setImageDraftCreating(false);
+      if (isCurrentSelection()) setImageDraftCreating(false);
     }
   }
 
@@ -2970,8 +3013,8 @@ export default function TypistPage() {
   useEffect(() => {
     if (!selectedDraft) return;
 
-    const existingText =
-      selectedDraft.edited_text || selectedDraft.ai_generated_text || "";
+    const selectionToken = queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
 
     const finalLetterTextForSave = getLetterTextForSave();
 
@@ -2982,11 +3025,12 @@ export default function TypistPage() {
       clearTimeout(autosaveTimerRef.current);
     }
 
-    autosaveTimerRef.current = setTimeout(async () => {
+    const save = async () => {
+      if (pendingPatientSavesRef.current.letter === run) delete pendingPatientSavesRef.current.letter;
       try {
-        setSaveStatus("saving");
+        if (isCurrentSelection()) setSaveStatus("saving");
 
-        const response = await fetch("/api/report-writing/update-draft", {
+        const response = await savePatientDraft(selectedDraft.id, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -3003,10 +3047,11 @@ export default function TypistPage() {
 
         if (!data.success) {
           console.error("Autosave failed:", data);
-          setSaveStatus("error");
+          if (isCurrentSelection()) setSaveStatus("error");
           return;
         }
 
+        if (!isCurrentSelection()) return;
         lastAutosavedTextRef.current = finalLetterTextForSave;
         setLastSavedAt(new Date().toISOString());
         setSaveStatus("saved");
@@ -3022,14 +3067,17 @@ export default function TypistPage() {
         );
       } catch (error) {
         console.error("Autosave error:", error);
-        setSaveStatus("error");
+        if (isCurrentSelection()) setSaveStatus("error");
       }
-    }, 1500);
+    };
+    const run = () => { clearTimeout(timer); void save(); };
+    const timer = setTimeout(run, 1500);
+    autosaveTimerRef.current = timer;
+    pendingPatientSavesRef.current.letter = run;
 
     return () => {
-      if (autosaveTimerRef.current) {
-        clearTimeout(autosaveTimerRef.current);
-      }
+      clearTimeout(timer);
+      if (pendingPatientSavesRef.current.letter === run) delete pendingPatientSavesRef.current.letter;
     };
   }, [letterText, pdfCcText, pdfLetterDate, pdfFontSize, typistQueries, selectedDraft]);
 
@@ -3052,14 +3100,19 @@ export default function TypistPage() {
       clearTimeout(referrerAutosaveTimerRef.current);
     }
 
-    referrerAutosaveTimerRef.current = setTimeout(() => {
-      persistCurrentReferrerDetails({ quiet: true });
-    }, 700);
+    const selectionToken = queueSelectionTokenRef.current;
+    const run = () => {
+      clearTimeout(timer);
+      if (pendingPatientSavesRef.current.referrer === run) delete pendingPatientSavesRef.current.referrer;
+      void persistCurrentReferrerDetails({ quiet: true, selectionToken });
+    };
+    const timer = setTimeout(run, 700);
+    referrerAutosaveTimerRef.current = timer;
+    pendingPatientSavesRef.current.referrer = run;
 
     return () => {
-      if (referrerAutosaveTimerRef.current) {
-        clearTimeout(referrerAutosaveTimerRef.current);
-      }
+      clearTimeout(timer);
+      if (pendingPatientSavesRef.current.referrer === run) delete pendingPatientSavesRef.current.referrer;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDraft?.id, referrerName, referrerAddress]);
@@ -3086,20 +3139,25 @@ export default function TypistPage() {
       clearTimeout(patientDetailsAutosaveTimerRef.current);
     }
 
-    patientDetailsAutosaveTimerRef.current = setTimeout(() => {
-      persistCurrentPatientDetails({ quiet: true });
-    }, 700);
+    const selectionToken = queueSelectionTokenRef.current;
+    const run = () => {
+      clearTimeout(timer);
+      if (pendingPatientSavesRef.current.patient === run) delete pendingPatientSavesRef.current.patient;
+      void persistCurrentPatientDetails({ quiet: true, selectionToken });
+    };
+    const timer = setTimeout(run, 700);
+    patientDetailsAutosaveTimerRef.current = timer;
+    pendingPatientSavesRef.current.patient = run;
 
     return () => {
-      if (patientDetailsAutosaveTimerRef.current) {
-        clearTimeout(patientDetailsAutosaveTimerRef.current);
-      }
+      clearTimeout(timer);
+      if (pendingPatientSavesRef.current.patient === run) delete pendingPatientSavesRef.current.patient;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDraft?.id, patientName, patientDob]);
 
   function clearForm() {
-    queueSelectionTokenRef.current += 1;
+    beginPatientSelection();
     setSelectedDraft(null);
     setActiveQueueItemId(null);
     setPatientFirstName("");
@@ -3125,6 +3183,7 @@ export default function TypistPage() {
     setLastSavedAt(null);
     lastAutosavedTextRef.current = "";
     setPraktikaCandidates([]);
+    setMatchingPatient(false);
     setSelectedPraktikaPatientId("");
     setAttachPeriodontalChart(false);
     setMedirefRecipientName("");
@@ -3137,11 +3196,16 @@ export default function TypistPage() {
     setMedirefConfirmed(false);
     setImageDraftId(null);
     setImageDraftError(null);
+    setImageDraftCreating(false);
     autoImageDraftQueueIdRef.current = null;
   }
 
-  function selectDraft(draft: Draft) {
-    queueSelectionTokenRef.current += 1;
+  function selectDraft(draft: Draft, queueId: string | null = null) {
+    beginPatientSelection();
+    draft = { ...draft, ...localDraftEditsRef.current.get(draft.id) };
+    setActiveQueueItemId(queueId);
+    setLoading(false);
+    setReferralAutoFillError("");
     const splitName = splitPatientName(draft.patient_name);
 
     setSelectedDraft(draft);
@@ -3161,7 +3225,7 @@ export default function TypistPage() {
     setClinicalNotes(getDraftClinicalNotes(draft));
     setTypistQueries(draft.typist_queries || "");
 
-    const savedLetterText = draft.edited_text || draft.ai_generated_text || "";
+    const savedLetterText = draft.edited_text ?? draft.ai_generated_text ?? "";
     setPdfCcText(extractPdfCcText(savedLetterText));
     setPdfFontSize(extractPdfBodyFontSize(savedLetterText));
     setPdfLetterDate(
@@ -3175,9 +3239,11 @@ export default function TypistPage() {
     lastAutosavedTextRef.current = savedLetterText;
     setAutoGenerateStatus("idle");
     setPraktikaCandidates([]);
+    setMatchingPatient(false);
     setSelectedPraktikaPatientId(draft.praktika_patient_id || "");
     setImageDraftId(draft.id);
     setImageDraftError(null);
+    setImageDraftCreating(false);
     autoImageDraftQueueIdRef.current = null;
   }
 
@@ -3185,6 +3251,8 @@ export default function TypistPage() {
     praktikaPatientId: string,
     queueIdForCache?: string | null,
   ) {
+    const selectionToken = queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (!praktikaPatientId) {
       console.warn("Auto-referrer lookup skipped: no Praktika patient ID", {
         activeQueueItemId,
@@ -3227,6 +3295,7 @@ export default function TypistPage() {
       );
 
       const text = await response.text();
+      if (!isCurrentSelection()) return;
       let data: any = {};
 
       try {
@@ -3268,9 +3337,7 @@ export default function TypistPage() {
 
       setReferrerName(referral.referrerName);
 
-      if (referral.referrerAddress) {
-        setReferrerAddress(referral.referrerAddress);
-      }
+      setReferrerAddress(referral.referrerAddress || "");
 
       const queueId = queueIdForCache || activeQueueItemId;
 
@@ -3294,7 +3361,7 @@ export default function TypistPage() {
                 ...queueItem,
                 referrer_name: referral.referrerName,
                 referrer_address:
-                  referral.referrerAddress || queueItem.referrer_address,
+                  referral.referrerAddress || "",
                 raw_json: {
                   ...(queueItem.raw_json || {}),
                   latest_referral: referral,
@@ -3311,10 +3378,12 @@ export default function TypistPage() {
         }
       }
 
+      if (!isCurrentSelection()) return;
       setLatestPraktikaReferral(referral);
       setReferralAutoFillError("");
       setReferralAutoFillStatus("found");
     } catch (error) {
+      if (!isCurrentSelection()) return;
       const message =
         error instanceof Error
           ? error.message
@@ -3347,8 +3416,9 @@ export default function TypistPage() {
   }
 
   async function startLetterFromQueue(item: QueueItem) {
-    const selectionToken = queueSelectionTokenRef.current + 1;
-    queueSelectionTokenRef.current = selectionToken;
+    beginPatientSelection();
+    const selectionToken = queueSelectionTokenRef.current;
+    setLoading(false);
 
     const isCurrentQueueSelection = () =>
       queueSelectionTokenRef.current === selectionToken;
@@ -3361,6 +3431,7 @@ export default function TypistPage() {
     setSelectedDraft(null);
     setImageDraftId(item.report_draft_id || null);
     setImageDraftError(null);
+    setImageDraftCreating(false);
     autoImageDraftQueueIdRef.current = null;
 
     const firstName = item.patient_first_name || "";
@@ -3409,6 +3480,7 @@ export default function TypistPage() {
     setReportType(inferredReportType);
     setPreferredExampleId("");
     setTypistQueries("");
+    setClinicalNotes("");
     setLetterText("");
     setGeneratedAiLetterText("");
     setPdfCcText("");
@@ -3418,7 +3490,27 @@ export default function TypistPage() {
         new Date().toISOString().slice(0, 10),
     );
     setPraktikaCandidates([]);
+    setMatchingPatient(false);
     setSelectedPraktikaPatientId(linkedPraktikaPatientId);
+
+    if (item.report_draft_id) {
+      try {
+        let linkedDraft = drafts.find(draft => draft.id === item.report_draft_id);
+        if (!linkedDraft) {
+          const response = await fetch(`/api/report-writing/get-drafts?providerId=${selectedProviderId}`);
+          const data = await response.json();
+          if (!isCurrentQueueSelection()) return;
+          if (!response.ok || !data.success) throw new Error("Linked draft could not be loaded.");
+          linkedDraft = (data.drafts as Draft[]).find(draft => draft.id === item.report_draft_id);
+        }
+        if (!isCurrentQueueSelection()) return;
+        if (!linkedDraft) throw new Error("Linked draft could not be loaded.");
+        selectDraft(linkedDraft, item.id);
+      } catch {
+        if (isCurrentQueueSelection()) { setSaveStatus("error"); setAutoGenerateStatus("error"); }
+      }
+      return;
+    }
 
     if (hasCachedReferrer) {
       setReferralAutoFillStatus("found");
@@ -3939,6 +4031,8 @@ export default function TypistPage() {
   }
 
   async function generateLetter() {
+    const selectionToken = queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (!selectedProviderId) {
       alert("Please select a provider first.");
       return;
@@ -3970,6 +4064,7 @@ export default function TypistPage() {
       });
 
       const data = await response.json();
+      if (!isCurrentSelection()) return;
 
       // TEMPORARY DEBUGGING: this confirms exactly what the generation API used.
       // Open Chrome DevTools > Console, then generate a letter and inspect these logs.
@@ -4002,7 +4097,7 @@ export default function TypistPage() {
       setGeneratedAiLetterText(data.report);
       setAutoGenerateStatus("ready");
     } finally {
-      setLoading(false);
+      if (isCurrentSelection()) setLoading(false);
     }
   }
 
@@ -4013,6 +4108,8 @@ export default function TypistPage() {
       | "awaiting_provider_approval"
       | "approved" = "draft",
   ) {
+    const selectionToken = queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (!selectedProviderId) {
       alert("Please select a provider first.");
       return;
@@ -4098,6 +4195,7 @@ export default function TypistPage() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok || !data.success) {
+        if (!isCurrentSelection()) return;
         alert(data.error || "Failed to save letter");
         return;
       }
@@ -4131,6 +4229,7 @@ export default function TypistPage() {
         await loadQueue(selectedProviderId, queueStatusTab);
       }
 
+      if (!isCurrentSelection()) return;
       setSaveStatus("saved");
       setLastSavedAt(new Date().toISOString());
       lastAutosavedTextRef.current = finalLetterTextForSave;
@@ -4139,6 +4238,7 @@ export default function TypistPage() {
 
       await loadDrafts(selectedProviderId);
 
+      if (!isCurrentSelection()) return;
       if (savedDraft) {
         selectDraft(savedDraft);
       }
@@ -4154,11 +4254,13 @@ export default function TypistPage() {
         alert("Draft saved. You can reopen it from Saved Drafts.");
       }
     } finally {
-      setLoading(false);
+      if (isCurrentSelection()) setLoading(false);
     }
   }
 
   async function updateExistingDraft(status: string) {
+    const selectionToken = queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (!selectedDraft) return;
 
     const finalLetterTextForSave = getLetterTextForSave();
@@ -4202,6 +4304,7 @@ export default function TypistPage() {
       });
 
       const data = await response.json();
+      if (!isCurrentSelection()) return;
 
       if (!data.success) {
         alert(data.error || "Failed to update draft");
@@ -4214,6 +4317,7 @@ export default function TypistPage() {
       lastAutosavedTextRef.current = finalLetterTextForSave;
       await loadDrafts(selectedProviderId);
 
+      if (!isCurrentSelection()) return;
       setSelectedDraft({
         ...selectedDraft,
         patient_name: patientName,
@@ -4228,7 +4332,7 @@ export default function TypistPage() {
         typist_queries: typistQueries || null,
       });
     } finally {
-      setLoading(false);
+      if (isCurrentSelection()) setLoading(false);
     }
   }
 
@@ -4499,6 +4603,8 @@ export default function TypistPage() {
   }
 
   async function persistPraktikaPatientMatch(praktikaPatientId: string | null) {
+    const selectionToken = queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     setSelectedPraktikaPatientId(praktikaPatientId || "");
 
     if (!selectedDraft) return;
@@ -4516,6 +4622,7 @@ export default function TypistPage() {
       });
 
       const data = await response.json();
+      if (!isCurrentSelection()) return;
 
       if (!data.success) {
         alert(data.error || "Failed to save Praktika patient match.");
@@ -4536,12 +4643,15 @@ export default function TypistPage() {
         ),
       );
     } catch (error) {
+      if (!isCurrentSelection()) return;
       console.error("Failed to save Praktika patient match:", error);
       alert("Failed to save Praktika patient match.");
     }
   }
 
   async function searchPraktikaPatientMatch() {
+    const selectionToken = queueSelectionTokenRef.current;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (!patientName.trim()) {
       alert("Patient name is required before matching.");
       return;
@@ -4567,6 +4677,7 @@ export default function TypistPage() {
       );
 
       const data = await response.json();
+      if (!isCurrentSelection()) return;
 
       if (!data.success) {
         alert(data.error || "Failed to search Praktika.");
@@ -4579,7 +4690,7 @@ export default function TypistPage() {
         await persistPraktikaPatientMatch(data.candidates[0].id);
       }
     } finally {
-      setMatchingPatient(false);
+      if (isCurrentSelection()) setMatchingPatient(false);
     }
   }
 
