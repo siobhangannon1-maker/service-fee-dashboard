@@ -21,10 +21,13 @@ class RetryTests(unittest.TestCase):
         base.ReservationTests.setUpClass()
         sql('create table user_status(user_id uuid,is_active boolean); grant all on report_drafts,praktika_helper_jobs,user_status to service_role;')
         sql((ROOT / 'supabase/migrations/20260915060642_praktika_manual_retry.sql').read_text())
+        sql('create table user_roles(user_id uuid,role text); create table providers(id uuid primary key,is_active boolean); grant select on user_roles,providers to service_role;')
+        sql((ROOT / 'supabase/migrations/20260915065053_praktika_retry_typist_authorization.sql').read_text())
 
     def setUp(self):
         self.draft, self.actor, self.prior = [str(uuid.uuid4()) for _ in range(3)]
         sql(f"insert into report_drafts(id,provider_id,created_by) values('{self.draft}',gen_random_uuid(),gen_random_uuid()); insert into user_status values('{self.actor}',true);")
+        sql(f"insert into user_roles values('{self.actor}','typist'); insert into providers select provider_id,true from report_drafts where id='{self.draft}';")
         self.parent = json.loads(sql(f"select reserve_praktika_workflow('{self.draft}','{self.actor}','{{}}');").stdout)['intentId']
         request = json.dumps({'reportDraftId':self.draft,'continuationId':self.parent,'body':{'file':{'path':'synthetic.pdf'}}})
         sql(f"insert into praktika_helper_jobs(id,app_user_id,job_type,status,attempts,error_message,request) values('{self.prior}','{self.actor}','upload_report_to_praktika','failed',1,'Unconfirmed','{request}'); update praktika_helper_jobs set status='failed' where id='{self.parent}'; update report_drafts set workflow_status='failed',workflow_mediref_status='completed',workflow_praktika_upload_status='running' where id='{self.draft}';")
@@ -68,8 +71,43 @@ class RetryTests(unittest.TestCase):
             self.assertEqual(sql(f"select status from praktika_helper_jobs where id='{self.parent}';").stdout.strip(),'failed')
         finally: sql('drop trigger reject_retry_fixture on report_drafts; drop function reject_retry_fixture();')
 
-    def test_other_actor(self):
-        self.assertFalse(self.result(actor=str(uuid.uuid4()))['ok']); self.assertEqual(self.count(),1)
+    def test_other_authorized_actor_and_concurrency(self):
+        other=str(uuid.uuid4())
+        sql(f"insert into user_status values('{other}',true); insert into user_roles values('{other}','typist');")
+        actors=[self.actor,other]*4
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            results=list(pool.map(lambda actor:self.result(actor=actor),actors))
+        self.assertTrue(all(r['ok'] for r in results)); self.assertEqual(len({r['uploadJobId'] for r in results}),1)
+        winner=actors[next(i for i,r in enumerate(results) if not r['reconciled'])]
+        job=results[0]['uploadJobId']
+        before=sql(f"select request->'manualRetry' from praktika_helper_jobs where id='{job}';").stdout
+        self.assertEqual(json.loads(before)['actorUserId'],winner)
+        self.result(actor=other);self.assertEqual(before,sql(f"select request->'manualRetry' from praktika_helper_jobs where id='{job}';").stdout)
+        self.assertEqual(sql(f"select app_user_id from praktika_helper_jobs where id='{self.parent}';").stdout.strip(),self.actor)
+        self.assertEqual(sql(f"select app_user_id from praktika_helper_jobs where id='{job}';").stdout.strip(),self.actor)
+        self.assertEqual(self.original,sql(f"select row_to_json(j) from praktika_helper_jobs j where id='{self.prior}';").stdout)
+        self.assertEqual(self.count(),2)
+
+    def test_different_typist_wins_then_another_explicit_retry(self):
+        other=str(uuid.uuid4())
+        sql(f"insert into user_status values('{other}',true); insert into user_roles values('{other}','typist');")
+        original_parent=sql(f"select request from praktika_helper_jobs where id='{self.parent}';").stdout
+        a=self.result(actor=other);self.assertTrue(a['ok'])
+        meta=json.loads(sql(f"select request->'manualRetry' from praktika_helper_jobs where id='{a['uploadJobId']}';").stdout)
+        self.assertEqual(meta['actorUserId'],other)
+        self.assertEqual(self.result()['uploadJobId'],a['uploadJobId'])
+        sql(f"update praktika_helper_jobs set status='failed' where id in ('{a['uploadJobId']}','{self.parent}');")
+        self.assertEqual(self.result()['uploadJobId'],a['uploadJobId'])
+        b=self.result(prior=a['uploadJobId']);self.assertTrue(b['ok']);self.assertNotEqual(a['uploadJobId'],b['uploadJobId'])
+        self.assertEqual(original_parent,sql(f"select request from praktika_helper_jobs where id='{self.parent}';").stdout)
+        self.assertEqual(sql(f"select workflow_mediref_status from report_drafts where id='{self.draft}';").stdout.strip(),'completed')
+
+    def test_disallowed_role_and_inactive_provider(self):
+        for role in ['staff','billing_staff','provider_readonly']:
+            sql(f"update user_roles set role='{role}' where user_id='{self.actor}';")
+            self.assertFalse(self.result()['ok'])
+        sql(f"update user_roles set role='typist' where user_id='{self.actor}'; update providers set is_active=false where id=(select provider_id from report_drafts where id='{self.draft}');")
+        self.assertFalse(self.result()['ok']);self.assertEqual(self.count(),1)
 
     def test_inactive_missing_duplicate_status(self):
         for action in [f"update user_status set is_active=false where user_id='{self.actor}'",f"delete from user_status where user_id='{self.actor}'",f"insert into user_status values('{self.actor}',true),('{self.actor}',true)"]:

@@ -5083,7 +5083,7 @@ export default function TypistPage() {
                   </div>
                   {draft.workflow_praktika_upload_status === "failed" && <>
                     <p className="mt-1 text-xs text-slate-500">Check the patient's file in Praktika before retrying. The letter has been retained in Approved.</p>
-                    <RetryPraktikaButton key={`${draft.id}:${draft.workflow_last_message}`} draftId={draft.id} onQueued={() => { void loadDrafts(selectedProviderId); }} />
+                    <RetryPraktikaButton key={`${draft.id}:${draft.workflow_last_message}`} draftId={draft.id} workflowStatus={draft.workflow_status} uploadStatus={draft.workflow_praktika_upload_status} recoveryMessage={draft.workflow_last_message} onQueued={() => { void loadDrafts(selectedProviderId); }} />
                   </>}
                 </div>
               ))}
