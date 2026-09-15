@@ -12,6 +12,8 @@ export type ResolvedWorkflow = {
   lookupUnavailable: boolean;
   praktikaRecovery: boolean;
   medirefRecovery: boolean;
+  // Retention only: never inferred from approval, job creation or polling.
+  completedAt?: number | null;
 };
 export type WorkflowDraft = {
   id?: string; status?: string; workflow_status?: string | null;
@@ -121,6 +123,17 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
     now - progress(j) < WORKFLOW_STALE_MS && (j === med ? e.liveMediref : Boolean(j.app_user_id && e.livePraktikaActors.has(j.app_user_id))));
   const conflictingMediref = e.mediref.some(j => !medJobs.includes(j));
   const allDone = !conflictingMediref && Object.values(branches).every(terminal) && ((parentValid && parent?.status === 'completed') || legacy) && !competing;
+  const terminalTime = (job: ReadJob | undefined) => job?.status === 'completed' ? time(job.completed_at) || time(job.updated_at) : 0;
+  const branchTimes = [
+    verifiedUpload ? time(verifiedUpload.verifiedAt) : terminalTime(upload),
+    ...(branches.mediref === 'completed' ? [verifiedMed ? time(verifiedMed.verifiedAt) : terminalTime(med)] : []),
+    ...(branches.icon === 'completed' ? [terminalTime(icon)] : []),
+    ...(branches.periodontal === 'completed' ? [time(d.periodontal_chart_attached_at)] : []),
+  ];
+  const parentCompletedAt = parentValid && parent?.status === 'completed' ? time(parent.completed_at) : 0;
+  const completionTime = Math.max(parentCompletedAt, ...branchTimes);
+  const completedAt = allDone && (parentCompletedAt > 0 || branchTimes.every(t => t > 0)) &&
+    completionTime > 0 && completionTime <= now ? completionTime : null;
   const started = Boolean(d.workflow_status || d.workflow_praktika_upload_status || d.workflow_mediref_status ||
     d.workflow_icon_update_status || d.workflow_periodontal_chart_status || parent || e.uploads.length || e.icons.length || e.mediref.length || d.status === 'uploaded_to_praktika' || d.emailed_to_referrer_at || d.uploaded_to_praktika);
   const failed = Object.values(branches).includes('failed');
@@ -131,7 +144,7 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
   const message = status !== 'needs_attention' ? null : branches.praktika === 'failed' ? 'Praktika upload needs verification.'
     : branches.mediref === 'failed' ? 'MediRef needs verification.'
     : branches.icon === 'failed' ? 'Praktika appointment icon update needs attention.' : staleWorkflowMessage;
-  return { status, message, branches, lastProgressAt: last || null, lookupUnavailable: false,
+  return { status, message, branches, lastProgressAt: last || null, lookupUnavailable: false, ...(allDone ? { completedAt } : {}),
     praktikaRecovery: parent?.status === 'failed' && response.stage === 'upload' && upload?.status === 'failed' && !verifiedUpload
       && !competing && d.status === 'approved' && !d.uploaded_to_praktika,
     medirefRecovery: Boolean(parent && ['failed','waiting'].includes(parent.status) && med?.status === 'failed'
