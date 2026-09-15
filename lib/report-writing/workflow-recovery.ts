@@ -1,3 +1,5 @@
+import { resolveWorkflow, unavailableWorkflow, type ReadJob, type WorkflowDraft } from './resolved-workflow';
+import { hasLivePraktikaHelper } from '../praktika/helper-lease';
 import { manualVerification } from './manual-verification';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { continuationChildId, continuationIntentId } from './workflow-continuation-token';
@@ -18,7 +20,7 @@ export function staleWorkflowStatus<T>(draft: T) {
 }
 // Read projection is intentionally independent of the best-effort draft update.
 // A terminal intent remains authoritative after interruption, including on page refresh.
-export async function projectWorkflowRecovery<T extends { id: string; workflow_status?: string | null }>(db: SupabaseClient, drafts: T[]): Promise<T[]> {
+async function projectLegacyWorkflowRecovery<T extends { id: string; workflow_status?: string | null }>(db: SupabaseClient, drafts: T[]): Promise<T[]> {
   if (!drafts.length) return drafts;
   try {
   const { data, error } = await db.from('praktika_helper_jobs').select('id,status,response,updated_at')
@@ -70,4 +72,84 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
   } catch {
     return drafts.map(staleWorkflowStatus);
   }
+}
+
+// Additive display evidence only. Keep existing durable fields/audit data for History
+// and existing callers; neither this resolver nor its queries can execute a workflow.
+export async function projectWorkflowRecovery<T extends { id: string; workflow_status?: string | null }>(db: SupabaseClient, drafts: T[]): Promise<T[]> {
+  const projected = await projectLegacyWorkflowRecovery(db, drafts);
+  const output = [...projected];
+  const indexes = drafts.map((d,i) => ({ d: d as T & WorkflowDraft, i }))
+    .filter(({d}) => ['approved','uploaded_to_praktika'].includes(d.status || ''));
+  // Bound additional read-time enrichment as a whole, not five seconds per batch.
+  // A large History list must still return its durable rows when enrichment is slow.
+  const signal = AbortSignal.timeout(5000);
+  let offset = 0;
+  async function readBatch(batch: typeof indexes) {
+    try {
+      signal.throwIfAborted();
+      const ids = batch.map(({d}) => d.id);
+      const readJobs = async (table: 'praktika_helper_jobs' | 'mediref_helper_jobs'): Promise<ReadJob[]> => {
+        const rows: ReadJob[] = [];
+        for (let start = 0; ; start += 500) {
+          const query = table === 'praktika_helper_jobs'
+            ? db.from(table).select('id,job_type,status,app_user_id,request,response,created_at,updated_at,locked_at,locked_by,completed_at,failed_at')
+              .in('job_type', ['complete_report_workflow','upload_report_to_praktika','update_praktika_letter_icons'])
+              .in('request->>reportDraftId', ids)
+            : db.from(table).select('id,job_type,status,payload,result,created_at,updated_at,locked_at,locked_by')
+              .eq('job_type','send_mediref_letter').in('payload->>draftId', ids);
+          const { data, error } = await query.order('id').range(start,start+499).abortSignal(signal);
+          if (error || !Array.isArray(data)) throw new Error('Workflow evidence unavailable');
+          rows.push(...data);
+          if (data.length < 500) return rows;
+        }
+      };
+      const [praktika, mediref] = await Promise.all([readJobs('praktika_helper_jobs'), readJobs('mediref_helper_jobs')]);
+      const active = (j: ReadJob) => ['pending','waiting','processing','running'].includes(j.status);
+      const actors = [...new Set(praktika.filter(j => j.job_type !== 'complete_report_workflow' && active(j))
+        .map(j => j.app_user_id).filter((id): id is string => Boolean(id)))];
+      const now = Date.now();
+      const livePraktikaActors = new Set<string>();
+      if (actors.length) {
+        const {data,error} = await db.from('praktika_sessions').select('app_user_id,status,helper_instance_id,helper_heartbeat_at')
+          .eq('scope','user').in('app_user_id',actors).abortSignal(signal);
+        if (error || !data) throw new Error('Workflow liveness unavailable');
+        for (const session of data) if (['connected','refreshing'].includes(session.status) && hasLivePraktikaHelper(session,now))
+          livePraktikaActors.add(session.app_user_id);
+      }
+      let liveMediref = false;
+      if (mediref.some(active)) {
+        const {data,error} = await db.from('mediref_sessions').select('status,helper_instance_id,helper_heartbeat_at,helper_expires_at,helper_stopping_at')
+          .eq('scope','practice').is('app_user_id',null).abortSignal(signal);
+        if (error || !data) throw new Error('Workflow liveness unavailable');
+        liveMediref = data.length === 1 && ['connected','refreshing'].includes(data[0].status) &&
+          Boolean(data[0].helper_instance_id) && !data[0].helper_stopping_at && Date.parse(data[0].helper_expires_at) > now &&
+          Date.parse(data[0].helper_heartbeat_at) <= now && now - Date.parse(data[0].helper_heartbeat_at) < 120000;
+      }
+      for (const {d,i} of batch) {
+        const jobs = praktika.filter(j => j.request?.reportDraftId === d.id);
+        const parent = jobs.find(j => j.id === continuationIntentId(d.id) && j.job_type === 'complete_report_workflow');
+        const response = parent?.response as { retryUploadId?: string } | null;
+        output[i] = { ...projected[i], workflow_resolved: resolveWorkflow(d, {
+          parent, uploads: jobs.filter(j => j.job_type === 'upload_report_to_praktika'),
+          icons: jobs.filter(j => j.job_type === 'update_praktika_letter_icons'),
+          mediref: mediref.filter(j => j.payload?.draftId === d.id),
+          currentUploadId: parent ? response?.retryUploadId || continuationChildId(parent.id,'upload_report_to_praktika') : undefined,
+          currentIconId: parent ? continuationChildId(parent.id,'update_praktika_letter_icons') : undefined,
+          livePraktikaActors, liveMediref,
+        }, now) };
+      }
+    } catch {
+      for (const {i} of batch) output[i] = { ...staleWorkflowStatus(projected[i]), workflow_resolved: unavailableWorkflow() };
+    }
+  }
+  // Four bounded readers; each owns distinct indexes and paginates its evidence.
+  await Promise.all(Array.from({length: Math.min(4, Math.ceil(indexes.length / 50))}, async () => {
+    while (offset < indexes.length) {
+      const batch = indexes.slice(offset, offset + 50);
+      offset += 50;
+      await readBatch(batch);
+    }
+  }));
+  return output;
 }

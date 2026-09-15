@@ -10,10 +10,10 @@ import { continuationIntentId, continuationChildId } from './workflow-continuati
 for(const status of ['failed','running','waiting_for_authentication','pending']) test(`unfinished ${status} upload retained after MediRef completion`,()=>{
   assert.equal(remainsInApproved({status:'approved',emailed_to_referrer_at:'synthetic',workflow_status:'failed',workflow_praktika_upload_status:status,workflow_mediref_status:'completed'}),true);
 });
-test('only fully completed branches leave Approved; icon failure remains',()=>{
+test('stored completion flags alone cannot remove a workflow from Approved',()=>{
   const d={status:'uploaded_to_praktika',workflow_status:'running',workflow_praktika_upload_status:'completed',workflow_mediref_status:'completed',workflow_icon_update_status:'failed'};
-  assert.equal(remainsInApproved(d),true);assert.equal(remainsInApproved({...d,workflow_icon_update_status:'completed'}),false);
-  assert.equal(remainsInApproved({status:'approved'}),true);assert.equal(remainsInApproved({status:'approved',emailed_to_referrer_at:'synthetic'}),false);
+  assert.equal(remainsInApproved(d),true);assert.equal(remainsInApproved({...d,workflow_icon_update_status:'completed'}),true);
+  assert.equal(remainsInApproved({status:'approved'}),true);assert.equal(remainsInApproved({status:'approved',emailed_to_referrer_at:'synthetic'}),true);
 });
 function declaration(path:string,name:string){const ast=ts.createSourceFile(path,readFileSync(path,'utf8'),ts.ScriptTarget.Latest,true);const fn=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name)!;return ts.transpileModule(fn.getText(ast).replace(/^export /,''),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;}
 const routePath='app/api/report-writing/retry-praktika/route.ts';
@@ -100,8 +100,8 @@ test('inactive actor denied on GET and POST',async()=>{const f=routeFixture();f.
 test('inactive provider denied using server draft provider',async()=>{const f=routeFixture();f.state.provider=false;assert.equal((await (await f.get()).json()).reason,'unauthorized_for_provider');assert.equal((await f.call({...body,providerId:'forged'})).status,403);assert.equal(f.calls.length,0);});
 for(const [field,value,reason] of [['parentStatus','processing','workflow_not_terminal'],['childStatus','pending','replacement_active'],['childStatus','completed','upload_not_failed'],['draftStatus','draft','invalid_state'],['stage','prepare','invalid_state']] as const)test(`GET exposes safe ${reason}`,async()=>{const f=routeFixture();f.state[field]=value;const r=await(await f.get()).json();assert.equal(r.reason,reason);assert.equal(r.eligible,false);assert.equal(f.calls.length,0);});
 test('lookup failure is safe and read-only',async()=>{const f=routeFixture();f.state.lookupError=true;const r=await f.get();assert.equal(r.status,503);assert.deepEqual(await r.json(),{eligible:false,reason:'lookup_unavailable'});assert.equal(f.calls.length,0);});
-test('Approved card always mounts recovery for failed upload and supplies recheck fields',()=>{
-  const s=readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx','utf8');assert.match(s,/workflow_praktika_upload_status === "failed" && <>/);for(const prop of ['workflowStatus','uploadStatus','recoveryMessage'])assert.ok(s.includes(prop+'={draft.'));
+test('Approved card uses authoritative recovery candidate and supplies recheck fields',()=>{
+  const s=readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx','utf8');assert.match(s,/approvedWorkflow\(draft\).praktikaRecovery && <>/);for(const prop of ['workflowStatus','uploadStatus','recoveryMessage'])assert.ok(s.includes(prop+'={draft.'));
   const ui=readFileSync('components/report-writing/RetryPraktikaButton.tsx','utf8');assert.ok(ui.includes('[draftId, workflowStatus, uploadStatus, recoveryMessage, check]'));assert.match(ui,/Check again/);assert.match(ui,/Praktika retry is already in progress/);
 });
 

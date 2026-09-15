@@ -37,7 +37,7 @@ test('projection respects manual verification and leaves another unresolved bran
  const db={from:()=>{const q:any={select:()=>q,eq:()=>q,in:()=>q,abortSignal:()=>q,then:(resolve:any)=>Promise.resolve({data:[{id:intentId,status:'failed',response}]}).then(resolve)};return q;}};
  const [draft]=await projectWorkflowRecovery(db as any,[{id,status:'approved',workflow_status:'failed',workflow_error:'MediRef needs verification.',workflow_praktika_upload_status:'failed',workflow_mediref_status:'failed',workflow_icon_update_status:'completed'}]);
  assert.equal(draft.workflow_praktika_upload_status,'completed');assert.equal(draft.workflow_error,'MediRef needs verification.');assert.equal(remainsInApproved(draft),true);
- assert.equal(remainsInApproved({...draft,workflow_mediref_status:'completed',workflow_status:'completed'}),false);
+ assert.equal(remainsInApproved({...draft,workflow_mediref_status:'completed',workflow_status:'completed'}),true);
  assert.equal(manualVerification(response,'praktika','other',intentId),null);
  assert.equal(manualVerification(response,'mediref',id,intentId),null);
 });

@@ -1,6 +1,7 @@
 "use client";
 import { ManualVerificationButton } from "@/components/report-writing/ManualVerificationButton";
 import { RetryPraktikaButton } from "@/components/report-writing/RetryPraktikaButton";
+import { approvedWorkflow, type ResolvedWorkflow } from "@/lib/report-writing/resolved-workflow";
 import { remainsInApproved } from "@/lib/report-writing/praktika-retry";
 
 import { DEFAULT_PDF_BODY_FONT_SIZE, extractPdfBodyFontSize, pdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
@@ -41,6 +42,7 @@ type PreferredExampleOption = {
 };
 
 type Draft = {
+  workflow_resolved?: ResolvedWorkflow;
   id: string;
   patient_name: string | null;
   patient_dob: string | null;
@@ -5045,34 +5047,22 @@ export default function TypistPage() {
                         {draft.status}
                       </div>
 
-                      {draft.workflow_status === "running" ? (
+                      {approvedWorkflow(draft).status === "completing" ? (
                         <div className="mt-2 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
                           Completing...
                         </div>
                       ) : null}
-
-                      {draft.workflow_status === "failed" ? (
+                      {approvedWorkflow(draft).status === "needs_attention" ? (
                         <div className="mt-2 inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
                           Needs attention
                         </div>
                       ) : null}
-
-                      {draft.workflow_last_message &&
-                      draft.workflow_status !== "completed" ? (
-                        <div className="mt-1 text-xs text-slate-500">
-                          {draft.workflow_last_message}
-                        </div>
-                      ) : null}
-
+                      {approvedWorkflow(draft).message && (
+                        <div className="mt-1 text-xs text-slate-500">{approvedWorkflow(draft).message}</div>
+                      )}
                       {draft.workflow_reconciliation_warning && (
                         <div className="text-xs text-amber-700">{draft.workflow_reconciliation_warning}</div>
                       )}
-                      {draft.workflow_error &&
-                      draft.workflow_status === "failed" ? (
-                        <div className="mt-1 text-xs text-red-600">
-                          {draft.workflow_error}
-                        </div>
-                      ) : null}
 
                       {draft.emailed_to_referrer_at ? (
                         <div className="mt-1 text-xs font-semibold text-emerald-600">
@@ -5082,11 +5072,11 @@ export default function TypistPage() {
                       ) : null}
                     </button>
                   </div>
-                  {draft.workflow_mediref_status === "failed" && <>
+                  {approvedWorkflow(draft).medirefRecovery && <>
                     <p className="mt-1 text-xs text-slate-500">MediRef needs verification.</p>
                     <ManualVerificationButton key={`${draft.id}:mediref:${draft.workflow_last_message}`} draftId={draft.id} integration="mediref" onVerified={() => { void loadDrafts(selectedProviderId); }} />
                   </>}
-                  {draft.workflow_praktika_upload_status === "failed" && <>
+                  {approvedWorkflow(draft).praktikaRecovery && <>
                     <p className="mt-1 text-xs text-slate-500">Check the patient's file in Praktika before retrying. The letter has been retained in Approved.</p>
                     <ManualVerificationButton key={`${draft.id}:praktika:${draft.workflow_last_message}`} draftId={draft.id} integration="praktika" onVerified={() => { void loadDrafts(selectedProviderId); }} />
                     <RetryPraktikaButton key={`${draft.id}:${draft.workflow_last_message}`} draftId={draft.id} workflowStatus={draft.workflow_status} uploadStatus={draft.workflow_praktika_upload_status} recoveryMessage={draft.workflow_last_message} onQueued={() => { void loadDrafts(selectedProviderId); }} />
