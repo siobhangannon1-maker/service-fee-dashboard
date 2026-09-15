@@ -103,6 +103,13 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
     && Boolean(time(d.periodontal_chart_attached_at) && d.periodontal_chart_attachment_name) && !d.periodontal_chart_attachment_error
     && Array.isArray(attachments) && attachments.filter(a => record(a).fileName === d.periodontal_chart_attachment_name).length === 1;
   if (chartRequired) branches.periodontal = chartProof ? 'completed' : d.periodontal_chart_attachment_error ? 'failed' : 'unknown';
+  // Historical best-effort preparation explicitly skipped an unavailable chart.
+  // Preserve its error as audit data; this proves a permitted skip, not attachment.
+  if (legacy && branches.praktika === 'completed' && terminal(branches.icon) && branches.mediref === 'completed'
+    && d.workflow_periodontal_chart_status === 'skipped'
+    && d.periodontal_chart_attachment_error === 'Periodontal chart was requested, but no periodontal chart was found.'
+    && !d.periodontal_chart_attached_at && !d.periodontal_chart_attachment_name)
+    branches.periodontal = 'skipped';
   // A contradictory active attempt must never be hidden behind an older success/manual audit.
   const competing = e.uploads.some(j => j.id !== upload?.id && j.status !== 'failed');
   if (competing) branches.praktika = 'unknown';

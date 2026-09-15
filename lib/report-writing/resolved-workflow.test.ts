@@ -167,3 +167,29 @@ test('explicit modern chart request is not overridden by skipped draft projectio
   const f=completed();f.parent.request!.options={attachPeriodontalChart:true};f.d.workflow_periodontal_chart_status='skipped';
   assert.equal(appears(f),true);
 });
+function legacyUnavailableChart() {
+  const f=kimFixture();f.d.periodontal_chart_attached_at=null;f.d.periodontal_chart_attachment_name=null;
+  f.d.periodontal_chart_attachment_error='Periodontal chart was requested, but no periodontal chart was found.';
+  f.med.payload!.attachments=[{fileName:'synthetic-letter.pdf'}];return f;
+}
+test('Sapphiroula legacy unavailable-chart skip completes without changing audit or inventing an attachment',()=>{
+  const f=legacyUnavailableChart();const before=JSON.stringify(f);const r=resolved(f);
+  assert.equal(r.status,'completed');assert.equal(r.branches.periodontal,'skipped');assert.equal(appears(f),false);
+  assert.equal(JSON.stringify(f),before);assert.equal(f.d.periodontal_chart_attached_at,null);
+  assert.equal(f.d.periodontal_chart_attachment_error,'Periodontal chart was requested, but no periodontal chart was found.');
+});
+for(const defect of ['modern_required','transport','generation','malformed','not_completed','failed_upload','failed_icon','failed_mediref','replacement','missing_child','attachment'])test(`legacy chart exception excludes ${defect}`,()=>{
+  const f=legacyUnavailableChart();
+  if(defect==='modern_required'){f.e.parent=f.parent;f.parent.request!.options={attachPeriodontalChart:true};f.upload.request!.continuationId=f.parent.id;}
+  if(defect==='transport')f.d.periodontal_chart_attachment_error='Praktika read is temporarily unavailable.';
+  if(defect==='generation')f.d.periodontal_chart_attachment_error='Failed to generate periodontal chart.';
+  if(defect==='malformed')f.d.periodontal_chart_attachment_error='Invalid chart data.';
+  if(defect==='not_completed')f.d.workflow_status='running';
+  if(defect==='failed_upload')f.upload.status='failed';
+  if(defect==='failed_icon')f.e.icons[0].status='failed';
+  if(defect==='failed_mediref')f.med.status='failed';
+  if(defect==='replacement')f.e.uploads.push({...f.upload,id:'replacement',status:'failed'});
+  if(defect==='missing_child')f.e.uploads=[];
+  if(defect==='attachment')f.d.periodontal_chart_attachment_name='unexpected-chart.pdf';
+  assert.equal(appears(f),true);assert.notEqual(resolved(f).branches.periodontal,'skipped');
+});
