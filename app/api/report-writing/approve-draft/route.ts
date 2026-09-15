@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { createReportAuditEvent } from "@/lib/report-writing/audit"
@@ -15,6 +16,9 @@ function clean(value: unknown) {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/approve-draft");
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await req.json().catch(() => ({}))
     const draftId = clean(body.draftId)

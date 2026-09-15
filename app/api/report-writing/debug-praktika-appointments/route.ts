@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
 import { NextResponse } from "next/server";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
@@ -9,6 +10,9 @@ export const dynamic = "force-dynamic";
 const PRACTICE_MODE = { scope: "practice" as const };
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/debug-praktika-appointments");
+  if (accessDenied) return accessDenied;
+
   try {
     await authorizePraktikaSession({ scope: "practice" });
     const practiceId = process.env.PRAKTIKA_PRACTICE_ID;

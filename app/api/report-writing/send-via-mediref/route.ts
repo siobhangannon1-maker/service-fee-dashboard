@@ -1,3 +1,5 @@
+import { POST as generateLetterPdf } from "../generate-pdf/route";
+import { sensitiveApiAccess } from "@/lib/auth";
 import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
@@ -359,7 +361,7 @@ async function generateAndStageLetterPdf(params: {
   diagnostics: EnqueueDiagnostics;
 }): Promise<StagedPdfAttachment> {
   params.diagnostics.setStage("pdf_generation");
-  const pdfResponse = await fetch(
+  const pdfResponse = await generateLetterPdf(new Request(
     `${params.origin}/api/report-writing/generate-pdf`,
     {
       signal: params.signal,
@@ -371,7 +373,7 @@ async function generateAndStageLetterPdf(params: {
         draftId: params.draftId,
       }),
     },
-  );
+  ));
 
   if (!pdfResponse.ok) {
     const errorText = await pdfResponse.text();
@@ -412,6 +414,10 @@ async function generateAndStageLetterPdf(params: {
 }
 
 export async function POST(req: Request) {
+  // Only the existing service-authenticated in-process continuation may bypass browser login.
+  const accessDenied = currentWorkflowExecution() ? null : await sensitiveApiAccess("/api/report-writing/send-via-mediref");
+  if (accessDenied) return accessDenied;
+
   const totalStartedAt = nowMs();
 
   /*

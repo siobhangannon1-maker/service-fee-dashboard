@@ -1,3 +1,5 @@
+import { POST as generateLetterPdf } from "../generate-pdf/route";
+import { sensitiveApiAccess } from "@/lib/auth";
 import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
 import { continuationChildId } from "@/lib/report-writing/workflow-continuation-token";
 import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
@@ -212,6 +214,10 @@ async function verifyStagedUploadExists(storagePath: string) {
 }
 
 export async function POST(req: Request) {
+  // Only the existing service-authenticated in-process continuation may bypass browser login.
+  const accessDenied = currentWorkflowExecution() ? null : await sensitiveApiAccess("/api/report-writing/upload-to-praktika");
+  if (accessDenied) return accessDenied;
+
   let storagePath: string | null = null;
   let helperJobId: string | null = null;
   let claimedDraftId: string | null = null;
@@ -292,11 +298,11 @@ export async function POST(req: Request) {
     claimedDraftId = draftId;
     const origin = new URL(req.url).origin;
 
-    const pdfResponse = await fetch(`${origin}/api/report-writing/generate-pdf`, {
+    const pdfResponse = await generateLetterPdf(new Request(`${origin}/api/report-writing/generate-pdf`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ draftId }),
-    });
+    }));
 
     if (!pdfResponse.ok) throw new Error("Failed to generate PDF before Praktika upload.");
 

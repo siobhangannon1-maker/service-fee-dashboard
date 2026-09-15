@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -539,6 +540,9 @@ async function findReportReferrerForReferral(
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/praktika-referrals/latest");
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await req.json().catch(() => ({}));
     const patientId = clean(body.patientId);

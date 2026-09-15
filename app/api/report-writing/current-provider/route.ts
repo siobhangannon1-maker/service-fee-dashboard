@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import { createServerClient } from "@supabase/ssr"
@@ -11,6 +12,9 @@ const serviceSupabase = createClient(
 )
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/current-provider");
+  if (accessDenied) return accessDenied;
+
   const cookieStore = await cookies()
 
   const supabase = createServerClient(

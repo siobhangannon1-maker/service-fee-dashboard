@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -7,6 +8,9 @@ const supabase = createClient(
 )
 
 export async function GET(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/get-draft-images");
+  if (accessDenied) return accessDenied;
+
   try {
     const { searchParams } = new URL(req.url)
     const reportDraftId = searchParams.get("reportDraftId")

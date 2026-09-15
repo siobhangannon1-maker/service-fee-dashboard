@@ -1,3 +1,5 @@
+import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
+import { sensitiveApiAccess } from "@/lib/auth";
 import { extractPdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
 import {
   PDFDocument,
@@ -726,6 +728,10 @@ async function embedStorageImage(pdfDoc: PDFDocument, image: DraftImage) {
 }
 
 export async function POST(req: Request) {
+  // Only the existing service-authenticated in-process continuation may bypass browser login.
+  const accessDenied = currentWorkflowExecution() ? null : await sensitiveApiAccess("/api/report-writing/generate-pdf");
+  if (accessDenied) return accessDenied;
+
   try {
     const { draftId, previewLetterText } = await req.json();
 

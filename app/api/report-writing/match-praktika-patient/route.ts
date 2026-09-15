@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { withPraktikaAutoRefresh } from "@/lib/praktika/hybrid-seamless-request";
 import { getCurrentUserPraktikaSessionMode } from "@/lib/praktika/hybrid-session-store";
@@ -17,6 +18,9 @@ function normaliseDob(dob: string) {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/match-praktika-patient");
+  if (accessDenied) return accessDenied;
+
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
     const body = await req.json();

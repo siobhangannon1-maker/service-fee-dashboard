@@ -1,3 +1,5 @@
+import { POST as generateLetterPdf } from "../generate-pdf/route";
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
@@ -205,6 +207,9 @@ async function updatePerioStatus(params: {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/email-secure-pdf");
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await req.json();
     console.log("EMAIL PERIO DEBUG", {
@@ -329,14 +334,14 @@ export async function POST(req: Request) {
 
     const origin = new URL(req.url).origin;
 
-    const pdfResponse = await fetch(
+    const pdfResponse = await generateLetterPdf(new Request(
       `${origin}/api/report-writing/generate-pdf`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ draftId }),
       },
-    );
+    ));
 
     if (!pdfResponse.ok) {
       return NextResponse.json(

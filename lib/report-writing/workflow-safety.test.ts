@@ -68,6 +68,8 @@ function fixture(status = "connected", lookupError?: unknown, throws = false) {
   };
   const db = database(tables, events, lookupError, throws);
   const mocks: Row = {
+    sensitiveApiAccess: async () => null, Request,
+    generateLetterPdf: async () => { events.push("pdf"); return new Response(Buffer.alloc(1024)); },
     currentWorkflowExecution: () => undefined, canQueueUserPraktikaWorkflow, continuationIntentId, workflowAuthorization, process: { env: { SUPABASE_SERVICE_ROLE_KEY: "synthetic" } }, workflowConfigurationIssue: () => null,
     supabase: db, isUserPraktikaReady, praktikaConnectionRequired, isConfirmedPraktikaUpload,
     claimWorkflowStart, AbortSignal, setTimeout, clearTimeout, Date, URL, Buffer, console: { log() {}, error() {}, warn() {} },

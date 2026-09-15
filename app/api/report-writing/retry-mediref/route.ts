@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getAuditActor } from "@/lib/report-writing/audit";
@@ -50,6 +51,9 @@ const store: RetryStore = {
   enqueue: (request) => createSendMedirefLetterJob({ request, priority: 20 }),
 };
 async function handle(req: Request, enqueue: boolean) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/retry-mediref");
+  if (accessDenied) return accessDenied;
+
   try {
     const actor = await getAuditActor();
     if (!actor.actorUserId) throw new RetryError("Authentication required.", 401);

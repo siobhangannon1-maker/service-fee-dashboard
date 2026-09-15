@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -27,6 +28,9 @@ function asObject(value: unknown): Record<string, unknown> {
 }
 
 export async function GET(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/letter-queue");
+  if (accessDenied) return accessDenied;
+
   const { searchParams } = new URL(req.url);
   const providerId = searchParams.get("providerId");
   const status = searchParams.get("status") || "active";
@@ -69,6 +73,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/letter-queue");
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await req.json().catch(() => ({}));
 
@@ -217,6 +224,9 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/letter-queue");
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await req.json().catch(() => ({}));
     const queueId = clean(body.queueId);

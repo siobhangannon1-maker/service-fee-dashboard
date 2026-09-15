@@ -18,7 +18,7 @@ for (const failure of ["pdf_generation", "pdf_validation", "storage_upload", "st
       remove: async () => ({ error: null }),
     }) };
     const fetch = async () => new Response(failure === "pdf_generation" ? "SECRET" : new Uint8Array(failure === "pdf_validation" ? 1 : 1200), { status: failure === "pdf_generation" ? 500 : 200 });
-    const prepare = new Function("supabase", "fetch", "HELPER_UPLOAD_BUCKET", "getReportPdfFileName", "getPdfFileNameFromResponse", `${javascript}; return generateAndStageLetterPdf;`)(
+    const prepare = new Function("supabase", "generateLetterPdf", "HELPER_UPLOAD_BUCKET", "getReportPdfFileName", "getPdfFileNameFromResponse", `${javascript}; return generateAndStageLetterPdf;`)(
       { storage }, fetch, "synthetic", () => "fixture.pdf", () => "fixture.pdf",
     );
     const operation = prepare({ origin: "https://example.invalid", draftId: "synthetic", draft: {}, signal: new AbortController().signal, diagnostics });

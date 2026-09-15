@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -7,6 +8,9 @@ const supabase = createClient(
 )
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/universal-rules");
+  if (accessDenied) return accessDenied;
+
   const { data, error } = await supabase
     .from("universal_report_rules")
     .select("*")
@@ -26,6 +30,9 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/universal-rules");
+  if (accessDenied) return accessDenied;
+
   const body = await req.json()
   const { reportType, ruleText } = body
 

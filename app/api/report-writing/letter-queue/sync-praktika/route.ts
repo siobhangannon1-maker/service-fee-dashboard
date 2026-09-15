@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { authorizePraktikaSession } from "@/lib/praktika/session-authorization";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
@@ -485,6 +486,9 @@ async function upsertPendingLetterIconIndex(parsedRows: PraktikaAppointmentRow[]
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/letter-queue/sync-praktika");
+  if (accessDenied) return accessDenied;
+
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
     const body = await req.json().catch(() => ({}));

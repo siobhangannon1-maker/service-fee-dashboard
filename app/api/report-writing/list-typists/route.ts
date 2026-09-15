@@ -1,9 +1,13 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/list-typists");
+  if (accessDenied) return accessDenied;
+
   try {
     const { data: roleRows, error: roleError } = await supabaseAdmin
       .from("user_roles")

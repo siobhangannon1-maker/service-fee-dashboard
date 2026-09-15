@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -73,6 +74,9 @@ function parseCurrency(value: string) {
 }
 
 export async function POST(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/afterpay-imports/upload", ["staff", "billing_staff", "practice_manager", "admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   let importId: string | null = null;
 
   try {

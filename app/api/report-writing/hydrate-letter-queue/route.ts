@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { authorizePraktikaSession, PraktikaSessionAuthorizationError } from "@/lib/praktika/session-authorization";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
@@ -78,6 +79,9 @@ async function getAlreadyQueuedQueueIds(queueIds: string[]) {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/hydrate-letter-queue");
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await req.json().catch(() => ({}));
     await authorizePraktikaSession(body);

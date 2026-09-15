@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 
 export type AppRole =
+  | "staff"
   | "admin"
   | "super_admin"
   | "practice_manager"
@@ -32,31 +33,17 @@ export async function requireRole(allowedRoles: AppRole[]) {
     .eq("user_id", user.id)
     .maybeSingle();
 
-  console.log("AUTH USER ID:", user.id);
-  console.log("AUTH USER EMAIL:", user.email);
-  console.log("AUTH USER PHONE:", user.phone);
-  console.log("ROLE DATA:", data);
-  console.log("ROLE ERROR:", error);
-  console.log("ALLOWED ROLES:", allowedRoles);
-
   if (error) {
-    console.error("Role lookup error:", error);
     redirect("/unauthorized");
   }
 
   if (!data) {
-    console.error("No role found for user:", user.id);
     redirect("/unauthorized");
   }
 
   const userRole = data.role as AppRole;
 
   if (!allowedRoles.includes(userRole)) {
-    console.error("User role not allowed:", {
-      userRole,
-      allowedRoles,
-    });
-
     redirect("/unauthorized");
   }
 
@@ -84,4 +71,40 @@ export async function requireApiRole(allowedRoles: AppRole[]) {
     throw new ApiAuthorizationError(403, "Access denied.");
   }
   return { supabase, user, role: data.role as AppRole };
+}
+
+// Batch 1: retain the established missing-status-row compatibility, but never
+// accept a failed status lookup. This does not change legacy page authentication.
+export async function requireActiveApiUser(allowedRoles?: AppRole[]) {
+  let identity: Awaited<ReturnType<typeof requireApiUser>>;
+  try { identity = await requireApiUser(); }
+  catch { throw new ApiAuthorizationError(401, "Authentication required."); }
+  const { getUserStatus } = await import("@/lib/getUserStatus");
+  let active = false;
+  try { active = await getUserStatus(identity.user.id, { failClosed: true }); }
+  catch { /* Verification unavailable: deny without exposing upstream errors. */ }
+  if (!active) throw new ApiAuthorizationError(403, "An active account is required.");
+  if (allowedRoles) {
+    try {
+      const { data, error } = await identity.supabase.from("user_roles").select("role")
+        .eq("user_id", identity.user.id).maybeSingle();
+      if (error || !data || !allowedRoles.includes(data.role as AppRole)) throw new Error();
+    } catch { throw new ApiAuthorizationError(403, "Access denied."); }
+  }
+  return identity;
+}
+
+// Return denials before entering route-specific catches (which may expose errors).
+// Call sites supply a fixed action name, never a request URL or request body.
+export async function sensitiveApiAccess(action: string, allowedRoles?: AppRole[]): Promise<Response | null> {
+  try {
+    await requireActiveApiUser(allowedRoles);
+    return null;
+  } catch (error) {
+    const status = error instanceof ApiAuthorizationError ? error.status : 403;
+    const message = status === 401 ? "Authentication required." : "Access denied. An active authorized account is required.";
+    try { console.warn("[security]", { action, outcome: status === 401 ? "unauthenticated" : "forbidden" }); }
+    catch { /* Audit logging must not affect access-control results. */ }
+    return Response.json({ success: false, error: message }, { status });
+  }
 }

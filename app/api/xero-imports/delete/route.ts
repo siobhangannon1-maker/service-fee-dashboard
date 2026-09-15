@@ -1,7 +1,11 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export async function DELETE(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/xero-imports/delete", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");

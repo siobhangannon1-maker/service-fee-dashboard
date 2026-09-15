@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { projectWorkflowRecovery, staleWorkflowStatus } from "@/lib/report-writing/workflow-recovery"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
@@ -10,6 +11,9 @@ const supabase = createClient(
 )
 
 export async function GET(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/get-drafts");
+  if (accessDenied) return accessDenied;
+
   try {
     const { searchParams } = new URL(req.url)
     const providerId = searchParams.get("providerId")

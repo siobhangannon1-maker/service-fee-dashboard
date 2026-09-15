@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
@@ -17,6 +18,9 @@ function detectSource(sourceFileName: string | null): "CSV" | "Praktika" {
 }
 
 export async function GET(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/imports/linked-production", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const url = new URL(request.url);
     const billingPeriodId = url.searchParams.get("billingPeriodId");

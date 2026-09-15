@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -40,6 +41,9 @@ function getSupabaseAdmin() {
 }
 
 export async function GET(request: NextRequest) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-letter-preference");
+  if (accessDenied) return accessDenied;
+
   try {
     const providerId = request.nextUrl.searchParams.get("providerId")?.trim();
 
@@ -92,6 +96,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-letter-preference");
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await request.json();
     const providerId = String(body?.providerId || "").trim();

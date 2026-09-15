@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -16,6 +17,9 @@ const defaultTypes = [
 ]
 
 export async function GET(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/correspondence-types");
+  if (accessDenied) return accessDenied;
+
   const { searchParams } = new URL(req.url)
   const providerId = searchParams.get("providerId")
 

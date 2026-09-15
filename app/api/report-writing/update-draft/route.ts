@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
@@ -58,6 +59,9 @@ async function updateLinkedQueueRows(params: {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/update-draft");
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await req.json()
     const actor = await getAuditActor()

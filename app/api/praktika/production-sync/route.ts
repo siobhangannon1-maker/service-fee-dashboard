@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { fetchPraktikaJson } from "@/lib/praktika/fetch-praktika-json";
@@ -337,6 +338,9 @@ for (const record of existingProviderRecords) {
 }
 
 export async function POST(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/praktika/production-sync", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
     const body = await request.json();

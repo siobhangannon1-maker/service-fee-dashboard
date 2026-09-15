@@ -21,7 +21,7 @@ async function run(mode: string) {
         return Promise.resolve({data,error:error?{message:'SECRET_DATABASE_ERROR'}:null}).then(resolve,reject);
       }};return q;
   }};
-  const route=runInNewContext(code+'\nGET',{supabase:db,projectWorkflowRecovery,staleWorkflowStatus,URL,NextResponse:{json:Response.json}});
+  const route=runInNewContext(code+'\nGET',{sensitiveApiAccess:async()=>null,supabase:db,projectWorkflowRecovery,staleWorkflowStatus,URL,NextResponse:{json:Response.json}});
   const response=await route(new Request('https://fixture.invalid/api/report-writing/get-drafts?providerId=all'));
   return {response,body:await response.json(),drafts};
 }

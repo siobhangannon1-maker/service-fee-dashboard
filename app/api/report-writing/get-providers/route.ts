@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -7,6 +8,9 @@ const supabase = createClient(
 )
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/get-providers");
+  if (accessDenied) return accessDenied;
+
   const { data, error } = await supabase
     .from("providers")
     .select("id, name, typist_letters_require_approval, is_active")

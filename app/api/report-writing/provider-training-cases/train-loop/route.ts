@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
 import { createClient } from "@supabase/supabase-js"
@@ -255,6 +256,9 @@ ${params.idealLetter}
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-training-cases/train-loop");
+  if (accessDenied) return accessDenied;
+
   try {
     if (!process.env.OPENAI_API_KEY) {
       return NextResponse.json(

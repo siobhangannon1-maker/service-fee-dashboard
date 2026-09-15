@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 
 import {
@@ -218,6 +219,9 @@ async function fetchClinicalNotesFromPraktika({
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/praktika-clinical-notes");
+  if (accessDenied) return accessDenied;
+
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
     const body = await req.json().catch(() => ({}));

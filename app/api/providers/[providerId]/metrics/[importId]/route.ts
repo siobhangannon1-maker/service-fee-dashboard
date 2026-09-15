@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -20,6 +21,9 @@ export async function GET(
     }>;
   }
 ) {
+  const accessDenied = await sensitiveApiAccess("/api/providers/[providerId]/metrics/[importId]", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const { providerId, importId } = await context.params;
 

@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { canQueueUserPraktikaWorkflow } from "@/lib/report-writing/praktika-readiness";
 import { workflowConfigurationIssue, continuationIntentId, workflowAuthorization } from "@/lib/report-writing/workflow-continuation-token";
 import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
@@ -48,6 +49,9 @@ function validOrNull(value: unknown, allowed: Set<string>) {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/workflow-status");
+  if (accessDenied) return accessDenied;
+
   let startRequested = false;
   let reservationAttempted = false;
   let preflightStage = "request_validation";

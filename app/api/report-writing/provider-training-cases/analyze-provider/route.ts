@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
 import { createClient } from "@supabase/supabase-js"
@@ -39,6 +40,9 @@ function safeJsonParse<T>(text: string, fallback: T): T {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-training-cases/analyze-provider");
+  if (accessDenied) return accessDenied;
+
   try {
     const supabase = getSupabase()
     const body = await req.json()

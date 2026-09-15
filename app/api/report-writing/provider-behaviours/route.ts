@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -19,6 +20,9 @@ function clean(value: unknown) {
 }
 
 export async function GET(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-behaviours");
+  if (accessDenied) return accessDenied;
+
   try {
     const supabase = getSupabase()
     const { searchParams } = new URL(req.url)

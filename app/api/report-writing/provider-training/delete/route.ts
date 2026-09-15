@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -20,6 +21,9 @@ const tableByType: Record<string, string> = {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-training/delete");
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await req.json()
 

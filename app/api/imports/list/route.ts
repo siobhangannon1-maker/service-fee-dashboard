@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
@@ -13,6 +14,9 @@ function detectSource(name: string | null): "CSV" | "Praktika" {
 }
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/imports/list", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const supabase = getClient();
 

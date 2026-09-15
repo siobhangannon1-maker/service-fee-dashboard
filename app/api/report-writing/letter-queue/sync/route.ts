@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -9,6 +10,9 @@ const supabase = createClient(
 const ALLOWED_STATUSES = new Set(["queued", "started", "completed"])
 
 export async function GET(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/letter-queue/sync");
+  if (accessDenied) return accessDenied;
+
   const { searchParams } = new URL(req.url)
   const providerId = searchParams.get("providerId")
   const status = searchParams.get("status") || "active"
@@ -46,6 +50,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/letter-queue/sync");
+  if (accessDenied) return accessDenied;
+
   const body = await req.json()
   const { queueId, status } = body
 

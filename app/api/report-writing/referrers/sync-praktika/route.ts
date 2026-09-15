@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -620,6 +621,9 @@ async function importReferringDirectory({
 }
 
 export async function POST() {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/referrers/sync-praktika");
+  if (accessDenied) return accessDenied;
+
   try {
     const mode = await getCurrentUserPraktikaSessionMode();
 

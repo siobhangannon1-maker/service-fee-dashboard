@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
 import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
 import { isConfirmedPraktikaUpload } from "@/lib/report-writing/praktika-upload-result";
@@ -323,6 +324,10 @@ async function saveIconStatus(draftId: string, status: "running" | "completed" |
 }
 
 export async function POST(req: Request) {
+  // Only the existing service-authenticated in-process continuation may bypass browser login.
+  const accessDenied = currentWorkflowExecution() ? null : await sensitiveApiAccess("/api/report-writing/update-praktika-letter-icons");
+  if (accessDenied) return accessDenied;
+
   let draftId = "";
   async function respond(payload: { success: boolean; iconUpdated: boolean; skipped?: boolean; [key: string]: unknown }) {
     await saveIconStatus(draftId, !payload.success ? "failed" : payload.skipped || !payload.iconUpdated ? "skipped" : "completed");

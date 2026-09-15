@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -31,6 +32,9 @@ function deidentifyText(text: string) {
 }
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/admin/provider-examples");
+  if (accessDenied) return accessDenied;
+
   const [providers, examples, customTypes] = await Promise.all([
     supabase
       .from("providers")
@@ -72,6 +76,9 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/report-writing/admin/provider-examples");
+  if (accessDenied) return accessDenied;
+
   const body = await req.json()
 
   const {

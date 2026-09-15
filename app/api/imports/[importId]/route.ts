@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -9,6 +10,9 @@ export async function PATCH(
     }>;
   }
 ) {
+  const accessDenied = await sensitiveApiAccess("/api/imports/[importId]", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const { importId } = await context.params;
 
@@ -71,6 +75,9 @@ export async function DELETE(
     }>;
   }
 ) {
+  const accessDenied = await sensitiveApiAccess("/api/imports/[importId]", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const { importId } = await context.params;
 
