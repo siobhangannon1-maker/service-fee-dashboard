@@ -131,7 +131,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
         const parent = jobs.find(j => j.id === continuationIntentId(d.id) && j.job_type === 'complete_report_workflow');
         const response = parent?.response as { retryUploadId?: string } | null;
         output[i] = { ...projected[i], workflow_resolved: resolveWorkflow(d, {
-          parent, uploads: jobs.filter(j => j.job_type === 'upload_report_to_praktika'),
+          parent, hasOtherParent: jobs.some(j => j.job_type === 'complete_report_workflow' && j.id !== parent?.id), uploads: jobs.filter(j => j.job_type === 'upload_report_to_praktika'),
           icons: jobs.filter(j => j.job_type === 'update_praktika_letter_icons'),
           mediref: mediref.filter(j => j.payload?.draftId === d.id),
           currentUploadId: parent ? response?.retryUploadId || continuationChildId(parent.id,'upload_report_to_praktika') : undefined,

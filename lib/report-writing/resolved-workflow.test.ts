@@ -122,3 +122,48 @@ test('failed evidence batch cannot hide rows or spoil a separate successful batc
   assert.equal(output.length,51);assert.equal(output[0].workflow_resolved?.lookupUnavailable,true);
   assert.equal(output[50].workflow_resolved?.status,'not_started');assert.ok(output.every(shouldAppearInApproved));
 });
+function kimFixture() {
+  const f=completed();
+  delete f.e.parent;
+  f.d.workflow_status='completed';f.d.status='uploaded_to_praktika';f.d.uploaded_to_praktika=true;
+  f.d.workflow_praktika_upload_status='completed';f.d.workflow_icon_update_status='completed';f.d.workflow_mediref_status='completed';
+  f.d.workflow_periodontal_chart_status='skipped';f.d.periodontal_chart_attached_at=iso(40*86400000);
+  f.d.periodontal_chart_attachment_name='synthetic-chart.pdf';f.d.emailed_to_referrer_at=iso(40*86400000);
+  f.upload.request={reportDraftId:f.d.id};f.upload.id='legacy-upload';
+  f.e.icons=[{...f.upload,id:'legacy-icon',job_type:'update_praktika_letter_icons',response:{success:true}}];
+  f.med.payload={draftId:f.d.id,attachments:[{fileName:'synthetic-chart.pdf'}]};
+  f.med.result={prepared:true,remoteDraftSaved:true,sent:false,recipientMatchingSkipped:true};
+  for(const j of [f.upload,...f.e.icons,f.med]){j.created_at=iso(40*86400000);j.updated_at=iso(40*86400000);}
+  f.e.livePraktikaActors=new Set();f.e.liveMediref=false;
+  return f;
+}
+test('Kim evidence: legacy IDs, skipped chart with retained metadata, old prepare-only completion',()=>{
+  const f=kimFixture();const r=resolved(f);
+  assert.equal(r.status==='needs_attention',false);assert.notEqual(r.message,staleWorkflowMessage);
+  assert.equal(r.status,'completed');assert.equal(appears(f),false);
+  assert.deepEqual(r.branches,{praktika:'completed',icon:'completed',mediref:'completed',periodontal:'skipped'});
+  assert.equal(r.praktikaRecovery,false);assert.equal(r.medirefRecovery,false);
+});
+for(const change of ['running','chart_error','missing_upload','missing_icon','missing_mediref','negative_upload','sent_false_only','retry','modern_link','other_parent'])test(`legacy terminal evidence remains fail-safe: ${change}`,()=>{
+  const f=kimFixture();
+  if(change==='running')f.d.workflow_mediref_status='running';
+  if(change==='chart_error')f.d.periodontal_chart_attachment_error='synthetic error';
+  if(change==='missing_upload')f.e.uploads=[];
+  if(change==='missing_icon')f.e.icons=[];
+  if(change==='missing_mediref')f.e.mediref=[];
+  if(change==='negative_upload')f.upload.response={success:true};
+  if(change==='sent_false_only')f.med.result={sent:false};
+  if(change==='retry')f.e.uploads.push({...f.upload,id:'replacement',status:'failed',request:{...f.upload.request,manualRetry:{priorJobId:f.upload.id}}});
+  if(change==='modern_link')f.upload.request!.continuationId='missing-parent';
+  if(change==='other_parent')f.e.hasOtherParent=true;
+  assert.equal(appears(f),true);assert.equal(resolved(f).status,'needs_attention');
+});
+test('modern failed replacement supersedes earlier confirmed upload',()=>{
+  const f=completed();const earlier={...f.upload,id:'earlier'};f.e.uploads.push(earlier);
+  f.upload.status='failed';f.parent.status='failed';f.parent.response={stage:'upload',retryUploadId:f.upload.id};
+  assert.equal(appears(f),true);assert.equal(resolved(f).status,'needs_attention');
+});
+test('explicit modern chart request is not overridden by skipped draft projection',()=>{
+  const f=completed();f.parent.request!.options={attachPeriodontalChart:true};f.d.workflow_periodontal_chart_status='skipped';
+  assert.equal(appears(f),true);
+});

@@ -28,7 +28,7 @@ export type ReadJob = {
   completed_at?: string | null; failed_at?: string | null; updated_at?: string | null;
 };
 export type WorkflowEvidence = {
-  parent?: ReadJob; uploads: ReadJob[]; icons: ReadJob[]; mediref: ReadJob[];
+  parent?: ReadJob; hasOtherParent?: boolean; uploads: ReadJob[]; icons: ReadJob[]; mediref: ReadJob[];
   currentUploadId?: string; currentIconId?: string;
   // Liveness is corroboration only; never a workflow-progress timestamp or write gate.
   livePraktikaActors: ReadonlySet<string>; liveMediref: boolean;
@@ -61,8 +61,19 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
   if (parent && !parentValid) return unavailableWorkflow();
   const response = record(parent?.response);
   const linked = (j: ReadJob) => j.request?.reportDraftId === d.id && j.request?.continuationId === parent?.id;
-  const upload = parent ? e.uploads.find(j => j.id === e.currentUploadId && linked(j)) : undefined;
-  const icon = parent ? e.icons.find(j => j.id === e.currentIconId && linked(j)) : undefined;
+  // Pre-continuation workflows used random child IDs and no continuation linkage.
+  // Only a terminal draft with one unambiguous legacy attempt per required branch
+  // can use those IDs. Never fall back here for a modern/malformed/retry workflow.
+  const legacy = !parent && !e.hasOtherParent && d.workflow_status === 'completed'
+    && d.workflow_praktika_upload_status === 'completed'
+    && (d.workflow_icon_update_status === 'completed' || skipped(d.workflow_icon_update_status))
+    && (d.workflow_mediref_status === 'completed' || skipped(d.workflow_mediref_status))
+    && e.uploads.length === 1 && e.icons.length <= 1 && e.mediref.length <= 1
+    && [...e.uploads, ...e.icons].every(j => j.request?.reportDraftId === d.id &&
+      !j.request?.continuationId && !j.request?.manualRetry)
+    && e.mediref.every(j => j.payload?.draftId === d.id && !j.payload?.workflowContinuationId && !j.payload?.retryMediref);
+  const upload = parent ? e.uploads.find(j => j.id === e.currentUploadId && linked(j)) : legacy ? e.uploads[0] : undefined;
+  const icon = parent ? e.icons.find(j => j.id === e.currentIconId && linked(j)) : legacy ? e.icons[0] : undefined;
   const medJobs = e.mediref.filter(j => j.payload?.draftId === d.id &&
     (!j.payload?.workflowContinuationId || j.payload?.workflowContinuationId === parent?.id));
   const med = [...medJobs].sort((a,b) => time(b.created_at) - time(a.created_at) || b.id.localeCompare(a.id))[0];
@@ -80,13 +91,15 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
     periodontal: skipped(d.workflow_periodontal_chart_status) ? 'skipped' : 'unknown',
   };
   const options = record(parent?.request?.options);
-  const chartRequired = options.attachPeriodontalChart === true || Boolean(d.periodontal_chart_attachment_name ||
-    d.periodontal_chart_attachment_error || d.periodontal_chart_attached_at ||
-    ['pending','running','completed','failed','error'].includes(d.workflow_periodontal_chart_status || ''));
+  // Attachment metadata can survive an explicitly skipped chart step. It does not
+  // itself make that step required again. Actual errors/explicit requirements win.
+  const chartRequired = options.attachPeriodontalChart === true || Boolean(d.periodontal_chart_attachment_error) ||
+    (!skipped(d.workflow_periodontal_chart_status) && Boolean(d.periodontal_chart_attachment_name || d.periodontal_chart_attached_at ||
+      ['pending','running','completed','failed','error'].includes(d.workflow_periodontal_chart_status || '')));
   if (!chartRequired && !d.workflow_periodontal_chart_status && parentValid && options.attachPeriodontalChart === false)
     branches.periodontal = 'skipped';
   const attachments = med?.payload?.attachments;
-  const chartProof = ['pending','completed'].includes(d.workflow_periodontal_chart_status || '') && parent?.status === 'completed' && branches.mediref === 'completed' && med?.status === 'completed' && medSuccess(med)
+  const chartProof = ['pending','completed'].includes(d.workflow_periodontal_chart_status || '') && (parent?.status === 'completed' || legacy) && branches.mediref === 'completed' && med?.status === 'completed' && medSuccess(med)
     && Boolean(time(d.periodontal_chart_attached_at) && d.periodontal_chart_attachment_name) && !d.periodontal_chart_attachment_error
     && Array.isArray(attachments) && attachments.filter(a => record(a).fileName === d.periodontal_chart_attachment_name).length === 1;
   if (chartRequired) branches.periodontal = chartProof ? 'completed' : d.periodontal_chart_attachment_error ? 'failed' : 'unknown';
@@ -100,7 +113,7 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
     (!['processing','running'].includes(j.status) || Boolean(j.locked_by && time(j.locked_at))) && progress(j) <= now &&
     now - progress(j) < WORKFLOW_STALE_MS && (j === med ? e.liveMediref : Boolean(j.app_user_id && e.livePraktikaActors.has(j.app_user_id))));
   const conflictingMediref = e.mediref.some(j => !medJobs.includes(j));
-  const allDone = !conflictingMediref && Object.values(branches).every(terminal) && Boolean(parentValid) && parent?.status === 'completed' && !competing;
+  const allDone = !conflictingMediref && Object.values(branches).every(terminal) && ((parentValid && parent?.status === 'completed') || legacy) && !competing;
   const started = Boolean(d.workflow_status || d.workflow_praktika_upload_status || d.workflow_mediref_status ||
     d.workflow_icon_update_status || d.workflow_periodontal_chart_status || parent || e.uploads.length || e.icons.length || e.mediref.length || d.status === 'uploaded_to_praktika' || d.emailed_to_referrer_at || d.uploaded_to_praktika);
   const failed = Object.values(branches).includes('failed');
