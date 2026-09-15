@@ -1,3 +1,4 @@
+import { manualVerification } from './manual-verification';
 import { projectWorkflowRecovery } from "./workflow-recovery";
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -47,7 +48,7 @@ function fixture(stage = 'upload') {
   } };
   let fresh = true, active = true;
   const handler = (name: string) => async () => { events.push(name); return Response.json({ success: true }); };
-  const mocks: Row = { db, validContinuationToken, validWorkflowAuthorization, continuationChildId, isConfirmedPraktikaUpload, Request, Date,
+  const mocks: Row = { manualVerification, db, validContinuationToken, validWorkflowAuthorization, continuationChildId, isConfirmedPraktikaUpload, Request, Date,
     process: { env: { SUPABASE_SERVICE_ROLE_KEY: secret } }, NextResponse: { json: Response.json },
     workflowAccountState: async () => active ? "active" : "inactive", workflowAccountMessage: "Staff account status unavailable.", isUserPraktikaReady: async () => fresh,
     withWorkflowExecution: async (ctx: Row, run: () => Promise<unknown>) => { assert.equal(ctx.actor.actorUserId, intent.response?.retryExecutionUserId || actor); return run(); },
@@ -239,4 +240,16 @@ test('retry uses connected current helper through upload/icon; original actor an
 for(const tamper of ['app_user_id','audit','link'])test(`mismatched retry ${tamper} cannot select another helper`,async()=>{
   const f=fixture();const r=manual(f);if(tamper==='app_user_id')r.app_user_id='other';else if(tamper==='audit')r.request.manualRetry.actorUserId='other';else r.request.continuationId='other';
   await f.call();assert.equal(f.intent.status,'failed');assert.deepEqual(f.events,[]);
+});
+
+for (const integration of ['praktika','mediref'] as const) test('manual verification survives continuation progress '+integration, async()=>{
+ const f=fixture('icon');
+ const audit={integration,action:'manually_verified_completed',verifiedSuccess:true,actorUserId:'verifier',verifiedAt:new Date().toISOString(),priorJobId:'prior',attempt:1,draftId:'draft',intentId:f.intent.id};
+ f.intent.response.manualVerification={[integration]:audit};
+ f.draft.uploaded_to_praktika=true; f.draft.workflow_praktika_upload_status='completed';f.draft.workflow_mediref_status='completed';
+ if(integration==='mediref') f.rows.praktika_helper_jobs.push({id:continuationChildId(f.intent.id,'upload_report_to_praktika'),status:'completed',app_user_id:f.intent.app_user_id,request:{continuationId:f.intent.id},response:{patient_communication:{iFileId:12}}});
+ await f.call();
+ assert.deepEqual(f.intent.response.manualVerification[integration],audit);
+ assert.equal(f.events.includes('upload'),false);assert.equal(f.events.includes('mediref'),false);
+ assert.equal(f.events.includes('icon'),true);
 });

@@ -1,6 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import { ManualVerificationButton, ManualVerificationHistory } from "@/components/report-writing/ManualVerificationButton"
+import type { ManualVerification } from "@/lib/report-writing/manual-verification"
 import { RetryMedirefButton } from "./RetryMedirefButton"
 import { MedirefToolsButton } from "./MedirefToolsButton"
 
@@ -10,6 +12,7 @@ type Provider = {
 }
 
 type Draft = {
+  workflow_manual_verification?: ManualVerification[];
   id: string
   provider_id?: string | null
   provider_name?: string | null
@@ -1029,10 +1032,14 @@ export default function ReportWritingHistoryPage() {
                         />
                       </div>
 
+                      <ManualVerificationHistory entries={draft.workflow_manual_verification} />
                       <RetentionBadges draft={draft} />
                     </div>
 
                     <div className="flex shrink-0 flex-wrap gap-2">
+                      {(['praktika', 'mediref'] as const).map(integration =>
+                        (integration === 'praktika' ? draft.workflow_praktika_upload_status : draft.workflow_mediref_status) === 'failed' &&
+                        <ManualVerificationButton key={`${draft.id}:${integration}`} draftId={draft.id} integration={integration} onVerified={() => { void loadProvidersAndDrafts(true); }} />)}
                       {draft.workflow_mediref_status === "failed" && draft.workflow_status !== "running" &&
                         ["approved", "uploaded_to_praktika"].includes(draft.status) && !draft.emailed_to_referrer_at ? (
                         <RetryMedirefButton draftId={draft.id} onQueued={() => {

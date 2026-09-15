@@ -70,6 +70,7 @@ export async function GET(req: Request) {
     const { data: parent, error } = await supabaseAdmin.from('praktika_helper_jobs').select('id,status,app_user_id,response,request')
       .eq('id', continuationIntentId(draftId)).eq('job_type', 'complete_report_workflow').abortSignal(AbortSignal.timeout(5000)).maybeSingle();
     if (error) throw new Error();
+    if (parent?.response?.manualVerification?.praktika?.verifiedSuccess === true) return NextResponse.json({ eligible: false, reason: 'already_verified' });
     if (!parent) return NextResponse.json({ eligible: false, reason: 'invalid_state' });
     const { data: jobs, error: jobsError } = await supabaseAdmin.from('praktika_helper_jobs').select('id,status,request')
       .eq('job_type', 'upload_report_to_praktika').eq('request->>reportDraftId', draftId).abortSignal(AbortSignal.timeout(5000));

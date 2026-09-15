@@ -1,3 +1,4 @@
+import { manualVerification } from './manual-verification';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { continuationChildId, continuationIntentId } from './workflow-continuation-token';
 export const workflowFailureMessage = 'Workflow needs reconciliation. The approved letter and queued intent are retained.';
@@ -31,7 +32,14 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     if (!intent) return draft;
     if (typeof intent.status !== 'string' || (intent.response != null &&
       (typeof intent.response !== 'object' || Array.isArray(intent.response)))) throw new Error('Invalid workflow projection');
-    if (intent.response?.stage === 'upload') {
+    const verifiedPraktika = manualVerification(intent.response, 'praktika', draft.id, intent.id);
+    const verifiedMediref = manualVerification(intent.response, 'mediref', draft.id, intent.id);
+    if (verifiedPraktika || verifiedMediref) draft = { ...draft,
+      workflow_manual_verification: [verifiedPraktika, verifiedMediref].filter(Boolean),
+      ...(verifiedPraktika ? { workflow_praktika_upload_status: 'completed' } : {}),
+      ...(verifiedMediref ? { workflow_mediref_status: 'completed' } : {}),
+    };
+    if (intent.response?.stage === 'upload' && !verifiedPraktika) {
       const uploadId = intent.response?.retryUploadId || continuationChildId(intent.id, 'upload_report_to_praktika');
       const { data: child, error: childError } = await db.from('praktika_helper_jobs').select('id,status')
         .eq('id', uploadId).eq('job_type', 'upload_report_to_praktika')
@@ -40,6 +48,11 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       if (child?.status === 'failed') return { ...draft, workflow_status: 'failed', workflow_praktika_upload_status: 'failed',
         workflow_error: 'Praktika upload needs verification.', workflow_last_message: 'Praktika upload needs verification.',
         praktikaFailedUploadId: child.id };
+    }
+    if (intent.status === 'failed' && (verifiedPraktika || verifiedMediref)) {
+      const message = (draft as T & { workflow_error?: string | null }).workflow_error ||
+        (intent.response?.stage === 'icon' ? 'Praktika icon update needs verification.' : 'Workflow needs reconciliation. Remaining steps need attention.');
+      return { ...draft, workflow_status: 'failed', workflow_error: message, workflow_last_message: message };
     }
     if (intent.status === 'failed') return { ...draft, workflow_status: 'failed', workflow_error: workflowFailureMessage, workflow_last_message: workflowFailureMessage };
     if (['waiting', 'processing'].includes(intent.status)) {

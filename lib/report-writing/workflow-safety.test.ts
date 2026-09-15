@@ -1,3 +1,4 @@
+import { manualVerification } from './manual-verification';
 import { PraktikaHelperUnavailable } from "../praktika/helper-lease";
 import { continuationIntentId, workflowAuthorization } from "./workflow-continuation-token";
 import assert from "node:assert/strict";
@@ -67,7 +68,7 @@ function fixture(status = "connected", lookupError?: unknown, throws = false) {
     report_letter_queue: [{ report_draft_id: "synthetic-draft", status: "started" }], praktika_helper_jobs: [],
   };
   const db = database(tables, events, lookupError, throws);
-  const mocks: Row = {
+  const mocks: Row = { manualVerification,
     sensitiveApiAccess: async () => null, Request,
     generateLetterPdf: async () => { events.push("pdf"); return new Response(Buffer.alloc(1024)); },
     currentWorkflowExecution: () => undefined, canQueueUserPraktikaWorkflow, continuationIntentId, workflowAuthorization, process: { env: { SUPABASE_SERVICE_ROLE_KEY: "synthetic" } }, workflowConfigurationIssue: () => null,

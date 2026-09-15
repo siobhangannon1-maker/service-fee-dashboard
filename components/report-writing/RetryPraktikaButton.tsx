@@ -20,7 +20,7 @@ export function RetryPraktikaButton({ draftId, workflowStatus, uploadStatus, rec
           setPriorJobId(result.priorJobId); setReason('eligible'); return;
         }
         const safeReason = ['unauthenticated', 'inactive_user', 'unauthorized_for_provider', 'workflow_not_terminal',
-          'upload_not_failed', 'replacement_active', 'invalid_state', 'lookup_unavailable'].includes(result.reason)
+          'upload_not_failed', 'replacement_active', 'already_verified', 'invalid_state', 'lookup_unavailable'].includes(result.reason)
           ? result.reason : 'lookup_unavailable';
         setReason(safeReason);
         // Only wait for the parent to catch up; never create a job from a recheck.
@@ -36,6 +36,7 @@ export function RetryPraktikaButton({ draftId, workflowStatus, uploadStatus, rec
         body: JSON.stringify({ draftId, priorJobId, verifiedAbsent: true }) });
       const result = await response.json();
       if (!response.ok || !result.success) { setMessage(result.error || 'Retry could not be confirmed. Refresh to check the workflow.'); return; }
+      if (result.manuallyVerified) { setPriorJobId(null); setConfirming(false); setReason('already_verified'); setMessage('Praktika completion was already manually verified. Nothing was uploaded again.'); onQueued(); return; }
       setPriorJobId(null); setConfirming(false); setReason('replacement_active'); setMessage('Praktika retry reserved. Continuing in background.'); onQueued();
     } catch { setMessage('Retry could not be confirmed. Refresh to check the workflow; the same attempt will be reconciled.'); }
     finally { submitting.current = false; setBusy(false); }
@@ -46,6 +47,7 @@ export function RetryPraktikaButton({ draftId, workflowStatus, uploadStatus, rec
       : reason === 'unauthorized_for_provider' ? 'You do not have permission to retry Praktika for this provider.'
       : reason === 'inactive_user' ? 'An active account is required to retry Praktika.'
       : reason === 'unauthenticated' ? 'Sign in to check Praktika retry availability.'
+      : reason === 'already_verified' ? 'Praktika completion has been manually verified.'
       : reason === 'replacement_active' ? 'Praktika retry is already in progress.'
       : reason === 'lookup_unavailable' ? 'Retry availability could not be checked.'
       : 'This upload is not currently eligible for retry. Refresh to check the workflow.'

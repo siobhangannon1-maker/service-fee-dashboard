@@ -1,3 +1,5 @@
+import { manualVerification } from '@/lib/report-writing/manual-verification';
+import { continuationIntentId } from '@/lib/report-writing/workflow-continuation-token';
 import { sensitiveApiAccess } from "@/lib/auth";
 import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
 import { isUserPraktikaReady, praktikaConnectionRequired } from "@/lib/report-writing/praktika-readiness";
@@ -348,7 +350,14 @@ export async function POST(req: Request) {
     const { data: uploads, error: uploadError } = await supabase.from("praktika_helper_jobs")
       .select("response").eq("job_type", "upload_report_to_praktika")
       .eq("app_user_id", mode.appUserId).eq("request->>reportDraftId", draftId).eq("status", "completed").limit(1);
-    if (uploadError || !uploads?.length || !isConfirmedPraktikaUpload(uploads[0].response)) {
+    let manuallyVerified = false;
+    if (!uploadError && (!uploads?.length || !isConfirmedPraktikaUpload(uploads[0].response))) {
+      const intentId = continuationIntentId(draftId);
+      const { data: intent, error: verificationError } = await supabase.from('praktika_helper_jobs')
+        .select('response').eq('id', intentId).eq('job_type', 'complete_report_workflow').maybeSingle();
+      manuallyVerified = !verificationError && Boolean(manualVerification(intent?.response, 'praktika', draftId, intentId));
+    }
+    if (uploadError || (!manuallyVerified && (!uploads?.length || !isConfirmedPraktikaUpload(uploads[0].response)))) {
       return NextResponse.json({ success: false, error: "A confirmed report upload is required before updating the appointment icon." }, { status: 409 });
     }
     const { data: claimed, error: claimError } = await supabase.from("report_drafts")

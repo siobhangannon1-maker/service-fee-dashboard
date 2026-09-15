@@ -1,3 +1,4 @@
+import { manualVerification } from '@/lib/report-writing/manual-verification';
 import { isConfirmedPraktikaUpload } from "@/lib/report-writing/praktika-upload-result";
 import { NextResponse } from 'next/server';
 import { supabaseAdmin as db } from '@/lib/supabase/admin';
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
   async function finish(status: string, nextStage = stage, message?: string, issue?: string) {
     if (status === 'failed' && !message) message = 'Workflow needs reconciliation. The approved letter and intent are retained.';
     const { data: finished, error: finishError } = await db.from('praktika_helper_jobs').update({
-      status, response: { stage: nextStage, ...(retryUploadId ? { retryUploadId, retryExecutionUserId } : {}), ...(issue ? { issue } : {}) }, locked_by: null, locked_at: null,
+      status, response: { ...(intent.response?.manualVerification ? { manualVerification: intent.response.manualVerification } : {}), stage: nextStage, ...(retryUploadId ? { retryUploadId, retryExecutionUserId } : {}), ...(issue ? { issue } : {}) }, locked_by: null, locked_at: null,
       ...(status === 'completed' ? { completed_at: new Date().toISOString() } : {}),
       ...(status === 'failed' ? { error_message: 'Workflow needs reconciliation.', failed_at: new Date().toISOString() } : {}),
       updated_at: new Date().toISOString(),
@@ -123,7 +124,7 @@ export async function POST(req: Request) {
     const waitingMessage = perioWaiting ? 'MediRef is waiting for the requested periodontal chart.'
       : medirefComplete ? `MediRef prepared. Praktika ${praktikaStep} is waiting for session verification and will continue automatically.`
       : `MediRef preparation is underway. Praktika session refreshing — Praktika ${praktikaStep} queued.`;
-    if (stage !== 'upload' || draft.uploaded_to_praktika) {
+    if ((stage !== 'upload' || draft.uploaded_to_praktika) && !manualVerification(intent.response, 'praktika', draftId, intentId)) {
       const { data: confirmed, error: confirmationError } = await db.from('praktika_helper_jobs').select('status,response')
         .eq('id', uploadId).eq('app_user_id', executionUserId)
         .eq('request->>continuationId', intentId).maybeSingle();

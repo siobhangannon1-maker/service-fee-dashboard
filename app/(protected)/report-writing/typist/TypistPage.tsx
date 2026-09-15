@@ -1,4 +1,5 @@
 "use client";
+import { ManualVerificationButton } from "@/components/report-writing/ManualVerificationButton";
 import { RetryPraktikaButton } from "@/components/report-writing/RetryPraktikaButton";
 import { remainsInApproved } from "@/lib/report-writing/praktika-retry";
 
@@ -5081,8 +5082,13 @@ export default function TypistPage() {
                       ) : null}
                     </button>
                   </div>
+                  {draft.workflow_mediref_status === "failed" && <>
+                    <p className="mt-1 text-xs text-slate-500">MediRef needs verification.</p>
+                    <ManualVerificationButton key={`${draft.id}:mediref:${draft.workflow_last_message}`} draftId={draft.id} integration="mediref" onVerified={() => { void loadDrafts(selectedProviderId); }} />
+                  </>}
                   {draft.workflow_praktika_upload_status === "failed" && <>
                     <p className="mt-1 text-xs text-slate-500">Check the patient's file in Praktika before retrying. The letter has been retained in Approved.</p>
+                    <ManualVerificationButton key={`${draft.id}:praktika:${draft.workflow_last_message}`} draftId={draft.id} integration="praktika" onVerified={() => { void loadDrafts(selectedProviderId); }} />
                     <RetryPraktikaButton key={`${draft.id}:${draft.workflow_last_message}`} draftId={draft.id} workflowStatus={draft.workflow_status} uploadStatus={draft.workflow_praktika_upload_status} recoveryMessage={draft.workflow_last_message} onQueued={() => { void loadDrafts(selectedProviderId); }} />
                   </>}
                 </div>
