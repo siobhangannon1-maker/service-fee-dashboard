@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { xeroFetch } from "@/lib/xero";
@@ -85,6 +86,9 @@ function buildMonthlyRanges(from: string, to: string) {
 }
 
 export async function GET(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/xero/labour-hire-sync", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const url = new URL(request.url);
 

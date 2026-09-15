@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
@@ -21,6 +22,9 @@ type ReportItemRow = {
 }
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/xero-benchmark-reports", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const { data: reportRows, error: reportError } = await supabase
       .from('xero_benchmark_reports')

@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import generateExpenseBenchmarkReport from "@/lib/generate-expense-benchmark-report";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -10,6 +11,9 @@ type XeroUploadRequestBody = {
 };
 
 export async function POST(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/xero-benchmark-report", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   let importId: string | null = null;
 
   try {

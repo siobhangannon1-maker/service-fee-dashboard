@@ -1,13 +1,17 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 export async function POST(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/send-completion-email", ["staff", "billing_staff", "practice_manager", "admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     // 🔍 DEBUG — this will print in your terminal
     console.log("RESEND_API_KEY:", process.env.RESEND_API_KEY ? "FOUND" : "MISSING");
@@ -85,6 +89,7 @@ ${intro}
 
 ${checklistText}`;
 
+    const resend = new Resend(process.env.RESEND_API_KEY);
     const result = await resend.emails.send({
       from: process.env.RESEND_FROM_EMAIL,
       to,

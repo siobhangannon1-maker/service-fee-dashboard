@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { getXeroAccessToken } from "@/lib/xero";
 
@@ -8,6 +9,9 @@ function parseDate(value: string) {
 }
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/xero/debug-accounts", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const token = await getXeroAccessToken();
 

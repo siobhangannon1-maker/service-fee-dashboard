@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -92,6 +93,9 @@ function parseDate(value: string): string | null {
 }
 
 export async function POST(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/connecteam/payroll-totals/import", ["admin", "super_admin", "practice_manager"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const formData = await request.formData();
     const file = formData.get("file");

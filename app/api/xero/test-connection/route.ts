@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { fetchXeroOrganisation, getXeroAccessToken } from "@/lib/xero";
@@ -105,9 +106,15 @@ async function runTestConnection() {
 }
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/xero/test-connection", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   return runTestConnection();
 }
 
 export async function POST() {
+  const accessDenied = await sensitiveApiAccess("/api/xero/test-connection", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   return runTestConnection();
 }

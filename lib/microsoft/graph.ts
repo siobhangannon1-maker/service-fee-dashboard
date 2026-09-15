@@ -12,9 +12,6 @@ const outlookSignatureHtml =
   process.env.OUTLOOK_EMAIL_SIGNATURE_HTML ||
   `<br><br><div><strong>Focus Dental Specialists</strong><br>Email: ${outlookSharedMailbox}</div>`;
 
-if (!tenantId) throw new Error("Missing MICROSOFT_TENANT_ID");
-if (!clientId) throw new Error("Missing MICROSOFT_CLIENT_ID");
-if (!clientSecret) throw new Error("Missing MICROSOFT_CLIENT_SECRET");
 
 export type OutlookDraftResult = {
   id: string;
@@ -70,6 +67,9 @@ export type OutlookAttachment = {
 };
 
 async function getGraphAccessToken() {
+  if (!tenantId) throw new Error("Missing MICROSOFT_TENANT_ID");
+  if (!clientId) throw new Error("Missing MICROSOFT_CLIENT_ID");
+  if (!clientSecret) throw new Error("Missing MICROSOFT_CLIENT_SECRET");
   const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
 
   const body = new URLSearchParams({

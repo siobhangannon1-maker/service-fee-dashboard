@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { getBenchmarkStatus } from '@/lib/benchmark-status'
@@ -8,6 +9,9 @@ function buildMonthKey(year: number, month: number) {
 }
 
 export async function POST(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/expense-benchmark-check", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await request.json()
 

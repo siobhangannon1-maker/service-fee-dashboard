@@ -1,9 +1,13 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+
 
 export async function POST(req: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/email-statement", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await req.json();
     const { to, subject, html } = body;
@@ -22,6 +26,7 @@ export async function POST(req: Request) {
       );
     }
 
+    const resend = new Resend(process.env.RESEND_API_KEY);
     const response = await resend.emails.send({
       from: process.env.EMAIL_FROM || "onboarding@resend.dev",
       to,

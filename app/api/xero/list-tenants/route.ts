@@ -1,7 +1,11 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { XeroClient } from "xero-node";
 
 export async function GET() {
+  const accessDenied = await sensitiveApiAccess("/api/xero/list-tenants", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const xero = new XeroClient({
       clientId: process.env.XERO_CLIENT_ID!,

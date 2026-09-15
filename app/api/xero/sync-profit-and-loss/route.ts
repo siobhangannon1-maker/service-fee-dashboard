@@ -1,3 +1,4 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -235,6 +236,9 @@ async function runProfitAndLossSync(year: number, month: number) {
 }
 
 export async function GET(request: NextRequest) {
+  const accessDenied = await sensitiveApiAccess("/api/xero/sync-profit-and-loss", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   const { searchParams } = new URL(request.url);
 
   const now = new Date();
@@ -248,6 +252,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const accessDenied = await sensitiveApiAccess("/api/xero/sync-profit-and-loss", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   let body: { year?: number; month?: number } = {};
 
   try {

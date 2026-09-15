@@ -1,7 +1,11 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from 'next/server'
 import { mapXeroExpensesToBenchmarkCategories } from '@/lib/map-xero-expenses-to-benchmarks'
 
 export async function POST(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/test-xero-mapping", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await request.json()
     const rows = Array.isArray(body.rows) ? body.rows : []

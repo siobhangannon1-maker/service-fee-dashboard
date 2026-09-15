@@ -17,14 +17,6 @@ type XeroFetchOptions = {
 const xeroClientId = process.env.XERO_CLIENT_ID;
 const xeroClientSecret = process.env.XERO_CLIENT_SECRET;
 
-if (!xeroClientId) {
-  throw new Error("Missing XERO_CLIENT_ID");
-}
-
-if (!xeroClientSecret) {
-  throw new Error("Missing XERO_CLIENT_SECRET");
-}
-
 const XERO_SCOPES = [
   "accounting.settings.read",
   "accounting.reports.read",
@@ -83,6 +75,13 @@ function stringifyForError(value: any) {
 }
 
 export async function getXeroAccessToken(): Promise<string> {
+  if (!xeroClientId) {
+    throw new Error("Missing XERO_CLIENT_ID");
+  }
+
+  if (!xeroClientSecret) {
+    throw new Error("Missing XERO_CLIENT_SECRET");
+  }
   const now = Date.now();
 
   if (cachedAccessToken && cachedAccessTokenExpiresAt > now + 60_000) {

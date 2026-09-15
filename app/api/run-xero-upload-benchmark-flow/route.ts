@@ -1,7 +1,11 @@
+import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from 'next/server'
 import { runXeroUploadBenchmarkFlow } from '@/lib/run-xero-upload-benchmark-flow'
 
 export async function POST(request: Request) {
+  const accessDenied = await sensitiveApiAccess("/api/run-xero-upload-benchmark-flow", ["admin", "super_admin"]);
+  if (accessDenied) return accessDenied;
+
   try {
     const body = await request.json()
 
