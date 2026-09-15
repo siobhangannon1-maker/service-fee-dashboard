@@ -12,7 +12,7 @@ test('continuation HTTP runs alongside helper drain, not blocking its child jobs
   let requests = 0; let finish!: (response: Response) => void;
   const inFlight = new Set<string>();
   const query: any = { select: () => query, eq: () => query, or: () => query, order: () => query, limit: () => query,
-    abortSignal: async () => ({ data: [{ id: 'intent', status: 'waiting', updated_at: 'fixture', response: { stage: 'upload' } }] }),
+    abortSignal: async () => ({ data: [{ id: 'intent', app_user_id:'actor', status: 'waiting', updated_at: 'fixture', response: { stage: 'upload' } }] }),
     update: () => query, maybeSingle: async () => ({ data: { id: 'intent' } }),
   };
   const poll = runInNewContext(code + '\npollPraktikaWorkflowContinuations', {
@@ -35,7 +35,7 @@ test('worker configuration failures are durably actionable, including rejected s
   for (const mode of ['missing', 'mismatch', 'matched', 'transport']) {
     const patches: any[] = [];
     const query: any = { select: () => query, eq: () => query, or: () => query, order: () => query, limit: () => query,
-      abortSignal: async () => ({ data: [{ id:'intent',status:'waiting',updated_at:'fixture',response:{stage:'upload'} }] }),
+      abortSignal: async () => ({ data: [{ id:'intent',app_user_id:'actor',status:'waiting',updated_at:'fixture',response:{stage:'upload'} }] }),
       update: (patch: any) => { patches.push(patch); return query; }, maybeSingle: async () => ({data:{id:'intent'}}),
       then: (resolve: (v: unknown) => void) => Promise.resolve({error:null}).then(resolve),
     };

@@ -13,12 +13,16 @@ export async function pollPraktikaWorkflowContinuations(db: SupabaseClient, acto
   const configurationIssue = workflowConfigurationIssue();
   if (!actorId || inFlight.has(actorId)) return;
   const stale = new Date(Date.now() - 300_000).toISOString();
+  const runnable = `or(status.eq.waiting,and(status.eq.processing,locked_at.lt.${stale}))`;
   const { data, error } = await db.from('praktika_helper_jobs').select('*')
-    .eq('job_type', 'complete_report_workflow').eq('app_user_id', actorId)
-    .or(`status.eq.waiting,and(status.eq.processing,locked_at.lt.${stale})`)
+    .eq('job_type', 'complete_report_workflow')
+    // Manual recovery belongs to its execution helper, not the historical actor.
+    .or(`and(app_user_id.eq.${actorId},response->>retryUploadId.is.null,${runnable}),and(response->>retryUploadId.not.is.null,response->>retryExecutionUserId.eq.${actorId},${runnable})`)
     .order('created_at').limit(1).abortSignal(AbortSignal.timeout(5000));
   if (error || !data?.length) return;
   const intent = data[0];
+  const executionActorId = intent.response?.retryUploadId ? intent.response?.retryExecutionUserId : intent.app_user_id;
+  if (executionActorId !== actorId) return;
   await ownership.assertOwned();
   if (ownership.isShuttingDown?.()) return;
   const lock = randomUUID();

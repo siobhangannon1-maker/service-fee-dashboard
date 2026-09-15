@@ -27,6 +27,7 @@ export async function POST(req: Request) {
   }
   const stage = intent.response?.stage;
   const retryUploadId = intent.response?.retryUploadId;
+  const retryExecutionUserId = intent.response?.retryExecutionUserId;
   const uploadId = retryUploadId || continuationChildId(intentId, 'upload_report_to_praktika');
   const childId = (type: string) => type === 'upload_report_to_praktika' ? uploadId : continuationChildId(intentId, type);
   if (!['upload', 'icon', 'mediref'].includes(stage)) return NextResponse.json({ success: false }, { status: 409 });
@@ -39,7 +40,7 @@ export async function POST(req: Request) {
   async function finish(status: string, nextStage = stage, message?: string, issue?: string) {
     if (status === 'failed' && !message) message = 'Workflow needs reconciliation. The approved letter and intent are retained.';
     const { data: finished, error: finishError } = await db.from('praktika_helper_jobs').update({
-      status, response: { stage: nextStage, ...(retryUploadId ? { retryUploadId } : {}), ...(issue ? { issue } : {}) }, locked_by: null, locked_at: null,
+      status, response: { stage: nextStage, ...(retryUploadId ? { retryUploadId, retryExecutionUserId } : {}), ...(issue ? { issue } : {}) }, locked_by: null, locked_at: null,
       ...(status === 'completed' ? { completed_at: new Date().toISOString() } : {}),
       ...(status === 'failed' ? { error_message: 'Workflow needs reconciliation.', failed_at: new Date().toISOString() } : {}),
       updated_at: new Date().toISOString(),
@@ -51,11 +52,43 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: status !== 'failed', pending: status === 'waiting' });
   }
   try {
-    const account = await workflowAccountState(db, intent.app_user_id);
+    let executionUserId = intent.app_user_id;
+    let executionActor = intent.request.options.actor;
+    if (retryUploadId) {
+      const { data: replacement, error: replacementError } = await db.from('praktika_helper_jobs')
+        .select('app_user_id,request').eq('id', retryUploadId).eq('job_type', 'upload_report_to_praktika')
+        .eq('request->>continuationId', intentId).eq('request->>reportDraftId', draftId).maybeSingle();
+      if (replacementError) throw new Error('Retry execution lookup unavailable.');
+      if (!replacement?.app_user_id || replacement.app_user_id !== retryExecutionUserId
+        || replacement.request?.manualRetry?.actorUserId !== replacement.app_user_id
+        || replacement.request?.manualRetry?.verifiedAbsent !== true) {
+        return await finish('failed', stage, 'Praktika retry execution needs reconciliation.');
+      }
+      executionUserId = replacement.app_user_id;
+      const { data: role, error: roleError } = await db.from('user_roles').select('role')
+        .eq('user_id', executionUserId).maybeSingle();
+      if (roleError) throw new Error('Retry account lookup unavailable.');
+      if (!role || !['admin', 'super_admin', 'practice_manager', 'typist'].includes(role.role))
+        return await finish('failed', stage, 'An authorized Typist account is required. Queued work is retained.');
+      const { data: profile, error: profileError } = await db.from('profiles').select('full_name,email,role')
+        .eq('id', executionUserId).maybeSingle();
+      if (profileError) throw new Error('Retry audit lookup unavailable.');
+      const name = String(profile?.full_name || '').trim();
+      executionActor = { actorUserId: executionUserId, actorFullName: name || 'Unknown user',
+        actorEmail: profile?.email || null, actorInitials: name ? name.split(/\s+/).map(part => part[0]).join('').slice(0, 3).toUpperCase() : '?',
+        actorRole: role.role === 'typist' ? 'typist' : role.role === 'practice_manager' ? 'staff' : 'admin', rawProfileRole: profile?.role || null };
+    }
+    const account = await workflowAccountState(db, executionUserId);
     if (account === 'unavailable') return await finish('waiting', stage, workflowAccountMessage, 'account_unavailable');
     if (account === 'inactive') return await finish('failed', stage, 'An active staff account is required. Queued work is retained.');
     const { data: draft, error: draftError } = await db.from('report_drafts').select('*').eq('id', draftId).is('deleted_at', null).single();
     if (draftError || !draft || !['approved', 'uploaded_to_praktika'].includes(draft.status)) return await finish('failed');
+    if (retryUploadId) {
+      const { data: provider, error: providerError } = await db.from('providers').select('id')
+        .eq('id', draft.provider_id).eq('is_active', true).maybeSingle();
+      if (providerError) throw new Error('Retry provider lookup unavailable.');
+      if (!provider) return await finish('failed', stage, 'An active provider is required. Queued work is retained.');
+    }
     // Independent branch: use the existing preparation/claim path and reconcile
     // every helper status before considering another insertion (including legacy intents).
     const options = intent.request.options;
@@ -92,7 +125,7 @@ export async function POST(req: Request) {
       : `MediRef preparation is underway. Praktika session refreshing — Praktika ${praktikaStep} queued.`;
     if (stage !== 'upload' || draft.uploaded_to_praktika) {
       const { data: confirmed, error: confirmationError } = await db.from('praktika_helper_jobs').select('status,response')
-        .eq('id', uploadId).eq('app_user_id', intent.app_user_id)
+        .eq('id', uploadId).eq('app_user_id', executionUserId)
         .eq('request->>continuationId', intentId).maybeSingle();
       if (confirmationError) throw new Error('Confirmation lookup unavailable.');
       if (confirmed?.status !== 'completed' || !isConfirmedPraktikaUpload(confirmed.response)) return await finish('failed');
@@ -128,9 +161,9 @@ export async function POST(req: Request) {
         perioWaiting ? 'MediRef is waiting for the requested periodontal chart.' : 'Waiting for the confirmed Praktika result. Independent MediRef preparation continues.',
         perioWaiting ? 'periodontal_unavailable' : undefined);
     }
-    if (!await isUserPraktikaReady(db, intent.app_user_id)) return await finish('waiting', stage, waitingMessage, perioWaiting ? 'periodontal_unavailable' : undefined);
+    if (!await isUserPraktikaReady(db, executionUserId)) return await finish('waiting', stage, waitingMessage, perioWaiting ? 'periodontal_unavailable' : undefined);
     const handler = stage === 'upload' ? upload : icon;
-    const response = await withWorkflowExecution<Response>({ intentId, actor: options.actor, ...(retryUploadId ? { retryUploadId } : {}) }, () => handler(new Request(req.url, {
+    const response = await withWorkflowExecution<Response>({ intentId, actor: executionActor, ...(retryUploadId ? { retryUploadId } : {}) }, () => handler(new Request(req.url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...options, draftId }),
     })));
     const result = await response.json();

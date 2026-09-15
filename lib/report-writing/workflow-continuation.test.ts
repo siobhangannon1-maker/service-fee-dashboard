@@ -21,9 +21,9 @@ function fixture(stage = 'upload') {
     app_user_id: actor, request: { reportDraftId: 'draft', actorUserId: actor, options: { actor: { actorUserId: actor }, praktikaPatientId: '123' } },
     response: { stage, dispatched: false } };
   intent.request.options.authorization = workflowAuthorization('draft', actor, intent.request.options, secret);
-  const draft: Row = { id: 'draft', status: 'approved', deleted_at: null, workflow_status: 'running', uploaded_to_praktika: false,
+  const draft: Row = { id: 'draft', provider_id:'provider', status: 'approved', deleted_at: null, workflow_status: 'running', uploaded_to_praktika: false,
     workflow_praktika_upload_status: 'waiting_for_authentication', workflow_icon_update_status: 'pending', edited_text: 'synthetic approved text' };
-  const rows: Record<string, Row[]> = { praktika_helper_jobs: [intent], report_drafts: [draft], mediref_helper_jobs: [{ id: 'existing', status: 'pending', job_type: 'send_mediref_letter', payload: { draftId: 'draft' } }] };
+  const rows: Record<string, Row[]> = { user_roles: [{user_id:'retry-actor',role:'typist'}], profiles:[{id:'retry-actor',full_name:'Retry Typist',role:'staff'}], providers:[{id:'provider',is_active:true}], praktika_helper_jobs: [intent], report_drafts: [draft], mediref_helper_jobs: [{ id: 'existing', status: 'pending', job_type: 'send_mediref_letter', payload: { draftId: 'draft' } }] };
   const events: string[] = [];
   const db = { from(table: string) {
     const filters: Array<(row: Row) => boolean> = []; let patch: Row | null = null; let limit = Infinity;
@@ -50,7 +50,7 @@ function fixture(stage = 'upload') {
   const mocks: Row = { db, validContinuationToken, validWorkflowAuthorization, continuationChildId, isConfirmedPraktikaUpload, Request, Date,
     process: { env: { SUPABASE_SERVICE_ROLE_KEY: secret } }, NextResponse: { json: Response.json },
     workflowAccountState: async () => active ? "active" : "inactive", workflowAccountMessage: "Staff account status unavailable.", isUserPraktikaReady: async () => fresh,
-    withWorkflowExecution: async (ctx: Row, run: () => Promise<unknown>) => { assert.equal(ctx.actor.actorUserId, actor); return run(); },
+    withWorkflowExecution: async (ctx: Row, run: () => Promise<unknown>) => { assert.equal(ctx.actor.actorUserId, intent.response?.retryExecutionUserId || actor); return run(); },
     upload: handler('upload'), icon: handler('icon'), mediref: handler('mediref'),
   };
   const call = () => runInNewContext(routeCode + '\nPOST', mocks)(new Request('https://fixture.invalid/api', {
@@ -188,34 +188,55 @@ for (const thrown of [false,true]) test(`History preserves durable partial field
   assert.match((result[0] as any).workflow_reconciliation_warning,/temporarily out of date/);assert.doesNotMatch(JSON.stringify(result),/SECRET/);
 });
 
+function manual(f: ReturnType<typeof fixture>, status='waiting') {
+  f.intent.response.retryUploadId='replacement';f.intent.response.retryExecutionUserId='retry-actor';
+  const row:Row={id:'replacement',job_type:'upload_report_to_praktika',status,app_user_id:'retry-actor',request:{reportDraftId:'draft',continuationId:f.intent.id,manualRetry:{verifiedAbsent:true,actorUserId:'retry-actor'}},response:status==='completed'?{patient_communication:{iFileId:42}}:null};
+  f.rows.praktika_helper_jobs.push(row);return row;
+}
 for (const medirefStatus of ['completed','failed','pending']) test(`manual retry never invokes MediRef (${medirefStatus})`, async () => {
-  const f = fixture(); f.intent.response.retryUploadId = 'replacement';
+  const f = fixture(); manual(f);
   f.draft.workflow_mediref_status = medirefStatus; f.rows.mediref_helper_jobs.length = 0;
   f.mocks.withWorkflowExecution = async (ctx: Row, run: () => Promise<unknown>) => { assert.equal(ctx.retryUploadId,'replacement'); return run(); };
   await f.call(); assert.deepEqual(f.events,['upload']); assert.equal(f.intent.response.retryUploadId,'replacement');
   assert.equal(f.draft.workflow_mediref_status,medirefStatus);
 });
 test('failed replacement requires new explicit verification, not automatic replay', async () => {
-  const f = fixture(); f.intent.response.retryUploadId='replacement'; f.draft.workflow_mediref_status='completed';
-  f.rows.praktika_helper_jobs.push({id:'replacement',status:'failed'});
+  const f = fixture(); manual(f,'failed'); f.draft.workflow_mediref_status='completed';
   await f.call(); assert.equal(f.intent.status,'failed'); assert.deepEqual(f.events,[]);
   assert.equal(f.draft.workflow_praktika_upload_status,'failed'); assert.equal(f.draft.workflow_last_message,'Praktika upload needs verification.');
   assert.equal(f.draft.workflow_mediref_status,'completed');
 });
 test('replacement pending remains waiting without generation or repeated write',async()=>{
-  const f=fixture();f.intent.response.retryUploadId='replacement';f.rows.praktika_helper_jobs.push({id:'replacement',status:'pending'});
+  const f=fixture();manual(f,'pending');
   await f.call();assert.equal(f.intent.status,'waiting');assert.deepEqual(f.events,[]);
 });
 test('manual replacement success continues icon and completes without MediRef replay',async()=>{
-  const f=fixture();f.intent.response.retryUploadId='replacement';f.draft.workflow_mediref_status='completed';f.rows.mediref_helper_jobs.length=0;
-  f.mocks.upload=async()=>{f.events.push('upload');f.rows.praktika_helper_jobs.push({id:'replacement',status:'completed',app_user_id:f.intent.app_user_id,request:{continuationId:f.intent.id},response:{patient_communication:{iFileId:42}}});Object.assign(f.draft,{uploaded_to_praktika:true,workflow_praktika_upload_status:'completed'});return Response.json({success:true});};
+  const f=fixture();const replacement=manual(f);f.draft.workflow_mediref_status='completed';f.rows.mediref_helper_jobs.length=0;
+  f.mocks.upload=async()=>{f.events.push('upload');Object.assign(replacement,{status:'completed',response:{patient_communication:{iFileId:42}}});Object.assign(f.draft,{uploaded_to_praktika:true,workflow_praktika_upload_status:'completed'});return Response.json({success:true});};
   f.mocks.icon=async()=>{f.events.push('icon');f.draft.workflow_icon_update_status='completed';return Response.json({success:true});};
   await f.call();f.dispatchedAgain();await f.call();f.dispatchedAgain();await f.call();
   assert.deepEqual(f.events,['upload','icon']);assert.equal(f.intent.status,'completed');assert.equal(f.intent.response.retryUploadId,'replacement');
 });
 test('manual retry preserves completed icon without creating another',async()=>{
-  const f=fixture('icon');f.intent.response.retryUploadId='replacement';f.draft.workflow_mediref_status='completed';
+  const f=fixture('icon');const replacement=manual(f,'completed');f.draft.workflow_mediref_status='completed';
   Object.assign(f.draft,{uploaded_to_praktika:true,workflow_praktika_upload_status:'completed',workflow_icon_update_status:'completed'});
-  f.rows.praktika_helper_jobs.push({id:'replacement',status:'completed',app_user_id:f.intent.app_user_id,request:{continuationId:f.intent.id},response:{patient_communication:{iFileId:42}}});
+  Object.assign(replacement,{status:'completed',response:{patient_communication:{iFileId:42}}});
   await f.call();f.dispatchedAgain();await f.call();assert.equal(f.intent.status,'completed');assert.deepEqual(f.events,[]);
+});
+
+test('retry uses connected current helper through upload/icon; original actor and MediRef untouched',async()=>{
+  const f=fixture();const replacement=manual(f);f.draft.workflow_mediref_status='completed';
+  const original=JSON.stringify(f.intent.request);const contexts:string[]=[];
+  f.mocks.workflowAccountState=async(_db:unknown,actor:string)=>{assert.equal(actor,'retry-actor');return 'active';};
+  f.mocks.isUserPraktikaReady=async(_db:unknown,actor:string)=>actor==='retry-actor';
+  f.mocks.withWorkflowExecution=async(ctx:Row,run:()=>Promise<unknown>)=>{contexts.push(ctx.actor.actorUserId);assert.equal(ctx.actor.actorFullName,'Retry Typist');return run();};
+  f.mocks.upload=async()=>{Object.assign(replacement,{status:'completed',response:{patient_communication:{iFileId:42}}});Object.assign(f.draft,{uploaded_to_praktika:true,workflow_praktika_upload_status:'completed'});f.events.push('upload');return Response.json({success:true});};
+  f.mocks.icon=async()=>{f.events.push('icon');f.draft.workflow_icon_update_status='completed';return Response.json({success:true});};
+  await f.call();f.dispatchedAgain();await f.call();f.dispatchedAgain();await f.call();
+  assert.deepEqual(contexts,['retry-actor','retry-actor']);assert.deepEqual(f.events,['upload','icon']);assert.equal(f.intent.status,'completed');
+  assert.equal(f.intent.app_user_id,'fixture-actor');assert.equal(JSON.stringify(f.intent.request),original);assert.equal(f.draft.workflow_mediref_status,'completed');
+});
+for(const tamper of ['app_user_id','audit','link'])test(`mismatched retry ${tamper} cannot select another helper`,async()=>{
+  const f=fixture();const r=manual(f);if(tamper==='app_user_id')r.app_user_id='other';else if(tamper==='audit')r.request.manualRetry.actorUserId='other';else r.request.continuationId='other';
+  await f.call();assert.equal(f.intent.status,'failed');assert.deepEqual(f.events,[]);
 });
