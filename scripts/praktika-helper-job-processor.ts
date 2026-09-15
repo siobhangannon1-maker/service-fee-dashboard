@@ -18,6 +18,17 @@ const supabase = createClient(
   },
 );
 
+type UploadFailureCategory = "preparation_failure" | "ownership_unavailable" | "ownership_lost"
+  | "browser_unavailable" | "context_closed" | "request_timeout" | "transport_failure"
+  | "http_307" | "http_other" | "response_read_failure" | "response_validation_failure"
+  | "result_persistence_failure" | "unknown_failure";
+type UploadDiagnostic = {
+  jobId: string;
+  stage: "preparation" | "pre_dispatch" | "request_invoked" | "response_read" | "response_validation" | "result_persistence";
+  requestInvoked: boolean;
+  httpStatus?: number;
+};
+
 type ReportReferrer = {
   id?: string;
   name?: string | null;
@@ -202,7 +213,7 @@ async function completeJob(jobId: string, response: unknown) {
   if (error) throw new Error(error.message);
 }
 
-async function failJob(job: any, message: string, forcePermanent = false, readFailure?: { jobType: string; attempt: number; failureCategory: PraktikaReadFailureCategory; httpStatus?: number }) {
+async function failJob(job: any, message: string, forcePermanent = false, readFailure?: { jobType: string; attempt: number; failureCategory: PraktikaReadFailureCategory; httpStatus?: number }, uploadFailure?: UploadDiagnostic & { failureCategory: UploadFailureCategory }) {
   const attempts = Number(job.attempts || 0);
   const permanent = forcePermanent || attempts >= 3;
 
@@ -212,6 +223,7 @@ async function failJob(job: any, message: string, forcePermanent = false, readFa
       status: permanent ? "failed" : "pending",
       error_message: message,
       ...(readFailure ? { response: { readFailure } } : {}),
+      ...(uploadFailure ? { response: { ...(job.response && typeof job.response === "object" && !Array.isArray(job.response) ? job.response : {}), uploadFailure } } : {}),
       failed_at: permanent ? nowIso() : null,
       available_at: permanent
         ? nowIso()
@@ -242,7 +254,7 @@ function parsePraktikaResponse(text: string, status: number) {
   }
 }
 
-async function runJsonOrFormRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>) {
+async function runJsonOrFormRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>, upload?: UploadDiagnostic) {
   const method = request.method || "POST";
   const contentType = request.contentType || "json";
   const referer =
@@ -280,18 +292,22 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
     data = request.body;
   }
 
+  if (upload) upload.stage = "pre_dispatch";
   await beforeRequest?.();
-  const response = await context.request.post(
-    `${PRAKTIKA_BASE_URL}${request.path}`,
-    {
+  const requestUrl = `${PRAKTIKA_BASE_URL}${request.path}`;
+  const requestOptions = {
       headers,
       data,
       timeout: 120_000,
       maxRedirects: 0, // Never replay an external action through a redirect.
-    },
-  );
+  };
+  // Diagnostic boundary only; the existing externalStarted replay guard is unchanged.
+  if (upload) { upload.stage = "request_invoked"; upload.requestInvoked = true; }
+  const response = await context.request.post(requestUrl, requestOptions);
 
+  if (upload) { upload.stage = "response_read"; upload.httpStatus = response.status(); }
   const text = await response.text();
+  if (upload) upload.stage = "response_validation";
 
   if (!response.ok()) {
     throw new Error(`Praktika helper request failed ${response.status()}: ${text}`);
@@ -300,7 +316,7 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
   return parsePraktikaResponse(text, response.status());
 }
 
-async function runMultipartStorageRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>) {
+async function runMultipartStorageRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>, upload?: UploadDiagnostic) {
   const referer =
     request.referer || `${PRAKTIKA_BASE_URL}/v2/patient-directory/patient-search`;
 
@@ -341,10 +357,10 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any,
     buffer: fileBuffer,
   };
 
+  if (upload) upload.stage = "pre_dispatch";
   await beforeRequest?.();
-  const response = await context.request.post(
-    `${PRAKTIKA_BASE_URL}${request.path}`,
-    {
+  const requestUrl = `${PRAKTIKA_BASE_URL}${request.path}`;
+  const requestOptions = {
       headers: {
         Accept: "application/json, text/plain, */*",
         Origin: PRAKTIKA_BASE_URL,
@@ -354,10 +370,14 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any,
       multipart,
       timeout: 120_000,
       maxRedirects: 0, // Never replay an external action through a redirect.
-    },
-  );
+  };
+  // Diagnostic boundary only; the existing externalStarted replay guard is unchanged.
+  if (upload) { upload.stage = "request_invoked"; upload.requestInvoked = true; }
+  const response = await context.request.post(requestUrl, requestOptions);
 
+  if (upload) { upload.stage = "response_read"; upload.httpStatus = response.status(); }
   const text = await response.text();
+  if (upload) upload.stage = "response_validation";
 
   if (!response.ok()) {
     throw new Error(`Praktika helper upload failed ${response.status()}: ${text.slice(0, 1000)}`);
@@ -373,12 +393,12 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any,
   return parsed;
 }
 
-async function runPraktikaRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>) {
+async function runPraktikaRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>, upload?: UploadDiagnostic) {
   if (request.contentType === "multipart_storage") {
-    return await runMultipartStorageRequest(context, request, beforeRequest);
+    return await runMultipartStorageRequest(context, request, beforeRequest, upload);
   }
 
-  return await runJsonOrFormRequest(context, request, beforeRequest);
+  return await runJsonOrFormRequest(context, request, beforeRequest, upload);
 }
 
 function isoDateOnly(value: unknown) {
@@ -1343,6 +1363,8 @@ export async function processOnePraktikaHelperJob(
     }`,
   );
 
+  const upload: UploadDiagnostic | undefined = job.job_type === "upload_report_to_praktika"
+    ? { jobId: job.id, stage: "preparation", requestInvoked: false } : undefined;
   let reportUploadStarted = false;
   let externalStarted = false;
   let readStage: "transport_failure" | "invalid_structure" | "result_persistence_failure" = "transport_failure";
@@ -1353,6 +1375,7 @@ export async function processOnePraktikaHelperJob(
     await ownership.assertOwned();
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
     const beforeRequest = async () => {
+      if (upload) upload.stage = "pre_dispatch";
       if (ownership.isBrowserReady && !await ownership.isBrowserReady()) throw new PraktikaHelperUnavailable();
       if (!await jobEligible(appUserId, job, ownership)) throw new PraktikaHelperUnavailable();
       if (ownership.isBrowserReady && !await ownership.isBrowserReady()) throw new PraktikaHelperUnavailable();
@@ -1389,7 +1412,7 @@ export async function processOnePraktikaHelperJob(
       await beforeRequest();
       response = await hydrateReportLetterQueueItem(context, job);
     } else {
-      response = await runPraktikaRequest(context, job.request, beforeRequest);
+      response = await runPraktikaRequest(context, job.request, beforeRequest, upload);
     }
 
     await ownership.assertOwned();
@@ -1397,10 +1420,29 @@ export async function processOnePraktikaHelperJob(
       throw new Error("Praktika report upload result could not be confirmed; reconciliation required.");
     }
     readStage = "result_persistence_failure";
+    if (upload) upload.stage = "result_persistence";
     await completeJob(job.id, response);
     console.log(`Completed Praktika helper job ${job.id}`);
     return { outcome: "completed", jobId: job.id };
   } catch (error: any) {
+    // Diagnostics never participate in eligibility, ownership or replay decisions.
+    const uploadFailure: (UploadDiagnostic & { failureCategory: UploadFailureCategory }) | undefined = upload ? {
+      ...upload,
+      failureCategory: error instanceof PraktikaOwnershipLost ? "ownership_lost"
+        : error?.name === "PraktikaOwnershipUnavailable" ? "ownership_unavailable"
+        : error instanceof PraktikaHelperUnavailable ? "browser_unavailable"
+        : upload.stage === "result_persistence" ? "result_persistence_failure"
+        : upload.stage === "response_read" ? "response_read_failure"
+        : upload.httpStatus === 307 ? "http_307"
+        : upload.httpStatus !== undefined && (upload.httpStatus < 200 || upload.httpStatus >= 300) ? "http_other"
+        : upload.stage === "response_validation" ? "response_validation_failure"
+        : /Target page, context or browser has been closed|Target closed|Request context disposed/.test(String(error?.message || "")) ? "context_closed"
+        : error?.name === "TimeoutError" || error?.name === "AbortError" ? "request_timeout"
+        : ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN"].includes(error?.code) ? "transport_failure"
+        : upload.stage === "preparation" ? "preparation_failure"
+        : "unknown_failure",
+    } : undefined;
+    if (uploadFailure) console.log("[Praktika upload] failure", uploadFailure);
     // A request may already have reached Praktika. Leave it for reconciliation,
     // rather than converting ownership loss into an automatic operation retry.
     if (ownership.isShuttingDown?.() || error instanceof PraktikaOwnershipLost) {
@@ -1424,7 +1466,7 @@ export async function processOnePraktikaHelperJob(
       // The server may have saved the PDF even if its response/DB acknowledgement
       // was lost. Never automatically replay this external write.
       await failJob(job, reportUploadStarted ? "Report upload outcome is unconfirmed. Reconcile before retrying."
-        : "Praktika write outcome is unconfirmed. Reconcile before retrying.", true);
+        : "Praktika write outcome is unconfirmed. Reconcile before retrying.", true, undefined, uploadFailure);
       return { outcome: "failed", jobId: job.id };
     }
     if (readOnly) {
@@ -1437,10 +1479,10 @@ export async function processOnePraktikaHelperJob(
       await failJob(job, "Praktika read is temporarily unavailable.", false, diagnostic);
       return { outcome: "failed", jobId: job.id };
     }
-    const message = error?.message || "Praktika helper job failed.";
+    const message = uploadFailure ? "Praktika report upload preparation failed." : error?.message || "Praktika helper job failed.";
     console.error(`Failed Praktika helper job ${job.id}:`, message);
 
-    await failJob(job, message);
+    await failJob(job, message, false, undefined, uploadFailure);
     return { outcome: "failed", jobId: job.id };
   }
 }
