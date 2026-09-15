@@ -48,3 +48,4 @@ praktika-browser-profiles/
 
 # Local Praktika browser profiles - never commit
 praktika-browser-profiles/
+.env.branch-validation.local
