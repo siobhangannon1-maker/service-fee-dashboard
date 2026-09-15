@@ -105,8 +105,12 @@ export function praktikaHelperToken(generation: string): string {
 
 export function isPraktikaRefreshTransition(status: number, location: string | undefined, expectedUrl: string,
   headers: Record<string, string>): boolean {
-  if (status !== 307 || !location || /[\u0000-\u001f\u007f]/.test(location)
-    || !Object.keys(headers).some(key => key.toLowerCase() === "set-cookie")) return false;
+  if (status !== 307 || !Object.keys(headers).some(key => key.toLowerCase() === "set-cookie")) return false;
+  return isPraktikaRefreshTokenTarget(location, expectedUrl);
+}
+
+function isPraktikaRefreshTokenTarget(location: string | undefined, expectedUrl: string): boolean {
+  if (!location || /[\u0000-\u001f\u007f]/.test(location)) return false;
   try {
     const expected = new URL(expectedUrl), destination = new URL(location, expected);
     return destination.origin === expected.origin && destination.protocol === "https:"
@@ -115,6 +119,38 @@ export function isPraktikaRefreshTransition(status: number, location: string | u
 }
 
 export type ProbeResult = { redirectDiagnostics?: RedirectDiagnostics; verified: boolean; phase: AuthenticationFailurePhase; httpStatus: number | null; parsedArray: boolean };
+type UploadResponseDiagnostic = Partial<{
+  responseUrlMatchesExpected: boolean;
+  responseOriginMatchesExpected: boolean;
+  sameOrigin: boolean | null;
+  destinationCategory: DestinationCategory;
+  phpTargetCategory: PhpTargetCategory;
+  phpTargetFamily: PhpTargetFamily;
+  phpTargetFingerprint: string;
+  setCookiePresent: boolean;
+  exactRefreshTokenTarget: boolean;
+}>;
+// Pure upload observation: never invokes a probe or contributes authentication evidence.
+export function praktikaUploadResponseDiagnostic(status: number, headers: Record<string, string>, responseUrl: string, expectedUrl: string): UploadResponseDiagnostic {
+  if (status >= 200 && status < 300) return {};
+  let responseOriginMatchesExpected = false;
+  try { responseOriginMatchesExpected = new URL(responseUrl).origin === new URL(expectedUrl).origin; } catch { /* Invalid URLs remain a false comparison. */ }
+  const response = { responseUrlMatchesExpected: responseUrl === expectedUrl, responseOriginMatchesExpected };
+  if (status < 300 || status >= 400) return response;
+  const location = Object.entries(headers).find(([key]) => key.toLowerCase() === "location")?.[1];
+  const setCookiePresent = Object.keys(headers).some(key => key.toLowerCase() === "set-cookie");
+  return {
+    ...response,
+    sameOrigin: classifyPraktikaRedirect(location, expectedUrl).same_origin,
+    destinationCategory: classifyPraktikaRedirectDestination(location, expectedUrl),
+    phpTargetCategory: classifyPraktikaPhpTarget(location, expectedUrl),
+    phpTargetFamily: classifyPraktikaPhpFamily(location, expectedUrl),
+    phpTargetFingerprint: praktikaPhpTargetFingerprint(location, expectedUrl),
+    setCookiePresent,
+    // Match the known target independently of the actual status/cookie presence.
+    exactRefreshTokenTarget: isPraktikaRefreshTokenTarget(location, expectedUrl),
+  };
+}
 export class PraktikaAuthenticationUnverified extends Error {
   constructor(readonly phase: AuthenticationFailurePhase = "error", readonly transient = false, readonly refreshTransition = false) { super(transient ? "Praktika verification is temporarily unavailable. Retry remains bounded." : "Praktika authentication could not be verified. Reconnect before retrying this job."); }
 }

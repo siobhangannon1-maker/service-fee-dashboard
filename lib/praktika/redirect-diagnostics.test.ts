@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserContext } from "playwright";
-import { classifyPraktikaPhpFamily, praktikaPhpTargetFingerprint, classifyPraktikaPhpTarget, classifyPraktikaRedirectDestination, classifyPraktikaPage, classifyPraktikaRedirect, probePraktikaAuthentication, createPraktikaAuthenticationGate, PraktikaAuthenticationUnverified } from "./authentication-probe";
+import { praktikaUploadResponseDiagnostic, classifyPraktikaPhpFamily, praktikaPhpTargetFingerprint, classifyPraktikaPhpTarget, classifyPraktikaRedirectDestination, classifyPraktikaPage, classifyPraktikaRedirect, probePraktikaAuthentication, createPraktikaAuthenticationGate, PraktikaAuthenticationUnverified } from "./authentication-probe";
 
 const expected = "https://fixture.invalid/php/json/db_reportingDataWarehouse.php";
 for (const [location, category, sameOrigin] of [
@@ -175,4 +175,26 @@ test('family omitted for known PHP endpoints and non-PHP redirects', () => {
     assert.equal(classifyPraktikaPhpFamily(pathname, expected), undefined);
   }
   assert.equal(classifyPraktikaPhpTarget('/php/forms/db_getFormData.php', expected), 'form_get');
+});
+
+for(const [location,category,refresh] of [
+ ['/php/security/db_refreshToken.php?PRIVATE#PRIVATE','php_endpoint',true],
+ ['/php/forms/unknown.php?PRIVATE','php_endpoint',false],
+ ['/v2/login?PRIVATE','login',false],
+ ['https://external.invalid/php/security/db_refreshToken.php','external',false],
+ [undefined,'location_missing',false],
+] as const) for(const cookie of [false,true]) test('upload response metadata '+category+' cookie='+cookie,()=>{
+ const headers:Record<string,string>={}; if(location) headers.Location=location;if(cookie) headers['Set-Cookie']='PRIVATE';
+ const result=praktikaUploadResponseDiagnostic(307,headers,expected,expected);
+ assert.equal(result.destinationCategory,category);assert.equal(result.exactRefreshTokenTarget,refresh);
+ assert.equal(result.setCookiePresent,cookie);assert.equal(result.responseUrlMatchesExpected,true);
+ assert.equal(result.responseOriginMatchesExpected,true);
+ assert.doesNotMatch(JSON.stringify(result),/PRIVATE|\/php\/|\/v2\/|external.invalid|set-cookie/i);
+});
+test('upload URL comparisons and successful response remain diagnostic only',()=>{
+ for(const [url,sameOrigin] of [['https://fixture.invalid/other',true],['https://external.invalid/other',false],['invalid',false]] as const){
+ const d=praktikaUploadResponseDiagnostic(500,{},url,expected);
+ assert.deepEqual(d,{responseUrlMatchesExpected:false,responseOriginMatchesExpected:sameOrigin});
+ }
+ assert.deepEqual(praktikaUploadResponseDiagnostic(200,{location:'PRIVATE'},expected,expected),{});
 });

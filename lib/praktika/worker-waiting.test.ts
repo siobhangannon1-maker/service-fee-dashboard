@@ -8,7 +8,7 @@ import ts from 'typescript';
 import { praktikaJobEligibility } from './job-eligibility';
 import { PraktikaReadFailure, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from './read-operations';
 import { PraktikaOwnershipLost } from './helper-lease';
-import { PraktikaAuthenticationUnverified } from './authentication-probe';
+import { praktikaUploadResponseDiagnostic, PraktikaAuthenticationUnverified } from './authentication-probe';
 import { isConfirmedPraktikaUpload } from '../report-writing/praktika-upload-result';
 type Row = Record<string, any>;
 const path = 'scripts/praktika-helper-job-processor.ts';
@@ -47,10 +47,11 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
       then: (resolve: (v: unknown) => void) => Promise.resolve(q.execute()).then(resolve),
     }; return q;
   } };
+  let responseHeaders: Record<string,string> = {};
   let nextOwnershipError: Error | undefined;
   let owned = true, operations = 0, connectedWrites = 0, httpStatus = 200;
   let responseUrl = "https://praktika.praktika.net.au/php/forms/db_getFormData.php", responseText = '{"patient_perioexamids":[12]}';
-  const globals = { PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
+  const globals = { praktikaUploadResponseDiagnostic, PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
     isConfirmedPraktikaUpload, Date, AbortSignal, URLSearchParams, Buffer, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
     console: { log(...args: unknown[]) { logs.push(args); }, error() {} },
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>, upload?: unknown) => { prepareRequest(_r as Row); if(realTransport) return (_r as Row).contentType === "multipart_storage" ? api.runMultipartStorageRequest(_c, _r, before, upload) : api.runJsonOrFormRequest(_c, _r, before, upload); await before(); operations++; return { patient_communication: { iFileId: 12 } }; },
@@ -61,9 +62,9 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   const context = { request: { post: async (_url: string, options: Row) => {
     operations++; assert.equal(options.maxRedirects, 0); assert.equal(options.timeout, 120_000);
     if (transportFails) throw transportError;
-    return { ok: () => httpStatus >= 200 && httpStatus < 300, status: () => httpStatus, url: () => responseUrl, text: async () => { if (readFails) throw new Error("private response body"); return responseText; } };
+    return { headers: () => responseHeaders, ok: () => httpStatus >= 200 && httpStatus < 300, status: () => httpStatus, url: () => responseUrl, text: async () => { if (readFails) throw new Error("private response body"); return responseText; } };
   } } };
-  return { job, session, logs, prepareRequest: (fn: (request: Row) => void) => {prepareRequest=fn;}, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failRead: () => { readFails = true; }, setTransportError: (error: Error) => { transportFails = true; transportError = error; }, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
+  return { job, session, logs, setHeaders: (headers: Record<string,string>) => { responseHeaders=headers; }, prepareRequest: (fn: (request: Row) => void) => {prepareRequest=fn;}, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failRead: () => { readFails = true; }, setTransportError: (error: Error) => { transportFails = true; transportError = error; }, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
     failNextOwnership: (error: Error) => {nextOwnershipError=error;}, connectedWrites: () => connectedWrites, loseOwnership: () => { owned = false; }, onClaim: (fn: () => void) => { afterClaim = fn; }, setHttp: (v: number) => { httpStatus = v; } };
 }
 test('waiting write stays pending with attempts unchanged, then resumes once after browser startup', async () => {
@@ -223,9 +224,9 @@ for (const multipart of [false,true]) for (const [kind, stage, category, status]
   await f.run();
   const entries=f.logs.filter(e=>e[0]==='[Praktika upload] failure');
   assert.equal(entries.length,1);
-  const expected={jobId:'job',stage,requestInvoked:true,failureCategory:category,...(status===undefined?{}:{httpStatus:status})};
-  assert.deepEqual(JSON.parse(JSON.stringify(entries[0][1])),expected);
-  assert.deepEqual(JSON.parse(JSON.stringify(f.job.response.uploadFailure)),expected);
+  const expected={jobId:'job',stage,requestInvoked:true,failureCategory:category,...(status===undefined?{}:{httpStatus:status}), ...(status === 307 || status === 500 ? praktikaUploadResponseDiagnostic(status, {}, 'https://praktika.praktika.net.au/php/forms/db_getFormData.php', 'https://praktika.praktika.net.au/private') : {})};
+  assert.deepEqual(JSON.parse(JSON.stringify(entries[0][1])),JSON.parse(JSON.stringify(expected)));
+  assert.deepEqual(JSON.parse(JSON.stringify(f.job.response.uploadFailure)),JSON.parse(JSON.stringify(expected)));
   assert.equal(f.job.error_message,'Report upload outcome is unconfirmed. Reconcile before retrying.');
   assert.equal(f.job.status,'failed'); assert.equal(f.job.attempts,1);
   await f.run(); assert.equal(f.operations(),1);
@@ -265,4 +266,22 @@ test('failure immediately before invocation retains conservative existing uncert
  assert.equal(d.stage,'pre_dispatch');assert.equal(d.requestInvoked,false);assert.equal(d.failureCategory,'unknown_failure');
  assert.equal(f.job.status,'failed');
  assert.equal(f.job.error_message,'Report upload outcome is unconfirmed. Reconcile before retrying.');
+});
+
+for (const bodyFails of [false,true]) test('upload redirect metadata survives body handling; no replay '+bodyFails, async()=>{
+ const f=fixture(false,'actor',true);
+ const url='https://praktika.praktika.net.au/php/forms/db_updateFormData.php';
+ f.job.request={method:'POST',path:'/php/forms/db_updateFormData.php',contentType:'multipart_storage',reportDraftId:'synthetic',body:{file:{bucket:'fixture',path:'PRIVATE',fieldName:'file',fileName:'PRIVATE'}}};
+ f.setHeaders({location:'/php/security/db_refreshToken.php?PRIVATE#PRIVATE','set-cookie':'PRIVATE'});
+ f.setResponse('PRIVATE',url); f.setHttp(307); if(bodyFails) f.failRead();
+ await f.run();
+ const diagnostic=f.job.response.uploadFailure;
+ assert.equal(diagnostic.exactRefreshTokenTarget,true); assert.equal(diagnostic.setCookiePresent,true);
+ assert.equal(diagnostic.sameOrigin,true); assert.equal(diagnostic.responseUrlMatchesExpected,true);
+ assert.equal(diagnostic.stage,bodyFails?'response_read':'response_validation');
+ assert.equal(diagnostic.requestInvoked,true); assert.equal(diagnostic.jobId,'job');
+ assert.equal(f.job.status,'failed');
+ assert.equal(f.job.error_message,'Report upload outcome is unconfirmed. Reconcile before retrying.');
+ assert.doesNotMatch(JSON.stringify([f.logs,f.job.response]),/PRIVATE|refreshToken|https:|set-cookie/);
+ await f.run();assert.equal(f.operations(),1);
 });

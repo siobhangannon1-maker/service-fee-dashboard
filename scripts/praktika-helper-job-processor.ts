@@ -1,4 +1,5 @@
 import { perioStructureDiagnostic } from "../lib/praktika/perio-structure-diagnostic";
+import { praktikaUploadResponseDiagnostic } from "../lib/praktika/authentication-probe";
 import { praktikaJobEligibility } from "../lib/praktika/job-eligibility";
 import { PraktikaReadFailure, type PraktikaReadFailureCategory, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from "../lib/praktika/read-operations";
 import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
@@ -22,7 +23,7 @@ type UploadFailureCategory = "preparation_failure" | "ownership_unavailable" | "
   | "browser_unavailable" | "context_closed" | "request_timeout" | "transport_failure"
   | "http_307" | "http_other" | "response_read_failure" | "response_validation_failure"
   | "result_persistence_failure" | "unknown_failure";
-type UploadDiagnostic = {
+type UploadDiagnostic = Partial<ReturnType<typeof praktikaUploadResponseDiagnostic>> & {
   jobId: string;
   stage: "preparation" | "pre_dispatch" | "request_invoked" | "response_read" | "response_validation" | "result_persistence";
   requestInvoked: boolean;
@@ -306,6 +307,10 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
   const response = await context.request.post(requestUrl, requestOptions);
 
   if (upload) { upload.stage = "response_read"; upload.httpStatus = response.status(); }
+  if (upload && !response.ok()) {
+    try { Object.assign(upload, praktikaUploadResponseDiagnostic(response.status(), response.headers(), response.url(), requestUrl)); }
+    catch { /* Diagnostics must not change upload handling. */ }
+  }
   const text = await response.text();
   if (upload) upload.stage = "response_validation";
 
@@ -376,6 +381,10 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any,
   const response = await context.request.post(requestUrl, requestOptions);
 
   if (upload) { upload.stage = "response_read"; upload.httpStatus = response.status(); }
+  if (upload && !response.ok()) {
+    try { Object.assign(upload, praktikaUploadResponseDiagnostic(response.status(), response.headers(), response.url(), requestUrl)); }
+    catch { /* Diagnostics must not change upload handling. */ }
+  }
   const text = await response.text();
   if (upload) upload.stage = "response_validation";
 
