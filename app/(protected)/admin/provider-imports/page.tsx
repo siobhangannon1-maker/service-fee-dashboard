@@ -10,6 +10,8 @@ import RecalculateMonthButton from "./RecalculateMonthButton";
 import PraktikaSyncPanel from "./PraktikaSyncPanel";
 import PraktikaSessionPanel from "@/components/PraktikaSessionPanel";
 
+export const dynamic = "force-dynamic";
+
 type BatchRow = Awaited<ReturnType<typeof getImportBatches>>[number];
 
 function formatMonthLabel(monthKey: string | null): string {
