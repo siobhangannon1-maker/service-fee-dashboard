@@ -1,3 +1,4 @@
+import {manualHistoricalMedirefWorkflow, type HistoricalMedirefProvenance} from './manual-historical-mediref';
 import { durableHistoricalWorkflow, type HistoricalReconciliationEvent } from './historical-reconciliation';
 import { manualVerification } from './manual-verification';
 import { isConfirmedPraktikaUpload } from './praktika-upload-result';
@@ -16,6 +17,7 @@ export type ResolvedWorkflow = {
   medirefRecovery: boolean;
   // Retention only: never inferred from approval, job creation or polling.
   completedAt?: number | null;
+  historicalMedirefVerification?: HistoricalMedirefProvenance;
   historicalRetention?: { reconciliationId: string; released: boolean };
 };
 export type WorkflowDraft = {
@@ -67,6 +69,8 @@ export function unavailableWorkflow(): ResolvedWorkflow {
 export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Date.now()): ResolvedWorkflow {
   const durable=durableHistoricalWorkflow(d,e,now);
   if (durable) return durable;
+  const human=manualHistoricalMedirefWorkflow(d,e,now);
+  if (human) return human;
   const parent = e.parent;
   const parentValid = Boolean(parent && parent.request?.reportDraftId === d.id && parent.app_user_id &&
     parent.request?.actorUserId === parent.app_user_id);

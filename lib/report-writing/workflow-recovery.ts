@@ -1,3 +1,4 @@
+import {manualHistoricalMedirefActions} from './manual-historical-mediref';
 import { historicalReconciliationAction, historicalInvalidationAction, historicalRetentionReleaseAction, type HistoricalReconciliationEvent } from './historical-reconciliation';
 import { resolveWorkflow, unavailableWorkflow, type ReadJob, type WorkflowDraft } from './resolved-workflow';
 import { hasLivePraktikaHelper } from '../praktika/helper-lease';
@@ -103,7 +104,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     reader.read<ReadJob>([...childIds.values()].filter(id=>!uploads.has(id)),batch=>db.from('praktika_helper_jobs')
       .select(workflowJobColumns).eq('job_type','upload_report_to_praktika').in('id',batch)),
     reader.read<HistoricalReconciliationEvent>(ids,batch=>db.from('report_writing_audit_events')
-      .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction]).in('entity_id',batch)),
+      .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction,...manualHistoricalMedirefActions]).in('entity_id',batch)),
     reader.read<PraktikaLive>(actors,batch=>db.from('praktika_sessions').select('id,app_user_id,status,helper_instance_id,helper_heartbeat_at')
       .eq('scope','user').in('app_user_id',batch)),
     reader.read<MedirefLive>(medirefRead.rows.some(active)?['practice']:[],()=>db.from('mediref_sessions')
