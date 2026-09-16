@@ -1,5 +1,7 @@
 import { PraktikaOwnershipLost, PraktikaOwnershipUnavailable, PRAKTIKA_HELPER_LEASE_MS } from './helper-lease';
 
+export class PraktikaLeaseExpired extends PraktikaOwnershipLost {}
+
 // Only a successful heartbeat extends this conservative local deadline. A check
 // proves ownership at that instant but does not renew the database lease.
 export function createPraktikaOwnershipRecovery(options: {
@@ -15,14 +17,16 @@ export function createPraktikaOwnershipRecovery(options: {
     async run<T>(operation: () => Promise<T>, heartbeat = false): Promise<T> {
       let attempt = 0;
       for (;;) {
-        if (expired || options.stopping?.() || now() >= deadline) {
+        if (options.stopping?.()) throw new PraktikaOwnershipLost();
+        if (expired || now() >= deadline) {
           expired = true;
-          throw new PraktikaOwnershipLost();
+          throw new PraktikaLeaseExpired();
         }
         const started = now();
         try {
           const result = await operation();
-          if (expired || options.stopping?.() || now() >= deadline) throw new PraktikaOwnershipLost();
+          if (options.stopping?.()) throw new PraktikaOwnershipLost();
+          if (expired || now() >= deadline) throw new PraktikaLeaseExpired();
           if (heartbeat) deadline = Math.max(deadline, started + PRAKTIKA_HELPER_LEASE_MS);
           return result;
         } catch (error) {

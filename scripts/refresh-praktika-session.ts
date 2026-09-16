@@ -1,4 +1,4 @@
-import { createPraktikaOwnershipRecovery, isPraktikaTransientInfrastructureError } from "../lib/praktika/ownership-recovery";
+import { PraktikaLeaseExpired, createPraktikaOwnershipRecovery, isPraktikaTransientInfrastructureError } from "../lib/praktika/ownership-recovery";
 import { praktikaNoAuthGateEnabled } from "../lib/praktika/authentication";
 import { pollPraktikaWorkflowContinuations } from "./praktika-workflow-continuations";
 import { createCookieSnapshotStore } from "../lib/praktika/cookie-snapshot";
@@ -171,6 +171,10 @@ if (!sessionId) {
 const helperInstanceId = argValue("helper-instance-id");
 if (!helperInstanceId) throw new Error("Missing --helper-instance-id; start through the owning watcher.");
 let ownershipLost = false;
+let browserLivenessRecovery: Promise<void> | undefined;
+function logOwnershipFailure(cause: "browser_liveness_unavailable" | "lease_expired" | "ownership_rejected" | "generation_mismatch") {
+  console.log("[Praktika lifecycle]", JSON.stringify({ event: "helper_unavailable", generation: helperInstanceId, cause }));
+}
 let scopedNoAuth = false;
 let browserReady = false;
 let recoverableExit = false;
@@ -218,12 +222,20 @@ async function ownedWrite(action: "check" | "heartbeat" | "update", values: Reco
     if (ownershipLost) throw new PraktikaOwnershipRejected();
   } catch (error) {
     if (!(error instanceof PraktikaOwnershipLost)) throw error;
+    if (error instanceof PraktikaLeaseExpired) logOwnershipFailure("lease_expired");
+    else if (error instanceof PraktikaOwnershipRejected) logOwnershipFailure("ownership_rejected");
     ownershipLost = true;
     await shutdownCoordinator.close();
-    throw new PraktikaOwnershipLost();
+    throw error;
   }
 }
-async function assertOwned() { await ownedWrite("check"); }
+async function assertOwned() {
+  // Only new dispatch/checks wait. An already invoked external request is never replayed.
+  do {
+    await browserLivenessRecovery?.catch(() => {});
+    await ownedWrite("check");
+  } while (browserLivenessRecovery);
+}
 async function releaseOwnership(failed = false) {
   await writePraktikaHelper(supabase, sessionId!, helperInstanceId!, "release", {
     status: failed ? "error" : "not_started",
@@ -263,7 +275,7 @@ async function markBrowserReady(page: Page) {
 function startHeartbeat(context: BrowserContext) {
   let stopped = false;
   let pending: Promise<void> | undefined;
-  const tick = async () => {
+  const responsive = async () => {
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -272,6 +284,25 @@ function startHeartbeat(context: BrowserContext) {
           deadline = setTimeout(() => reject(new Error("Browser liveness unavailable")), PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS);
         }),
       ]);
+    } finally { clearTimeout(deadline); }
+  };
+  const tick = async () => {
+    try {
+      try { await responsive(); }
+      catch {
+        if (stopped || shuttingDown) return;
+        logOwnershipFailure("browser_liveness_unavailable");
+        // One recheck only. A check does not extend the existing ownership lease.
+        // Use ownedWrite directly here: assertOwned waits for this recovery.
+        browserLivenessRecovery = (async () => {
+          await ownedWrite("check");
+          await responsive();
+          if (!stopped && !shuttingDown) await ownedWrite("heartbeat");
+        })();
+        try { await browserLivenessRecovery; }
+        finally { browserLivenessRecovery = undefined; }
+        return;
+      }
       if (!stopped) await ownedWrite("heartbeat");
     } catch {
       if (shuttingDown) return;
@@ -281,8 +312,6 @@ function startHeartbeat(context: BrowserContext) {
       recoverableExit = true;
       if (await shutdownCoordinator.close()) await releaseOwnership(false);
       else process.exitCode = 75;
-    } finally {
-      if (deadline) clearTimeout(deadline);
     }
   };
   const timer = setInterval(() => {
@@ -303,6 +332,7 @@ async function getSession() {
   });
 
   if (data.helper_instance_id !== helperInstanceId) {
+    logOwnershipFailure("generation_mismatch");
     ownershipLost = true;
     await shutdownCoordinator.close();
     throw new PraktikaOwnershipLost();
