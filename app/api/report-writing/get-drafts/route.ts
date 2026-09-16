@@ -1,3 +1,5 @@
+import { readDraftList, readDocumentAvailability } from '@/lib/report-writing/draft-list-reader';
+import { toDraftListItem } from '@/lib/report-writing/draft-contract';
 import { sensitiveApiAccess } from "@/lib/auth";
 import { projectWorkflowRecovery, staleWorkflowStatus } from "@/lib/report-writing/workflow-recovery"
 import { NextResponse } from "next/server"
@@ -18,47 +20,19 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url)
     const providerId = searchParams.get("providerId")
 
-    let query = supabase
-      .from("report_drafts")
-      .select("*")
-      .is("deleted_at", null)
-      .order("created_at", { ascending: false })
-
-    if (providerId && providerId !== "all") {
-      query = query.eq("provider_id", providerId)
-    }
-
-    const { data, error } = await query
-
-    if (error) {
-      return NextResponse.json(
-        { success: false, error: "Failed to load report drafts." },
-        { status: 500 }
-      )
-    }
-
-    const durableDrafts = data || []
+    const [durableDrafts, availability] = await Promise.all([
+      readDraftList(supabase, providerId), readDocumentAvailability(supabase, providerId),
+    ])
     // Auxiliary status enrichment must never discard successfully loaded History.
     let recovered = durableDrafts
     try { recovered = await projectWorkflowRecovery(supabase, durableDrafts) }
     catch { recovered = durableDrafts.map(staleWorkflowStatus) }
-    const drafts = recovered.map((draft: any) => ({
-      ...draft,
-      status: draft.status || "draft",
-      clinical_notes:
-        draft.clinical_notes ||
-        draft.source_clinical_notes ||
-        draft.source_text ||
-        null,
-      source_clinical_notes:
-        draft.source_clinical_notes ||
-        draft.clinical_notes ||
-        draft.source_text ||
-        null,
-      typist_instructions: draft.typist_instructions || null,
-    }))
+    const drafts = recovered.map((draft) => {
+      const state = availability.get(String(draft.id))
+      return toDraftListItem(draft, state && state.revision === draft.updated_at ? state.available : null)
+    })
+    return NextResponse.json({ success: true, drafts }, { headers: { 'Cache-Control': 'private, no-store' } })
 
-    return NextResponse.json({ success: true, drafts })
   } catch {
 
     return NextResponse.json(

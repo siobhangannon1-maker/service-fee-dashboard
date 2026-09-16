@@ -1,6 +1,8 @@
 "use client";
+import { type DraftDetail as Draft, type DraftListItem } from '@/lib/report-writing/draft-contract';
+import { createDraftDetailLoader } from '@/lib/report-writing/draft-detail-loader';
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReferrerSearchBox from "@/components/report-writing/ReferrerSearchBox";
 import OpenAIDictationBox from "@/components/report-writing/OpenAIDictationBox";
 import SmartDictateBox from "@/components/report-writing/SmartDictateBox";
@@ -11,28 +13,6 @@ import ProviderTypistSmsBox from "@/components/report-writing/ProviderTypistSmsB
 type ReportTypeOption = {
   value: string;
   label: string;
-};
-
-type Draft = {
-  id: string;
-  patient_name: string | null;
-  patient_dob: string | null;
-  referrer_name: string | null;
-  referrer_address: string | null;
-  report_type: string;
-  edited_text: string | null;
-  ai_generated_text: string | null;
-  status: string;
-  created_at: string;
-  provider_approved_at?: string | null;
-  uploaded_to_praktika?: boolean | null;
-  uploaded_to_praktika_at?: string | null;
-  emailed_to_referrer_at?: string | null;
-  emailed_to_referrer_email?: string | null;
-  praktika_patient_id?: string | null;
-  typist_instructions?: string | null;
-  typist_queries?: string | null;
-  source_type?: LetterSourceType | string | null;
 };
 
 type ProviderReportClientProps = {
@@ -557,14 +537,29 @@ export default function ProviderReportClient({
   const [dictatedLetter, setDictatedLetter] = useState("");
   const [typistInstructions, setTypistInstructions] = useState("");
 
-  const [letterDrafts, setLetterDrafts] = useState<Draft[]>([]);
-  const [approvalDrafts, setApprovalDrafts] = useState<Draft[]>([]);
-  const [approvedDrafts, setApprovedDrafts] = useState<Draft[]>([]);
+  const [letterDrafts, setLetterDrafts] = useState<DraftListItem[]>([]);
+  const [approvalDrafts, setApprovalDrafts] = useState<DraftListItem[]>([]);
+  const [approvedDrafts, setApprovedDrafts] = useState<DraftListItem[]>([]);
   const [selectedDraft, setSelectedDraft] = useState<Draft | null>(null);
   const [selectedApprovalDraft, setSelectedApprovalDraft] =
     useState<Draft | null>(null);
   const [selectedApprovedDraft, setSelectedApprovedDraft] =
     useState<Draft | null>(null);
+  const detailSelectionRef = useRef(0);
+  const detailProviderRef = useRef(providerId);
+  const detailLoaderRef = useRef(createDraftDetailLoader());
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  useEffect(() => {
+    detailProviderRef.current = providerId;
+    setLetterDrafts([]);
+    setApprovalDrafts([]);
+    setApprovedDrafts([]);
+    resetLetterEditor();
+    setSelectedApprovalDraft(null);
+    setSelectedApprovedDraft(null);
+    return () => { detailSelectionRef.current += 1; };
+  }, [providerId]);
   const [draftSearch, setDraftSearch] = useState("");
   const [recordingState, setRecordingState] = useState<
     "idle" | "recording" | "paused" | "saving"
@@ -719,22 +714,23 @@ export default function ProviderReportClient({
 
     const data = await readJsonSafely(response);
 
+    if (providerId !== detailProviderRef.current) return;
     if (data.success) {
-      const drafts: Draft[] = data.drafts || [];
+      const drafts: DraftListItem[] = data.drafts || [];
 
       setLetterDrafts(
-        drafts.filter((draft: Draft) => draft.status === "draft"),
+        drafts.filter((draft: DraftListItem) => draft.status === "draft"),
       );
 
       setApprovalDrafts(
         drafts.filter(
-          (draft: Draft) => draft.status === "awaiting_provider_approval",
+          (draft: DraftListItem) => draft.status === "awaiting_provider_approval",
         ),
       );
 
       setApprovedDrafts(
         drafts.filter(
-          (draft: Draft) =>
+          (draft: DraftListItem) =>
             draft.status === "approved" &&
             !Boolean(draft.emailed_to_referrer_at),
         ),
@@ -785,6 +781,10 @@ export default function ProviderReportClient({
   }
 
   function resetLetterEditor() {
+    detailSelectionRef.current += 1;
+    setLoading(false);
+    setDetailLoading(false);
+    setDetailError(null);
     setPatientFirstName("");
     setPatientLastName("");
     setPatientDob("");
@@ -800,7 +800,7 @@ export default function ProviderReportClient({
     setSelectedDraft(null);
   }
 
-  function loadDraftIntoEditor(draft: Draft) {
+  function applyDraftToEditor(draft: Draft) {
     const splitName = splitPatientName(draft.patient_name);
 
     setSelectedDraft(draft);
@@ -829,7 +829,7 @@ export default function ProviderReportClient({
   function editApprovedLetter(draft: Draft | null) {
     if (!draft) return;
 
-    loadDraftIntoEditor(draft);
+    applyDraftToEditor(draft);
     setSelectedApprovedDraft(null);
     setActiveTab("drafts");
     setSidebarView("drafts");
@@ -840,6 +840,8 @@ export default function ProviderReportClient({
   }
 
   async function unapproveLetter(draft: Draft | null) {
+    const selectionToken = detailSelectionRef.current;
+    const isCurrentSelection = () => selectionToken === detailSelectionRef.current && providerId === detailProviderRef.current;
     if (!draft) return;
 
     const confirmed = confirm(
@@ -867,6 +869,7 @@ export default function ProviderReportClient({
       });
 
       const data = await readJsonSafely(response);
+      if (!isCurrentSelection()) { void loadDrafts(); return; }
 
       if (!response.ok || !data.success) {
         alert(data.error || "Failed to unapprove letter.");
@@ -889,7 +892,7 @@ export default function ProviderReportClient({
 
       await loadDrafts();
     } finally {
-      setLoading(false);
+      if (isCurrentSelection()) setLoading(false);
     }
   }
 
@@ -897,6 +900,8 @@ export default function ProviderReportClient({
     status?: string;
     showToast?: boolean;
   }) {
+    const selectionToken = detailSelectionRef.current;
+    const isCurrentSelection = () => selectionToken === detailSelectionRef.current && providerId === detailProviderRef.current;
     if (!selectedDraft) return null;
     if (!validatePatientName()) return null;
 
@@ -934,6 +939,7 @@ export default function ProviderReportClient({
       });
 
       const data = await readJsonSafely(response);
+      if (!isCurrentSelection()) { void loadDrafts(); return; }
 
       if (!data.success) {
         alert(data.error || "Failed to update letter.");
@@ -960,7 +966,7 @@ export default function ProviderReportClient({
 
       return data;
     } finally {
-      setLoading(false);
+      if (isCurrentSelection()) setLoading(false);
     }
   }
 
@@ -1127,6 +1133,8 @@ export default function ProviderReportClient({
   async function approveCurrentDraft(options?: {
     sourceType?: LetterSourceType;
   }) {
+    const selectionToken = detailSelectionRef.current;
+    const isCurrentSelection = () => selectionToken === detailSelectionRef.current && providerId === detailProviderRef.current;
     const sourceType =
       options?.sourceType ||
       (selectedDraft
@@ -1175,6 +1183,7 @@ export default function ProviderReportClient({
         });
 
         const data = await readJsonSafely(response);
+        if (!isCurrentSelection()) { void loadDrafts(); return; }
 
         if (!data.success) {
           alert(data.error || "Failed to approve draft");
@@ -1194,7 +1203,7 @@ export default function ProviderReportClient({
         setSidebarView("approved");
         await loadDrafts();
       } finally {
-        setLoading(false);
+        if (isCurrentSelection()) setLoading(false);
       }
 
       return;
@@ -1237,6 +1246,7 @@ export default function ProviderReportClient({
       });
 
       const data = await readJsonSafely(response);
+      if (!isCurrentSelection()) { void loadDrafts(); return; }
 
       if (!data.success) {
         alert(data.error || "Failed to approve letter");
@@ -1256,7 +1266,7 @@ export default function ProviderReportClient({
       setSidebarView("approved");
       await loadDrafts();
     } finally {
-      setLoading(false);
+      if (isCurrentSelection()) setLoading(false);
     }
   }
 
@@ -1431,6 +1441,8 @@ export default function ProviderReportClient({
   }
 
   async function approveDraft() {
+    const selectionToken = detailSelectionRef.current;
+    const isCurrentSelection = () => selectionToken === detailSelectionRef.current && providerId === detailProviderRef.current;
     if (!selectedApprovalDraft) return;
 
     const finalText = selectedApprovalDraft.edited_text || "";
@@ -1467,6 +1479,7 @@ export default function ProviderReportClient({
       });
 
       const data = await readJsonSafely(response);
+      if (!isCurrentSelection()) { void loadDrafts(); return; }
 
       if (!data.success) {
         alert(data.error || "Failed to approve draft");
@@ -1483,11 +1496,13 @@ export default function ProviderReportClient({
       setActiveTab("approved");
       await loadDrafts();
     } finally {
-      setLoading(false);
+      if (isCurrentSelection()) setLoading(false);
     }
   }
 
   async function returnToTypist() {
+    const selectionToken = detailSelectionRef.current;
+    const isCurrentSelection = () => selectionToken === detailSelectionRef.current && providerId === detailProviderRef.current;
     if (!selectedApprovalDraft) return;
 
     const confirmed = confirm(
@@ -1512,6 +1527,7 @@ export default function ProviderReportClient({
       });
 
       const data = await readJsonSafely(response);
+      if (!isCurrentSelection()) { void loadDrafts(); return; }
 
       if (!data.success) {
         alert(data.error || "Failed to return draft");
@@ -1522,11 +1538,11 @@ export default function ProviderReportClient({
       setSelectedApprovalDraft(null);
       await loadDrafts();
     } finally {
-      setLoading(false);
+      if (isCurrentSelection()) setLoading(false);
     }
   }
 
-  async function deleteDraft(draft: Draft | null) {
+  async function deleteDraft(draft: DraftListItem | null) {
     if (!draft) return;
 
     const confirmed = confirm(
@@ -1571,7 +1587,7 @@ export default function ProviderReportClient({
     }
   }
 
-  function selectApprovalDraft(draft: Draft) {
+  function applyApprovalDraft(draft: Draft) {
     setSelectedApprovalDraft(draft);
     setSidebarView("approval");
     setShowOriginal(false);
@@ -1612,24 +1628,30 @@ export default function ProviderReportClient({
     loadDrafts();
   }
 
-  function selectSidebarDraft(draft: Draft) {
-    if (sidebarView === "drafts") {
-      loadDraftIntoEditor(draft);
-      setSidebarView("drafts");
-      return;
+  async function selectProviderDraft(item: DraftListItem, view: SidebarView) {
+    resetLetterEditor();
+    const token = detailSelectionRef.current;
+    setSelectedApprovalDraft(null);
+    setSelectedApprovedDraft(null);
+    setDetailLoading(true);
+    setSidebarView(view);
+    setActiveTab(view);
+    try {
+      const draft = await detailLoaderRef.current(item.id, providerId);
+      if (token !== detailSelectionRef.current || providerId !== detailProviderRef.current) return;
+      if (view === 'drafts') applyDraftToEditor(draft);
+      else if (view === 'approval') applyApprovalDraft(draft);
+      else setSelectedApprovedDraft(draft);
+    } catch {
+      if (token === detailSelectionRef.current && providerId === detailProviderRef.current)
+        setDetailError('Letter could not be loaded. Please select it again.');
+    } finally {
+      if (token === detailSelectionRef.current && providerId === detailProviderRef.current) setDetailLoading(false);
     }
-
-    if (sidebarView === "approval") {
-      selectApprovalDraft(draft);
-      setActiveTab("approval");
-      setSidebarView("approval");
-      return;
-    }
-
-    setSelectedApprovedDraft(draft);
-    setActiveTab("approved");
-    setSidebarView("approved");
   }
+  function selectSidebarDraft(draft: DraftListItem) { void selectProviderDraft(draft, sidebarView); }
+  function loadDraftIntoEditor(draft: DraftListItem) { void selectProviderDraft(draft, 'drafts'); }
+  function selectApprovalDraft(draft: DraftListItem) { void selectProviderDraft(draft, 'approval'); }
 
   const sharedPatientFields = (
     <PatientAndReferrerFields
@@ -1914,6 +1936,9 @@ export default function ProviderReportClient({
         </aside>
 
         <main className="space-y-6">
+          {detailLoading && <p role="status">Loading letter…</p>}
+          {detailError && <p role="alert" className="text-red-700">{detailError}</p>}
+          <div inert={detailLoading || Boolean(detailError)} className="space-y-6">
           <ProviderTypistSmsBox providerId={providerId} />
 
           <section className="rounded-3xl border bg-white p-5 shadow-sm">
@@ -2563,7 +2588,7 @@ export default function ProviderReportClient({
                 {filteredApprovedDrafts.map((draft) => (
                   <button
                     key={draft.id}
-                    onClick={() => setSelectedApprovedDraft(draft)}
+                    onClick={() => { void selectProviderDraft(draft, 'approved'); }}
                     className={[
                       "w-full rounded-2xl border bg-white p-4 text-left shadow-sm hover:bg-slate-50",
                       selectedApprovedDraft?.id === draft.id
@@ -2683,6 +2708,7 @@ export default function ProviderReportClient({
               </div>
             </div>
           ) : null}
+          </div>
         </main>
       </div>
     </div>

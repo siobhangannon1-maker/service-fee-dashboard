@@ -1,7 +1,9 @@
 "use client";
+import { type DraftDetail as Draft, type DraftListItem, mergeDraftWorkflow } from '@/lib/report-writing/draft-contract';
+import { createDraftDetailLoader } from '@/lib/report-writing/draft-detail-loader';
 import { ManualVerificationButton } from "@/components/report-writing/ManualVerificationButton";
 import { RetryPraktikaButton } from "@/components/report-writing/RetryPraktikaButton";
-import { approvedWorkflow, type ResolvedWorkflow } from "@/lib/report-writing/resolved-workflow";
+import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
 import { remainsInApproved } from "@/lib/report-writing/praktika-retry";
 
 import { DEFAULT_PDF_BODY_FONT_SIZE, extractPdfBodyFontSize, pdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
@@ -39,40 +41,6 @@ type PreferredExampleOption = {
   scenario_tags: string[] | null;
   scenario_summary: string | null;
   is_preferred: boolean | null;
-};
-
-type Draft = {
-  workflow_resolved?: ResolvedWorkflow;
-  id: string;
-  patient_name: string | null;
-  patient_dob: string | null;
-  referrer_name: string | null;
-  referrer_address: string | null;
-  report_type: string;
-  clinical_notes?: string | null;
-  source_clinical_notes?: string | null;
-  edited_text: string | null;
-  ai_generated_text: string | null;
-  status: string;
-  praktika_patient_id?: string | null;
-  created_at: string;
-  uploaded_to_praktika?: boolean | null;
-  uploaded_to_praktika_at?: string | null;
-  emailed_to_referrer_at?: string | null;
-  emailed_to_referrer_email?: string | null;
-  emailed_to_referrer_resend_id?: string | null;
-  typist_instructions?: string | null;
-  typist_queries?: string | null;
-  workflow_status?: string | null;
-  workflow_started_at?: string | null;
-  workflow_completed_at?: string | null;
-  workflow_error?: string | null;
-  workflow_praktika_upload_status?: string | null;
-  workflow_icon_update_status?: string | null;
-  workflow_mediref_status?: string | null;
-  workflow_periodontal_chart_status?: string | null;
-  workflow_last_message?: string | null;
-  workflow_reconciliation_warning?: string | null;
 };
 
 type QueueItem = {
@@ -1163,7 +1131,7 @@ export default function TypistPage() {
   >([]);
   const [preferredExampleId, setPreferredExampleId] = useState("");
 
-  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [drafts, setDrafts] = useState<DraftListItem[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [activeQueueItemId, setActiveQueueItemId] = useState<string | null>(
     null,
@@ -1177,6 +1145,10 @@ export default function TypistPage() {
   );
 
   const [selectedDraft, setSelectedDraft] = useState<Draft | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [draftListError, setDraftListError] = useState<string | null>(null);
+  const detailLoaderRef = useRef(createDraftDetailLoader());
   const selectedDraftIdRef = useRef<string | null>(null);
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [listTab, setListTab] = useState<ListTab>("queue");
@@ -1290,7 +1262,13 @@ export default function TypistPage() {
     // Returning to A and editing again must not let an older A save arrive last.
     // B has its own chain and selection never waits for either request.
     const previous = patientSaveChainsRef.current.get(draftId) ?? Promise.resolve();
-    const next = previous.catch(() => {}).then(() => fetch("/api/report-writing/update-draft", request));
+    const next = previous.catch(() => {}).then(async () => {
+      const response = await fetch("/api/report-writing/update-draft", request);
+      const result = await response.clone().json().catch(() => null);
+      if (response.ok && result?.success && patientSaveChainsRef.current.get(draftId) === next)
+        localDraftEditsRef.current.delete(draftId);
+      return response;
+    });
     patientSaveChainsRef.current.set(draftId, next);
     void next.finally(() => {
       if (patientSaveChainsRef.current.get(draftId) === next) patientSaveChainsRef.current.delete(draftId);
@@ -1301,7 +1279,9 @@ export default function TypistPage() {
   function beginPatientSelection() {
     // Keep the latest local edit available if this draft is reopened before its
     // captured save finishes. Never overlay identity/status fields from another row.
-    if (selectedDraft) localDraftEditsRef.current.set(selectedDraft.id, {
+    if (selectedDraft && (Object.keys(pendingPatientSavesRef.current).length > 0 ||
+      patientSaveChainsRef.current.has(selectedDraft.id) || saveStatus === 'error' || saveStatus === 'unsaved'))
+      localDraftEditsRef.current.set(selectedDraft.id, {
       edited_text: getLetterTextForSave(), typist_queries: typistQueries || null,
       patient_name: patientName || null, patient_dob: patientDob || null,
       referrer_name: referrerName || null, referrer_address: referrerAddress || null,
@@ -2747,16 +2727,17 @@ export default function TypistPage() {
           continue;
         }
 
-        const refreshedDrafts: Draft[] = draftsData.drafts || [];
+        const refreshedDrafts: DraftListItem[] = draftsData.drafts || [];
         const refreshedDraft = refreshedDrafts.find(
           (draft) => draft.id === params.draft.id,
         );
 
+        if (params.providerId !== selectedProviderIdRef.current) return;
         setDrafts(refreshedDrafts);
 
         if (refreshedDraft) {
           setSelectedDraft((current) =>
-            current?.id === refreshedDraft.id ? refreshedDraft : current,
+            current?.id === refreshedDraft.id ? mergeDraftWorkflow(current, refreshedDraft) : current,
           );
 
           if (
@@ -2901,7 +2882,10 @@ export default function TypistPage() {
         const data = await response.json();
         if (!cancelled && response.ok && Array.isArray(data.drafts)) {
           setDrafts(data.drafts);
-          setSelectedDraft(current => current ? data.drafts.find((draft: Draft) => draft.id === current.id) || current : current);
+          setSelectedDraft(current => {
+            const item = current && (data.drafts as DraftListItem[]).find(draft => draft.id === current.id);
+            return current && item ? mergeDraftWorkflow(current, item) : current;
+          });
         }
       } catch { /* Keep the last known state; this poll never controls execution. */ }
       if (!cancelled) timer = setTimeout(poll, 5000);
@@ -2912,19 +2896,16 @@ export default function TypistPage() {
 
   async function loadDrafts(providerId: string, requestToken?: number) {
     const activeRequestToken = requestToken ?? providerDataRequestRef.current;
-
-    const response = await fetch(
-      `/api/report-writing/get-drafts?providerId=${providerId}`,
-    );
-
-    const data = await response.json();
-
-    if (!isCurrentProviderDataRequest(providerId, activeRequestToken)) {
-      return;
-    }
-
-    if (data.success) {
+    try {
+      const response = await fetch(`/api/report-writing/get-drafts?providerId=${encodeURIComponent(providerId)}`, { cache: 'no-store' });
+      const data = await response.json();
+      if (!isCurrentProviderDataRequest(providerId, activeRequestToken)) return;
+      if (!response.ok || !data.success || !Array.isArray(data.drafts)) throw new Error();
       setDrafts(data.drafts);
+      setDraftListError(null);
+    } catch {
+      if (isCurrentProviderDataRequest(providerId, activeRequestToken))
+        setDraftListError('Letters could not be loaded. Please refresh the list.');
     }
   }
 
@@ -3000,6 +2981,9 @@ export default function TypistPage() {
       const requestToken = providerDataRequestRef.current + 1;
       providerDataRequestRef.current = requestToken;
 
+      setDrafts([]);
+      setQueue([]);
+      setDraftListError(null);
       loadDrafts(selectedProviderId, requestToken);
       loadReportTypes(selectedProviderId);
       loadQueue(selectedProviderId, queueStatusTab, requestToken);
@@ -3161,8 +3145,10 @@ export default function TypistPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDraft?.id, patientName, patientDob]);
 
-  function clearForm() {
+  function clearForm(resetWorkflowOptions = true) {
     beginPatientSelection();
+    setDetailLoading(false);
+    setDetailError(null);
     setSelectedDraft(null);
     setActiveQueueItemId(null);
     setPatientFirstName("");
@@ -3190,24 +3176,49 @@ export default function TypistPage() {
     setPraktikaCandidates([]);
     setMatchingPatient(false);
     setSelectedPraktikaPatientId("");
-    setAttachPeriodontalChart(false);
-    setMedirefRecipientName("");
-    setMedirefRecipientPracticeName("");
-    setMedirefAutoMatchRecipient(true);
-    setMedirefRecipientEmail("");
-    setMedirefRecipientProviderNumber("");
-    setMedirefAdditionalRecipients([]);
-    setMedirefMessage("");
-    setMedirefConfirmed(false);
+    // A new/cleared workspace resets workflow controls. Selecting an existing
+    // letter keeps their established behavior; only patient/detail state reloads.
+    if (resetWorkflowOptions) {
+      setAttachPeriodontalChart(false);
+      setMedirefRecipientName("");
+      setMedirefRecipientPracticeName("");
+      setMedirefAutoMatchRecipient(true);
+      setMedirefRecipientEmail("");
+      setMedirefRecipientProviderNumber("");
+      setMedirefAdditionalRecipients([]);
+      setMedirefMessage("");
+      setMedirefConfirmed(false);
+    }
     setImageDraftId(null);
     setImageDraftError(null);
     setImageDraftCreating(false);
     autoImageDraftQueueIdRef.current = null;
   }
 
-  function selectDraft(draft: Draft, queueId: string | null = null) {
-    beginPatientSelection();
-    draft = { ...draft, ...localDraftEditsRef.current.get(draft.id) };
+  async function selectDraft(item: Pick<DraftListItem, 'id'>, queueId: string | null = null) {
+    clearForm(false);
+    const selectionToken = queueSelectionTokenRef.current;
+    const providerId = selectedProviderId;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken &&
+      selectedProviderIdRef.current === providerId;
+    setActiveQueueItemId(queueId);
+    setDetailLoading(true);
+    try {
+      // A pending local edit remains visible on reselection without waiting for
+      // or cancelling its server save. Only this draft's captured edit is merged.
+      const localEdit = localDraftEditsRef.current.get(item.id);
+      const loaded = await detailLoaderRef.current(item.id, providerId);
+      if (!isCurrentSelection()) return;
+      const draft = { ...loaded, ...localEdit };
+      applyDraftDetail(draft, queueId);
+    } catch {
+      if (isCurrentSelection()) setDetailError('Letter could not be loaded. Please select it again.');
+    } finally {
+      if (isCurrentSelection()) setDetailLoading(false);
+    }
+  }
+
+  function applyDraftDetail(draft: Draft, queueId: string | null = null) {
     setActiveQueueItemId(queueId);
     setLoading(false);
     setReferralAutoFillError("");
@@ -3421,7 +3432,13 @@ export default function TypistPage() {
   }
 
   async function startLetterFromQueue(item: QueueItem) {
+    if (item.report_draft_id) {
+      await selectDraft({ id: item.report_draft_id }, item.id);
+      return;
+    }
     beginPatientSelection();
+    setDetailLoading(false);
+    setDetailError(null);
     const selectionToken = queueSelectionTokenRef.current;
     setLoading(false);
 
@@ -3497,25 +3514,6 @@ export default function TypistPage() {
     setPraktikaCandidates([]);
     setMatchingPatient(false);
     setSelectedPraktikaPatientId(linkedPraktikaPatientId);
-
-    if (item.report_draft_id) {
-      try {
-        let linkedDraft = drafts.find(draft => draft.id === item.report_draft_id);
-        if (!linkedDraft) {
-          const response = await fetch(`/api/report-writing/get-drafts?providerId=${selectedProviderId}`);
-          const data = await response.json();
-          if (!isCurrentQueueSelection()) return;
-          if (!response.ok || !data.success) throw new Error("Linked draft could not be loaded.");
-          linkedDraft = (data.drafts as Draft[]).find(draft => draft.id === item.report_draft_id);
-        }
-        if (!isCurrentQueueSelection()) return;
-        if (!linkedDraft) throw new Error("Linked draft could not be loaded.");
-        selectDraft(linkedDraft, item.id);
-      } catch {
-        if (isCurrentQueueSelection()) { setSaveStatus("error"); setAutoGenerateStatus("error"); }
-      }
-      return;
-    }
 
     if (hasCachedReferrer) {
       setReferralAutoFillStatus("found");
@@ -4777,7 +4775,14 @@ export default function TypistPage() {
               </label>
               <select
                 value={selectedProviderId}
-                onChange={(e) => setSelectedProviderId(e.target.value)}
+                onChange={(e) => {
+                  clearForm();
+                  selectedProviderIdRef.current = e.target.value;
+                  providerDataRequestRef.current += 1;
+                  setDrafts([]);
+                  setQueue([]);
+                  setSelectedProviderId(e.target.value);
+                }}
                 className="mt-2 w-full rounded-xl border border-blue-300 bg-white p-3 text-sm font-semibold text-blue-950 shadow-sm"
               >
                 {providers.map((provider) => (
@@ -4819,7 +4824,7 @@ export default function TypistPage() {
             </h2>
 
             <button
-              onClick={clearForm}
+              onClick={() => clearForm()}
               className="mt-3 w-full rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
             >
               New Letter
@@ -5088,6 +5093,10 @@ export default function TypistPage() {
         </div>
 
         <div className="col-span-6 flex flex-col bg-white">
+          {draftListError && <p role="alert" className="p-4 text-red-700">{draftListError}</p>}
+          {detailLoading && <p role="status" className="p-4">Loading letter…</p>}
+          {detailError && <p role="alert" className="p-4 text-red-700">{detailError}</p>}
+          <div inert={detailLoading || Boolean(detailError)} className="flex min-h-0 flex-1 flex-col">
           <div className="border-b p-4">
             <h2 className="text-xl font-bold">
               {selectedDraft ? "Edit Existing Letter" : "Create New Letter"}
@@ -5807,6 +5816,7 @@ export default function TypistPage() {
                 ) : null}
               </>
             )}
+          </div>
           </div>
         </div>
       </div>

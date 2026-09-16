@@ -47,9 +47,8 @@ test('invalid workflow authorization never reserves',async()=>{const f=routeFixt
 test('uncertain reservation acknowledgement sanitized',async()=>{const f=routeFixture();f.setError();const r=await f.call(body);assert.equal(r.status,503);assert.doesNotMatch(await r.text(),/SECRET/);});
 test('authoritative failed child projects failed without mutating durable fields or querying MediRef',async()=>{
   const d={id:'draft',workflow_status:'failed',workflow_praktika_upload_status:'running',workflow_mediref_status:'completed'};
-  const db:any={from:(table:string)=>{assert.equal(table,'praktika_helper_jobs');const q:any={select:()=>q,eq:()=>q,in:()=>q,abortSignal:()=>q,
-    then:(resolve:any)=>Promise.resolve({data:[{id:continuationIntentId('draft'),status:'failed',response:{stage:'upload'}}]}).then(resolve),
-    maybeSingle:async()=>({data:{id:continuationChildId(continuationIntentId('draft'),'upload_report_to_praktika'),status:'failed'}})};return q;}};
+  const db:any={from:(table:string)=>{assert.equal(table,'praktika_helper_jobs');let kind='';const q:any={select:()=>q,eq:(_key:string,value:string)=>{kind=value;return q;},in:()=>q,or:()=>q,order:()=>q,range:()=>q,abortSignal:()=>q,
+    then:(resolve:any)=>Promise.resolve({data:kind==='complete_report_workflow'?[{id:continuationIntentId('draft'),status:'failed',response:{stage:'upload'}}]:[{id:continuationChildId(continuationIntentId('draft'),'upload_report_to_praktika'),status:'failed'}]}).then(resolve)};return q;}};
   const result:any=(await projectWorkflowRecovery(db,[d]))[0];assert.equal(result.workflow_praktika_upload_status,'failed');assert.equal(result.workflow_last_message,'Praktika upload needs verification.');assert.equal(result.workflow_mediref_status,'completed');assert.equal(d.workflow_praktika_upload_status,'running');
 });
 test('confirmation has separate cancel and affirmative controls; no mount-time mutation',()=>{

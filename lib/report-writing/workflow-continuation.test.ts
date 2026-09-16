@@ -138,7 +138,7 @@ test('lost MediRef enqueue acknowledgement observes new job instead of creating 
 test('durable helper failure survives failed draft update and refresh returns failed', async () => {
   const f = fixture(); f.child('failed'); f.events.push('fail-draft-update');
   await f.call(); assert.equal(f.intent.status, 'failed'); assert.equal(f.draft.workflow_status, 'running');
-  const db = { from: () => { const q: any = { select: () => q, eq: () => q, in: () => q,
+  const db = { from: () => { const q: any = { select: () => q, eq: () => q, in: () => q, or: () => q, order: () => q, range: () => q,
     abortSignal: () => q, maybeSingle: async () => ({ data: { id: 'failed-upload', status: 'failed' }, error: null }),
     then: (resolve: (value: unknown) => void) => Promise.resolve({ data: [{ ...f.intent, id: continuationIntentId(f.draft.id) }], error: null }).then(resolve) }; return q; } };
   for (let refresh = 0; refresh < 2; refresh++) {

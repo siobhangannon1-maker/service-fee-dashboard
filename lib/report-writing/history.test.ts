@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { toDraftListItem } from './draft-contract';
+import { readDraftList, readDocumentAvailability } from './draft-list-reader';
 import { projectWorkflowRecovery, staleWorkflowStatus } from './workflow-recovery';
 import { continuationIntentId } from './workflow-continuation-token';
 const source = readFileSync('app/api/report-writing/get-drafts/route.ts','utf8');
@@ -12,7 +14,7 @@ const code = ts.transpileModule(fn.getText(ast).replace('export ',''),{compilerO
 async function run(mode: string) {
   const drafts = ['waiting_for_authentication','pending','running','completed','failed'].map((state,i)=>({id:`draft-${i}`,workflow_status:state==='failed'?'failed':'running',workflow_praktika_upload_status:state,workflow_mediref_status:i===0?'completed':'pending',workflow_icon_update_status:'pending'}));
   const db = {from(table:string){
-    const q:any={select:()=>q,is:()=>q,order:()=>q,eq:()=>q,in:()=>q,abortSignal:()=>q,
+    const q:any={select:()=>q,is:()=>q,eq:()=>q,in:()=>q,or:()=>q,returns:()=>q,range:()=>q,order:()=>q,abortSignal:()=>q,
       then(resolve:(v:unknown)=>void,reject:(v:unknown)=>void){
         if(mode==='throw'&&table==='praktika_helper_jobs')return Promise.reject(new Error('SECRET')).then(resolve,reject);
         const error=(table==='report_drafts'&&mode==='base_error')||(table==='praktika_helper_jobs'&&mode==='lookup_error');
@@ -21,7 +23,7 @@ async function run(mode: string) {
         return Promise.resolve({data,error:error?{message:'SECRET_DATABASE_ERROR'}:null}).then(resolve,reject);
       }};return q;
   }};
-  const route=runInNewContext(code+'\nGET',{sensitiveApiAccess:async()=>null,supabase:db,projectWorkflowRecovery,staleWorkflowStatus,URL,NextResponse:{json:Response.json}});
+  const route=runInNewContext(code+'\nGET',{sensitiveApiAccess:async()=>null,supabase:db,readDraftList,readDocumentAvailability,toDraftListItem,projectWorkflowRecovery,staleWorkflowStatus,URL,NextResponse:{json:Response.json}});
   const response=await route(new Request('https://fixture.invalid/api/report-writing/get-drafts?providerId=all'));
   return {response,body:await response.json(),drafts};
 }

@@ -24,6 +24,8 @@ export function retentionSettings(env: Record<string, string | undefined>): Rete
 }
 export function retentionPlan(d: RetentionDraft, settings: RetentionSettings, now = Date.now()) {
   const r = d.workflow_resolved;
+  // Only durable historical provenance carries this hold; modern retention is unchanged.
+  if (r?.historicalRetention && r.historicalRetention.released !== true) return null;
   if (d.deleted_at || d.workflowStatusStale || !r || r.lookupUnavailable || r.status !== 'completed' ||
     !Number.isFinite(r.completedAt) || !r.completedAt || r.completedAt > now || r.completedAt <= 0) return null;
   const completedAt = new Date(r.completedAt).toISOString();

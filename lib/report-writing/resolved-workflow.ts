@@ -1,5 +1,7 @@
+import { durableHistoricalWorkflow, type HistoricalReconciliationEvent } from './historical-reconciliation';
 import { manualVerification } from './manual-verification';
 import { isConfirmedPraktikaUpload } from './praktika-upload-result';
+import { historicalWorkflowAssociation, type HistoricalEvidence } from './historical-workflow-evidence';
 
 export const WORKFLOW_STALE_MS = 30 * 60_000;
 export const staleWorkflowMessage = 'Workflow has not progressed. Review the unfinished workflow steps.';
@@ -14,14 +16,18 @@ export type ResolvedWorkflow = {
   medirefRecovery: boolean;
   // Retention only: never inferred from approval, job creation or polling.
   completedAt?: number | null;
+  historicalRetention?: { reconciliationId: string; released: boolean };
 };
 export type WorkflowDraft = {
-  id?: string; status?: string; workflow_status?: string | null;
+  id?: string; created_at?: string | null; status?: string; workflow_status?: string | null;
   workflow_praktika_upload_status?: string | null; workflow_mediref_status?: string | null;
   workflow_icon_update_status?: string | null; workflow_periodontal_chart_status?: string | null;
   periodontal_chart_attached_at?: string | null; periodontal_chart_attachment_name?: string | null;
   periodontal_chart_attachment_error?: string | null; uploaded_to_praktika?: boolean | null;
   emailed_to_referrer_at?: string | null; workflow_resolved?: ResolvedWorkflow;
+  praktika_patient_id?: string | null; praktika_letter_icon_appointment_id?: string | null;
+  praktika_letter_icon_updated_at?: string | null; praktika_letter_icon_update_response_preview?: string | null;
+  provider_approved_at?: string | null;
 };
 export type ReadJob = {
   id: string; status: string; job_type: string; app_user_id?: string | null;
@@ -32,6 +38,8 @@ export type ReadJob = {
 export type WorkflowEvidence = {
   parent?: ReadJob; hasOtherParent?: boolean; uploads: ReadJob[]; icons: ReadJob[]; mediref: ReadJob[];
   currentUploadId?: string; currentIconId?: string;
+  historical?: HistoricalEvidence;
+  reconciliations?: HistoricalReconciliationEvent[];
   // Liveness is corroboration only; never a workflow-progress timestamp or write gate.
   livePraktikaActors: ReadonlySet<string>; liveMediref: boolean;
 };
@@ -57,6 +65,8 @@ export function unavailableWorkflow(): ResolvedWorkflow {
     lastProgressAt: null, lookupUnavailable: true, praktikaRecovery: false, medirefRecovery: false };
 }
 export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Date.now()): ResolvedWorkflow {
+  const durable=durableHistoricalWorkflow(d,e,now);
+  if (durable) return durable;
   const parent = e.parent;
   const parentValid = Boolean(parent && parent.request?.reportDraftId === d.id && parent.app_user_id &&
     parent.request?.actorUserId === parent.app_user_id);
@@ -66,7 +76,8 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
   // Pre-continuation workflows used random child IDs and no continuation linkage.
   // Only a terminal draft with one unambiguous legacy attempt per required branch
   // can use those IDs. Never fall back here for a modern/malformed/retry workflow.
-  const legacy = !parent && !e.hasOtherParent && d.workflow_status === 'completed'
+  const historical = historicalWorkflowAssociation(d,e);
+  const legacy = Boolean(historical) || !parent && !e.hasOtherParent && d.workflow_status === 'completed'
     && d.workflow_praktika_upload_status === 'completed'
     && (d.workflow_icon_update_status === 'completed' || skipped(d.workflow_icon_update_status))
     && (d.workflow_mediref_status === 'completed' || skipped(d.workflow_mediref_status))
@@ -74,8 +85,8 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
     && [...e.uploads, ...e.icons].every(j => j.request?.reportDraftId === d.id &&
       !j.request?.continuationId && !j.request?.manualRetry)
     && e.mediref.every(j => j.payload?.draftId === d.id && !j.payload?.workflowContinuationId && !j.payload?.retryMediref);
-  const upload = parent ? e.uploads.find(j => j.id === e.currentUploadId && linked(j)) : legacy ? e.uploads[0] : undefined;
-  const icon = parent ? e.icons.find(j => j.id === e.currentIconId && linked(j)) : legacy ? e.icons[0] : undefined;
+  const upload = parent ? e.uploads.find(j => j.id === e.currentUploadId && linked(j)) : historical?.upload || (legacy ? e.uploads[0] : undefined);
+  const icon = parent ? e.icons.find(j => j.id === e.currentIconId && linked(j)) : historical?.icon || (legacy ? e.icons[0] : undefined);
   const medJobs = e.mediref.filter(j => j.payload?.draftId === d.id &&
     (!j.payload?.workflowContinuationId || j.payload?.workflowContinuationId === parent?.id));
   const med = [...medJobs].sort((a,b) => time(b.created_at) - time(a.created_at) || b.id.localeCompare(a.id))[0];

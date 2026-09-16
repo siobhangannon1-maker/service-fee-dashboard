@@ -2,62 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { ManualVerificationButton, ManualVerificationHistory } from "@/components/report-writing/ManualVerificationButton"
-import type { ManualVerification } from "@/lib/report-writing/manual-verification"
+import type { DraftListItem as Draft } from "@/lib/report-writing/draft-contract"
 import { RetryMedirefButton } from "./RetryMedirefButton"
 import { MedirefToolsButton } from "./MedirefToolsButton"
 
 type Provider = {
   id: string
   name: string
-}
-
-type Draft = {
-  workflow_manual_verification?: ManualVerification[];
-  id: string
-  provider_id?: string | null
-  provider_name?: string | null
-  patient_name: string | null
-  patient_dob: string | null
-  referrer_name: string | null
-  report_type: string
-  edited_text: string | null
-  ai_generated_text: string | null
-  status: string
-  created_at: string
-
-  uploaded_to_praktika?: boolean | null
-  uploaded_to_praktika_at?: string | null
-  emailed_to_referrer_at?: string | null
-  emailed_to_referrer_email?: string | null
-  emailed_to_referrer_resend_id?: string | null
-  completed_at?: string | null
-
-  drafted_by_initials?: string | null
-  drafted_by_name?: string | null
-  approved_by_initials?: string | null
-  approved_by_name?: string | null
-  uploaded_by_initials?: string | null
-  uploaded_by_name?: string | null
-  emailed_by_initials?: string | null
-  emailed_by_name?: string | null
-
-  sensitive_source_deleted_at?: string | null
-  ai_text_deleted_at?: string | null
-  final_text_deleted_at?: string | null
-  retention_status?: string | null
-
-  workflow_status?: string | null
-  workflow_error?: string | null
-  workflow_praktika_upload_status?: string | null
-  workflow_icon_update_status?: string | null
-  workflow_mediref_status?: string | null
-  workflow_periodontal_chart_status?: string | null
-  workflow_last_message?: string | null
-
-  praktika_letter_icon_updated_at?: string | null
-  periodontal_chart_attached_at?: string | null
-  periodontal_chart_attachment_name?: string | null
-  periodontal_chart_attachment_error?: string | null
 }
 
 type StatusFilter =
@@ -119,7 +70,8 @@ function getFilenameFromResponse(response: Response, fallback: string) {
 }
 
 function hasFinalText(draft: Draft) {
-  return Boolean((draft.edited_text || draft.ai_generated_text || "").trim())
+  // Unknown availability can be checked by the existing authoritative PDF route.
+  return draft.has_final_text !== false
 }
 
 function isUploadedToPraktika(draft: Draft) {

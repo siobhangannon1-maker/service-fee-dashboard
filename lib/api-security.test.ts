@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { readDraftList, readDocumentAvailability } from './report-writing/draft-list-reader';
+import { toDraftListItem } from './report-writing/draft-contract';
 
 const compile = (source: string) => ts.transpileModule(source, { compilerOptions: {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
@@ -81,10 +83,10 @@ test('active authorized History access reaches the existing durable response', a
   const ast = ts.createSourceFile('route.ts', source, ts.ScriptTarget.Latest, true);
   const fn = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'GET')!;
   const draft = { id: 'fixture', workflow_status: 'running' };
-  const q: any = { select: () => q, is: () => q, order: () => q, then: (resolve: any) => resolve({ data: [draft], error: null }) };
+  const q: any = { select: () => q, is: () => q, order: () => q, or:()=>q, range:()=>q, returns:()=>q, abortSignal:()=>q, then: (resolve: any) => resolve({ data: [draft], error: null }) };
   const run = runInNewContext(compile(fn.getText(ast).replace(/^export /, '')) + '\nGET', {
     sensitiveApiAccess: authentication('active').guard, URL, NextResponse: { json: Response.json },
-    supabase: { from: () => q }, projectWorkflowRecovery: async (_db: unknown, drafts: unknown) => drafts,
+    supabase: { from: () => q }, readDraftList, readDocumentAvailability, toDraftListItem, projectWorkflowRecovery: async (_db: unknown, drafts: unknown) => drafts,
   });
   const result = await run(new Request('https://fixture.invalid'));
   assert.equal(result.status, 200); assert.equal((await result.json()).drafts[0].id, 'fixture');

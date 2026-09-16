@@ -95,7 +95,7 @@ test('real read projection returns only safe resolved metadata and never mutates
   const db={from(table:string){let filtered=tables[table]||[];const q:Record<string,unknown>={};
     q.select=()=>q;q.eq=(key:string,value:unknown)=>{filtered=filtered.filter(j=>(j as unknown as Record<string,unknown>)[key]===value);return q;};
     q.in=(key:string,values:unknown[])=>{filtered=filtered.filter(j=>values.includes(key==='request->>reportDraftId'?j.request?.reportDraftId:key==='payload->>draftId'?j.payload?.draftId:(j as unknown as Record<string,unknown>)[key]));return q;};
-    q.order=()=>q;q.range=()=>q;q.abortSignal=()=>q;q.then=(fn:(v:unknown)=>unknown)=>Promise.resolve({data:filtered,error:null}).then(fn);return q;
+    q.or=()=>q;q.order=()=>q;q.range=()=>q;q.abortSignal=()=>q;q.then=(fn:(v:unknown)=>unknown)=>Promise.resolve({data:filtered,error:null}).then(fn);return q;
   }};
   const before=JSON.stringify(f.d);const [d]=await projectWorkflowRecovery(db as never,[{...f.d,id:f.d.id!}]);
   assert.equal(d.workflow_resolved?.status,'completed');assert.equal(JSON.stringify(f.d),before);
@@ -107,20 +107,20 @@ test('invalid manual verification cannot establish success',()=>{const f=complet
 test('completed MediRef without accepted result remains uncertain',()=>{const f=completed();f.med.result={success:true};assert.equal(resolved(f).branches.mediref,'failed');assert.equal(appears(f),true);});
 test('auxiliary database failure returns durable row with safe unresolved presentation',async()=>{
   const f=fixture();const original=JSON.stringify(f.d);
-  const db={from(){const q={select:()=>q,eq:()=>q,in:()=>q,order:()=>q,range:()=>q,abortSignal:()=>q,
+  const db={from(){const q={select:()=>q,eq:()=>q,or:()=>q,in:()=>q,order:()=>q,range:()=>q,abortSignal:()=>q,
     then:(fn:(v:unknown)=>unknown)=>Promise.resolve({data:null,error:{message:'PRIVATE_DATABASE_ERROR'}}).then(fn)};return q;}};
   const [d]=await projectWorkflowRecovery(db as never,[{...f.d,id:f.d.id!}]);
   assert.equal(d.workflow_praktika_upload_status,'running');assert.equal(d.workflow_resolved?.lookupUnavailable,true);
   assert.equal(shouldAppearInApproved(d),true);assert.doesNotMatch(JSON.stringify(d),/PRIVATE_DATABASE_ERROR/);assert.equal(JSON.stringify(f.d),original);
 });
 test('failed evidence batch cannot hide rows or spoil a separate successful batch',async()=>{
-  const drafts=Array.from({length:51},(_,i)=>({id:`synthetic-${i}`,status:'approved'}));
-  const db={from(){let broken=false;const q={select:()=>q,eq:()=>q,order:()=>q,range:()=>q,abortSignal:()=>q,
+  const drafts=Array.from({length:101},(_,i)=>({id:`synthetic-${i}`,status:'approved'}));
+  const db={from(){let broken=false;const q={select:()=>q,eq:()=>q,or:()=>q,order:()=>q,range:()=>q,abortSignal:()=>q,
     in:(key:string,ids:string[])=>{if(key==='request->>reportDraftId'&&ids.includes('synthetic-0'))broken=true;return q;},
     then:(fn:(v:unknown)=>unknown)=>Promise.resolve({data:broken?null:[],error:broken?{message:'PRIVATE'}:null}).then(fn)};return q;}};
   const output=await projectWorkflowRecovery(db as never,drafts) as Array<typeof drafts[number]&WorkflowDraft>;
-  assert.equal(output.length,51);assert.equal(output[0].workflow_resolved?.lookupUnavailable,true);
-  assert.equal(output[50].workflow_resolved?.status,'not_started');assert.ok(output.every(shouldAppearInApproved));
+  assert.equal(output.length,101);assert.equal(output[0].workflow_resolved?.lookupUnavailable,true);
+  assert.equal(output[100].workflow_resolved?.status,'not_started');assert.ok(output.every(shouldAppearInApproved));
 });
 function kimFixture() {
   const f=completed();

@@ -37,7 +37,7 @@ test('configuration requires HTTPS origin and signing material; matched tokens o
 });
 test('configuration problem and absent dispatch surface safe actionable state on refresh', async () => {
   for (const issue of ['configuration_unavailable', undefined]) {
-    const db = { from() { const q: any = { select:()=>q,eq:()=>q,in:()=>q,abortSignal:async()=>({data:[{
+    const db = { from() { const q: any = { select:()=>q,eq:()=>q,in:()=>q,or:()=>q,range:()=>q,order:()=>q,abortSignal:async()=>({data:[{
       id:continuationIntentId('draft'),status:'waiting',response:{issue},updated_at:new Date(0).toISOString(),
     }],error:null}) };return q;} };
     const [draft] = await projectWorkflowRecovery(db as any,[{id:'draft',workflow_status:'running',workflow_last_message:''}]);
