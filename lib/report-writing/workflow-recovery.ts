@@ -1,3 +1,4 @@
+import {projectHistoricalAttention,historicalAttentionAction,historicalAttentionInvalidated} from './historical-attention';
 import {manualHistoricalMedirefActions} from './manual-historical-mediref';
 import { historicalReconciliationAction, historicalInvalidationAction, historicalRetentionReleaseAction, type HistoricalReconciliationEvent } from './historical-reconciliation';
 import { resolveWorkflow, unavailableWorkflow, type ReadJob, type WorkflowDraft } from './resolved-workflow';
@@ -104,7 +105,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     reader.read<ReadJob>([...childIds.values()].filter(id=>!uploads.has(id)),batch=>db.from('praktika_helper_jobs')
       .select(workflowJobColumns).eq('job_type','upload_report_to_praktika').in('id',batch)),
     reader.read<HistoricalReconciliationEvent>(ids,batch=>db.from('report_writing_audit_events')
-      .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction,...manualHistoricalMedirefActions]).in('entity_id',batch)),
+      .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction,...manualHistoricalMedirefActions,historicalAttentionAction,historicalAttentionInvalidated]).in('entity_id',batch)),
     reader.read<PraktikaLive>(actors,batch=>db.from('praktika_sessions').select('id,app_user_id,status,helper_instance_id,helper_heartbeat_at')
       .eq('scope','user').in('app_user_id',batch)),
     reader.read<MedirefLive>(medirefRead.rows.some(active)?['practice']:[],()=>db.from('mediref_sessions')
@@ -130,13 +131,14 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     }
     const parent=parents.get(continuationIntentId(d.id));
     const response=parent?.response as {retryUploadId?:string}|null;
-    output[i]={...projected[i],workflow_resolved:resolveWorkflow(d,{
+    const evidence = {
       parent,hasOtherParent:parentRead.rows.some(j=>j.request?.reportDraftId===d.id && j.id!==parent?.id),
       uploads:jobs.filter(j=>j.job_type==='upload_report_to_praktika'),icons:jobs.filter(j=>j.job_type==='update_praktika_letter_icons'),mediref,
       currentUploadId:parent?response?.retryUploadId || continuationChildId(parent.id,'upload_report_to_praktika'):undefined,
       currentIconId:parent?continuationChildId(parent.id,'update_praktika_letter_icons'):undefined,
       livePraktikaActors,liveMediref,reconciliations:reconciliations.rows.filter(event=>event.entity_id===d.id),
-    },now)};
+    };
+    output[i]={...projected[i],workflow_resolved:resolveWorkflow(d,evidence,now),workflow_attention:projectHistoricalAttention(d,evidence,now)};
   }
   return output;
 }

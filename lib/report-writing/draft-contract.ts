@@ -15,6 +15,7 @@ export type DraftListItem = {
   uploaded_to_praktika?: boolean | null;
   has_final_text: boolean | null; // null means availability lookup was unavailable.
   workflow_resolved?: ResolvedWorkflow;
+  workflow_attention?: import('./historical-attention').WorkflowAttention;
   workflow_manual_verification?: ManualVerification[];
   workflowStatusStale?: boolean;
   workflow_reconciliation_warning?: string | null;
@@ -120,7 +121,7 @@ export const draftListColumns = [
 ] as const;
 // This preview is evidence for historical icon association. Keep it server-side.
 export const draftListSelect = [...draftListColumns, 'praktika_letter_icon_update_response_preview'].join(',');
-const projectionFields = ['workflow_resolved', 'workflow_manual_verification', 'workflowStatusStale',
+const projectionFields = ['workflow_attention', 'workflow_resolved', 'workflow_manual_verification', 'workflowStatusStale',
   'workflow_reconciliation_warning', 'praktikaFailedUploadId'] as const;
 export function toDraftListItem(row: Record<string, unknown>, availability: boolean | null): DraftListItem {
   const output: Record<string, unknown> = { has_final_text: availability };

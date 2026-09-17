@@ -1,3 +1,5 @@
+import type {WorkflowAttention} from './historical-attention';
+import {nonOperationalDraftIds} from './non-operational-drafts';
 import {manualHistoricalMedirefWorkflow, type HistoricalMedirefProvenance} from './manual-historical-mediref';
 import { durableHistoricalWorkflow, type HistoricalReconciliationEvent } from './historical-reconciliation';
 import { manualVerification } from './manual-verification';
@@ -21,6 +23,7 @@ export type ResolvedWorkflow = {
   historicalRetention?: { reconciliationId: string; released: boolean };
 };
 export type WorkflowDraft = {
+  workflow_attention?: WorkflowAttention; updated_at?: string | null;
   id?: string; created_at?: string | null; status?: string; workflow_status?: string | null;
   workflow_praktika_upload_status?: string | null; workflow_mediref_status?: string | null;
   workflow_icon_update_status?: string | null; workflow_periodontal_chart_status?: string | null;
@@ -166,7 +169,8 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
       && d.workflow_mediref_status === 'failed' && !verifiedMed && e.mediref.every(j => j.status === 'failed')) };
 }
 export function shouldAppearInApproved(draft: WorkflowDraft): boolean {
-  return ['approved','uploaded_to_praktika'].includes(draft.status || '') && draft.workflow_resolved?.status !== 'completed';
+  return ['approved','uploaded_to_praktika'].includes(draft.status || '') && draft.workflow_resolved?.status !== 'completed'
+    && !nonOperationalDraftIds.has(draft.id || '') && !draft.workflow_attention;
 }
 // Missing/failed enrichment must never fall back to raw error text or an endless spinner.
 export function approvedWorkflow(draft: WorkflowDraft): ResolvedWorkflow {

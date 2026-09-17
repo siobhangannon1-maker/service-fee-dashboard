@@ -180,6 +180,7 @@ function hasWorkflowIssue(draft: Draft) {
 }
 
 function getStatusLabel(draft: Draft) {
+  if (draft.workflow_attention) return draft.workflow_attention.message
   if (hasWorkflowIssue(draft)) return "Workflow issue"
   if (draft.completed_at) return "Completed"
   if (draft.emailed_to_referrer_at) return "Emailed"
