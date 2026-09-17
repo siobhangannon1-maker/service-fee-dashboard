@@ -1,4 +1,5 @@
 "use client";
+import { startActiveWorkflowPolling } from '@/lib/report-writing/active-workflow-poll';
 import { type DraftDetail as Draft, type DraftListItem, mergeDraftWorkflow } from '@/lib/report-writing/draft-contract';
 import { createDraftDetailLoader } from '@/lib/report-writing/draft-detail-loader';
 import { ManualVerificationButton } from "@/components/report-writing/ManualVerificationButton";
@@ -2869,30 +2870,32 @@ export default function TypistPage() {
     }
   }
 
-  const hasRunningWorkflows = drafts.some(draft => draft.workflow_status === "running");
+  const activeWorkflowDrafts = useRef(drafts);
+  activeWorkflowDrafts.current = drafts;
+  const activeWorkflowIds = drafts.filter(draft => draft.provider_id === selectedProviderId && draft.workflow_status === "running")
+    .map(draft => draft.id).sort().join(',');
   useEffect(() => {
-    if (!selectedProviderId || !hasRunningWorkflows) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
+    if (!selectedProviderId || !activeWorkflowIds) return;
+    const requestToken = providerDataRequestRef.current;
+    return startActiveWorkflowPolling({
+      drafts: activeWorkflowDrafts.current.filter(draft => draft.provider_id === selectedProviderId),
+      providerId: selectedProviderId,
+      fetch,
+      refresh: async signal => {
         const response = await fetch(`/api/report-writing/get-drafts?providerId=${encodeURIComponent(selectedProviderId)}`, {
-          cache: "no-store", signal: AbortSignal.timeout(10000),
+          cache: "no-store", signal,
         });
         const data = await response.json();
-        if (!cancelled && response.ok && Array.isArray(data.drafts)) {
-          setDrafts(data.drafts);
-          setSelectedDraft(current => {
-            const item = current && (data.drafts as DraftListItem[]).find(draft => draft.id === current.id);
-            return current && item ? mergeDraftWorkflow(current, item) : current;
-          });
-        }
-      } catch { /* Keep the last known state; this poll never controls execution. */ }
-      if (!cancelled) timer = setTimeout(poll, 5000);
-    };
-    timer = setTimeout(poll, 5000);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [selectedProviderId, hasRunningWorkflows]);
+        if (signal.aborted || !isCurrentProviderDataRequest(selectedProviderId, requestToken)) return;
+        if (!response.ok || !data.success || !Array.isArray(data.drafts)) throw new Error();
+        setDrafts(data.drafts);
+        setSelectedDraft(current => {
+          const item = current && (data.drafts as DraftListItem[]).find(draft => draft.id === current.id);
+          return current && item ? mergeDraftWorkflow(current, item) : current;
+        });
+      },
+    });
+  }, [selectedProviderId, activeWorkflowIds]);
 
   async function loadDrafts(providerId: string, requestToken?: number) {
     const activeRequestToken = requestToken ?? providerDataRequestRef.current;
