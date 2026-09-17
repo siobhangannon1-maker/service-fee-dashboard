@@ -70,24 +70,6 @@ test('waiting replacement activation is conditional and never resets runnable or
   }
 });
 
-test('button requires affirmative confirmation; cancel and duplicate click are safe',async()=>{
-  const source=readFileSync('components/report-writing/RetryPraktikaButton.tsx','utf8').replace(/^import .*;$/gm,'').replace('export function','function');
-  const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText;
-  const state:any[]=[];let cursor=0,effectRun=false,posts=0,queued=0;
-  const useState=(initial:any)=>{const slot=cursor++;if(!(slot in state))state[slot]=initial;return[state[slot],(value:any)=>{state[slot]=value;}];};
-  const component=runInNewContext(js+'\nRetryPraktikaButton',{
-    setTimeout,clearTimeout,useState,useRef:(value:any)=>useState({current:value})[0],useEffect:(run:()=>void)=>{if(!effectRun){effectRun=true;run();}},AbortController,encodeURIComponent,
-    React:{createElement:(type:any,props:any,...children:any[])=>({type,props:{...props,children}})},
-    fetch:async(_url:string,options:any)=>{if(options.method==='POST'){posts++;assert.equal(JSON.parse(options.body).verifiedAbsent,true);return Response.json({success:true});}return Response.json({eligible:true,priorJobId:'prior'});},
-  });
-  const render=()=>{cursor=0;return component({draftId:'draft',onQueued:()=>{queued++;}});};
-  const button=(tree:any,label:string):any=>{if(!tree||typeof tree!=='object')return null;if(tree.type==='button'&&tree.props.children.includes(label))return tree;return(tree.props?.children||[]).flat(Infinity).map((n:any)=>button(n,label)).find(Boolean);};
-  render();await new Promise(resolve=>setImmediate(resolve));let tree=render();assert.equal(posts,0);
-  button(tree,'Retry Praktika').props.onClick();tree=render();button(tree,'Cancel').props.onClick();assert.equal(posts,0);
-  tree=render();button(tree,'Retry Praktika').props.onClick();tree=render();
-  const yes=button(tree,'Yes — retry Praktika');await Promise.all([yes.props.onClick(),yes.props.onClick()]);assert.equal(posts,1);assert.equal(queued,1);
-});
-
 for(const role of ['admin','super_admin','practice_manager','typist']) test(`active ${role} can recover another actor workflow`,async()=>{
   const f=routeFixture();f.state.role=role;assert.equal((await (await f.get()).json()).eligible,true);assert.equal((await f.call({...body,providerId:'forged',actorUserId:'forged',role:'super_admin'})).status,202);
 });
@@ -101,30 +83,103 @@ for(const [field,value,reason] of [['parentStatus','processing','workflow_not_te
 test('lookup failure is safe and read-only',async()=>{const f=routeFixture();f.state.lookupError=true;const r=await f.get();assert.equal(r.status,503);assert.deepEqual(await r.json(),{eligible:false,reason:'lookup_unavailable'});assert.equal(f.calls.length,0);});
 test('Approved card uses authoritative recovery candidate and supplies recheck fields',()=>{
   const s=readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx','utf8');assert.match(s,/approvedWorkflow\(draft\).praktikaRecovery && <>/);for(const prop of ['workflowStatus','uploadStatus','recoveryMessage'])assert.ok(s.includes(prop+'={draft.'));
-  const ui=readFileSync('components/report-writing/RetryPraktikaButton.tsx','utf8');assert.ok(ui.includes('[draftId, workflowStatus, uploadStatus, recoveryMessage, check]'));assert.match(ui,/Check again/);assert.match(ui,/Praktika retry is already in progress/);
+  const ui=readFileSync('components/report-writing/RetryPraktikaButton.tsx','utf8');assert.ok(ui.includes('[draftId, workflowStatus, uploadStatus, recoveryMessage]'));assert.match(ui,/Check again/);assert.match(ui,/Praktika retry is already in progress/);
 });
 
-test('recovery UI exposes lookup failure, rechecks transitions, and never reserves on GET',async()=>{
-  const source=readFileSync('components/report-writing/RetryPraktikaButton.tsx','utf8').replace(/^import .*;$/gm,'').replace('export function','function');
-  const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText;
-  const state:any[]=[];let cursor=0,gets=0,posts=0,deps:unknown[]|undefined,cleanup:(()=>void)|undefined,timer:(()=>void)|undefined;
-  let result:any={eligible:false,reason:'lookup_unavailable'};
-  const useState=(initial:any)=>{const slot=cursor++;if(!(slot in state))state[slot]=initial;return[state[slot],(value:any)=>{state[slot]=typeof value==='function'?value(state[slot]):value;}];};
-  const component=runInNewContext(js+'\nRetryPraktikaButton',{
-    useState,useRef:(value:any)=>useState({current:value})[0],
-    useEffect:(run:()=>()=>void,next:unknown[])=>{if(!deps||next.some((v,i)=>v!==deps![i])){cleanup?.();deps=[...next];cleanup=run();}},
-    setTimeout:(fn:()=>void,ms:number)=>{assert.equal(ms,15000);timer=fn;return 1;},clearTimeout:()=>{timer=undefined;},AbortController,encodeURIComponent,
-    React:{createElement:(type:any,props:any,...children:any[])=>({type,props:{...props,children}})},
-    fetch:async(_url:string,options:any)=>{if(options.method==='POST')posts++;else gets++;return Response.json(result,{status:result.reason==='lookup_unavailable'?503:200});},
+// Execute the real components with mocked hooks/fetch; effects run on mount and
+// dependency changes, so passive requests and accidental timer polling are visible.
+function controlFixture(kind: 'retry' | 'praktika' | 'mediref') {
+  const name = kind === 'retry' ? 'RetryPraktikaButton' : 'ManualVerificationButton';
+  const path = `components/report-writing/${name}.tsx`;
+  const source = readFileSync(path, 'utf8').replace(/^import .*;$/gm, '').replace(/export function/g, 'function');
+  const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText;
+  const state: any[] = [];
+  const requests: { url: string; options: any }[] = [];
+  let cursor = 0, deps: unknown[] | undefined, cleanup: (() => void) | undefined, callbacks = 0;
+  let result: any = { eligible: true, priorJobId: 'prior' }, status = 200;
+  let pending: Promise<Response> | undefined;
+  const useState = (initial: any) => {
+    const slot = cursor++; if (!(slot in state)) state[slot] = initial;
+    return [state[slot], (value: any) => { state[slot] = typeof value === 'function' ? value(state[slot]) : value; }];
+  };
+  const component = runInNewContext(js + `\n${name}`, {
+    useState, useRef: (value: any) => useState({ current: value })[0],
+    useEffect: (run: () => () => void, next: unknown[]) => {
+      if (!deps || next.some((v, i) => v !== deps![i])) { cleanup?.(); deps = [...next]; cleanup = run(); }
+    },
+    setTimeout: () => assert.fail('Recovery must not schedule polling'),
+    setInterval: () => assert.fail('Recovery must not schedule polling'),
+    AbortController, encodeURIComponent,
+    React: { createElement: (type: any, props: any, ...children: any[]) => ({ type, props: { ...props, children } }) },
+    fetch: async (url: string, options: any) => {
+      requests.push({ url, options });
+      return pending || Response.json(result, { status });
+    },
   });
-  let workflowStatus='running';
-  const render=()=>{cursor=0;return component({draftId:'draft',workflowStatus,uploadStatus:'failed',recoveryMessage:'verification',onQueued:()=>{}});};
-  const settle=()=>new Promise(resolve=>setImmediate(resolve));
-  const button=(tree:any,label:string):any=>{if(!tree||typeof tree!=='object')return null;if(tree.type==='button'&&tree.props.children.includes(label))return tree;return(tree.props?.children||[]).flat(Infinity).map((n:any)=>button(n,label)).find(Boolean);};
-  render();await settle();let tree=render();assert.match(JSON.stringify(tree),/Retry availability could not be checked/);
-  result={eligible:false,reason:'workflow_not_terminal'};button(tree,'Check again').props.onClick();render();await settle();tree=render();assert.match(JSON.stringify(tree),/Preparing Praktika retry options/);assert.equal(gets,2);assert.ok(timer);
-  timer!();render();await settle();render();assert.equal(gets,3);
-  result={eligible:true,reason:'eligible',priorJobId:'prior'};workflowStatus='failed';render();await settle();tree=render();assert.ok(button(tree,'Retry Praktika'));assert.equal(gets,4);
-  result={eligible:false,reason:'replacement_active'};workflowStatus='running';render();await settle();tree=render();assert.match(JSON.stringify(tree),/Praktika retry is already in progress/);assert.equal(button(tree,'Retry Praktika'),undefined);
-  assert.equal(posts,0);cleanup?.();
-});
+  let draftId = 'draft', workflowStatus = 'failed';
+  const render = () => { cursor = 0; return component({ draftId, workflowStatus, integration: kind,
+    onQueued: () => { callbacks++; }, onVerified: () => { callbacks++; } }); };
+  const button = (tree: any, label: string): any => {
+    if (!tree || typeof tree !== 'object') return undefined;
+    if (tree.type === 'button' && tree.props.children.join('') === label) return tree;
+    return (tree.props?.children || []).flat(Infinity).map((n: any) => button(n, label)).find(Boolean);
+  };
+  const openLabel = kind === 'retry' ? 'Retry Praktika' : `Mark ${kind === 'praktika' ? 'Praktika' : 'MediRef'} completed`;
+  const yesLabel = kind === 'retry' ? 'Yes — retry Praktika' : `Yes — mark ${kind === 'praktika' ? 'Praktika' : 'MediRef'} completed`;
+  return { render, button, requests, openLabel, yesLabel, callbacks: () => callbacks,
+    reply: (value: any, code = 200) => { result = value; status = code; },
+    defer: (value: Promise<Response>) => { pending = value; },
+    change: () => { draftId = 'other-draft'; workflowStatus = 'running'; }, unmount: () => cleanup?.() };
+}
+for (const kind of ['retry', 'praktika', 'mediref'] as const) {
+  test(`${kind}: one and 100 mounted recovery controls make zero requests and retain a visible action`, () => {
+    for (let i = 0; i < 100; i++) {
+      const f = controlFixture(kind); f.render(); const tree = f.render();
+      assert.ok(f.button(tree, f.openLabel)); assert.equal(f.requests.length, 0);
+      f.change(); f.render(); f.render(); assert.equal(f.requests.length, 0); f.unmount();
+    }
+  });
+  test(`${kind}: explicit open checks once; cancel/reopen checks freshly; affirmative double-click mutates once`, async () => {
+    const f = controlFixture(kind); f.render();
+    const open = f.button(f.render(), f.openLabel);
+    await Promise.all([open.props.onClick(), open.props.onClick()]);
+    assert.equal(f.requests.length, 1); assert.equal(f.requests[0].options.method, undefined);
+    assert.ok(f.requests[0].url.includes(kind === 'retry' ? '/retry-praktika?' : '/verify-workflow-completion?'));
+    if (kind !== 'retry') assert.ok(f.requests[0].url.includes(`integration=${kind}`));
+    let tree = f.render(); assert.ok(f.button(tree, f.yesLabel)); assert.equal(f.callbacks(), 0);
+    f.button(tree, 'Cancel').props.onClick();
+    await f.button(f.render(), f.openLabel).props.onClick(); assert.equal(f.requests.length, 2);
+    f.reply({ success: true }); tree = f.render(); const yes = f.button(tree, f.yesLabel);
+    await Promise.all([yes.props.onClick(), yes.props.onClick()]);
+    assert.equal(f.requests.length, 3); assert.equal(f.requests[2].options.method, 'POST');
+    const body = JSON.parse(f.requests[2].options.body);
+    assert.equal(body.draftId, 'draft'); assert.equal(body.priorJobId, 'prior');
+    assert.equal(kind === 'retry' ? body.verifiedAbsent : body.verifiedSuccess, true);
+    assert.equal(f.callbacks(), 1); f.unmount();
+  });
+  test(`${kind}: ineligible or failed lookup never enables confirmation or mutates`, async () => {
+    for (const reason of ['workflow_not_terminal', 'replacement_active', 'lookup_unavailable', 'inactive_user']) {
+      const f = controlFixture(kind); f.reply({ eligible: false, reason }, reason === 'lookup_unavailable' ? 503 : 200);
+      f.render(); await f.button(f.render(), f.openLabel).props.onClick();
+      for (let i = 0; i < 5; i++) f.render();
+      assert.equal(f.requests.length, 1); assert.equal(f.button(f.render(), f.yesLabel), undefined);
+      assert.equal(f.callbacks(), 0);
+      if (kind === 'retry') { await f.button(f.render(), 'Check again').props.onClick(); assert.equal(f.requests.length, 2); }
+      f.unmount();
+    }
+  });
+  test(`${kind}: server mutation rejection never fabricates completion`, async () => {
+    const f = controlFixture(kind); f.render(); await f.button(f.render(), f.openLabel).props.onClick();
+    f.reply({ success: false, error: 'Current eligibility changed.' }, 409);
+    await f.button(f.render(), f.yesLabel).props.onClick();
+    assert.equal(f.callbacks(), 0); assert.match(JSON.stringify(f.render()), /Current eligibility changed/); f.unmount();
+  });
+  test(`${kind}: late eligibility response after identity change is ignored`, async () => {
+    const f = controlFixture(kind); let resolve!: (response: Response) => void;
+    f.defer(new Promise<Response>(r => { resolve = r; })); f.render();
+    const request = f.button(f.render(), f.openLabel).props.onClick();
+    f.change(); f.render(); assert.equal(f.requests[0].options.signal.aborted, true);
+    resolve(Response.json({ eligible: true, priorJobId: 'old-prior' })); await request;
+    assert.equal(f.button(f.render(), f.yesLabel), undefined); assert.equal(f.requests.length, 1); f.unmount();
+  });
+}

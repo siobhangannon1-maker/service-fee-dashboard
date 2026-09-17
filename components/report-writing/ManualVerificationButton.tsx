@@ -16,14 +16,29 @@ export function ManualVerificationButton({ draftId, integration, onVerified }: {
   const [message, setMessage] = useState('');
   const submitting = useRef(false);
   const label = integration === 'praktika' ? 'Praktika' : 'MediRef';
+  const [checking, setChecking] = useState(false);
+  const eligibilityRequest = useRef<AbortController | null>(null);
   useEffect(() => {
-    const controller = new AbortController();
-    setPriorJobId(null); setConfirming(false);
-    fetch(`/api/report-writing/verify-workflow-completion?draftId=${encodeURIComponent(draftId)}&integration=${integration}`, { signal: controller.signal, cache: 'no-store' })
-      .then(async response => { const data = await response.json(); if (!controller.signal.aborted && response.ok && data.eligible) setPriorJobId(data.priorJobId); })
-      .catch(() => { if (!controller.signal.aborted) setMessage('Verification availability could not be checked. Refresh to try again.'); });
-    return () => controller.abort();
+    setPriorJobId(null); setConfirming(false); setChecking(false); setMessage('');
+    return () => { eligibilityRequest.current?.abort(); eligibilityRequest.current = null; };
   }, [draftId, integration]);
+  async function checkEligibility() {
+    if (eligibilityRequest.current || submitting.current) return;
+    const controller = new AbortController();
+    eligibilityRequest.current = controller;
+    setPriorJobId(null); setConfirming(false); setChecking(true); setMessage('');
+    try {
+      const response = await fetch(`/api/report-writing/verify-workflow-completion?draftId=${encodeURIComponent(draftId)}&integration=${integration}`, { signal: controller.signal, cache: 'no-store' });
+      const data = await response.json();
+      if (controller.signal.aborted) return;
+      if (response.ok && data.eligible && typeof data.priorJobId === 'string') {
+        setPriorJobId(data.priorJobId); setConfirming(true);
+      } else setMessage('This operation cannot currently be marked completed. Check again to refresh verification availability.');
+    } catch { if (!controller.signal.aborted) setMessage('Verification availability could not be checked. Check again to try again.'); }
+    finally {
+      if (eligibilityRequest.current === controller) { eligibilityRequest.current = null; setChecking(false); }
+    }
+  }
   async function verify() {
     if (!confirming || !priorJobId || submitting.current) return;
     submitting.current = true; setBusy(true);
@@ -37,7 +52,7 @@ export function ManualVerificationButton({ draftId, integration, onVerified }: {
     finally { submitting.current = false; setBusy(false); }
   }
   return <div className="mt-2 text-xs">
-    {priorJobId && !confirming && <button type="button" className="rounded border px-3 py-2" onClick={() => setConfirming(true)}>Mark {label} completed</button>}
+    {!confirming && <button type="button" disabled={busy || checking} className="rounded border px-3 py-2" onClick={checkEligibility}>{checking ? 'Checking…' : `Mark ${label} completed`}</button>}
     {confirming && <div role="alertdialog" aria-label={`Verify ${label} completion`} className="space-y-2 rounded border p-2">
       <p>{integration === 'praktika' ? "Have you checked the patient's file in Praktika and confirmed that this letter is already there?" : 'Have you checked MediRef and confirmed that this correspondence was successfully prepared/sent?'}</p>
       <p>{integration === 'praktika' ? 'This will mark the Praktika upload as manually verified. Nothing will be uploaded again.' : 'This will mark the MediRef step as manually verified. Nothing will be sent again.'}</p>

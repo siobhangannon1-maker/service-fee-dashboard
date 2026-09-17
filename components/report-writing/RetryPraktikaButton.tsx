@@ -6,28 +6,31 @@ export function RetryPraktikaButton({ draftId, workflowStatus, uploadStatus, rec
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const submitting = useRef(false);
-  const [reason, setReason] = useState('checking');
-  const [check, setCheck] = useState(0);
+  const [reason, setReason] = useState('idle');
+  const eligibilityRequest = useRef<AbortController | null>(null);
   useEffect(() => {
+    setPriorJobId(null); setConfirming(false); setReason('idle'); setMessage('');
+    return () => { eligibilityRequest.current?.abort(); eligibilityRequest.current = null; };
+  }, [draftId, workflowStatus, uploadStatus, recoveryMessage]);
+  async function checkEligibility() {
+    if (eligibilityRequest.current || submitting.current) return;
     const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    setPriorJobId(null); setConfirming(false); setReason('checking');
-    fetch(`/api/report-writing/retry-praktika?draftId=${encodeURIComponent(draftId)}`, { cache: 'no-store', signal: controller.signal })
-      .then(async response => {
-        const result = await response.json();
-        if (controller.signal.aborted) return;
-        if (response.ok && result.eligible && typeof result.priorJobId === 'string') {
-          setPriorJobId(result.priorJobId); setReason('eligible'); return;
-        }
-        const safeReason = ['unauthenticated', 'inactive_user', 'unauthorized_for_provider', 'workflow_not_terminal',
-          'upload_not_failed', 'replacement_active', 'already_verified', 'invalid_state', 'lookup_unavailable'].includes(result.reason)
-          ? result.reason : 'lookup_unavailable';
-        setReason(safeReason);
-        // Only wait for the parent to catch up; never create a job from a recheck.
-        if (safeReason === 'workflow_not_terminal') timer = setTimeout(() => setCheck(value => value + 1), 15000);
-      }).catch(() => { if (!controller.signal.aborted) setReason('lookup_unavailable'); });
-    return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [draftId, workflowStatus, uploadStatus, recoveryMessage, check]);
+    eligibilityRequest.current = controller;
+    setPriorJobId(null); setConfirming(false); setReason('checking'); setMessage('');
+    try {
+      const response = await fetch(`/api/report-writing/retry-praktika?draftId=${encodeURIComponent(draftId)}`, { cache: 'no-store', signal: controller.signal });
+      const result = await response.json();
+      if (controller.signal.aborted) return;
+      if (response.ok && result.eligible && typeof result.priorJobId === 'string') {
+        setPriorJobId(result.priorJobId); setReason('eligible'); setConfirming(true); return;
+      }
+      const safeReason = ['unauthenticated', 'inactive_user', 'unauthorized_for_provider', 'workflow_not_terminal',
+        'upload_not_failed', 'replacement_active', 'already_verified', 'invalid_state', 'lookup_unavailable'].includes(result.reason)
+        ? result.reason : 'lookup_unavailable';
+      setReason(safeReason);
+    } catch { if (!controller.signal.aborted) setReason('lookup_unavailable'); }
+    finally { if (eligibilityRequest.current === controller) eligibilityRequest.current = null; }
+  }
   async function retry() {
     if (!confirming || !priorJobId || submitting.current) return;
     submitting.current = true; setBusy(true); setMessage('');
@@ -42,8 +45,9 @@ export function RetryPraktikaButton({ draftId, workflowStatus, uploadStatus, rec
     finally { submitting.current = false; setBusy(false); }
   }
   return <div className="mt-2 text-xs" aria-label="Praktika recovery">
-    {!priorJobId && <p role="status">{
-      reason === 'checking' || reason === 'workflow_not_terminal' ? 'Preparing Praktika retry options…'
+    {reason !== 'idle' && !priorJobId && <p role="status">{
+      reason === 'checking' ? 'Preparing Praktika retry options…'
+      : reason === 'workflow_not_terminal' ? 'Workflow is still finishing. Check again when it has stopped.'
       : reason === 'unauthorized_for_provider' ? 'You do not have permission to retry Praktika for this provider.'
       : reason === 'inactive_user' ? 'An active account is required to retry Praktika.'
       : reason === 'unauthenticated' ? 'Sign in to check Praktika retry availability.'
@@ -52,9 +56,9 @@ export function RetryPraktikaButton({ draftId, workflowStatus, uploadStatus, rec
       : reason === 'lookup_unavailable' ? 'Retry availability could not be checked.'
       : 'This upload is not currently eligible for retry. Refresh to check the workflow.'
     }</p>}
-    {['lookup_unavailable', 'invalid_state', 'upload_not_failed'].includes(reason) &&
-      <button type="button" className="rounded border px-3 py-2" onClick={() => setCheck(value => value + 1)}>Check again</button>}
-    {priorJobId && !confirming && <button type="button" className="rounded border px-3 py-2" onClick={() => setConfirming(true)}>Retry Praktika</button>}
+    {!confirming && <button type="button" disabled={busy || reason === 'checking'} className="rounded border px-3 py-2" onClick={checkEligibility}>
+      {reason === 'checking' ? 'Checking…' : reason === 'idle' || reason === 'eligible' ? 'Retry Praktika' : 'Check again'}
+    </button>}
     {confirming && <div role="alertdialog" aria-label="Verify Praktika upload" className="space-y-2 rounded border p-2">
       <p>Have you checked the patient's file in Praktika and confirmed that this letter is not already there?</p>
       <p>Retrying may create a duplicate if the previous upload actually succeeded.</p>
