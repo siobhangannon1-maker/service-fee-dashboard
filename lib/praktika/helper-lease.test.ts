@@ -1,5 +1,5 @@
 import { PraktikaHelperUnavailable } from "./helper-lease";
-import { createPraktikaOwnershipRecovery } from "./ownership-recovery";
+import { createPraktikaOwnershipRecovery, PraktikaLeaseExpired } from "./ownership-recovery";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
@@ -110,7 +110,7 @@ test("clean exit only releases captured generation; never promotes Connected; du
 
 test("helper session writes fail closed, close old browser, and refuse subsequent writes", async () => {
   const globals = { PraktikaHelperUnavailable,
-    ownershipRecovery: createPraktikaOwnershipRecovery(), PraktikaOwnershipRejected, ownershipLost: false, sessionId: "session", helperInstanceId: "old-owner",
+    ownershipRecovery: createPraktikaOwnershipRecovery(), PraktikaOwnershipRejected, PraktikaLeaseExpired, ownershipLost: false, sessionId: "session", helperInstanceId: "old-owner",
     renewal: { stop: () => { stopped++; } },
     shutdownCoordinator: { close: async () => { closed++; return true; } }, supabase: {}, PraktikaOwnershipLost,
     writePraktikaHelper: async () => { attempts++; throw new PraktikaOwnershipLost(); },
@@ -122,20 +122,26 @@ test("helper session writes fail closed, close old browser, and refuse subsequen
   assert.equal(closed, 1); assert.equal(attempts, 1); assert.equal(stopped, 0);
 });
 
-test("browser liveness failure releases nonterminal for recovery and closes browser without authentication write", async () => {
+test("persistent browser liveness failure closes and releases only after one bounded recheck", { timeout: 1000 }, async () => {
   let tick: (() => void) | undefined; const events: string[] = [];
+  let checks = 0;
+  let released!: () => void;
+  const releaseCompleted = new Promise<void>(resolve => { released = resolve; });
   const globals = { PraktikaHelperUnavailable,
+    browserLivenessRecovery: undefined, logOwnershipFailure: () => {},
     recoverableExit: false, shuttingDown: false, ownershipLost: false, PRAKTIKA_HELPER_HEARTBEAT_MS: 15_000, PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS: 5_000,
     shutdownCoordinator: { close: async () => { events.push("close"); return true; } },
     setTimeout, clearTimeout,
     setInterval: (callback: () => void) => { tick = callback; return 1; }, clearInterval() {},
     ownedWrite: async (action: string) => { events.push(action); },
-    releaseOwnership: async (failed: boolean) => { assert.equal(failed, false); events.push("release"); },
+    releaseOwnership: async (failed: boolean) => { assert.equal(failed, false); events.push("release"); released(); },
   };
   const { startHeartbeat } = await functionsFrom("scripts/refresh-praktika-session.ts", ["startHeartbeat"], globals);
-  const stop = startHeartbeat({ cookies: async () => { throw new Error("browser closed"); }, close: async () => { events.push("close"); } });
-  tick!(); await stop();
-  assert.deepEqual(events, ["close", "release"]); assert.equal(globals.ownershipLost, true);
+  const stop = startHeartbeat({ cookies: async () => { checks++; throw new Error("browser closed"); }, close: async () => { events.push("close"); } });
+  // Stopping immediately cancels recovery; let the failed recheck finish first.
+  tick!(); await releaseCompleted; await stop();
+  assert.equal(checks, 2);
+  assert.deepEqual(events, ["check", "close", "release"]); assert.equal(globals.ownershipLost, true);
 });
 
 test("ownership loss during a job never requeues an ambiguous external operation", async () => {

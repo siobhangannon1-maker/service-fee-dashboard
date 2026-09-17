@@ -1,3 +1,4 @@
+import { pollPraktikaWorkflowContinuations } from '../../scripts/praktika-workflow-continuations';
 import { PraktikaHelperUnavailable } from "./helper-lease";
 import { perioStructureDiagnostic } from "./perio-structure-diagnostic";
 import assert from 'node:assert/strict';
@@ -7,7 +8,7 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { praktikaJobEligibility } from './job-eligibility';
 import { PraktikaReadFailure, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from './read-operations';
-import { PraktikaOwnershipLost } from './helper-lease';
+import { hasLivePraktikaHelper, PraktikaOwnershipLost } from './helper-lease';
 import { praktikaUploadResponseDiagnostic, PraktikaAuthenticationUnverified } from './authentication-probe';
 import { isConfirmedPraktikaUpload } from '../report-writing/praktika-upload-result';
 type Row = Record<string, any>;
@@ -20,29 +21,36 @@ const code = names.map(name => {
   return ts.transpileModule(fn.getText(ast).replace(/^export /, ''), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 }).join('\n');
 function fixture(read = false, actor = 'actor', realTransport = false) {
-  const session: Row = { scope: 'user', app_user_id: actor, helper_instance_id: 'generation', helper_heartbeat_at: new Date().toISOString(), status: 'connected', authenticated_at: null };
+  const calls: string[] = [];
+  const session: Row = { id: 'session', scope: 'user', app_user_id: actor, helper_instance_id: 'generation', helper_heartbeat_at: new Date().toISOString(), status: 'connected', authenticated_at: null };
   const job: Row = { id: 'job', app_user_id: actor, job_type: read ? 'periodontal_chart_patient_perio_exam_ids' : 'upload_report_to_praktika', status: 'pending', attempts: 0,
     request: read ? { method: 'POST', path: '/php/forms/db_getFormData.php', contentType: 'json', body: [{ parameters: [{ practice_id: 1181, patient_id: 123 }], fields: [...PERIO_READ_FIELDS.periodontal_chart_patient_perio_exam_ids] }] } : {} };
+  const jobs: Row[] = [job];
+  let browserReady = true;
+  let afterDiscovery = () => {};
   let afterClaim = () => {};
   let prepareRequest = (_request: Row) => {};
   let persistenceFails = false, transportFails = false;
   let transportError: Error = new Error("private transport detail"), readFails = false;
   const logs: unknown[][] = [];
   const supabase = { storage: { from: () => ({ download: async () => ({ data: new Blob(['synthetic']), error: null }), remove: async () => ({error:null}) }) }, from(table: string) {
-    const rows = table === 'praktika_sessions' ? [session] : [job];
-    const filters: Array<(r: Row) => boolean> = []; let patch: Row | null = null;
-    const q: any = { select: () => q, abortSignal: () => q, order: () => q, limit: () => q, lte: () => q,
+    const rows = table === 'praktika_sessions' ? [session] : jobs;
+    const filters: Array<(r: Row) => boolean> = []; let patch: Row | null = null; let limit = Infinity;
+    const q: any = { select: () => q, abortSignal: () => q, order: () => q, limit: (n: number) => { limit = n; return q; }, lte: () => q, or: () => q,
       neq: (k: string, v: unknown) => { filters.push(r => r[k] !== v); return q; },
       eq: (k: string, v: unknown) => { filters.push(r => r[k] === v); return q; },
       in: (k: string, values: unknown[]) => { filters.push(r => values.includes(r[k])); return q; },
       is: (k: string, v: unknown) => { filters.push(r => (r[k] ?? null) === v); return q; },
       update: (p: Row) => { patch = p; return q; },
       execute(single = false) {
+        calls.push(table + (patch ? ':update' : ':select'));
         if (persistenceFails && patch?.status === 'completed') return {data: null, error: {message: 'private database detail'}};
-        const matches = rows.filter(r => filters.every(f => f(r)));
+        const matches = rows.filter(r => filters.every(f => f(r))).slice(0, limit);
+        if (table === 'praktika_helper_jobs' && !patch) afterDiscovery();
         if (patch) { matches.forEach(r => Object.assign(r, patch)); if (patch.status === 'processing') afterClaim(); }
         return { data: structuredClone(single ? matches[0] ?? null : matches), error: null };
       },
+      single: async () => q.execute(true),
       maybeSingle: async () => q.execute(true),
       then: (resolve: (v: unknown) => void) => Promise.resolve(q.execute()).then(resolve),
     }; return q;
@@ -58,13 +66,28 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
     markSessionConnectedForJob: async () => { connectedWrites++; },
   };
   const api = runInNewContext(code + '\n({claimNextJob,processOnePraktikaHelperJob,runJsonOrFormRequest,runMultipartStorageRequest})', globals);
-  const ownership = { assertOwned: async () => { if(nextOwnershipError){ const error=nextOwnershipError;nextOwnershipError=undefined;throw error; } if (!owned) throw new PraktikaOwnershipLost(); }, ensureAuthenticated: async () => assert.fail('claim must not change GST renewal cadence'), updateSession: async () => {} };
+  const ownership = { isBrowserReady: async () => browserReady, assertOwned: async () => { calls.push('ownership:check'); if(nextOwnershipError){ const error=nextOwnershipError;nextOwnershipError=undefined;throw error; } if (!owned || session.helper_instance_id !== 'generation' || !hasLivePraktikaHelper(session)) throw new PraktikaOwnershipLost(); }, ensureAuthenticated: async () => assert.fail('claim must not change GST renewal cadence'), updateSession: async () => {} };
   const context = { request: { post: async (_url: string, options: Row) => {
     operations++; assert.equal(options.maxRedirects, 0); assert.equal(options.timeout, 120_000);
     if (transportFails) throw transportError;
     return { headers: () => responseHeaders, ok: () => httpStatus >= 200 && httpStatus < 300, status: () => httpStatus, url: () => responseUrl, text: async () => { if (readFails) throw new Error("private response body"); return responseText; } };
   } } };
-  return { job, session, logs, setHeaders: (headers: Record<string,string>) => { responseHeaders=headers; }, prepareRequest: (fn: (request: Row) => void) => {prepareRequest=fn;}, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failRead: () => { readFails = true; }, setTransportError: (error: Error) => { transportFails = true; transportError = error; }, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
+  const helperPath = 'scripts/refresh-praktika-session.ts';
+  const helperAst = ts.createSourceFile(helperPath, readFileSync(helperPath, 'utf8'), ts.ScriptTarget.Latest, true);
+  const helperCode = helperAst.statements.filter(n => ts.isFunctionDeclaration(n) && ['getSession','drainAvailableHelperJobs'].includes(n.name?.text || ''))
+    .map(n => ts.transpileModule(n.getText(helperAst), {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText).join('\n');
+  const helper = runInNewContext(helperCode + '\n({getSession,drainAvailableHelperJobs})', {
+    supabase, sessionId: 'session', helperInstanceId: 'generation', assertOwned: ownership.assertOwned,
+    ownershipRecovery: {run: (fn: () => Promise<unknown>) => fn()}, AbortSignal,
+    pollPraktikaWorkflowContinuations, processOnePraktikaHelperJob: api.processOnePraktikaHelperJob,
+    browserReady: true, shuttingDown: false, remainingUsefulWorkMs: () => 1000,
+    HELPER_JOB_DRAIN_LIMIT: 5, checkBrowserAvailability: async () => browserReady,
+    updateSession: ownership.updateSession, jobActive: false,
+  });
+  return { jobs, calls, empty: () => { jobs.length = 0; }, disconnect: () => { browserReady = false; },
+    onDiscovery: (fn: () => void) => { afterDiscovery = fn; },
+    idleCycle: async () => { await helper.getSession(); return helper.drainAvailableHelperJobs(context, actor, {}); },
+    job, session, logs, setHeaders: (headers: Record<string,string>) => { responseHeaders=headers; }, prepareRequest: (fn: (request: Row) => void) => {prepareRequest=fn;}, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failRead: () => { readFails = true; }, setTransportError: (error: Error) => { transportFails = true; transportError = error; }, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
     failNextOwnership: (error: Error) => {nextOwnershipError=error;}, connectedWrites: () => connectedWrites, loseOwnership: () => { owned = false; }, onClaim: (fn: () => void) => { afterClaim = fn; }, setHttp: (v: number) => { httpStatus = v; } };
 }
 test('waiting write stays pending with attempts unchanged, then resumes once after browser startup', async () => {
@@ -284,4 +307,60 @@ for (const bodyFails of [false,true]) test('upload redirect metadata survives bo
  assert.equal(f.job.error_message,'Report upload outcome is unconfirmed. Reconcile before retrying.');
  assert.doesNotMatch(JSON.stringify([f.logs,f.job.response]),/PRIVATE|refreshToken|https:|set-cookie/);
  await f.run();assert.equal(f.operations(),1);
+});
+
+
+test('ordinary idle cycle falls from nine calls to six without skipping ownership or continuation discovery', async () => {
+  const f = fixture(); f.empty();
+  await f.idleCycle();
+  assert.deepEqual(f.calls, [
+    'ownership:check', 'praktika_sessions:select', // helper session read
+    'ownership:check', 'praktika_helper_jobs:select', // continuation discovery
+    'ownership:check', 'praktika_helper_jobs:select', // ordinary job discovery
+  ]);
+  assert.equal(f.calls.length, 9 - 3);
+  assert.equal(f.operations(), 0);
+});
+test('pending work is discovered before authoritative eligibility and claim', async () => {
+  const f = fixture(); await f.run();
+  const discovery = f.calls.indexOf('praktika_helper_jobs:select');
+  const eligibility = f.calls.indexOf('praktika_sessions:select');
+  const claim = f.calls.indexOf('praktika_helper_jobs:update');
+  assert.ok(discovery < eligibility && eligibility < claim);
+  assert.equal(f.calls[eligibility - 1], 'ownership:check');
+  assert.equal(f.calls[eligibility + 1], 'ownership:check');
+  assert.ok(f.calls.slice(claim + 1).includes('praktika_sessions:select')); // final dispatch eligibility
+  assert.equal(f.operations(), 1);
+});
+for (const reason of ['ownership_rejected', 'generation_mismatch', 'lease_expired']) {
+  test(reason + ' after discovery prevents claim and dispatch', async () => {
+    const f = fixture();
+    f.onDiscovery(() => {
+      if (reason === 'generation_mismatch') f.session.helper_instance_id = 'replacement-generation';
+      else if (reason === 'lease_expired') f.session.helper_heartbeat_at = new Date(0).toISOString();
+      else f.loseOwnership();
+    });
+    await assert.rejects(f.run(), PraktikaOwnershipLost);
+    assert.equal(f.job.status, 'pending'); assert.equal(f.job.attempts, 0);
+    assert.equal(f.operations(), 0);
+    assert.ok(!f.calls.includes('praktika_helper_jobs:update'));
+  });
+}
+test('expired session lease leaves discovered work pending', async () => {
+  const f = fixture(); f.session.helper_heartbeat_at = new Date(0).toISOString();
+  await assert.rejects(f.run(), PraktikaOwnershipLost); assert.equal(f.job.status, 'pending'); assert.equal(f.job.attempts, 0); assert.equal(f.operations(), 0);
+});
+test('disconnected browser cannot discover/claim a job', async () => {
+  const f = fixture(); f.disconnect(); await f.run();
+  assert.deepEqual(f.calls, ['ownership:check']); assert.equal(f.operations(), 0); assert.equal(f.job.attempts, 0);
+});
+test('blocked writes retain filtered read discovery beyond the first twenty jobs', async () => {
+  const f = fixture(true); f.session.status = 'refreshing';
+  f.jobs.unshift(...Array.from({length:20}, (_,i) => ({...f.job, id:'blocked-'+i, job_type:'upload_report_to_praktika'})));
+  await f.run();
+  // Existing semantics still reject execution while refreshing, but the second
+  // discovery is filtered before its limit, so the read receives eligibility checks.
+  assert.equal(f.calls.filter(c => c === 'praktika_helper_jobs:select').length, 2);
+  assert.equal(f.calls.filter(c => c === 'praktika_sessions:select').length, 2);
+  assert.equal(f.operations(), 0); assert.ok(f.jobs.every(j => j.attempts === 0));
 });

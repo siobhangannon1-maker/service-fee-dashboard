@@ -166,13 +166,18 @@ async function claimNextJob(appUserId: string | null | undefined, ownership: Pra
     query = query.is("app_user_id", null);
   }
 
-  if (!await jobEligible(appUserId, { job_type: "write_gate", request: {} }, ownership)) {
-    query = query.in("job_type", Object.keys(PERIO_READ_FIELDS));
-  }
-  const { data: jobs, error } = await query;
+  // Discovery is not authorization: an empty queue needs no session eligibility read.
+  let { data: jobs, error } = await query;
 
   if (error) throw new PraktikaJobQueueUnavailable();
   if (!jobs || jobs.length === 0) return null;
+
+  if (!await jobEligible(appUserId, { job_type: "write_gate", request: {} }, ownership)) {
+    // Preserve read discovery beyond the first twenty blocked writes.
+    ({ data: jobs, error } = await query.in("job_type", Object.keys(PERIO_READ_FIELDS)));
+    if (error) throw new PraktikaJobQueueUnavailable();
+    if (!jobs || jobs.length === 0) return null;
+  }
 
   // Skip blocked writes without changing their attempts; eligible reads may pass them.
   let job = null;
