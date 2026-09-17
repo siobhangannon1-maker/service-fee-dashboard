@@ -1,12 +1,13 @@
 import { PraktikaLeaseExpired, createPraktikaOwnershipRecovery, isPraktikaTransientInfrastructureError } from "../lib/praktika/ownership-recovery";
 import { praktikaNoAuthGateEnabled } from "../lib/praktika/authentication";
+import { probePraktikaAuthentication, type ProbeResult } from "../lib/praktika/authentication-probe";
 import { pollPraktikaWorkflowContinuations } from "./praktika-workflow-continuations";
 import { createCookieSnapshotStore } from "../lib/praktika/cookie-snapshot";
 import { createShutdownCoordinator, type SkipReason } from "../lib/praktika/shutdown-coordinator";
 import { requestPlannedRestoration } from "../lib/praktika/planned-restoration";
 import {
-  writePraktikaHelper, PraktikaOwnershipLost, PraktikaOwnershipUnavailable, PraktikaOwnershipRejected, PRAKTIKA_HELPER_HEARTBEAT_MS,
-  PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS,
+  writePraktikaHelper, PraktikaOwnershipLost, PraktikaOwnershipUnavailable, PraktikaOwnershipRejected,
+  PraktikaHelperUnavailable, PRAKTIKA_HELPER_HEARTBEAT_MS, PRAKTIKA_BROWSER_LIVENESS_TIMEOUT_MS,
 } from "../lib/praktika/helper-lease";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -215,7 +216,10 @@ process.on("SIGINT", shutdown);
 
 const ownershipRecovery = createPraktikaOwnershipRecovery({ stopping: () => ownershipLost });
 
-async function ownedWrite(action: "check" | "heartbeat" | "update", values: Record<string, unknown> = {}) {
+async function ownedWrite(
+  action: "check" | "heartbeat" | "update" | "authenticate" | "authentication_failed",
+  values: Record<string, unknown> = {},
+) {
   if (ownershipLost) throw new PraktikaOwnershipLost();
   try {
     await ownershipRecovery.run(() => writePraktikaHelper(supabase, sessionId!, helperInstanceId!, action, values), action === "heartbeat");
@@ -339,6 +343,65 @@ async function getSession() {
   }
   return data as SessionRow;
 }
+
+const WRITE_AUTH_REFRESH_RETRIES = 2;
+const WRITE_AUTH_REFRESH_RETRY_MS = 2_000;
+
+function isConfirmedRefreshTransition(result: ProbeResult) {
+  return result.httpStatus === 307 && result.redirectDiagnostics?.refreshTransition === true;
+}
+
+async function ensureWriteAuthenticated() {
+  if (!ownedContext || shuttingDown) throw new PraktikaHelperUnavailable();
+
+  const practiceId = String(process.env.PRAKTIKA_PRACTICE_ID || "").trim();
+  if (!/^\d+$/.test(practiceId)) {
+    console.warn("[Praktika auth] write_auth_unavailable", { reason: "practice_id_missing" });
+    throw new PraktikaHelperUnavailable();
+  }
+
+  await assertOwned();
+
+  for (let attempt = 0; attempt <= WRITE_AUTH_REFRESH_RETRIES; attempt++) {
+    if (shuttingDown || ownershipLost || !ownedContext) throw new PraktikaOwnershipLost();
+
+    const result = await probePraktikaAuthentication(ownedContext, practiceId, PRAKTIKA_BASE_URL);
+    await assertOwned();
+
+    if (result.verified && result.httpStatus === 200) {
+      await ownedWrite("authenticate");
+      console.log("[Praktika auth] write_auth_verified", { httpStatus: 200, attempt: attempt + 1 });
+      return;
+    }
+
+    if (result.phase === "waiting_for_credentials" || result.phase === "waiting_for_mfa") {
+      browserReady = false;
+      await ownedWrite("authentication_failed", { status: result.phase });
+      console.log("[Praktika auth] write_auth_challenge", { phase: result.phase });
+      throw new PraktikaHelperUnavailable();
+    }
+
+    if (isConfirmedRefreshTransition(result) && attempt < WRITE_AUTH_REFRESH_RETRIES) {
+      console.log("[Praktika auth] write_auth_refresh_transition", { httpStatus: 307, retry: attempt + 1 });
+      await sleep(WRITE_AUTH_REFRESH_RETRY_MS);
+      continue;
+    }
+
+    console.warn("[Praktika auth] write_auth_unverified", {
+      httpStatus: result.httpStatus,
+      refreshTransition: isConfirmedRefreshTransition(result),
+    });
+    throw new PraktikaHelperUnavailable();
+  }
+
+  throw new PraktikaHelperUnavailable();
+}
+
+// Keep the drain function source-extraction tests isolated: production registers
+// the real fence here, while extracted test functions simply see no callback.
+(globalThis as typeof globalThis & {
+  __praktikaEnsureWriteAuthenticated?: () => Promise<void>;
+}).__praktikaEnsureWriteAuthenticated = ensureWriteAuthenticated;
 
 async function updateSession(values: Record<string, unknown>) {
   if (["waiting_for_credentials", "waiting_for_mfa", "error", "expired"].includes(String(values.status || ""))) {
@@ -787,7 +850,21 @@ async function drainAvailableHelperJobs(
       result = await processOnePraktikaHelperJob(
         context,
         appUserId,
-        { assertOwned, updateSession, isBrowserReady: async () => browserReady && await checkBrowserAvailability(page), isShuttingDown: () => shuttingDown },
+        {
+          assertOwned,
+          updateSession,
+          ...((globalThis as typeof globalThis & {
+            __praktikaEnsureWriteAuthenticated?: () => Promise<void>;
+          }).__praktikaEnsureWriteAuthenticated
+            ? {
+                ensureWriteAuthenticated: (globalThis as typeof globalThis & {
+                  __praktikaEnsureWriteAuthenticated: () => Promise<void>;
+                }).__praktikaEnsureWriteAuthenticated,
+              }
+            : {}),
+          isBrowserReady: async () => browserReady && await checkBrowserAvailability(page),
+          isShuttingDown: () => shuttingDown,
+        },
       );
     } catch (error) {
       if (shuttingDown) unresolvedShutdownWork = true;

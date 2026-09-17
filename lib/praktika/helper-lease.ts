@@ -40,6 +40,9 @@ export interface PraktikaJobOwnership {
   isBrowserReady?(): boolean | Promise<boolean>;
   isShuttingDown?(): boolean;
   assertOwned(): Promise<void>;
+  // Production may provide a strict pre-write authentication fence.
+  // Existing reduced callers/tests may omit it and retain prior behavior.
+  ensureWriteAuthenticated?(): Promise<void>;
   updateSession(values: Record<string, unknown>): Promise<void>;
 }
 

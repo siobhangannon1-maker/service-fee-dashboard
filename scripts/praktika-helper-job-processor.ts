@@ -1395,6 +1395,17 @@ export async function processOnePraktikaHelperJob(
       if (ownership.isBrowserReady && !await ownership.isBrowserReady()) throw new PraktikaHelperUnavailable();
       await ownership.assertOwned();
       if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
+
+      // Production can supply a strict write-only authentication fence.
+      // Read/retrieval operations remain on the existing lightweight path.
+      if (!retrieval && ownership.ensureWriteAuthenticated) {
+        await ownership.ensureWriteAuthenticated();
+        if (ownership.isBrowserReady && !await ownership.isBrowserReady()) throw new PraktikaHelperUnavailable();
+        if (!await jobEligible(appUserId, job, ownership)) throw new PraktikaHelperUnavailable();
+        await ownership.assertOwned();
+        if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
+      }
+
       externalStarted = true;
     };
     await ownership.assertOwned();
