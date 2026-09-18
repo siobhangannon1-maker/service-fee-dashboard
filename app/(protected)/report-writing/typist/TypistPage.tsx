@@ -4,6 +4,7 @@ import { type DraftDetail as Draft, type DraftListItem, mergeDraftWorkflow } fro
 import { createDraftDetailLoader } from '@/lib/report-writing/draft-detail-loader';
 import { ManualVerificationButton } from "@/components/report-writing/ManualVerificationButton";
 import { RetryPraktikaButton } from "@/components/report-writing/RetryPraktikaButton";
+import { ResumeMedirefButton } from "@/components/report-writing/ResumeMedirefButton";
 import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
 import { remainsInApproved } from "@/lib/report-writing/praktika-retry";
 
@@ -5089,6 +5090,11 @@ export default function TypistPage() {
                     <ManualVerificationButton key={`${draft.id}:praktika:${draft.workflow_last_message}`} draftId={draft.id} integration="praktika" onVerified={() => { void loadDrafts(selectedProviderId); }} />
                     <RetryPraktikaButton key={`${draft.id}:${draft.workflow_last_message}`} draftId={draft.id} workflowStatus={draft.workflow_status} uploadStatus={draft.workflow_praktika_upload_status} recoveryMessage={draft.workflow_last_message} onQueued={() => { void loadDrafts(selectedProviderId); }} />
                   </>}
+                  <ResumeMedirefButton
+                    key={`${draft.id}:resume-mediref:${draft.workflow_last_message}`}
+                    draftId={draft.id}
+                    onQueued={() => { void loadDrafts(selectedProviderId); }}
+                  />
                 </div>
               ))}
             </div>
