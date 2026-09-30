@@ -1,3 +1,4 @@
+import { PDF_PRESENCE_JOB, inspectPdfPresence, matchesPdfReview, unknownPdf } from './pdf-presence';
 import { pollPraktikaWorkflowContinuations } from '../../scripts/praktika-workflow-continuations';
 import { PraktikaHelperUnavailable } from "./helper-lease";
 import { perioStructureDiagnostic } from "./perio-structure-diagnostic";
@@ -26,6 +27,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   const job: Row = { id: 'job', app_user_id: actor, job_type: read ? 'periodontal_chart_patient_perio_exam_ids' : 'upload_report_to_praktika', status: 'pending', attempts: 0,
     request: read ? { method: 'POST', path: '/php/forms/db_getFormData.php', contentType: 'json', body: [{ parameters: [{ practice_id: 1181, patient_id: 123 }], fields: [...PERIO_READ_FIELDS.periodontal_chart_patient_perio_exam_ids] }] } : {} };
   const jobs: Row[] = [job];
+  let verificationDraft: Row | null = null;
   let browserReady = true;
   let afterDiscovery = () => {};
   let afterClaim = () => {};
@@ -34,7 +36,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   let transportError: Error = new Error("private transport detail"), readFails = false;
   const logs: unknown[][] = [];
   const supabase = { storage: { from: () => ({ download: async () => ({ data: new Blob(['synthetic']), error: null }), remove: async () => ({error:null}) }) }, from(table: string) {
-    const rows = table === 'praktika_sessions' ? [session] : jobs;
+    const rows = table === 'praktika_sessions' ? [session] : table === 'report_drafts' ? verificationDraft ? [verificationDraft] : [] : jobs;
     const filters: Array<(r: Row) => boolean> = []; let patch: Row | null = null; let limit = Infinity;
     const q: any = { select: () => q, abortSignal: () => q, order: () => q, limit: (n: number) => { limit = n; return q; }, lte: () => q, or: () => q,
       neq: (k: string, v: unknown) => { filters.push(r => r[k] !== v); return q; },
@@ -59,7 +61,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   let nextOwnershipError: Error | undefined;
   let owned = true, operations = 0, connectedWrites = 0, httpStatus = 200;
   let responseUrl = "https://praktika.praktika.net.au/php/forms/db_getFormData.php", responseText = '{"patient_perioexamids":[12]}';
-  const globals = { praktikaUploadResponseDiagnostic, PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
+  const globals = { PDF_PRESENCE_JOB, inspectPdfPresence, matchesPdfReview, unknownPdf, praktikaUploadResponseDiagnostic, PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
     isConfirmedPraktikaUpload, Date, AbortSignal, URLSearchParams, Buffer, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
     console: { log(...args: unknown[]) { logs.push(args); }, error() {} },
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>, upload?: unknown) => { prepareRequest(_r as Row); if(realTransport) return (_r as Row).contentType === "multipart_storage" ? api.runMultipartStorageRequest(_c, _r, before, upload) : api.runJsonOrFormRequest(_c, _r, before, upload); await before(); operations++; return { patient_communication: { iFileId: 12 } }; },
@@ -84,7 +86,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
     HELPER_JOB_DRAIN_LIMIT: 5, checkBrowserAvailability: async () => browserReady,
     updateSession: ownership.updateSession, jobActive: false,
   });
-  return { jobs, calls, empty: () => { jobs.length = 0; }, disconnect: () => { browserReady = false; },
+  return { setVerificationDraft: (d: Row) => { verificationDraft=d; }, jobs, calls, empty: () => { jobs.length = 0; }, disconnect: () => { browserReady = false; },
     onDiscovery: (fn: () => void) => { afterDiscovery = fn; },
     idleCycle: async () => { await helper.getSession(); return helper.drainAvailableHelperJobs(context, actor, {}); },
     job, session, logs, setHeaders: (headers: Record<string,string>) => { responseHeaders=headers; }, prepareRequest: (fn: (request: Row) => void) => {prepareRequest=fn;}, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failRead: () => { readFails = true; }, setTransportError: (error: Error) => { transportFails = true; transportError = error; }, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
@@ -119,20 +121,80 @@ test('307 periodontal read is not success and never refreshes proof', async () =
   const f = fixture(true); f.setHttp(307); await f.run(); assert.equal(f.job.status, 'pending'); assert.equal(f.session.authenticated_at, null); assert.equal(f.connectedWrites(), 0);
 });
 
-for (const category of ['transport_failure', 'result_persistence_failure', 'http_307'] as const) test(category+' stays safe and retains three-attempt retry schedule', async()=>{
- const f=fixture(true); if(category==='transport_failure')f.failTransport(); else if(category==='result_persistence_failure')f.failPersistence(); else f.setHttp(307);
- for(let attempt=1;attempt<=3;attempt++){
-  const before=Date.now(); await f.run(); assert.equal(f.job.attempts,attempt);
-  assert.equal(f.job.status,attempt===3?'failed':'pending');
-  assert.equal(f.job.error_message,'Praktika read is temporarily unavailable.');
-  assert.equal(f.job.response.readFailure.failureCategory,category);
-  if(attempt<3) assert.ok(Date.parse(f.job.available_at)>=before+60000);
- }
- const events=f.logs.filter(e=>e[0]==='[Praktika read] failure'); assert.equal(events.length,3);
- for(const event of events) assert.ok(!JSON.stringify(event).includes('private'));
- assert.ok(!JSON.stringify(f.job.response).includes('private'));
- assert.equal(f.operations(),3);
+for (const category of ['transport_failure', 'http_307'] as const) {
+  test(category + ' stays safe and receives extended automatic recovery', async () => {
+    const f = fixture(true);
+
+    if (category === 'transport_failure') {
+      f.failTransport();
+    } else {
+      f.setHttp(307);
+    }
+
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      const before = Date.now();
+      await f.run();
+
+      assert.equal(f.job.attempts, attempt);
+      assert.equal(f.job.status, attempt === 10 ? 'failed' : 'pending');
+      assert.equal(f.job.error_message, 'Praktika read is temporarily unavailable.');
+      assert.equal(f.job.response.readFailure.failureCategory, category);
+
+      if (attempt < 10) {
+        assert.ok(Date.parse(f.job.available_at) >= before + 60000);
+      }
+    }
+
+    const events = f.logs.filter(
+      (event) => event[0] === '[Praktika read] failure',
+    );
+
+    assert.equal(events.length, 10);
+
+    for (const event of events) {
+      assert.ok(!JSON.stringify(event).includes('private'));
+    }
+
+    assert.ok(!JSON.stringify(f.job.response).includes('private'));
+    assert.equal(f.operations(), 10);
+  });
+}
+
+test('result_persistence_failure stays safe and retains three-attempt retry schedule', async () => {
+  const f = fixture(true);
+  f.failPersistence();
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const before = Date.now();
+    await f.run();
+
+    assert.equal(f.job.attempts, attempt);
+    assert.equal(f.job.status, attempt === 3 ? 'failed' : 'pending');
+    assert.equal(f.job.error_message, 'Praktika read is temporarily unavailable.');
+    assert.equal(
+      f.job.response.readFailure.failureCategory,
+      'result_persistence_failure',
+    );
+
+    if (attempt < 3) {
+      assert.ok(Date.parse(f.job.available_at) >= before + 60000);
+    }
+  }
+
+  const events = f.logs.filter(
+    (event) => event[0] === '[Praktika read] failure',
+  );
+
+  assert.equal(events.length, 3);
+
+  for (const event of events) {
+    assert.ok(!JSON.stringify(event).includes('private'));
+  }
+
+  assert.ok(!JSON.stringify(f.job.response).includes('private'));
+  assert.equal(f.operations(), 3);
 });
+
 test('ownership failure after claim stays separate and never becomes ordinary read retry',async()=>{
  const f=fixture(true); f.onClaim(f.loseOwnership); await assert.rejects(f.run(),PraktikaOwnershipLost);
  assert.equal(f.job.status,'processing'); assert.equal(f.job.attempts,1); assert.equal(f.job.error_message,undefined);
@@ -363,4 +425,25 @@ test('blocked writes retain filtered read discovery beyond the first twenty jobs
   assert.equal(f.calls.filter(c => c === 'praktika_helper_jobs:select').length, 2);
   assert.equal(f.calls.filter(c => c === 'praktika_sessions:select').length, 2);
   assert.equal(f.operations(), 0); assert.ok(f.jobs.every(j => j.attempts === 0));
+});
+
+test('PDF verification persists UNKNOWN for invalid frozen input without invoking transport or writes',async()=>{
+ const f=fixture();f.job.job_type=PDF_PRESENCE_JOB;f.job.request={verification:{}};
+ assert.equal((await f.run()).outcome,'completed');assert.equal(f.job.response.classification,'UNKNOWN');assert.equal(f.operations(),0);assert.equal(f.connectedWrites(),0);
+});
+test('PDF verification result persistence failure is terminal and never replayed',async()=>{
+ const f=fixture();f.job.job_type=PDF_PRESENCE_JOB;f.job.request={verification:{}};f.failPersistence();
+ assert.equal((await f.run()).outcome,'failed');assert.equal(f.job.status,'failed');assert.equal((await f.run()).outcome,'none');assert.equal(f.operations(),0);
+});
+
+test('valid PDF inspection takes one read, keeps auth unchanged and stores sanitized positive result',async()=>{
+ const {historicalEpoch}=await import('../report-writing/historical-reconciliation');
+ const f=fixture();const id='00000000-0000-4000-8000-000000000001';
+ const d={id,status:'approved',deleted_at:null,created_at:'2026-08-01T00:00:00Z',provider_approved_at:null,updated_at:'2026-09-01T00:00:00Z',praktika_patient_id:'123',workflow_status:'failed'};
+ f.setVerificationDraft(d);f.job.job_type=PDF_PRESENCE_JOB;
+ f.job.request={verification:{draftId:id,epoch:historicalEpoch(d),revision:d.updated_at,reviewedRevision:d.updated_at,patientId:'123',practiceId:'1181',filename:'synthetic.pdf',artifactFingerprint:'a'.repeat(64),retainedUpload:{id:'old',status:'completed',response:{patient_communication:{iFileId:42}},request:{method:'POST',path:'/php/forms/db_updateFormData.php',contentType:'multipart_storage',reportDraftId:id,body:{file:{path:`report-uploads/actor/${id}/1-synthetic.pdf`,fileName:'synthetic.pdf',contentType:'application/pdf',fieldName:'patient_communication[file][file]'},fields:{patient_id:'123',practice_id:'1181','patient_communication[file][name]':'synthetic.pdf'}}}}}};
+ f.setResponse(JSON.stringify({patient_id:123,patient_communication:[{id:1,typeId:3,directionId:2,fileId:42,summary:'synthetic.pdf',notes:'private data'}]}));
+ assert.equal((await f.run()).outcome,'completed');assert.equal(f.operations(),1);assert.equal(f.job.response.classification,'CONFIRMED_PRESENT');
+ assert.equal(f.session.authenticated_at,null);assert.equal(f.connectedWrites(),0);assert.equal(d.workflow_status,'failed');assert.doesNotMatch(JSON.stringify(f.job.response),/private data|synthetic.pdf/);
+ assert.equal(f.calls.filter(s=>s==='report_drafts:select').length,2);
 });

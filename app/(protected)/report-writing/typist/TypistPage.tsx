@@ -5,6 +5,7 @@ import { createDraftDetailLoader } from '@/lib/report-writing/draft-detail-loade
 import { ManualVerificationButton } from "@/components/report-writing/ManualVerificationButton";
 import { RetryPraktikaButton } from "@/components/report-writing/RetryPraktikaButton";
 import { ResumeMedirefButton } from "@/components/report-writing/ResumeMedirefButton";
+import { ResumeWorkflowButton } from "@/components/report-writing/ResumeWorkflowButton";
 import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
 import { remainsInApproved } from "@/lib/report-writing/praktika-retry";
 
@@ -5092,6 +5093,11 @@ export default function TypistPage() {
                   </>}
                   <ResumeMedirefButton
                     key={`${draft.id}:resume-mediref:${draft.workflow_last_message}`}
+                    draftId={draft.id}
+                    onQueued={() => { void loadDrafts(selectedProviderId); }}
+                  />
+                  <ResumeWorkflowButton
+                    key={`${draft.id}:resume-workflow:${draft.workflow_last_message}`}
                     draftId={draft.id}
                     onQueued={() => { void loadDrafts(selectedProviderId); }}
                   />

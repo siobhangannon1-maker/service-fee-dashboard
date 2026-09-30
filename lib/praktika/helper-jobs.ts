@@ -7,6 +7,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export type PraktikaHelperJsonRequest = {
   reportDraftId?: string;
+  continuationId?: string;
   method: "POST";
   path: string;
   contentType?: "json" | "form";
@@ -16,6 +17,7 @@ export type PraktikaHelperJsonRequest = {
 
 export type PraktikaHelperMultipartStorageRequest = {
   reportDraftId?: string;
+  continuationId?: string;
   method: "POST";
   path: string;
   contentType: "multipart_storage";
@@ -43,6 +45,16 @@ type CreatePraktikaHelperJobInput = {
   priority?: number;
 };
 
+const DURABLE_WORKFLOW_WRITES = new Set([
+  "upload_report_to_praktika",
+  "update_praktika_letter_icons",
+]);
+
+const DURABLE_WORKFLOW_READS = new Set([
+  "periodontal_chart_patient_perio_exam_ids",
+  "periodontal_chart_perio_exams",
+]);
+
 export async function createPraktikaHelperJob({
   appUserId,
   jobType,
@@ -50,9 +62,11 @@ export async function createPraktikaHelperJob({
   priority = 100,
 }: CreatePraktikaHelperJobInput) {
   const workflow = currentWorkflowExecution();
-  const durableWrite = workflow && ["upload_report_to_praktika", "update_praktika_letter_icons"].includes(jobType);
+  const durableWrite = Boolean(workflow && DURABLE_WORKFLOW_WRITES.has(jobType));
+  const durableRead = Boolean(workflow && DURABLE_WORKFLOW_READS.has(jobType));
+  const durableWorkflowChild = durableWrite || durableRead;
+
   if (workflow?.retryUploadId && jobType === "upload_report_to_praktika") {
-    // Only activate the waiting reservation. Never reset a runnable/terminal job.
     const existing = await supabaseAdmin.from("praktika_helper_jobs").select("*").eq("id", workflow.retryUploadId)
       .eq("app_user_id", appUserId).eq("job_type", jobType).eq("request->>continuationId", workflow.intentId).single();
     if (existing.error || !existing.data?.request?.manualRetry?.verifiedAbsent) throw new Error("Retry reservation unavailable.");
@@ -67,14 +81,17 @@ export async function createPraktikaHelperJob({
     if (reconciled.error || !reconciled.data) throw new Error("Retry activation unavailable.");
     return reconciled.data;
   }
-  const id = durableWrite ? continuationChildId(workflow.intentId, jobType) : undefined;
+
+  const id = durableWorkflowChild && workflow ? continuationChildId(workflow.intentId, jobType) : undefined;
+  const workflowRequest = durableWorkflowChild && workflow ? { ...request, continuationId: workflow.intentId } : request;
+
   const { data, error } = await supabaseAdmin
     .from("praktika_helper_jobs")
     .insert({
       ...(id ? { id } : {}),
       app_user_id: appUserId || null,
       job_type: jobType,
-      request: durableWrite ? { ...request, continuationId: workflow.intentId } : request,
+      request: workflowRequest,
       priority,
       status: "pending",
       available_at: new Date().toISOString(),
@@ -89,9 +106,12 @@ export async function createPraktikaHelperJob({
       if (jobType === "update_praktika_letter_icons" && !sameIconHelperTarget(existing.data.request, request)) {
         throw new Error("Existing icon target could not be reconciled. No new icon action was created.");
       }
+      // Never silently re-arm a failed deterministic child here. Reads are
+      // re-armed only by Resume Workflow after server-side revalidation.
       return existing.data;
     }
   }
+
   if (error || !data) {
     throw new Error(
       `Could not create Praktika helper job: ${error?.message || "No job returned."}`,

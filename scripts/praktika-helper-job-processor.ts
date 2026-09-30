@@ -1,3 +1,4 @@
+import { inspectPdfPresence, matchesPdfReview, unknownPdf } from '../lib/praktika/pdf-presence';
 import { perioStructureDiagnostic } from "../lib/praktika/perio-structure-diagnostic";
 import { praktikaUploadResponseDiagnostic } from "../lib/praktika/authentication-probe";
 import { praktikaJobEligibility } from "../lib/praktika/job-eligibility";
@@ -221,7 +222,11 @@ async function completeJob(jobId: string, response: unknown) {
 
 async function failJob(job: any, message: string, forcePermanent = false, readFailure?: { jobType: string; attempt: number; failureCategory: PraktikaReadFailureCategory; httpStatus?: number }, uploadFailure?: UploadDiagnostic & { failureCategory: UploadFailureCategory }) {
   const attempts = Number(job.attempts || 0);
-  const permanent = forcePermanent || attempts >= 3;
+  const transientReadFailure = Boolean(
+    readFailure && ["http_307", "transport_failure"].includes(readFailure.failureCategory),
+  );
+  const maxAttempts = transientReadFailure ? 10 : 3;
+  const permanent = forcePermanent || attempts >= maxAttempts;
 
   const { error } = await supabase
     .from("praktika_helper_jobs")
@@ -1390,20 +1395,42 @@ export async function processOnePraktikaHelperJob(
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
     const beforeRequest = async () => {
       if (upload) upload.stage = "pre_dispatch";
-      if (ownership.isBrowserReady && !await ownership.isBrowserReady()) throw new PraktikaHelperUnavailable();
-      if (!await jobEligible(appUserId, job, ownership)) throw new PraktikaHelperUnavailable();
-      if (ownership.isBrowserReady && !await ownership.isBrowserReady()) throw new PraktikaHelperUnavailable();
-      await ownership.assertOwned();
-      if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
 
-      // Production can supply a strict write-only authentication fence.
-      // Read/retrieval operations remain on the existing lightweight path.
+      if (ownership.isBrowserReady && !await ownership.isBrowserReady()) {
+        throw new PraktikaHelperUnavailable();
+      }
+
+      if (!await jobEligible(appUserId, job, ownership)) {
+        throw new PraktikaHelperUnavailable();
+      }
+
+      await ownership.assertOwned();
+
+      if (ownership.isShuttingDown?.()) {
+        throw new PraktikaOwnershipLost();
+      }
+
+      // Keep read-only/retrieval work on the lightweight connected-browser path.
+      // Genuine Praktika writes must establish positive authentication before
+      // externalStarted/requestInvoked can become true.
       if (!retrieval && ownership.ensureWriteAuthenticated) {
         await ownership.ensureWriteAuthenticated();
-        if (ownership.isBrowserReady && !await ownership.isBrowserReady()) throw new PraktikaHelperUnavailable();
-        if (!await jobEligible(appUserId, job, ownership)) throw new PraktikaHelperUnavailable();
+
+        // Authentication may refresh cookies/session state. Revalidate all
+        // dispatch guards after it completes and before starting the write.
+        if (ownership.isBrowserReady && !await ownership.isBrowserReady()) {
+          throw new PraktikaHelperUnavailable();
+        }
+
+        if (!await jobEligible(appUserId, job, ownership)) {
+          throw new PraktikaHelperUnavailable();
+        }
+
         await ownership.assertOwned();
-        if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
+
+        if (ownership.isShuttingDown?.()) {
+          throw new PraktikaOwnershipLost();
+        }
       }
 
       externalStarted = true;
@@ -1412,7 +1439,21 @@ export async function processOnePraktikaHelperJob(
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
     reportUploadStarted = job.job_type === "upload_report_to_praktika";
     let response: unknown;
-    if (readOnly) {
+    if (job.job_type === "historical_pdf_presence_verify") {
+      const checkReview = async () => {
+        const input = job.request.verification;
+        if (!input || typeof input.draftId !== "string") return false;
+        const { data, error } = await supabase.from("report_drafts")
+          .select("id,status,deleted_at,created_at,updated_at,provider_approved_at,praktika_patient_id,workflow_status")
+          .eq("id", input.draftId).abortSignal(AbortSignal.timeout(5000)).maybeSingle();
+        return !error && matchesPdfReview(input, data);
+      };
+      if (!await checkReview()) response = unknownPdf("unknown_revision_or_draft_state");
+      else {
+        response = await inspectPdfPresence(context, job.request.verification, beforeRequest);
+        if (!await checkReview()) response = unknownPdf("unknown_revision_or_draft_state");
+      }
+    } else if (readOnly) {
       await beforeRequest();
       const readResponse = await context.request.post(`${PRAKTIKA_BASE_URL}${job.request.path}`, {
         headers: { Origin: PRAKTIKA_BASE_URL, Referer: `${PRAKTIKA_BASE_URL}/v2/scheduler`, "Content-Type": "application/json" },
@@ -1478,10 +1519,22 @@ export async function processOnePraktikaHelperJob(
       if (readOnly) console.log("[Praktika read] failure", { jobType: job.job_type, attempt: job.attempts, failureCategory: "ownership_unavailable" });
       throw ownershipError;
     }
+    if (job.job_type === "historical_pdf_presence_verify") {
+      // No replay after a failed guard or lost result acknowledgement. Failure
+      // to obtain/persist a verification is UNKNOWN, never evidence of absence.
+      await failJob(job, "Praktika PDF verification unavailable. Outcome UNKNOWN; operator review required.", true);
+      return { outcome: "failed", jobId: job.id };
+    }
     if (error instanceof PraktikaHelperUnavailable) {
       // No external action occurred: preserve the job and its original attempt count.
       const { error: releaseError } = await supabase.from("praktika_helper_jobs").update({
-        status: "pending", attempts: Math.max(0, job.attempts - 1), locked_at: null, locked_by: null,
+        status: "pending",
+        // Authentication/liveness rejection happened before dispatch. It is not
+        // an external-operation attempt, so preserve the original attempt count.
+        attempts: Math.max(0, job.attempts - 1),
+        available_at: new Date(Date.now() + 60_000).toISOString(),
+        locked_at: null,
+        locked_by: null,
         updated_at: nowIso(),
       }).eq("id", job.id).eq("status", "processing").eq("locked_by", WORKER_ID);
       if (releaseError) throw new Error("Could not preserve waiting Praktika job.");
