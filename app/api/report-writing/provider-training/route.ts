@@ -1,4 +1,4 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { trainingAccess, trainingProviderAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -31,7 +31,7 @@ async function safeSelect<T>(query: PromiseLike<{ data: T | null; error: any }>)
   const result = await query
 
   if (result.error) {
-    console.warn("Provider training optional query failed:", result.error.message)
+    console.warn("Provider training optional query failed.")
     return null
   }
 
@@ -39,13 +39,15 @@ async function safeSelect<T>(query: PromiseLike<{ data: T | null; error: any }>)
 }
 
 export async function GET(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-training");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     const supabase = getSupabase()
     const { searchParams } = new URL(req.url)
     const providerId = searchParams.get("providerId")
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
 
     if (!providerId) {
       return NextResponse.json(
@@ -62,7 +64,7 @@ export async function GET(req: Request) {
 
     if (providerResult.error) {
       return NextResponse.json(
-        { success: false, error: providerResult.error.message },
+        { success: false, error: "Training request could not be completed." },
         { status: 500 }
       )
     }
@@ -118,15 +120,13 @@ export async function GET(req: Request) {
       editExamples: editExamples || [],
     })
   } catch (error) {
-    console.error("Load provider training failed:", error)
+    console.error("Load provider training failed:")
 
     return NextResponse.json(
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to load provider training.",
+          "Failed to load provider training.",
       },
       { status: 500 }
     )
@@ -134,14 +134,16 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-training");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     const supabase = getSupabase()
     const body = await req.json()
 
     const providerId = clean(body.providerId)
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
     const type = clean(body.type)
 
     if (!providerId) {
@@ -185,7 +187,7 @@ export async function POST(req: Request) {
 
       if (error) {
         return NextResponse.json(
-          { success: false, error: error.message },
+          { success: false, error: "Training request could not be completed." },
           { status: 500 }
         )
       }
@@ -216,7 +218,7 @@ export async function POST(req: Request) {
 
       if (error) {
         return NextResponse.json(
-          { success: false, error: error.message },
+          { success: false, error: "Training request could not be completed." },
           { status: 500 }
         )
       }
@@ -259,7 +261,7 @@ export async function POST(req: Request) {
 
       if (error) {
         return NextResponse.json(
-          { success: false, error: error.message },
+          { success: false, error: "Training request could not be completed." },
           { status: 500 }
         )
       }
@@ -293,7 +295,7 @@ export async function POST(req: Request) {
 
       if (error) {
         return NextResponse.json(
-          { success: false, error: error.message },
+          { success: false, error: "Training request could not be completed." },
           { status: 500 }
         )
       }
@@ -306,15 +308,13 @@ export async function POST(req: Request) {
       { status: 400 }
     )
   } catch (error) {
-    console.error("Save provider training failed:", error)
+    console.error("Save provider training failed:")
 
     return NextResponse.json(
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to save provider training.",
+          "Failed to save provider training.",
       },
       { status: 500 }
     )

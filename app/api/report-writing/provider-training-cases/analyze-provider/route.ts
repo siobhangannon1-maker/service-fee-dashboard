@@ -1,4 +1,4 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { trainingAccess, trainingProviderAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
 import { createClient } from "@supabase/supabase-js"
@@ -40,14 +40,16 @@ function safeJsonParse<T>(text: string, fallback: T): T {
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-training-cases/analyze-provider");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     const supabase = getSupabase()
     const body = await req.json()
 
     const providerId = clean(body.providerId)
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
 
     if (!providerId) {
       return NextResponse.json(
@@ -257,15 +259,13 @@ ${trainingCase.best_generated_letter || "none"}`
       },
     })
   } catch (error) {
-    console.error("Analyze provider training failed:", error)
+    console.error("Analyze provider training failed:")
 
     return NextResponse.json(
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to analyse provider training.",
+          "Failed to analyse provider training.",
       },
       { status: 500 }
     )

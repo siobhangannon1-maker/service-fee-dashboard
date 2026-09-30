@@ -1,4 +1,4 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { trainingAccess, trainingProviderAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -24,13 +24,15 @@ function makeKnowledgeKey(reportType: string, knowledgeType: string, category: s
 }
 
 export async function GET(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-knowledge");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     const supabase = getSupabase()
     const { searchParams } = new URL(req.url)
     const providerId = clean(searchParams.get("providerId"))
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
     const reportType = clean(searchParams.get("reportType"))
     const status = clean(searchParams.get("status")) || "active"
 
@@ -61,21 +63,23 @@ export async function GET(req: Request) {
     return NextResponse.json({ success: true, knowledge: data || [], summary })
   } catch (error) {
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Failed to load provider knowledge." },
+      { success: false, error: "Failed to load provider knowledge." },
       { status: 500 }
     )
   }
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-knowledge");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     const supabase = getSupabase()
     const body = await req.json()
 
     const providerId = clean(body.providerId)
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
     const reportType = clean(body.reportType) || "all"
     const knowledgeType = clean(body.knowledgeType) || "manual_rule"
     const category = clean(body.category) || "manual_rule"
@@ -118,7 +122,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, item: data })
   } catch (error) {
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Failed to save provider knowledge." },
+      { success: false, error: "Failed to save provider knowledge." },
       { status: 500 }
     )
   }

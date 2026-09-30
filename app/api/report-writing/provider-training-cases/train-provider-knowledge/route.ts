@@ -1,4 +1,5 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { generateTrainingLetter, trainingGenerationErrorResponse } from "@/lib/report-writing/training-generation";
+import { trainingAccess, trainingProviderAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
 import { createClient } from "@supabase/supabase-js"
@@ -110,18 +111,7 @@ function deidentifyExampleText(text: string, patientFirstName: string) {
     .replace(/\bDOB[:\s]*[^\n,]+/gi, "DOB: [DOB]")
 }
 
-async function generateLetter(origin: string, payload: Record<string, unknown>) {
-  const response = await fetch(`${origin}/api/report-writing/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  })
 
-  const data = await response.json()
-  if (!data.success) throw new Error(data.error || "Letter generation failed.")
-
-  return clean(data.report)
-}
 
 type KnowledgeSuggestion = {
   knowledge_type: string
@@ -294,17 +284,18 @@ ${input.idealLetter}
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-training-cases/train-provider-knowledge");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     if (!process.env.OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY.")
 
     const supabase = getSupabase()
-    const origin = new URL(req.url).origin
     const body = await req.json()
 
     const providerId = clean(body.providerId)
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
     const reportType = clean(body.reportType) || "consultation_report"
     const patientFirstName = clean(body.patientFirstName)
     const patientGender = clean(body.patientGender) || "neutral"
@@ -330,7 +321,7 @@ export async function POST(req: Request) {
       reportType
     )
 
-    const generatedLetter = await generateLetter(origin, {
+    const generatedLetter = await generateTrainingLetter(req, {
       providerId,
       reportType,
       patientName: patientFirstName,
@@ -439,7 +430,7 @@ export async function POST(req: Request) {
     let regeneratedLetter = ""
 
     if (regeneratePreview && previewKnowledgeItems.length > 0) {
-      regeneratedLetter = await generateLetter(origin, {
+      regeneratedLetter = await generateTrainingLetter(req, {
         providerId,
         reportType,
         patientName: patientFirstName,
@@ -527,15 +518,15 @@ export async function POST(req: Request) {
       knowledgeCount: knowledgeItems.length,
     })
   } catch (error) {
-    console.error("Train provider knowledge V4 failed:", error)
+    const generationError = trainingGenerationErrorResponse(error);
+    if (generationError) return generationError;
+    console.error("Train provider knowledge V4 failed:")
 
     return NextResponse.json(
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Provider knowledge training failed.",
+          "Provider knowledge training failed.",
       },
       { status: 500 }
     )

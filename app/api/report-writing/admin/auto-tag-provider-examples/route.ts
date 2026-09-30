@@ -1,4 +1,4 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { trainingAccess, trainingProviderAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
 import { createClient } from "@supabase/supabase-js"
@@ -30,8 +30,8 @@ function safeJsonParse<T>(text: string, fallback: T): T {
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/admin/auto-tag-provider-examples");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess(true);
+  if (access.denied) return access.denied;
 
   try {
     if (!process.env.OPENAI_API_KEY) {
@@ -42,6 +42,8 @@ export async function POST(req: Request) {
     }
 
     const { providerId, retagAll } = await req.json()
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
 
     if (!providerId) {
       return NextResponse.json(
@@ -64,7 +66,7 @@ export async function POST(req: Request) {
 
     if (examplesResult.error) {
       return NextResponse.json(
-        { success: false, error: examplesResult.error.message },
+        { success: false, error: "Training examples could not be loaded." },
         { status: 500 }
       )
     }
@@ -194,7 +196,7 @@ ${example.example_text}
           failures.push({
             id: example.id,
             title: example.title,
-            error: updateResult.error.message,
+            error: "Training example could not be updated.",
           })
         } else {
           updated += 1
@@ -203,7 +205,7 @@ ${example.example_text}
         failures.push({
           id: example.id,
           title: example.title,
-          error: error instanceof Error ? error.message : "Unknown error",
+          error: "Unknown error",
         })
       }
     }
@@ -215,15 +217,13 @@ ${example.example_text}
       failures,
     })
   } catch (error) {
-    console.error("Auto-tag examples failed:", error)
+    console.error("Auto-tag examples failed:")
 
     return NextResponse.json(
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to auto-tag examples.",
+          "Failed to auto-tag examples.",
       },
       { status: 500 }
     )

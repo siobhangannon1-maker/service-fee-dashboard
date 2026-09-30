@@ -1,4 +1,5 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { generateTrainingLetter, trainingGenerationErrorResponse } from "@/lib/report-writing/training-generation";
+import { trainingAccess, trainingProviderAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
 import { createClient } from "@supabase/supabase-js"
@@ -68,21 +69,7 @@ function enforcePatientFirstNameOnly(report: string, patientFirstName: string) {
   return report
 }
 
-async function generateLetter(origin: string, payload: Record<string, unknown>) {
-  const response = await fetch(`${origin}/api/report-writing/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  })
 
-  const data = await response.json()
-
-  if (!data.success) {
-    throw new Error(data.error || "Letter generation failed.")
-  }
-
-  return clean(data.report)
-}
 
 type ComparisonResult = {
   score: number
@@ -256,8 +243,8 @@ ${params.idealLetter}
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-training-cases/train-loop");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     if (!process.env.OPENAI_API_KEY) {
@@ -268,10 +255,11 @@ export async function POST(req: Request) {
     }
 
     const supabase = getSupabase()
-    const origin = new URL(req.url).origin
     const body = await req.json()
 
     const providerId = clean(body.providerId)
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
     const reportType = clean(body.reportType) || "consultation_report"
     const patientFirstName = clean(body.patientFirstName) || "Patient"
     const patientName = patientFirstName
@@ -311,7 +299,7 @@ export async function POST(req: Request) {
         .map((rule, ruleIndex) => `${ruleIndex + 1}. ${rule}`)
         .join("\n")
 
-      const generatedRaw = await generateLetter(origin, {
+      const generatedRaw = await generateTrainingLetter(req, {
         providerId,
         reportType,
         patientName,
@@ -423,13 +411,15 @@ export async function POST(req: Request) {
       suggestedRulesText,
     })
   } catch (error) {
-    console.error("Training loop failed:", error)
+    const generationError = trainingGenerationErrorResponse(error);
+    if (generationError) return generationError;
+    console.error("Training loop failed:")
 
     return NextResponse.json(
       {
         success: false,
         error:
-          error instanceof Error ? error.message : "Training loop failed.",
+          "Training loop failed.",
       },
       { status: 500 }
     )

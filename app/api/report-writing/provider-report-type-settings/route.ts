@@ -1,4 +1,4 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { trainingAccess, trainingProviderAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -20,13 +20,15 @@ function clean(value: unknown) {
 }
 
 export async function GET(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-report-type-settings");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     const supabase = getSupabase()
     const { searchParams } = new URL(req.url)
     const providerId = clean(searchParams.get("providerId"))
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
 
     if (!providerId) {
       return NextResponse.json(
@@ -44,7 +46,7 @@ export async function GET(req: Request) {
 
     if (error) {
       return NextResponse.json(
-        { success: false, error: error.message },
+        { success: false, error: "Training request could not be completed." },
         { status: 500 }
       )
     }
@@ -55,9 +57,7 @@ export async function GET(req: Request) {
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to load report type settings.",
+          "Failed to load report type settings.",
       },
       { status: 500 }
     )
@@ -65,14 +65,16 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-report-type-settings");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     const supabase = getSupabase()
     const body = await req.json()
 
     const providerId = clean(body.providerId)
+    const providerDenied = await trainingProviderAccess(access.value, providerId);
+    if (providerDenied) return providerDenied;
     const reportType = clean(body.reportType)
     const label = clean(body.label) || reportType.replace(/_/g, " ")
     const displayOrder = Number.isFinite(Number(body.displayOrder))
@@ -105,7 +107,7 @@ export async function POST(req: Request) {
 
     if (error) {
       return NextResponse.json(
-        { success: false, error: error.message },
+        { success: false, error: "Training request could not be completed." },
         { status: 500 }
       )
     }
@@ -116,9 +118,7 @@ export async function POST(req: Request) {
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to save report type setting.",
+          "Failed to save report type setting.",
       },
       { status: 500 }
     )

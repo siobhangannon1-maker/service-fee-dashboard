@@ -1,4 +1,4 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { trainingAccess, trainingProviderAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -32,35 +32,26 @@ function deidentifyText(text: string) {
 }
 
 export async function GET() {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/admin/provider-examples");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess(true);
+  if (access.denied) return access.denied;
 
-  const [providers, examples, customTypes] = await Promise.all([
-    supabase
-      .from("providers")
-      .select("id, name")
-      .eq("is_active", true)
-      .order("name", { ascending: true }),
-
-    supabase
-      .from("provider_report_examples")
-      .select("*, providers(name)")
-      .order("created_at", { ascending: false }),
-
-    supabase
-      .from("provider_correspondence_types")
-      .select("*")
-      .order("label", { ascending: true }),
-  ])
+  const providers = await supabase.from("providers").select("id, name")
+    .eq("is_active", true).order("name", { ascending: true });
+  if (providers.error) return NextResponse.json({ success: false, error: "Training data could not be loaded." }, { status: 500 });
+  const providerIds = (providers.data || []).map(provider => provider.id);
+  const [examples, customTypes] = providerIds.length ? await Promise.all([
+    supabase.from("provider_report_examples").select("*, providers(name)")
+      .in("provider_id", providerIds).order("created_at", { ascending: false }),
+    supabase.from("provider_correspondence_types").select("*")
+      .in("provider_id", providerIds).order("label", { ascending: true }),
+  ]) : [{ data: [], error: null }, { data: [], error: null }];
 
   if (providers.error || examples.error || customTypes.error) {
     return NextResponse.json(
       {
         success: false,
         error:
-          providers.error?.message ||
-          examples.error?.message ||
-          customTypes.error?.message,
+          "Training data could not be loaded.",
       },
       { status: 500 }
     )
@@ -76,8 +67,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/admin/provider-examples");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess(true);
+  if (access.denied) return access.denied;
 
   const body = await req.json()
 
@@ -86,8 +77,6 @@ export async function POST(req: Request) {
     reportType,
     title,
     exampleText,
-    actorFullName,
-    actorEmail,
   } = body
 
   if (!providerId || !reportType || !exampleText) {
@@ -96,6 +85,9 @@ export async function POST(req: Request) {
       { status: 400 }
     )
   }
+
+  const providerDenied = await trainingProviderAccess(access.value, providerId);
+  if (providerDenied) return providerDenied;
 
   const deidentifiedExample = deidentifyText(exampleText)
 
@@ -112,7 +104,7 @@ export async function POST(req: Request) {
 
   if (error) {
     return NextResponse.json(
-      { success: false, error: error.message },
+      { success: false, error: "Training request could not be completed." },
       { status: 500 }
     )
   }

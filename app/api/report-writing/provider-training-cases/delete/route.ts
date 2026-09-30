@@ -1,4 +1,4 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { trainingAccess, trainingItemAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -16,8 +16,8 @@ function getSupabase() {
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-training-cases/delete");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     const supabase = getSupabase()
@@ -30,14 +30,18 @@ export async function POST(req: Request) {
       )
     }
 
+    const itemAccess = await trainingItemAccess(access.value, "provider_training_cases", body.id);
+    if (itemAccess.denied) return itemAccess.denied;
+
     const { error } = await supabase
       .from("provider_training_cases")
       .delete()
       .eq("id", body.id)
+      .eq("provider_id", itemAccess.value)
 
     if (error) {
       return NextResponse.json(
-        { success: false, error: error.message },
+        { success: false, error: "Training request could not be completed." },
         { status: 500 }
       )
     }
@@ -48,9 +52,7 @@ export async function POST(req: Request) {
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to delete training case.",
+          "Failed to delete training case.",
       },
       { status: 500 }
     )

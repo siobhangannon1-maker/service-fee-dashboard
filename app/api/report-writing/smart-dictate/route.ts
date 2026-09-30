@@ -1,3 +1,4 @@
+import { generateTrainingLetter, trainingGenerationErrorResponse } from "@/lib/report-writing/training-generation";
 import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
@@ -101,51 +102,14 @@ ${dictatedText}
       parsed.clinicalNotes || dictatedText
     ).trim()
 
-    const generateResponse = await fetch(
-      `${new URL(req.url).origin}/api/report-writing/generate`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          providerId,
-          patientName: finalPatientName,
-          patientFirstName: finalPatientFirstName,
-          patientDob: patientDob || "",
-          reportType: finalReportType,
-          clinicalNotes,
-        }),
-      }
-    )
-
-    const generateText = await generateResponse.text()
-
-    let generateData: any
-
-    try {
-      generateData = generateText ? JSON.parse(generateText) : {}
-    } catch {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "The generate API returned a web page instead of JSON.",
-          preview: generateText.slice(0, 500),
-        },
-        { status: 500 }
-      )
-    }
-
-    if (!generateResponse.ok || !generateData.success) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: generateData.error || "Failed to generate report.",
-        },
-        { status: 500 }
-      )
-    }
+    const report = await generateTrainingLetter(req, {
+      providerId,
+      patientName: finalPatientName,
+      patientFirstName: finalPatientFirstName,
+      patientDob: patientDob || "",
+      reportType: finalReportType,
+      clinicalNotes,
+    })
 
     return NextResponse.json({
       success: true,
@@ -154,19 +118,19 @@ ${dictatedText}
       patientDob: patientDob || "",
       reportType: finalReportType,
       clinicalNotes,
-      report: generateData.report,
+      report,
       dictatedText,
     })
   } catch (error) {
-    console.error("Smart dictate failed:", error)
+    const generationError = trainingGenerationErrorResponse(error);
+    if (generationError) return generationError;
+    console.error("Smart dictate failed.")
 
     return NextResponse.json(
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Smart dictate failed.",
+          "Smart dictate failed.",
       },
       { status: 500 }
     )

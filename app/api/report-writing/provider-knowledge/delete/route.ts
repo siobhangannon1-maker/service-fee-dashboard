@@ -1,4 +1,4 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { trainingAccess, trainingItemAccess } from "@/lib/report-writing/training-authorization";
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -12,8 +12,8 @@ function getSupabase() {
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/provider-knowledge/delete");
-  if (accessDenied) return accessDenied;
+  const access = await trainingAccess();
+  if (access.denied) return access.denied;
 
   try {
     const supabase = getSupabase()
@@ -25,16 +25,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: "Missing knowledge id." }, { status: 400 })
     }
 
+    const itemAccess = await trainingItemAccess(access.value, "provider_knowledge", id);
+    if (itemAccess.denied) return itemAccess.denied;
+
     const { error } = await supabase
       .from("provider_knowledge")
       .update({ status, updated_at: new Date().toISOString() })
       .eq("id", id)
+      .eq("provider_id", itemAccess.value)
 
     if (error) throw new Error(error.message)
     return NextResponse.json({ success: true })
   } catch (error) {
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Failed to update provider knowledge." },
+      { success: false, error: "Failed to update provider knowledge." },
       { status: 500 }
     )
   }
