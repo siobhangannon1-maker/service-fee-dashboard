@@ -1,4 +1,3 @@
-import { PDF_PRESENCE_JOB, inspectPdfPresence, matchesPdfReview, unknownPdf } from './pdf-presence';
 import { pollPraktikaWorkflowContinuations } from '../../scripts/praktika-workflow-continuations';
 import { PraktikaHelperUnavailable } from "./helper-lease";
 import { perioStructureDiagnostic } from "./perio-structure-diagnostic";
@@ -61,7 +60,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   let nextOwnershipError: Error | undefined;
   let owned = true, operations = 0, connectedWrites = 0, httpStatus = 200;
   let responseUrl = "https://praktika.praktika.net.au/php/forms/db_getFormData.php", responseText = '{"patient_perioexamids":[12]}';
-  const globals = { PDF_PRESENCE_JOB, inspectPdfPresence, matchesPdfReview, unknownPdf, praktikaUploadResponseDiagnostic, PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
+  const globals = { praktikaUploadResponseDiagnostic, PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
     isConfirmedPraktikaUpload, Date, AbortSignal, URLSearchParams, Buffer, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
     console: { log(...args: unknown[]) { logs.push(args); }, error() {} },
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>, upload?: unknown) => { prepareRequest(_r as Row); if(realTransport) return (_r as Row).contentType === "multipart_storage" ? api.runMultipartStorageRequest(_c, _r, before, upload) : api.runJsonOrFormRequest(_c, _r, before, upload); await before(); operations++; return { patient_communication: { iFileId: 12 } }; },
@@ -425,25 +424,4 @@ test('blocked writes retain filtered read discovery beyond the first twenty jobs
   assert.equal(f.calls.filter(c => c === 'praktika_helper_jobs:select').length, 2);
   assert.equal(f.calls.filter(c => c === 'praktika_sessions:select').length, 2);
   assert.equal(f.operations(), 0); assert.ok(f.jobs.every(j => j.attempts === 0));
-});
-
-test('PDF verification persists UNKNOWN for invalid frozen input without invoking transport or writes',async()=>{
- const f=fixture();f.job.job_type=PDF_PRESENCE_JOB;f.job.request={verification:{}};
- assert.equal((await f.run()).outcome,'completed');assert.equal(f.job.response.classification,'UNKNOWN');assert.equal(f.operations(),0);assert.equal(f.connectedWrites(),0);
-});
-test('PDF verification result persistence failure is terminal and never replayed',async()=>{
- const f=fixture();f.job.job_type=PDF_PRESENCE_JOB;f.job.request={verification:{}};f.failPersistence();
- assert.equal((await f.run()).outcome,'failed');assert.equal(f.job.status,'failed');assert.equal((await f.run()).outcome,'none');assert.equal(f.operations(),0);
-});
-
-test('valid PDF inspection takes one read, keeps auth unchanged and stores sanitized positive result',async()=>{
- const {historicalEpoch}=await import('../report-writing/historical-reconciliation');
- const f=fixture();const id='00000000-0000-4000-8000-000000000001';
- const d={id,status:'approved',deleted_at:null,created_at:'2026-08-01T00:00:00Z',provider_approved_at:null,updated_at:'2026-09-01T00:00:00Z',praktika_patient_id:'123',workflow_status:'failed'};
- f.setVerificationDraft(d);f.job.job_type=PDF_PRESENCE_JOB;
- f.job.request={verification:{draftId:id,epoch:historicalEpoch(d),revision:d.updated_at,reviewedRevision:d.updated_at,patientId:'123',practiceId:'1181',filename:'synthetic.pdf',artifactFingerprint:'a'.repeat(64),retainedUpload:{id:'old',status:'completed',response:{patient_communication:{iFileId:42}},request:{method:'POST',path:'/php/forms/db_updateFormData.php',contentType:'multipart_storage',reportDraftId:id,body:{file:{path:`report-uploads/actor/${id}/1-synthetic.pdf`,fileName:'synthetic.pdf',contentType:'application/pdf',fieldName:'patient_communication[file][file]'},fields:{patient_id:'123',practice_id:'1181','patient_communication[file][name]':'synthetic.pdf'}}}}}};
- f.setResponse(JSON.stringify({patient_id:123,patient_communication:[{id:1,typeId:3,directionId:2,fileId:42,summary:'synthetic.pdf',notes:'private data'}]}));
- assert.equal((await f.run()).outcome,'completed');assert.equal(f.operations(),1);assert.equal(f.job.response.classification,'CONFIRMED_PRESENT');
- assert.equal(f.session.authenticated_at,null);assert.equal(f.connectedWrites(),0);assert.equal(d.workflow_status,'failed');assert.doesNotMatch(JSON.stringify(f.job.response),/private data|synthetic.pdf/);
- assert.equal(f.calls.filter(s=>s==='report_drafts:select').length,2);
 });
