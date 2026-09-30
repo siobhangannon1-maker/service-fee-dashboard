@@ -1,5 +1,5 @@
 import {projectHistoricalAttention,historicalAttentionAction,historicalAttentionInvalidated} from './historical-attention';
-import {manualHistoricalMedirefActions} from './manual-historical-mediref';
+import {manualHistoricalMedirefActions,manualHistoricalMedirefAction,manualHistoricalMedirefContract} from './manual-historical-mediref';
 import { durableHistoricalWorkflow, historicalReconciliationAction, historicalInvalidationAction, historicalRetentionReleaseAction, type HistoricalReconciliationEvent } from './historical-reconciliation';
 import { resolveWorkflow, unavailableWorkflow, type ReadJob, type WorkflowDraft } from './resolved-workflow';
 import { hasLivePraktikaHelper } from '../praktika/helper-lease';
@@ -93,6 +93,35 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       liveMediref:false, reconciliations:events };
     const resolved = durableHistoricalWorkflow(draft as T & WorkflowDraft,evidence,historicalNow);
     if (resolved?.status === 'completed') completed.set(draft.id,{...draft,workflow_resolved:resolved});
+  }
+  // Discovery only: the existing resolver remains the authority for the full
+  // verification contract. Source changes are covered by the audit invalidation
+  // fences, as for durable reconciliation above; read every event before deciding.
+  const manualCandidates = new Map<string,string[]>();
+  for (const draft of drafts) {
+    if (completed.has(draft.id) || reconciliations.failed.has(draft.id)) continue;
+    const ids = (eventsByDraft.get(draft.id) || []).flatMap(event=>{
+      const v = event.details as Record<string,unknown> | null;
+      if (event.action!==manualHistoricalMedirefAction || !v || typeof v!=='object' || Array.isArray(v)
+        || v.contract!==manualHistoricalMedirefContract || v.version!==1 || v.source!=='human_external_verification'
+        || v.draftId!==draft.id || !Array.isArray(v.failedJobIds) || v.failedJobIds.length<1 || v.failedJobIds.length>2
+        || !v.failedJobIds.every((id:unknown)=>typeof id==='string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id))) return [];
+      return v.failedJobIds as string[];
+    });
+    if (ids.length) manualCandidates.set(draft.id,ids);
+  }
+  const manualJobs = await reader.read<ReadJob>([...manualCandidates.values()].flat(),batch=>db.from('mediref_helper_jobs')
+    .select('id,job_type,status,payload,result,created_at,updated_at,locked_at,locked_by')
+    .eq('job_type','send_mediref_letter').in('id',batch));
+  for (const draft of drafts) {
+    const ids = manualCandidates.get(draft.id);
+    if (!ids || ids.some(id=>manualJobs.failed.has(id))) continue;
+    const evidence = {uploads:[],icons:[],
+      mediref:manualJobs.rows.filter(j=>ids.includes(j.id) || j.payload?.draftId===draft.id),
+      reconciliations:eventsByDraft.get(draft.id) || [],livePraktikaActors:new Set<string>(),liveMediref:false};
+    const resolved = resolveWorkflow(draft as T & WorkflowDraft,evidence,historicalNow);
+    if (resolved.status==='completed' && resolved.historicalMedirefVerification)
+      completed.set(draft.id,{...draft,workflow_resolved:resolved});
   }
   drafts = drafts.filter(d=>!completed.has(d.id));
   if (!drafts.length) return originalDrafts.map(d=>completed.get(d.id) || d);

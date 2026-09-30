@@ -162,3 +162,81 @@ test('successful event pagination includes a later invalidation before accepting
   const [out]=await projectWorkflowRecovery(db,[draft]);
   assert.ok(shouldAppearInApproved(out));assert.equal(calls.filter(u=>u.pathname.endsWith('/report_writing_audit_events')).length,2);
 });
+
+function manualFixture(index: number) {
+  const {draft}=reconciledFixture(index);
+  draft.workflow_status='failed';
+  const job={id:`11111111-1111-4111-8111-${String(index).padStart(12,'0')}`,job_type:'send_mediref_letter',status:'failed',payload:{draftId:draft.id} as Record<string,unknown>};
+  const event={id:`manual-${index}`,entity_id:draft.id,action:'manual_historical_mediref_verification',details:{
+    eventId:`manual-${index}`,draftId:draft.id,epoch:'2026-01-01T00:00:00.000000Z/unrecorded',
+    contract:'manual-historical-mediref-v1',version:1,source:'human_external_verification',integration:'mediref',outcome:'completed',
+    verifierUserId:'33333333-3333-4333-8333-333333333333',verifiedAt:'2026-01-02T00:00:00Z',importedAt:'2026-01-02T00:00:00Z',
+    failedJobIds:[job.id],fingerprint:'a'.repeat(64),pdfFingerprint:'b'.repeat(64),workbookFingerprint:'c'.repeat(64),manifestFingerprint:'d'.repeat(64),
+    historicalCompletedAt:null,otherBranches:{praktika:'completed',icon:'completed',periodontal:'skipped'}}};
+  return {draft,event,job};
+}
+function manualDatabase(events: ReturnType<typeof manualFixture>['event'][], jobs: ReturnType<typeof manualFixture>['job'][], failure='') {
+  const calls:URL[]=[],signals=new Set<AbortSignal>();
+  const db=createClient('https://fixture.invalid','synthetic',{auth:{persistSession:false},global:{fetch:async(input,init)=>{
+    assert.equal(init?.method,'GET');if(init?.signal)signals.add(init.signal);
+    const u=new URL(String(input));calls.push(u);
+    const audit=u.pathname.endsWith('/report_writing_audit_events'),med=u.pathname.endsWith('/mediref_helper_jobs');
+    if((audit&&failure==='audit')||(med&&failure==='mediref'))return Response.json({message:'unavailable'},{status:400});
+    const filter=u.searchParams.get(audit?'entity_id':u.searchParams.has('id')?'id':'payload->>draftId') || '';
+    const rows=audit?events.filter(e=>filter.includes(e.entity_id)):med?jobs.filter(j=>filter.includes(u.searchParams.has('id')?j.id:String(j.payload.draftId))):[];
+    return Response.json(rows);
+  }}});
+  return {db,calls,signals};
+}
+test('130 manual terminal verifications use two audit and two exact-job reads, hide Approved, preserve order and inputs',async()=>{
+  const fixtures=Array.from({length:130},(_,i)=>manualFixture(i));
+  for(let i=116;i<130;i++)fixtures[i].event.details.otherBranches.icon='skipped';
+  const before=JSON.stringify(fixtures),{db,calls,signals}=manualDatabase(fixtures.map(f=>f.event),fixtures.map(f=>f.job));
+  const drafts=fixtures.map(f=>Object.freeze(f.draft));
+  const out=await projectWorkflowRecovery(db,drafts);
+  assert.equal(calls.length,4);assert.equal(signals.size,1);
+  assert.equal(calls.filter(u=>u.pathname.endsWith('/report_writing_audit_events')).length,2);
+  const jobReads=calls.filter(u=>u.pathname.endsWith('/mediref_helper_jobs'));
+  assert.equal(jobReads.length,2);assert.ok(jobReads.every(u=>u.searchParams.has('id')&&!u.searchParams.has('payload->>draftId')));
+  assert.ok(calls.every(u=>u.toString().length<5000));
+  assert.deepEqual(out.map(d=>d.id),drafts.map(d=>d.id));assert.ok(out.every(d=>!shouldAppearInApproved(d)));
+  assert.ok(out.every(d=>(d as typeof d & {workflow_resolved:{historicalMedirefVerification:unknown}}).workflow_resolved.historicalMedirefVerification));
+  assert.equal(JSON.stringify(fixtures),before);
+});
+for(const defect of ['periodontal','icon','praktika','missing','mismatched','completed','retry','continuation','invalidated','duplicate','system','malformed','wrong_epoch','extra','audit','mediref'])
+  test(`manual exact-job fast path falls through safely: ${defect}`,async()=>{
+    const {draft,event,job}=manualFixture(1);const events=[event],jobs=[job];
+    if(['periodontal','icon','praktika'].includes(defect))event.details.otherBranches[defect as 'periodontal'|'icon'|'praktika']='unknown';
+    if(defect==='missing')jobs.length=0;
+    if(defect==='mismatched')job.payload.draftId='other';
+    if(defect==='completed')job.status='completed';
+    if(defect==='retry')job.payload.retryMediref=true;
+    if(defect==='continuation')job.payload.workflowContinuationId='parent';
+    if(defect==='invalidated')events.push({...event,id:'invalid',action:'manual_historical_mediref_invalidated'});
+    if(defect==='duplicate')events.push({...event,id:'duplicate'});
+    if(defect==='system')events.push({...event,id:'system',action:'system_historical_reconciliation'});
+    if(defect==='malformed')event.details.fingerprint='invalid';
+    if(defect==='wrong_epoch')event.details.epoch='changed';
+    // A second candidate discloses another job for this same draft; it must not
+    // be discarded merely because the first event did not name it.
+    if(defect==='extra'){
+      const other=manualFixture(2);other.job.payload.draftId=draft.id;
+      events.push(other.event);jobs.push(other.job);
+    }
+    const {db,calls}=manualDatabase(events,jobs,defect);
+    const inputs=defect==='extra'?[draft,manualFixture(2).draft]:[draft];
+    const [out]=await projectWorkflowRecovery(db,inputs);
+    assert.equal(shouldAppearInApproved(out),true);
+    assert.ok(calls.some(u=>u.pathname.endsWith('/praktika_helper_jobs')));
+    assert.ok(calls.some(u=>u.pathname.endsWith('/mediref_helper_jobs')&&u.searchParams.has('payload->>draftId')));
+  });
+test('130 terminal and 15 periodontal-unknown records resolve separately without hiding unknown records',async()=>{
+  const fixtures=Array.from({length:145},(_,i)=>manualFixture(i));
+  for(const f of fixtures.slice(130))f.event.details.otherBranches.periodontal='unknown';
+  const {db,calls}=manualDatabase(fixtures.map(f=>f.event),fixtures.map(f=>f.job));
+  const out=await projectWorkflowRecovery(db,fixtures.map(f=>f.draft));
+  assert.equal(out.filter(shouldAppearInApproved).length,15);
+  for(const u of calls.filter(u=>u.pathname.endsWith('/praktika_helper_jobs')||u.searchParams.has('payload->>draftId'))){
+    assert.ok(!decodeURIComponent(u.search).includes(fixtures[0].draft.id));
+  }
+});
