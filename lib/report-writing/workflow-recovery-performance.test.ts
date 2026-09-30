@@ -264,3 +264,36 @@ for (const scenario of ['canonical','other','absent','failed','partial_page'] as
     assert.equal(JSON.stringify(draft),before);assert.ok(shouldAppearInApproved(out));
   });
 }
+
+for (const scenario of ['credentials','connected','mfa','missing','duplicate','user_mismatch','wrong_child','wrong_link','historical','lookup_failure','other_parent','other_upload','replacement','parent_failure','upload_failure'] as const) {
+  test(`connection block ${scenario}: existing reads only and no input mutation`,async()=>{
+    const id='11111111-1111-4111-8111-111111111111',parentId=continuationIntentId(id);
+    const parent={id:parentId,job_type:'complete_report_workflow',status:'waiting',app_user_id:'actor',request:{reportDraftId:id,actorUserId:'actor'},response:{stage:'upload',...(scenario==='replacement'?{retryUploadId:'replacement'}:{})}};
+    const child={id:scenario==='wrong_child'?'wrong':continuationChildId(parentId,'upload_report_to_praktika'),job_type:'upload_report_to_praktika',status:'pending',app_user_id:scenario==='user_mismatch'?'other':'actor',request:{reportDraftId:id,continuationId:scenario==='wrong_link'?'other':parentId},response:null};
+    const draft={id,status:'approved',workflow_connection_block:'praktika_credentials_required'};
+    const before=JSON.stringify(draft),calls:URL[]=[];
+    const db=createClient('https://fixture.invalid','synthetic',{auth:{persistSession:false},global:{fetch:async(input,init)=>{
+      assert.equal(init?.method,'GET');const u=new URL(String(input));calls.push(u);
+      if(u.searchParams.get('job_type')==='eq.complete_report_workflow') {
+        if(scenario==='parent_failure')return Response.json({message:'unavailable'},{status:400});
+        return Response.json(scenario==='historical'?[]:scenario==='other_parent'?[parent,{...parent,id:'other'}]:[parent]);
+      }
+      if(u.pathname.endsWith('/praktika_helper_jobs')) {
+        if(scenario==='upload_failure')return Response.json({message:'unavailable'},{status:400});
+        if(u.searchParams.has('id'))return Response.json([]);
+        return Response.json(scenario==='other_upload'?[child,{...child,id:'other'}]:[child]);
+      }
+      if(u.pathname.endsWith('/praktika_sessions')) {
+        if(scenario==='lookup_failure')return Response.json({message:'unavailable'},{status:400});
+        const session={id:'session',app_user_id:'actor',status:scenario==='connected'?'connected':scenario==='mfa'?'waiting_for_mfa':'waiting_for_credentials',helper_instance_id:null,helper_heartbeat_at:null};
+        return Response.json(scenario==='missing'?[]:scenario==='duplicate'?[session,{...session,id:'duplicate'}]:[session]);
+      }
+      return Response.json([]);
+    }}});
+    const [out]=await projectWorkflowRecovery(db,[Object.freeze(draft)]);
+    assert.equal(out.workflow_connection_block,scenario==='credentials'?'praktika_credentials_required':'unknown');
+    assert.equal(JSON.stringify(draft),before);assert.ok(shouldAppearInApproved(out));
+    assert.equal(calls.filter(u=>u.pathname.endsWith('/praktika_sessions')).length,scenario==='upload_failure'?0:1);
+    assert.equal(calls.length,['wrong_child','replacement'].includes(scenario)?6:5);
+  });
+}

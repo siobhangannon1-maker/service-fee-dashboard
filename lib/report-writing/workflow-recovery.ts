@@ -92,7 +92,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     const evidence = { uploads:[], icons:[], mediref:[], livePraktikaActors:new Set<string>(),
       liveMediref:false, reconciliations:events };
     const resolved = durableHistoricalWorkflow(draft as T & WorkflowDraft,evidence,historicalNow);
-    if (resolved?.status === 'completed') completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown'});
+    if (resolved?.status === 'completed') completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown',workflow_connection_block:'unknown'});
   }
   // Discovery only: the existing resolver remains the authority for the full
   // verification contract. Source changes are covered by the audit invalidation
@@ -121,7 +121,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       reconciliations:eventsByDraft.get(draft.id) || [],livePraktikaActors:new Set<string>(),liveMediref:false};
     const resolved = resolveWorkflow(draft as T & WorkflowDraft,evidence,historicalNow);
     if (resolved.status==='completed' && resolved.historicalMedirefVerification)
-      completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown'});
+      completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown',workflow_connection_block:'unknown'});
   }
   drafts = drafts.filter(d=>!completed.has(d.id));
   if (!drafts.length) return originalDrafts.map(d=>completed.get(d.id) || d);
@@ -172,6 +172,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
   for (const [draftId,jobId] of childIds) if (childRead.failed.has(jobId)) projectionUnavailable.add(draftId);
   const projected = projectLegacyWorkflowRecovery(drafts,parents,uploads,projectionUnavailable);
   const output = [...projected],now=Date.now();
+  const connectionBlocked = new Set<string>();
   const livePraktikaActors = new Set(praktikaLive.rows.filter(j=>['connected','refreshing'].includes(j.status) && hasLivePraktikaHelper(j,now)).map(j=>j.app_user_id));
   const m=medirefLive.rows[0];
   const liveMediref=medirefLive.rows.length===1 && ['connected','refreshing'].includes(m.status) && Boolean(m.helper_instance_id) &&
@@ -194,9 +195,25 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       currentIconId:parent?continuationChildId(parent.id,'update_praktika_letter_icons'):undefined,
       livePraktikaActors,liveMediref,reconciliations:eventsByDraft.get(d.id) || [],
     };
+    // Display evidence only: require the unambiguous original pending upload and
+    // its exact execution user's explicit credential challenge, never missing liveness.
+    const child = evidence.uploads[0];
+    const sessions = praktikaLive.rows.filter(s=>s.app_user_id===parent?.app_user_id);
+    if (parent && parent.status==='waiting' && parent.request?.reportDraftId===d.id &&
+      parent.app_user_id && parent.request?.actorUserId===parent.app_user_id &&
+      (parent.response as {stage?:string}|null)?.stage==='upload' && !response?.retryUploadId &&
+      !evidence.hasOtherParent && parentRead.rows.filter(p=>p.id===parent.id).length===1 &&
+      evidence.uploads.length===1 && child.id===continuationChildId(parent.id,'upload_report_to_praktika') &&
+      child.request?.reportDraftId===d.id && child.request?.continuationId===parent.id &&
+      !child.request?.manualRetry && child.status==='pending' && child.app_user_id===parent.app_user_id &&
+      !child.locked_at && !child.locked_by && child.response==null &&
+      !manualVerification(parent.response,'praktika',d.id,parent.id) &&
+      !praktikaLive.failed.has(parent.app_user_id) && sessions.length===1 &&
+      sessions[0].status==='waiting_for_credentials') connectionBlocked.add(d.id);
     output[i]={...projected[i],workflow_resolved:resolveWorkflow(d,evidence,now),workflow_attention:projectHistoricalAttention(d,evidence,now)};
   }
   const recovered = new Map(output.map(d=>[d.id,d]));
   return originalDrafts.map(d=>completed.get(d.id) || {...(recovered.get(d.id) || d),
-    workflow_continuation_context:continuationContexts.get(d.id) || 'unknown'});
+    workflow_continuation_context:continuationContexts.get(d.id) || 'unknown',
+    workflow_connection_block:connectionBlocked.has(d.id)?'praktika_credentials_required':'unknown'});
 }

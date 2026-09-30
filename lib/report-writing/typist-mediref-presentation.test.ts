@@ -123,3 +123,24 @@ test('continuation context survives list serialization and refresh merge, with m
   assert.equal(mergeDraftWorkflow(updated,toDraftListItem({id:'draft',provider_id:'provider'},null)).workflow_continuation_context,undefined);
   assert.equal(JSON.stringify(row),before);
 });
+
+test('only authoritative present connection block changes card wording; resolution and recovery stay intact',()=>{
+  for(const context of ['present','absent','unknown'] as const)for(const block of ['praktika_credentials_required','unknown'] as const){
+    const d={...fixture(),workflow_continuation_context:context,workflow_connection_block:block};
+    const before=JSON.stringify(d),visible=shouldAppearInApproved(d),p=typistApprovedPresentation(d);
+    assert.equal(p.kind==='connection_blocked',context==='present'&&block==='praktika_credentials_required');
+    if(p.kind==='connection_blocked'){
+      assert.equal(p.label,'Waiting for Praktika connection');
+      assert.equal(p.message,'This workflow will continue automatically when the required Praktika connection is restored.');
+    }
+    assert.equal(JSON.stringify(d),before);assert.equal(shouldAppearInApproved(d),visible);
+    d.workflow_resolved!.lookupUnavailable=true;assert.notEqual(typistApprovedPresentation(d).kind,'connection_blocked');
+  }
+});
+test('connection block survives projection and refresh; old evidence is cleared',()=>{
+  const row={id:'draft',workflow_connection_block:'praktika_credentials_required'};
+  const list=toDraftListItem(row,null),detail=toDraftDetail(row);
+  assert.equal(list.workflow_connection_block,'praktika_credentials_required');
+  assert.equal(mergeDraftWorkflow(detail,toDraftListItem({...row,workflow_connection_block:'unknown'},null)).workflow_connection_block,'unknown');
+  assert.equal(mergeDraftWorkflow(detail,toDraftListItem({id:'draft'},null)).workflow_connection_block,undefined);
+});

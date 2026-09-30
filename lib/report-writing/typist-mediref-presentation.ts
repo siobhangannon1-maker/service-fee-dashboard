@@ -16,13 +16,18 @@ export function typistMedirefPresentation(draft: WorkflowDraft | null | undefine
 }
 
 // Card wording only: never resolves completion, eligibility or list membership.
-export function typistApprovedPresentation(draft: WorkflowDraft & Pick<DraftListItem, 'workflow_continuation_context'>) {
+export function typistApprovedPresentation(draft: WorkflowDraft & Pick<DraftListItem, 'workflow_continuation_context' | 'workflow_connection_block'>) {
   const workflow = approvedWorkflow(draft);
   if (draft.workflow_resolved && !workflow.lookupUnavailable) {
     if (workflow.status === 'not_started') return {
       kind: 'ready', tone: 'neutral', label: 'Ready for workflow',
       message: 'No workflow is currently recorded for this letter.',
     };
+    if (['needs_attention','completing'].includes(workflow.status) &&
+      draft.workflow_continuation_context==='present' && draft.workflow_connection_block==='praktika_credentials_required') return {
+        kind: 'connection_blocked', tone: 'amber', label: 'Waiting for Praktika connection',
+        message: 'This workflow will continue automatically when the required Praktika connection is restored.',
+      };
     if (workflow.status === 'needs_attention' && draft.workflow_continuation_context === 'absent') {
       if (['failed', 'unknown'].includes(workflow.branches.mediref)) return {
         kind: 'historical_mediref', tone: 'amber', label: 'MediRef delivery not confirmed',
