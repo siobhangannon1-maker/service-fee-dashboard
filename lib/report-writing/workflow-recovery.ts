@@ -1,6 +1,6 @@
 import {projectHistoricalAttention,historicalAttentionAction,historicalAttentionInvalidated} from './historical-attention';
 import {manualHistoricalMedirefActions} from './manual-historical-mediref';
-import { historicalReconciliationAction, historicalInvalidationAction, historicalRetentionReleaseAction, type HistoricalReconciliationEvent } from './historical-reconciliation';
+import { durableHistoricalWorkflow, historicalReconciliationAction, historicalInvalidationAction, historicalRetentionReleaseAction, type HistoricalReconciliationEvent } from './historical-reconciliation';
 import { resolveWorkflow, unavailableWorkflow, type ReadJob, type WorkflowDraft } from './resolved-workflow';
 import { hasLivePraktikaHelper } from '../praktika/helper-lease';
 import { manualVerification } from './manual-verification';
@@ -73,6 +73,29 @@ function projectLegacyWorkflowRecovery<T extends { id: string; workflow_status?:
 export async function projectWorkflowRecovery<T extends { id: string; workflow_status?: string | null }>(db: SupabaseClient, drafts: T[]): Promise<T[]> {
   // One clock starts BEFORE any lookup. Every database read uses this reader.
   const reader = createWorkflowEvidenceReader(AbortSignal.timeout(5000));
+  const originalDrafts = drafts;
+  const approvedIds = drafts.filter(d=>['approved','uploaded_to_praktika'].includes((d as T & WorkflowDraft).status || '')).map(d=>d.id);
+  const reconciliations = await reader.read<HistoricalReconciliationEvent>(approvedIds,batch=>db.from('report_writing_audit_events')
+    .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction,...manualHistoricalMedirefActions,historicalAttentionAction,historicalAttentionInvalidated]).in('entity_id',batch));
+  const eventsByDraft = new Map<string, HistoricalReconciliationEvent[]>();
+  for (const event of reconciliations.rows) {
+    const events = eventsByDraft.get(event.entity_id) || [];
+    events.push(event); eventsByDraft.set(event.entity_id,events);
+  }
+  const completed = new Map<string,T>();
+  const historicalNow = Date.now();
+  for (const draft of drafts) {
+    const events = eventsByDraft.get(draft.id);
+    if (!events || reconciliations.failed.has(draft.id)) continue;
+    // Existing database fences atomically append invalidation evidence for later
+    // relevant draft/helper activity. Only a complete event read can take this path.
+    const evidence = { uploads:[], icons:[], mediref:[], livePraktikaActors:new Set<string>(),
+      liveMediref:false, reconciliations:events };
+    const resolved = durableHistoricalWorkflow(draft as T & WorkflowDraft,evidence,historicalNow);
+    if (resolved?.status === 'completed') completed.set(draft.id,{...draft,workflow_resolved:resolved});
+  }
+  drafts = drafts.filter(d=>!completed.has(d.id));
+  if (!drafts.length) return originalDrafts.map(d=>completed.get(d.id) || d);
   const indexes = drafts.map((d,i)=>({d:d as T & WorkflowDraft,i}))
     .filter(({d})=>['approved','uploaded_to_praktika'].includes(d.status || ''));
   const ids = indexes.map(({d})=>d.id);
@@ -101,11 +124,9 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
   const actors = [...new Set(praktikaRead.rows.filter(active).map(j=>j.app_user_id).filter((id):id is string=>Boolean(id)))];
   type PraktikaLive = {app_user_id:string;status:string;helper_instance_id:string|null;helper_heartbeat_at:string|null};
   type MedirefLive = {status:string;helper_instance_id:string|null;helper_heartbeat_at:string|null;helper_expires_at:string|null;helper_stopping_at:string|null};
-  const [childRead,reconciliations,praktikaLive,medirefLive] = await Promise.all([
+  const [childRead,praktikaLive,medirefLive] = await Promise.all([
     reader.read<ReadJob>([...childIds.values()].filter(id=>!uploads.has(id)),batch=>db.from('praktika_helper_jobs')
       .select(workflowJobColumns).eq('job_type','upload_report_to_praktika').in('id',batch)),
-    reader.read<HistoricalReconciliationEvent>(ids,batch=>db.from('report_writing_audit_events')
-      .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction,...manualHistoricalMedirefActions,historicalAttentionAction,historicalAttentionInvalidated]).in('entity_id',batch)),
     reader.read<PraktikaLive>(actors,batch=>db.from('praktika_sessions').select('id,app_user_id,status,helper_instance_id,helper_heartbeat_at')
       .eq('scope','user').in('app_user_id',batch)),
     reader.read<MedirefLive>(medirefRead.rows.some(active)?['practice']:[],()=>db.from('mediref_sessions')
@@ -136,9 +157,10 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       uploads:jobs.filter(j=>j.job_type==='upload_report_to_praktika'),icons:jobs.filter(j=>j.job_type==='update_praktika_letter_icons'),mediref,
       currentUploadId:parent?response?.retryUploadId || continuationChildId(parent.id,'upload_report_to_praktika'):undefined,
       currentIconId:parent?continuationChildId(parent.id,'update_praktika_letter_icons'):undefined,
-      livePraktikaActors,liveMediref,reconciliations:reconciliations.rows.filter(event=>event.entity_id===d.id),
+      livePraktikaActors,liveMediref,reconciliations:eventsByDraft.get(d.id) || [],
     };
     output[i]={...projected[i],workflow_resolved:resolveWorkflow(d,evidence,now),workflow_attention:projectHistoricalAttention(d,evidence,now)};
   }
-  return output;
+  const recovered = new Map(output.map(d=>[d.id,d]));
+  return originalDrafts.map(d=>completed.get(d.id) || recovered.get(d.id) || d);
 }

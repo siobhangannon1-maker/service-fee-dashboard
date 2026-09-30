@@ -89,3 +89,76 @@ test('actual five-second deadline aborts a later stage without granting a fresh 
   assert.equal(shouldAppearInApproved({...d,status:'approved'}),true);
   assert.equal(retentionPlan({...d,status:'approved',updated_at:new Date(0).toISOString()},retentionSettings({})!),null);
 });
+
+function reconciledFixture(index: number) {
+  const id=`00000000-0000-4000-8000-${String(index).padStart(12,'0')}`;
+  const draft={id,status:'approved',workflow_status:'completed',created_at:'2026-01-01T00:00:00Z'};
+  const event={id:`event-${index}`,entity_id:id,action:'system_historical_reconciliation',details:{
+    eventId:`event-${index}`,draftId:id,epoch:'2026-01-01T00:00:00.000000Z/unrecorded',
+    source:'controlled_historical_cleanup',contract:'historical-v1',reconciliationVersion:1,
+    reconciledAt:'2026-01-02T00:00:00Z',historicalCompletedAt:'2026-01-01T00:00:00Z',
+    branches:{praktika:{outcome:'completed',basis:'system_verified_historical_completion',jobId:'upload',auditId:'audit'},
+      mediref:{outcome:'skipped'},icon:{outcome:'skipped'},periodontal:{outcome:'skipped'}}}};
+  return {draft,event};
+}
+function eventDatabase(events: unknown[], failPage = -1) {
+  const calls:URL[]=[];
+  const db=createClient('https://fixture.invalid','synthetic-key',{auth:{persistSession:false},global:{fetch:async(input,init)=>{
+    assert.equal(init?.method,'GET');const url=new URL(String(input));calls.push(url);
+    if(!url.pathname.endsWith('/report_writing_audit_events'))return Response.json([]);
+    const start=Number(url.searchParams.get('offset') || 0);
+    if(start===failPage)return Response.json({message:'unavailable'},{status:400});
+    const filter=url.searchParams.get('entity_id') || '';
+    const rows=events.filter(e=>filter.includes((e as {entity_id:string}).entity_id));
+    return Response.json(rows.slice(start,start+500));
+  }}});
+  return {db,calls};
+}
+test('1153 durable reconciliations require only 12 batched audit reads, hide Approved, and never mutate inputs',async()=>{
+  const fixtures=Array.from({length:1153},(_,i)=>reconciledFixture(i));
+  const drafts=fixtures.map(f=>Object.freeze(f.draft)),before=JSON.stringify(drafts);
+  const {db,calls}=eventDatabase(fixtures.map(f=>f.event));
+  const output=await projectWorkflowRecovery(db,drafts);
+  assert.equal(output.length,1153);assert.equal(calls.length,12);
+  assert.ok(calls.every(u=>u.pathname.endsWith('/report_writing_audit_events')));
+  assert.ok(output.every(d=>!shouldAppearInApproved(d)));
+  assert.ok(output.every(d=>(d as typeof d & {workflow_resolved:{status:string}}).workflow_resolved.status==='completed'));
+  assert.equal(JSON.stringify(drafts),before);assert.notEqual(output[0],drafts[0]);
+  assert.equal(retentionPlan({...output[0],source_text:'synthetic',updated_at:'2026-01-01T00:00:00Z'},retentionSettings({})!),null);
+});
+for(const defect of ['invalidated','malformed','duplicate','wrong_epoch','lookup_failed','partial_page'])test(`historical first pass fails closed: ${defect}`,async()=>{
+  const {draft,event}=reconciledFixture(1);let events:unknown[]=[event];
+  if(defect==='invalidated')events.push({...event,id:'invalid',action:'system_historical_reconciliation_invalidated'});
+  if(defect==='malformed')event.details.contract='wrong';
+  if(defect==='duplicate')events.push({...event,id:'duplicate'});
+  if(defect==='wrong_epoch')event.details.epoch='wrong';
+  if(defect==='partial_page')events.push(...Array.from({length:499},(_,i)=>({...event,id:`padding-${i}`,action:'unrelated'})));
+  const {db,calls}=eventDatabase(events,defect==='lookup_failed'?0:defect==='partial_page'?500:-1);
+  const [out]=await projectWorkflowRecovery(db,[draft]);
+  assert.ok(shouldAppearInApproved(out));
+  assert.ok(calls.some(u=>u.pathname.endsWith('/praktika_helper_jobs')));
+  assert.ok(calls.some(u=>u.pathname.endsWith('/mediref_helper_jobs')));
+  if(['lookup_failed','partial_page'].includes(defect))assert.equal((out as typeof out & {workflowStatusStale:boolean}).workflowStatusStale,true);
+});
+test('mixed population sends only modern and unresolved drafts through full recovery, preserving order',async()=>{
+  const a=reconciledFixture(1),b=reconciledFixture(2),c=reconciledFixture(3);
+  b.draft.workflow_status='running';
+  const {db,calls}=eventDatabase([a.event]);
+  const input=[b.draft,a.draft,c.draft],before=JSON.stringify(input);
+  const output=await projectWorkflowRecovery(db,input);
+  assert.deepEqual(output.map(d=>d.id),input.map(d=>d.id));
+  assert.deepEqual(output.map(shouldAppearInApproved),[true,false,true]);
+  for(const call of calls.filter(u=>!u.pathname.endsWith('/report_writing_audit_events'))){
+    const query=decodeURIComponent(call.search);
+    assert.ok(!query.includes(a.draft.id));assert.ok(query.includes(b.draft.id));assert.ok(query.includes(c.draft.id));
+  }
+  assert.equal(JSON.stringify(input),before);
+});
+test('successful event pagination includes a later invalidation before accepting completion',async()=>{
+  const {draft,event}=reconciledFixture(4);
+  const events=[event,...Array.from({length:499},(_,i)=>({...event,id:`padding-${i}`,action:'unrelated'})),
+    {...event,id:'invalid',action:'system_historical_reconciliation_invalidated'}];
+  const {db,calls}=eventDatabase(events);
+  const [out]=await projectWorkflowRecovery(db,[draft]);
+  assert.ok(shouldAppearInApproved(out));assert.equal(calls.filter(u=>u.pathname.endsWith('/report_writing_audit_events')).length,2);
+});
