@@ -8,7 +8,7 @@ import { ResumeMedirefButton } from "@/components/report-writing/ResumeMedirefBu
 import { ResumeWorkflowButton } from "@/components/report-writing/ResumeWorkflowButton";
 import { typistMedirefPresentation, typistApprovedPresentation } from "@/lib/report-writing/typist-mediref-presentation";
 import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
-import { remainsInApproved } from "@/lib/report-writing/praktika-retry";
+import { partitionApprovedForVerification } from "@/lib/report-writing/typist-approved-partition";
 
 import { DEFAULT_PDF_BODY_FONT_SIZE, extractPdfBodyFontSize, pdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
 
@@ -66,7 +66,7 @@ type QueueItem = {
   raw_json?: Record<string, unknown> | null;
 };
 
-type ListTab = "queue" | "drafts" | "awaiting" | "completed";
+type ListTab = "queue" | "drafts" | "awaiting" | "completed" | "verification";
 
 type QueueStatusTab = "active" | "queued" | "started" | "completed";
 
@@ -1321,6 +1321,8 @@ export default function TypistPage() {
   const selectedProviderRequiresApproval =
     selectedProvider?.typist_letters_require_approval !== false;
 
+  const approvedPartition = useMemo(() => partitionApprovedForVerification(drafts), [drafts]);
+
   const filteredDrafts = useMemo(() => {
     if (listTab === "drafts") {
       return drafts.filter((draft) =>
@@ -1335,14 +1337,13 @@ export default function TypistPage() {
     }
 
     if (listTab === "completed") {
-      return drafts.filter(
-        (draft) =>
-          remainsInApproved(draft),
-      );
+      return approvedPartition.approved;
     }
 
+    if (listTab === "verification") return approvedPartition.verificationItems;
+
     return [];
-  }, [drafts, listTab]);
+  }, [drafts, listTab, approvedPartition]);
 
   const visibleQueue = useMemo(() => {
     const loadedDraftIds = new Set(drafts.map((draft) => draft.id));
@@ -1373,10 +1374,8 @@ export default function TypistPage() {
     (draft) => draft.status === "awaiting_provider_approval",
   ).length;
 
-  const countCompleted = drafts.filter(
-    (draft) =>
-      remainsInApproved(draft),
-  ).length;
+  const countCompleted = approvedPartition.approved.length;
+  const countVerification = approvedPartition.verificationItems.length;
 
   const selectedDraftHasPraktikaPatient = Boolean(
     selectedPraktikaPatientId || selectedDraft?.praktika_patient_id,
@@ -4845,6 +4844,7 @@ export default function TypistPage() {
                 ["drafts", `Saved Drafts (${countDrafts})`],
                 ["awaiting", `Awaiting Approval (${countAwaiting})`],
                 ["completed", `Approved (${countCompleted})`],
+                ["verification", `Requires Verification (${countVerification})`],
               ].map(([key, label]) => (
                 <button
                   key={key}
@@ -5020,6 +5020,9 @@ export default function TypistPage() {
             </div>
           ) : (
             <div className="space-y-2 p-3">
+              {listTab === "verification" ? (
+                <p className="px-1 text-xs text-slate-600">These records require workflow evidence verification. This does not confirm delivery, completion or the need to retry.</p>
+              ) : null}
               {filteredDrafts.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">
                   No letters in this list.
@@ -5061,6 +5064,7 @@ export default function TypistPage() {
                         {draft.status}
                       </div>
 
+                      {listTab === "verification" ? <div className="mt-2 text-xs font-semibold text-amber-800">Requires Verification</div> : null}
                       {typistApprovedPresentation(draft).label ? (
                         <div className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
                           typistApprovedPresentation(draft).tone === "neutral" ? "bg-slate-100 text-slate-700"

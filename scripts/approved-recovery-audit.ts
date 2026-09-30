@@ -8,6 +8,8 @@ import { createClient } from '@supabase/supabase-js';
 import { projectWorkflowRecovery } from '../lib/report-writing/workflow-recovery';
 import { approvedWorkflow, shouldAppearInApproved, staleWorkflowMessage, type WorkflowDraft } from '../lib/report-writing/resolved-workflow';
 import * as token from '../lib/report-writing/workflow-continuation-token';
+import { toDraftListItem } from '../lib/report-writing/draft-contract';
+import { requiresWorkflowVerification } from '../lib/report-writing/typist-approved-partition';
 import { typistApprovedPresentation } from '../lib/report-writing/typist-mediref-presentation';
 import { isConfirmedPraktikaUpload } from '../lib/report-writing/praktika-upload-result';
 
@@ -131,6 +133,7 @@ async function auditProvider(provider:Provider,env:Environment) {
       {retry:await evaluators.retry(d.id),mediref:await evaluators.mediref(d.id),workflow:await evaluators.workflow(d.id)};
     output.push({draftId:d.id,patientName:d.patient_name,providerId:provider.id,providerName:provider.name,
       bucket:actionBucket(d,checks,Boolean(parent)),status:r.status,message:r.message,branches:r.branches,
+      listPartition:requiresWorkflowVerification(toDraftListItem(d,null))?'requires_verification':'approved',
       continuationContext:d.workflow_continuation_context || 'unknown',presentation:typistApprovedPresentation(d),
       lookupUnavailable:r.lookupUnavailable,checks,specificReason:specificReason(d,checks,Boolean(parent)),
       controls:{retry:r.praktikaRecovery,manualPraktika:r.praktikaRecovery,manualMediref:r.medirefRecovery,
