@@ -6,6 +6,7 @@ import { ManualVerificationButton } from "@/components/report-writing/ManualVeri
 import { RetryPraktikaButton } from "@/components/report-writing/RetryPraktikaButton";
 import { ResumeMedirefButton } from "@/components/report-writing/ResumeMedirefButton";
 import { ResumeWorkflowButton } from "@/components/report-writing/ResumeWorkflowButton";
+import { typistMedirefPresentation } from "@/lib/report-writing/typist-mediref-presentation";
 import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
 import { remainsInApproved } from "@/lib/report-writing/praktika-retry";
 
@@ -1387,6 +1388,7 @@ export default function TypistPage() {
   );
 
   const selectedDraftEmailed = Boolean(selectedDraft?.emailed_to_referrer_at);
+  const selectedDraftMedirefPresentation = typistMedirefPresentation(selectedDraft);
 
   const selectedDraftCanComplete = Boolean(
     selectedDraft &&
@@ -1416,7 +1418,9 @@ export default function TypistPage() {
       return "Send the approved PDF to the referrer via MediRef.";
     }
 
-    return "Completed: uploaded and sent via MediRef.";
+    return selectedDraftMedirefPresentation.completed
+      ? "Uploaded to Praktika. MediRef step completed."
+      : "Uploaded to Praktika. MediRef delivery not confirmed.";
   }
 
   function getAutoGenerateStatusLabel() {
@@ -5074,10 +5078,9 @@ export default function TypistPage() {
                         <div className="text-xs text-amber-700">{draft.workflow_reconciliation_warning}</div>
                       )}
 
-                      {draft.emailed_to_referrer_at ? (
-                        <div className="mt-1 text-xs font-semibold text-emerald-600">
-                          Emailed to{" "}
-                          {draft.emailed_to_referrer_email || "referrer"}
+                      {typistMedirefPresentation(draft).showCardLabel ? (
+                        <div className={`mt-1 text-xs font-semibold ${typistMedirefPresentation(draft).completed ? "text-emerald-600" : "text-amber-700"}`}>
+                          {typistMedirefPresentation(draft).label}
                         </div>
                       ) : null}
                     </button>
@@ -5607,12 +5610,12 @@ export default function TypistPage() {
                     <span
                       className={[
                         "rounded-full px-3 py-1",
-                        selectedDraftEmailed
+                        selectedDraftMedirefPresentation.completed
                           ? "bg-emerald-100 text-emerald-700"
-                          : "bg-slate-200 text-slate-600",
+                          : "bg-amber-100 text-amber-700",
                       ].join(" ")}
                     >
-                      {selectedDraftEmailed ? "Emailed" : "Not emailed"}
+                      {selectedDraftMedirefPresentation.label}
                     </span>
                   </div>
                 </div>
@@ -5620,20 +5623,20 @@ export default function TypistPage() {
             ) : null}
 
             {selectedDraft?.emailed_to_referrer_at ? (
-              <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-                <div className="font-bold">Email sent via Mediref</div>
+              <section className={`rounded-2xl border p-4 text-sm ${selectedDraftMedirefPresentation.completed ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+                <div className="font-bold">{selectedDraftMedirefPresentation.label}</div>
                 <div className="mt-1">
                   To: {selectedDraft.emailed_to_referrer_email || "Referrer"}
                 </div>
                 <div>
-                  Sent:{" "}
+                  Recorded:{" "}
                   {new Date(
                     selectedDraft.emailed_to_referrer_at,
                   ).toLocaleString("en-AU")}
                 </div>
                 {selectedDraft.emailed_to_referrer_resend_id ? (
-                  <div className="text-xs text-emerald-700">
-                    Resend ID: {selectedDraft.emailed_to_referrer_resend_id}
+                  <div className="text-xs">
+                    Reference: {selectedDraft.emailed_to_referrer_resend_id}
                   </div>
                 ) : null}
               </section>
@@ -5940,7 +5943,7 @@ export default function TypistPage() {
                     ? "This letter has already been uploaded to Praktika. "
                     : ""}
                   {selectedDraftEmailed
-                    ? "This letter has already been emailed. "
+                    ? "A previous MediRef action is recorded. Verify its outcome before repeating it. "
                     : ""}
                   Continuing will repeat one or more completion actions.
                 </div>
