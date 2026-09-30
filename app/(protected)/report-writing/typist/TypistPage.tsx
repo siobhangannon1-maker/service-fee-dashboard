@@ -6,7 +6,7 @@ import { ManualVerificationButton } from "@/components/report-writing/ManualVeri
 import { RetryPraktikaButton } from "@/components/report-writing/RetryPraktikaButton";
 import { ResumeMedirefButton } from "@/components/report-writing/ResumeMedirefButton";
 import { ResumeWorkflowButton } from "@/components/report-writing/ResumeWorkflowButton";
-import { typistMedirefPresentation } from "@/lib/report-writing/typist-mediref-presentation";
+import { typistMedirefPresentation, typistApprovedPresentation } from "@/lib/report-writing/typist-mediref-presentation";
 import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
 import { remainsInApproved } from "@/lib/report-writing/praktika-retry";
 
@@ -5061,24 +5061,22 @@ export default function TypistPage() {
                         {draft.status}
                       </div>
 
-                      {approvedWorkflow(draft).status === "completing" ? (
-                        <div className="mt-2 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
-                          Completing...
+                      {typistApprovedPresentation(draft).label ? (
+                        <div className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                          typistApprovedPresentation(draft).tone === "neutral" ? "bg-slate-100 text-slate-700"
+                            : typistApprovedPresentation(draft).tone === "danger" ? "bg-red-100 text-red-700"
+                            : "bg-amber-100 text-amber-800"}`}>
+                          {typistApprovedPresentation(draft).label}
                         </div>
                       ) : null}
-                      {approvedWorkflow(draft).status === "needs_attention" ? (
-                        <div className="mt-2 inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
-                          Needs attention
-                        </div>
-                      ) : null}
-                      {approvedWorkflow(draft).message && (
-                        <div className="mt-1 text-xs text-slate-500">{approvedWorkflow(draft).message}</div>
+                      {typistApprovedPresentation(draft).message && (
+                        <div className="mt-1 text-xs text-slate-500">{typistApprovedPresentation(draft).message}</div>
                       )}
                       {draft.workflow_reconciliation_warning && (
                         <div className="text-xs text-amber-700">{draft.workflow_reconciliation_warning}</div>
                       )}
 
-                      {typistMedirefPresentation(draft).showCardLabel ? (
+                      {typistMedirefPresentation(draft).showCardLabel && typistApprovedPresentation(draft).kind !== "historical_mediref" ? (
                         <div className={`mt-1 text-xs font-semibold ${typistMedirefPresentation(draft).completed ? "text-emerald-600" : "text-amber-700"}`}>
                           {typistMedirefPresentation(draft).label}
                         </div>

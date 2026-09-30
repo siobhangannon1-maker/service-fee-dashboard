@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { typistMedirefPresentation } from './typist-mediref-presentation';
+import { toDraftListItem, toDraftDetail, mergeDraftWorkflow } from './draft-contract';
+import { typistMedirefPresentation, typistApprovedPresentation } from './typist-mediref-presentation';
 import { shouldAppearInApproved, unavailableWorkflow, type WorkflowDraft } from './resolved-workflow';
 
 const stamp = '2026-01-01T00:00:00Z';
@@ -75,4 +76,50 @@ test('Typist card/detail use presentation helper while operational duplicate gua
   assert.ok(source.includes('if (selectedDraftUploadedToPraktika || selectedDraftEmailed)'));
   const helper = readFileSync('lib/report-writing/typist-mediref-presentation.ts', 'utf8');
   assert.doesNotMatch(helper, /fetch\(|\.from\(|\.rpc\(|\.update\(|\.insert\(/);
+});
+
+test('authoritative not-started card is neutral without an age assertion',()=>{
+  const d=fixture();d.workflow_resolved!.status='not_started';
+  const p=typistApprovedPresentation(d);
+  assert.equal(p.label,'Ready for workflow');assert.equal(p.tone,'neutral');
+  assert.equal(p.message,'No workflow is currently recorded for this letter.');
+  assert.doesNotMatch(p.message,/predates|historical|failed/i);
+});
+for(const branch of ['failed','unknown'] as const)test(`absent continuation with ${branch} MediRef uses unconfirmed wording`,()=>{
+  const d={...fixture(),workflow_continuation_context:'absent' as const};d.workflow_resolved!.branches.mediref=branch;
+  const before=JSON.stringify(d),visible=shouldAppearInApproved(d);
+  const p=typistApprovedPresentation(d);
+  assert.equal(p.kind,'historical_mediref');assert.equal(p.label,'MediRef delivery not confirmed');assert.equal(p.tone,'amber');
+  assert.equal(JSON.stringify(d),before);assert.equal(shouldAppearInApproved(d),visible);
+});
+test('absent continuation with completed MediRef and unknown branch requires review',()=>{
+  const d={...fixture(),workflow_continuation_context:'absent' as const};d.workflow_resolved!.branches.mediref='completed';
+  assert.equal(typistApprovedPresentation(d).label,'Historical workflow requires review');
+});
+for(const context of ['present','unknown',undefined] as const)test(`context ${context} cannot classify as historical`,()=>{
+  const d={...fixture(),workflow_continuation_context:context};
+  assert.equal(typistApprovedPresentation(d).label,'Needs attention');
+  assert.equal(typistApprovedPresentation(d).message,d.workflow_resolved!.message);
+  assert.equal(typistApprovedPresentation(d).kind,'current');
+});
+test('Aaron-style waiting modern upload preserves authoritative status and recovery flags',()=>{
+  const d={...fixture(),workflow_continuation_context:'present' as const};
+  d.workflow_resolved!.branches={praktika:'active',icon:'unknown',mediref:'completed',periodontal:'skipped'};
+  const before=JSON.stringify(d),p=typistApprovedPresentation(d);
+  assert.equal(p.kind,'current');assert.equal(p.label,'Needs attention');
+  assert.equal(p.message,d.workflow_resolved!.message);assert.equal(JSON.stringify(d),before);
+  assert.equal(shouldAppearInApproved(d),true);
+});
+test('failed resolution cannot produce historical wording even with absent context',()=>{
+  const d={...fixture(),workflow_continuation_context:'absent' as const};d.workflow_resolved!.lookupUnavailable=true;
+  assert.equal(typistApprovedPresentation(d).kind,'current');
+});
+test('continuation context survives list serialization and refresh merge, with missing fields cleared',()=>{
+  const row={id:'draft',provider_id:'provider',status:'approved',workflow_continuation_context:'present'};
+  const before=JSON.stringify(row),list=toDraftListItem(row,null),detail=toDraftDetail(row);
+  assert.equal(list.workflow_continuation_context,'present');
+  const updated=mergeDraftWorkflow(detail,toDraftListItem({...row,workflow_continuation_context:'unknown'},null));
+  assert.equal(updated.workflow_continuation_context,'unknown');assert.equal(detail.workflow_continuation_context,'present');
+  assert.equal(mergeDraftWorkflow(updated,toDraftListItem({id:'draft',provider_id:'provider'},null)).workflow_continuation_context,undefined);
+  assert.equal(JSON.stringify(row),before);
 });

@@ -87,7 +87,9 @@ test('read resolver contains no mutation/execution entry points',()=>{
   const source=readFileSync('lib/report-writing/resolved-workflow.ts','utf8')+readFileSync('lib/report-writing/workflow-recovery.ts','utf8');
   assert.doesNotMatch(source,/\.(insert|update|upsert|delete|rpc)\s*\(/);
   const ui=readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx','utf8');
-  const card=ui.slice(ui.indexOf('{approvedWorkflow(draft).status'),ui.indexOf('onQueued={() => { void loadDrafts',ui.indexOf('{approvedWorkflow(draft).status')));
+  const start=ui.indexOf('{filteredDrafts.map((draft)'),end=ui.indexOf('<div className="col-span-6',start);
+  assert.ok(start>=0 && end>start);
+  const card=ui.slice(start,end);
   assert.doesNotMatch(card,/\{draft.workflow_error\}/);assert.match(card,/approvedWorkflow\(draft\).praktikaRecovery/);
 });
 test('real read projection returns only safe resolved metadata and never mutates',async()=>{

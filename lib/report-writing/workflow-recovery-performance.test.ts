@@ -120,6 +120,7 @@ test('1153 durable reconciliations require only 12 batched audit reads, hide App
   const {db,calls}=eventDatabase(fixtures.map(f=>f.event));
   const output=await projectWorkflowRecovery(db,drafts);
   assert.equal(output.length,1153);assert.equal(calls.length,12);
+  assert.ok(output.every(d=>(d as typeof d & {workflow_continuation_context:string}).workflow_continuation_context==='unknown'));
   assert.ok(calls.every(u=>u.pathname.endsWith('/report_writing_audit_events')));
   assert.ok(output.every(d=>!shouldAppearInApproved(d)));
   assert.ok(output.every(d=>(d as typeof d & {workflow_resolved:{status:string}}).workflow_resolved.status==='completed'));
@@ -240,3 +241,26 @@ test('130 terminal and 15 periodontal-unknown records resolve separately without
     assert.ok(!decodeURIComponent(u.search).includes(fixtures[0].draft.id));
   }
 });
+
+for (const scenario of ['canonical','other','absent','failed','partial_page'] as const) {
+  test(`continuation presentation context ${scenario}: bounded existing reads and immutable inputs`,async()=>{
+    const id='11111111-1111-4111-8111-111111111111';
+    const draft={id,status:'approved',workflow_continuation_context:'absent'};
+    const before=JSON.stringify(draft);const calls:URL[]=[];
+    const db=createClient('https://fixture.invalid','synthetic',{auth:{persistSession:false},global:{fetch:async(input,init)=>{
+      assert.equal(init?.method,'GET');const u=new URL(String(input));calls.push(u);
+      if(u.searchParams.get('job_type')==='eq.complete_report_workflow'){
+        if(scenario==='failed'||(scenario==='partial_page'&&Number(u.searchParams.get('offset'))===500))
+          return Response.json({message:'unavailable'},{status:400});
+        const parent={id:scenario==='other'?'22222222-2222-4222-8222-222222222222':continuationIntentId(id),
+          status:'waiting',job_type:'complete_report_workflow',app_user_id:'actor',request:{reportDraftId:id,actorUserId:'actor'}};
+        return Response.json(scenario==='absent'?[]:scenario==='partial_page'?Array.from({length:500},()=>parent):[parent]);
+      }
+      return Response.json([]);
+    }}});
+    const [out]=await projectWorkflowRecovery(db,[Object.freeze(draft)]);
+    assert.equal(out.workflow_continuation_context,['failed','partial_page'].includes(scenario)?'unknown':scenario==='absent'?'absent':'present');
+    assert.equal(calls.length,scenario==='partial_page'?5:4);
+    assert.equal(JSON.stringify(draft),before);assert.ok(shouldAppearInApproved(out));
+  });
+}

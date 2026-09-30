@@ -92,7 +92,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     const evidence = { uploads:[], icons:[], mediref:[], livePraktikaActors:new Set<string>(),
       liveMediref:false, reconciliations:events };
     const resolved = durableHistoricalWorkflow(draft as T & WorkflowDraft,evidence,historicalNow);
-    if (resolved?.status === 'completed') completed.set(draft.id,{...draft,workflow_resolved:resolved});
+    if (resolved?.status === 'completed') completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown'});
   }
   // Discovery only: the existing resolver remains the authority for the full
   // verification contract. Source changes are covered by the audit invalidation
@@ -121,7 +121,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       reconciliations:eventsByDraft.get(draft.id) || [],livePraktikaActors:new Set<string>(),liveMediref:false};
     const resolved = resolveWorkflow(draft as T & WorkflowDraft,evidence,historicalNow);
     if (resolved.status==='completed' && resolved.historicalMedirefVerification)
-      completed.set(draft.id,{...draft,workflow_resolved:resolved});
+      completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown'});
   }
   drafts = drafts.filter(d=>!completed.has(d.id));
   if (!drafts.length) return originalDrafts.map(d=>completed.get(d.id) || d);
@@ -141,6 +141,12 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       .eq('job_type','send_mediref_letter').in('payload->>draftId',batch)),
   ]);
   const parents = new Map(parentRead.rows.map(j=>[j.id,j]));
+  // Presentation metadata only. A skipped/failed parent read never proves absence.
+  const continuationContexts = new Map(drafts.map(d=>[d.id,
+    parentRead.failed.has(d.id) ? 'unknown' :
+      parents.has(continuationIntentId(d.id)) || parentRead.rows.some(j=>j.request?.reportDraftId===d.id)
+        ? 'present' : 'absent',
+  ] as const));
   const uploads = new Map(praktikaRead.rows.filter(j=>j.job_type==='upload_report_to_praktika').map(j=>[j.id,j]));
   const childIds = new Map<string,string>();
   for (const d of drafts) {
@@ -191,5 +197,6 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     output[i]={...projected[i],workflow_resolved:resolveWorkflow(d,evidence,now),workflow_attention:projectHistoricalAttention(d,evidence,now)};
   }
   const recovered = new Map(output.map(d=>[d.id,d]));
-  return originalDrafts.map(d=>completed.get(d.id) || recovered.get(d.id) || d);
+  return originalDrafts.map(d=>completed.get(d.id) || {...(recovered.get(d.id) || d),
+    workflow_continuation_context:continuationContexts.get(d.id) || 'unknown'});
 }
