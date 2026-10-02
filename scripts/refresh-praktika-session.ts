@@ -1,3 +1,4 @@
+import { WriteAuthCooldown } from "../lib/praktika/write-auth-cooldown";
 import { PraktikaLeaseExpired, createPraktikaOwnershipRecovery, isPraktikaTransientInfrastructureError } from "../lib/praktika/ownership-recovery";
 import { praktikaNoAuthGateEnabled } from "../lib/praktika/authentication";
 import { probePraktikaAuthentication, type ProbeResult } from "../lib/praktika/authentication-probe";
@@ -181,6 +182,30 @@ let browserReady = false;
 let recoverableExit = false;
 let verificationRequested = false;
 let ownedContext: BrowserContext | undefined;
+// Process-local negative evidence is safe: this process owns one leased generation.
+// Restart/new context starts with no proof and still requires the per-write fence.
+let writeAuthEpoch = 0;
+let writeAuthUserId: string | null | undefined;
+let writeAuthBinding: { context: BrowserContext; key: string; state: WriteAuthCooldown } | undefined;
+function invalidateWriteAuthCooldown() {
+  writeAuthBinding?.state.invalidate();
+  writeAuthBinding = undefined;
+}
+function writeAuthCooldown() {
+  if (!ownedContext || shuttingDown || ownershipLost) {
+    invalidateWriteAuthCooldown();
+    return undefined;
+  }
+  const key = JSON.stringify([writeAuthUserId, sessionId, helperInstanceId]);
+  if (writeAuthBinding?.context !== ownedContext || writeAuthBinding.key !== key) {
+    invalidateWriteAuthCooldown();
+    const contextEpoch = ++writeAuthEpoch;
+    writeAuthBinding = { context: ownedContext, key, state: new WriteAuthCooldown((event, fields) => {
+      console.log("[Praktika write auth]", { event, generation: helperInstanceId, sessionId, contextEpoch, ...fields });
+    }) };
+  }
+  return writeAuthBinding.state;
+}
 let browserLaunch: Promise<BrowserContext> | undefined;
 let loginTransition = true;
 let shuttingDown = false;
@@ -209,6 +234,7 @@ const shutdownCoordinator = createShutdownCoordinator({
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  invalidateWriteAuthCooldown();
   shutdownCoordinator.start();
 }
 process.on("SIGTERM", shutdown);
@@ -229,6 +255,7 @@ async function ownedWrite(
     if (error instanceof PraktikaLeaseExpired) logOwnershipFailure("lease_expired");
     else if (error instanceof PraktikaOwnershipRejected) logOwnershipFailure("ownership_rejected");
     ownershipLost = true;
+    invalidateWriteAuthCooldown();
     await shutdownCoordinator.close();
     throw error;
   }
@@ -262,6 +289,7 @@ async function checkBrowserAvailability(page: Page) {
 // Only this path promotes the current generation to connected. Cookies and
 // completed jobs never do so. Browser checks are repeated before resuming work.
 async function markBrowserReady(page: Page) {
+  invalidateWriteAuthCooldown();
   browserReady = false;
   if (shuttingDown || page.isClosed() || !await checkBrowserAvailability(page)) return false;
   await assertOwned();
@@ -341,6 +369,8 @@ async function getSession() {
     await shutdownCoordinator.close();
     throw new PraktikaOwnershipLost();
   }
+  (globalThis as typeof globalThis & { __praktikaObserveWriteAuthSession?: (userId: string | null) => void })
+    .__praktikaObserveWriteAuthSession?.(data.app_user_id);
   return data as SessionRow;
 }
 
@@ -351,7 +381,10 @@ function isConfirmedRefreshTransition(result: ProbeResult) {
   return result.httpStatus === 307 && result.redirectDiagnostics?.refreshTransition === true;
 }
 
-async function ensureWriteAuthenticated() {
+async function ensureWriteAuthenticated(revalidation = false) {
+  const cooldown = writeAuthCooldown();
+  if (cooldown?.isBlocked() && !revalidation) throw new PraktikaHelperUnavailable();
+  const context = ownedContext;
   if (!ownedContext || shuttingDown) throw new PraktikaHelperUnavailable();
 
   const practiceId = String(process.env.PRAKTIKA_PRACTICE_ID || "").trim();
@@ -365,17 +398,29 @@ async function ensureWriteAuthenticated() {
   for (let attempt = 0; attempt <= WRITE_AUTH_REFRESH_RETRIES; attempt++) {
     if (shuttingDown || ownershipLost || !ownedContext) throw new PraktikaOwnershipLost();
 
+    const probeStarted = Date.now();
     const result = await probePraktikaAuthentication(ownedContext, practiceId, PRAKTIKA_BASE_URL);
     await assertOwned();
+    if (shuttingDown || ownershipLost || context !== ownedContext || (cooldown && cooldown !== writeAuthCooldown())) {
+      throw new PraktikaOwnershipLost();
+    }
+    cooldown?.probe(attempt + 1, Date.now() - probeStarted,
+      result.verified && result.httpStatus === 200 ? "verified"
+        : result.phase === "waiting_for_credentials" || result.phase === "waiting_for_mfa" ? "challenge"
+        : isConfirmedRefreshTransition(result) ? "refresh_transition" : "unverified", result.httpStatus ?? undefined);
+
 
     if (result.verified && result.httpStatus === 200) {
       await ownedWrite("authenticate");
+      if (context !== ownedContext || shuttingDown || ownershipLost || (cooldown && cooldown !== writeAuthCooldown())) throw new PraktikaOwnershipLost();
+      cooldown?.verified();
       console.log("[Praktika auth] write_auth_verified", { httpStatus: 200, attempt: attempt + 1 });
       return;
     }
 
     if (result.phase === "waiting_for_credentials" || result.phase === "waiting_for_mfa") {
       browserReady = false;
+      invalidateWriteAuthCooldown();
       await ownedWrite("authentication_failed", { status: result.phase });
       console.log("[Praktika auth] write_auth_challenge", { phase: result.phase });
       throw new PraktikaHelperUnavailable();
@@ -387,6 +432,7 @@ async function ensureWriteAuthenticated() {
       continue;
     }
 
+    if (isConfirmedRefreshTransition(result) || cooldown?.isBlocked()) cooldown?.block();
     console.warn("[Praktika auth] write_auth_unverified", {
       httpStatus: result.httpStatus,
       refreshTransition: isConfirmedRefreshTransition(result),
@@ -397,13 +443,37 @@ async function ensureWriteAuthenticated() {
   throw new PraktikaHelperUnavailable();
 }
 
+(globalThis as typeof globalThis & { __praktikaObserveWriteAuthSession?: (userId: string | null) => void })
+  .__praktikaObserveWriteAuthSession = userId => {
+    if (writeAuthUserId !== userId) invalidateWriteAuthCooldown();
+    writeAuthUserId = userId;
+  };
+
 // Keep the drain function source-extraction tests isolated: production registers
 // the real fence here, while extracted test functions simply see no callback.
 (globalThis as typeof globalThis & {
   __praktikaEnsureWriteAuthenticated?: () => Promise<void>;
 }).__praktikaEnsureWriteAuthenticated = ensureWriteAuthenticated;
 
+async function canClaimWriteJobs() {
+  if (shuttingDown || ownershipLost || !ownedContext || !browserReady) return false;
+  const state = writeAuthCooldown();
+  if (!state) return false;
+  return state.canClaim(async () => {
+    await assertOwned();
+    if (shuttingDown || !browserReady || !ownedContext || state !== writeAuthCooldown()) throw new PraktikaOwnershipLost();
+    try { await ensureWriteAuthenticated(true); }
+    catch (error) { if (!(error instanceof PraktikaHelperUnavailable)) throw error; }
+  });
+}
+(globalThis as typeof globalThis & { __praktikaWriteAuthDiscovery?: Pick<import("../lib/praktika/helper-lease").PraktikaJobOwnership, "canClaimWrites" | "observeWriteCompleted"> })
+  .__praktikaWriteAuthDiscovery = {
+    canClaimWrites: canClaimWriteJobs,
+    observeWriteCompleted: job => writeAuthCooldown()?.writeCompleted(job),
+  };
+
 async function updateSession(values: Record<string, unknown>) {
+  if (["refreshing", "refresh_requested", "waiting_for_credentials", "waiting_for_mfa", "expired", "error"].includes(String(values.status || ""))) invalidateWriteAuthCooldown();
   if (["waiting_for_credentials", "waiting_for_mfa", "error", "expired"].includes(String(values.status || ""))) {
     browserReady = false;
     operationalThisGeneration = false;
@@ -853,6 +923,7 @@ async function drainAvailableHelperJobs(
         {
           assertOwned,
           updateSession,
+          ...((globalThis as typeof globalThis & { __praktikaWriteAuthDiscovery?: Pick<import("../lib/praktika/helper-lease").PraktikaJobOwnership, "canClaimWrites" | "observeWriteCompleted"> }).__praktikaWriteAuthDiscovery || {}),
           ...((globalThis as typeof globalThis & {
             __praktikaEnsureWriteAuthenticated?: () => Promise<void>;
           }).__praktikaEnsureWriteAuthenticated
@@ -1124,8 +1195,8 @@ async function refreshOnce() {
     if (shuttingDown || (isWarmRestoration && remainingUsefulWorkMs() <= 0)) return;
     await assertOwned();
     page = await context.newPage();
-    context.once("close", () => { browserReady = false; operationalThisGeneration = false; });
-    page.once("close", () => { browserReady = false; operationalThisGeneration = false; });
+    context.once("close", () => { invalidateWriteAuthCooldown(); browserReady = false; operationalThisGeneration = false; });
+    page.once("close", () => { invalidateWriteAuthCooldown(); browserReady = false; operationalThisGeneration = false; });
     if (await hasExistingBrowserSession(page)) {
       const saved = await markBrowserReady(page) && await saveCookies(context, page);
 

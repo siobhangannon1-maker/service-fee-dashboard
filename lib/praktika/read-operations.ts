@@ -89,3 +89,8 @@ export function verifiedReadOperation(jobType: string, request: unknown) {
   return Object.hasOwn(VERIFIED_READ_PATHS, jobType) && record(request)
     && request.method === 'POST' && request.path === VERIFIED_READ_PATHS[jobType];
 }
+
+// Discovery inventory only; callers must still validate each exact read request.
+export const PRAKTIKA_RETRIEVAL_JOB_TYPES = [
+  ...Object.keys(PERIO_READ_FIELDS), ...Object.keys(VERIFIED_READ_PATHS), 'hydrate_report_letter_queue_item',
+];

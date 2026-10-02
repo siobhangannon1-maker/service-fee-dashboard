@@ -15,7 +15,7 @@ const refreshSource = readFileSync(
 test("production helper supplies a strict write-authentication fence", () => {
   assert.match(
     refreshSource,
-    /async function ensureWriteAuthenticated\(\)/,
+    /async function ensureWriteAuthenticated\(revalidation = false\)/,
     "production helper must define the write-authentication fence",
   );
 

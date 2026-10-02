@@ -57,6 +57,8 @@ test('helper insertion conflict reuses only the same icon target', async () => {
       return {error:null,data:{id:'existing',request:request(target)}};
     }};
     const create=runInNewContext(code+'\ncreatePraktikaHelperJob',{
+      DURABLE_WORKFLOW_WRITES:new Set(['upload_report_to_praktika','update_praktika_letter_icons']),
+      DURABLE_WORKFLOW_READS:new Set(['periodontal_chart_patient_perio_exam_ids','periodontal_chart_perio_exams']),
       currentWorkflowExecution:()=>({intentId:'intent'}),continuationChildId:()=> 'existing',supabaseAdmin:{from:()=>q},sameIconHelperTarget,Date,
     });
     const call=create({appUserId:'actor',jobType:'update_praktika_letter_icons',request:request(12)});

@@ -109,7 +109,7 @@ test("clean exit only releases captured generation; never promotes Connected; du
 });
 
 test("helper session writes fail closed, close old browser, and refuse subsequent writes", async () => {
-  const globals = { PraktikaHelperUnavailable,
+  const globals = { invalidateWriteAuthCooldown: () => {}, PraktikaHelperUnavailable,
     ownershipRecovery: createPraktikaOwnershipRecovery(), PraktikaOwnershipRejected, PraktikaLeaseExpired, ownershipLost: false, sessionId: "session", helperInstanceId: "old-owner",
     renewal: { stop: () => { stopped++; } },
     shutdownCoordinator: { close: async () => { closed++; return true; } }, supabase: {}, PraktikaOwnershipLost,

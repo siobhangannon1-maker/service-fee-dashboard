@@ -34,6 +34,8 @@ test('reserved replacement activation and new icon insertion retain retry execut
       update:(p:any)=>{patch=p;return q;},insert:(r:any)=>{rows.push(r);filters.push(x=>x===r);return q;},single:async()=>execute(true),maybeSingle:async()=>execute(true),then:(resolve:any)=>Promise.resolve(execute()).then(resolve)};return q;
   }};
   const create=runInNewContext(declaration('lib/praktika/helper-jobs.ts','createPraktikaHelperJob')+'\ncreatePraktikaHelperJob',{
+    DURABLE_WORKFLOW_WRITES:new Set(['upload_report_to_praktika','update_praktika_letter_icons']),
+    DURABLE_WORKFLOW_READS:new Set(['periodontal_chart_patient_perio_exam_ids','periodontal_chart_perio_exams']),
     supabaseAdmin:db,currentWorkflowExecution:()=>({intentId:'intent',retryUploadId:'replacement',actor:{actorUserId:'retry'}}),continuationChildId:()=> 'icon',Date,
   });
   await create({appUserId:'retry',jobType:'upload_report_to_praktika',request:{reportDraftId:'draft'}});

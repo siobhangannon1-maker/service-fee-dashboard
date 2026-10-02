@@ -43,6 +43,9 @@ export interface PraktikaJobOwnership {
   // Production may provide a strict pre-write authentication fence.
   // Existing reduced callers/tests may omit it and retain prior behavior.
   ensureWriteAuthenticated?(): Promise<void>;
+  // Negative generation gate for ordinary discovery; never replaces the write fence.
+  canClaimWrites?(): Promise<boolean>;
+  observeWriteCompleted?(job: { id: string; job_type: string; created_at?: string }): void;
   updateSession(values: Record<string, unknown>): Promise<void>;
 }
 

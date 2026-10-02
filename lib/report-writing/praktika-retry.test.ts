@@ -64,7 +64,10 @@ test('waiting replacement activation is conditional and never resets runnable or
   for(const status of ['waiting','pending','processing','completed','failed']){
     const row:any={id:'replacement',status,request:{manualRetry:{verifiedAbsent:true,priorJobId:'old'}}};let updates=0;
     const db:any={from:()=>{let patch:any;const q:any={select:()=>q,eq:()=>q,single:async()=>({data:row}),update:(p:any)=>{patch=p;return q;},maybeSingle:async()=>{updates++;Object.assign(row,patch);return{data:row};}};return q;}};
-    const fn=runInNewContext(activate+'\ncreatePraktikaHelperJob',{supabaseAdmin:db,currentWorkflowExecution:()=>({intentId:'intent',retryUploadId:'replacement'}),Date});
+    const fn=runInNewContext(activate+'\ncreatePraktikaHelperJob',{
+      DURABLE_WORKFLOW_WRITES:new Set(['upload_report_to_praktika','update_praktika_letter_icons']),
+      DURABLE_WORKFLOW_READS:new Set(['periodontal_chart_patient_perio_exam_ids','periodontal_chart_perio_exams']),
+      supabaseAdmin:db,currentWorkflowExecution:()=>({intentId:'intent',retryUploadId:'replacement'}),Date});
     const result=await fn({appUserId:'actor',jobType:'upload_report_to_praktika',request:{reportDraftId:'draft'}});
     assert.equal(updates,status==='waiting'?1:0);assert.equal(result.status,status==='waiting'?'pending':status);assert.equal(result.request.manualRetry.priorJobId,'old');
   }

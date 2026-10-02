@@ -1,7 +1,7 @@
 import { perioStructureDiagnostic } from "../lib/praktika/perio-structure-diagnostic";
 import { praktikaUploadResponseDiagnostic } from "../lib/praktika/authentication-probe";
 import { praktikaJobEligibility } from "../lib/praktika/job-eligibility";
-import { PraktikaReadFailure, type PraktikaReadFailureCategory, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from "../lib/praktika/read-operations";
+import { PraktikaReadFailure, type PraktikaReadFailureCategory, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation, PRAKTIKA_RETRIEVAL_JOB_TYPES } from "../lib/praktika/read-operations";
 import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
 import { PraktikaHelperUnavailable } from "../lib/praktika/helper-lease";
 import { PraktikaOwnershipLost, type PraktikaJobOwnership } from "../lib/praktika/helper-lease";
@@ -150,6 +150,7 @@ export class PraktikaJobQueueUnavailable extends Error {
 }
 
 async function claimNextJob(appUserId: string | null | undefined, ownership: PraktikaJobOwnership) {
+  const writesAllowed = await ownership.canClaimWrites?.() ?? true;
   let query = supabase
     .from("praktika_helper_jobs")
     .select("*")
@@ -165,6 +166,8 @@ async function claimNextJob(appUserId: string | null | undefined, ownership: Pra
   } else {
     query = query.is("app_user_id", null);
   }
+
+  if (!writesAllowed) query = query.in("job_type", PRAKTIKA_RETRIEVAL_JOB_TYPES);
 
   // Discovery is not authorization: an empty queue needs no session eligibility read.
   let { data: jobs, error } = await query;
@@ -182,6 +185,9 @@ async function claimNextJob(appUserId: string | null | undefined, ownership: Pra
   // Skip blocked writes without changing their attempts; eligible reads may pass them.
   let job = null;
   for (const candidate of jobs) {
+    if (!writesAllowed && !(allowedPraktikaRead(candidate.job_type, candidate.request)
+      || verifiedReadOperation(candidate.job_type, candidate.request)
+      || candidate.job_type === "hydrate_report_letter_queue_item")) continue;
     if (await jobEligible(appUserId, candidate, ownership)) { job = candidate; break; }
   }
   if (!job) return null;
@@ -1473,6 +1479,10 @@ export async function processOnePraktikaHelperJob(
     readStage = "result_persistence_failure";
     if (upload) upload.stage = "result_persistence";
     await completeJob(job.id, response);
+    // Observation must never change successful persistence or replay behavior.
+    if (!retrieval) {
+      try { ownership.observeWriteCompleted?.(job); } catch { /* diagnostic only */ }
+    }
     console.log(`Completed Praktika helper job ${job.id}`);
     return { outcome: "completed", jobId: job.id };
   } catch (error: any) {

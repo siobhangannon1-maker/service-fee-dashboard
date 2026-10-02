@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { praktikaJobEligibility } from './job-eligibility';
-import { PraktikaReadFailure, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation } from './read-operations';
+import { PraktikaReadFailure, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation, PRAKTIKA_RETRIEVAL_JOB_TYPES } from './read-operations';
 import { hasLivePraktikaHelper, PraktikaOwnershipLost } from './helper-lease';
 import { praktikaUploadResponseDiagnostic, PraktikaAuthenticationUnverified } from './authentication-probe';
 import { isConfirmedPraktikaUpload } from '../report-writing/praktika-upload-result';
@@ -60,7 +60,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   let nextOwnershipError: Error | undefined;
   let owned = true, operations = 0, connectedWrites = 0, httpStatus = 200;
   let responseUrl = "https://praktika.praktika.net.au/php/forms/db_getFormData.php", responseText = '{"patient_perioexamids":[12]}';
-  const globals = { praktikaUploadResponseDiagnostic, PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
+  const globals = { praktikaUploadResponseDiagnostic, PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, PRAKTIKA_RETRIEVAL_JOB_TYPES, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
     isConfirmedPraktikaUpload, Date, AbortSignal, URLSearchParams, Buffer, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
     console: { log(...args: unknown[]) { logs.push(args); }, error() {} },
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>, upload?: unknown) => { prepareRequest(_r as Row); if(realTransport) return (_r as Row).contentType === "multipart_storage" ? api.runMultipartStorageRequest(_c, _r, before, upload) : api.runJsonOrFormRequest(_c, _r, before, upload); await before(); operations++; return { patient_communication: { iFileId: 12 } }; },
@@ -88,7 +88,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   return { setVerificationDraft: (d: Row) => { verificationDraft=d; }, jobs, calls, empty: () => { jobs.length = 0; }, disconnect: () => { browserReady = false; },
     onDiscovery: (fn: () => void) => { afterDiscovery = fn; },
     idleCycle: async () => { await helper.getSession(); return helper.drainAvailableHelperJobs(context, actor, {}); },
-    job, session, logs, setHeaders: (headers: Record<string,string>) => { responseHeaders=headers; }, prepareRequest: (fn: (request: Row) => void) => {prepareRequest=fn;}, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failRead: () => { readFails = true; }, setTransportError: (error: Error) => { transportFails = true; transportError = error; }, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
+    ownership, job, session, logs, setHeaders: (headers: Record<string,string>) => { responseHeaders=headers; }, prepareRequest: (fn: (request: Row) => void) => {prepareRequest=fn;}, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failRead: () => { readFails = true; }, setTransportError: (error: Error) => { transportFails = true; transportError = error; }, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
     failNextOwnership: (error: Error) => {nextOwnershipError=error;}, connectedWrites: () => connectedWrites, loseOwnership: () => { owned = false; }, onClaim: (fn: () => void) => { afterClaim = fn; }, setHttp: (v: number) => { httpStatus = v; } };
 }
 test('waiting write stays pending with attempts unchanged, then resumes once after browser startup', async () => {
@@ -424,4 +424,39 @@ test('blocked writes retain filtered read discovery beyond the first twenty jobs
   assert.equal(f.calls.filter(c => c === 'praktika_helper_jobs:select').length, 2);
   assert.equal(f.calls.filter(c => c === 'praktika_sessions:select').length, 2);
   assert.equal(f.operations(), 0); assert.ok(f.jobs.every(j => j.attempts === 0));
+});
+
+test('generation cooldown excludes old writes before bounded discovery and preserves read fairness', async () => {
+  const f = fixture(true);
+  const oldWrites = Array.from({ length: 40 }, (_, i) => ({ id: `old-${i}`, app_user_id: 'actor',
+    job_type: i % 2 ? 'update_praktika_letter_icons' : 'upload_report_to_praktika', status: 'pending',
+    attempts: 0, available_at: '2026-01-01', request: {} }));
+  f.jobs.unshift(...oldWrites);
+  const before = structuredClone(oldWrites);
+  Object.assign(f.ownership, { canClaimWrites: async () => false });
+  assert.equal((await f.run()).outcome, 'completed');
+  assert.equal(f.job.status, 'completed');
+  assert.deepEqual(oldWrites, before);
+  assert.equal(f.operations(), 1);
+  for (let i = 0; i < 5; i++) assert.equal((await f.run()).outcome, 'none');
+  assert.deepEqual(oldWrites, before);
+});
+
+test('cooldown never claims or prepares a blocked upload, then resumes through the strict fence', async () => {
+  const f = fixture(); let blocked = true, preparations = 0, fences = 0;
+  Object.assign(f.ownership, { canClaimWrites: async () => !blocked,
+    ensureWriteAuthenticated: async () => { fences++; } });
+  f.prepareRequest(() => { preparations++; });
+  const before = structuredClone(f.job);
+  for (let i = 0; i < 30; i++) assert.equal((await f.run()).outcome, 'none');
+  assert.deepEqual(f.job, before); assert.equal(preparations, 0); assert.equal(fences, 0);
+  blocked = false;
+  assert.equal((await f.run()).outcome, 'completed');
+  assert.equal(preparations, 1); assert.equal(fences, 1);
+});
+
+test('cooldown read inventory cannot authorize a malformed retrieval request', async () => {
+  const f = fixture(); f.job.job_type = 'patient_match_search'; f.job.request = { method: 'POST', path: '/write' };
+  Object.assign(f.ownership, { canClaimWrites: async () => false });
+  assert.equal((await f.run()).outcome, 'none'); assert.equal(f.job.attempts, 0); assert.equal(f.operations(), 0);
 });
