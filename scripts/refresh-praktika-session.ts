@@ -1,4 +1,4 @@
-import { installRefreshObserver, stopRefreshObservation } from "../lib/praktika/refresh-observer";
+import { installRefreshObserver, stopRefreshObservation, observeKeepalive } from "../lib/praktika/refresh-observer";
 import { WriteAuthCooldown } from "../lib/praktika/write-auth-cooldown";
 import { PraktikaLeaseExpired, createPraktikaOwnershipRecovery, isPraktikaTransientInfrastructureError } from "../lib/praktika/ownership-recovery";
 import { praktikaNoAuthGateEnabled } from "../lib/praktika/authentication";
@@ -862,6 +862,8 @@ async function performRealBrowserActivity(page: Page) {
    * the server genuine authenticated activity without navigating or
    * rebuilding the visible Praktika application.
    */
+  const observeActivity = process.env.PRAKTIKA_REFRESH_OBSERVER === "true";
+  const activityStarted = observeActivity ? performance.now() : 0;
   const probe = await page.evaluate(async (url) => {
     try {
       const response = await fetch(url, {
@@ -884,7 +886,16 @@ async function performRealBrowserActivity(page: Page) {
         error: error instanceof Error ? error.message : String(error),
       };
     }
-  }, `${PRAKTIKA_BASE_URL}/v2/`);
+  }, `${PRAKTIKA_BASE_URL}/v2/`).catch((error: unknown) => {
+    if (observeActivity) {
+      try { observeKeepalive(page.context(), { ok: false, status: 0 }, performance.now() - activityStarted); } catch { /* Diagnostic only. */ }
+    }
+    throw error;
+  });
+
+  if (observeActivity) {
+    try { observeKeepalive(page.context(), { ok: probe.ok, status: probe.status }, performance.now() - activityStarted); } catch { /* Diagnostic only. */ }
+  }
 
   if (!probe.ok) {
     console.warn(
