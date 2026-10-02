@@ -1,3 +1,4 @@
+import { observeProbeResponse } from "./refresh-observer";
 import { createHash } from "node:crypto";
 import type { BrowserContext } from "playwright";
 import { hasFreshPraktikaAuthentication, praktikaExperimentEnabled, hasPraktikaChallenge, praktikaNoAuthGateEnabled, derivePraktikaConnection } from "./authentication";
@@ -212,6 +213,9 @@ export async function probePraktikaAuthentication(context: BrowserContext, pract
         maxRedirects: 0, timeout: PRAKTIKA_AUTH_PROBE_TIMEOUT_MS,
       });
       try {
+        if (process.env.PRAKTIKA_REFRESH_OBSERVER === "true") {
+          try { observeProbeResponse(context, "POST", url, response.status(), response.headers()); } catch { /* Passive diagnostic only. */ }
+        }
         if (response.url() !== url || !response.ok()) {
           if (response.status() >= 300 && response.status() < 400) {
             // Redirects never prove authentication; only the confirmed login path is a challenge.

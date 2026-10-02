@@ -1,3 +1,4 @@
+import { installRefreshObserver, stopRefreshObservation } from "../lib/praktika/refresh-observer";
 import { WriteAuthCooldown } from "../lib/praktika/write-auth-cooldown";
 import { PraktikaLeaseExpired, createPraktikaOwnershipRecovery, isPraktikaTransientInfrastructureError } from "../lib/praktika/ownership-recovery";
 import { praktikaNoAuthGateEnabled } from "../lib/praktika/authentication";
@@ -233,6 +234,7 @@ const shutdownCoordinator = createShutdownCoordinator({
 });
 function shutdown() {
   if (shuttingDown) return;
+  stopRefreshObservation(ownedContext, 'shutdown');
   shuttingDown = true;
   invalidateWriteAuthCooldown();
   shutdownCoordinator.start();
@@ -254,6 +256,7 @@ async function ownedWrite(
     if (!(error instanceof PraktikaOwnershipLost)) throw error;
     if (error instanceof PraktikaLeaseExpired) logOwnershipFailure("lease_expired");
     else if (error instanceof PraktikaOwnershipRejected) logOwnershipFailure("ownership_rejected");
+    stopRefreshObservation(ownedContext, 'ownership_lost');
     ownershipLost = true;
     invalidateWriteAuthCooldown();
     await shutdownCoordinator.close();
@@ -413,12 +416,14 @@ async function ensureWriteAuthenticated(revalidation = false) {
     if (result.verified && result.httpStatus === 200) {
       await ownedWrite("authenticate");
       if (context !== ownedContext || shuttingDown || ownershipLost || (cooldown && cooldown !== writeAuthCooldown())) throw new PraktikaOwnershipLost();
+      stopRefreshObservation(ownedContext, 'authenticated');
       cooldown?.verified();
       console.log("[Praktika auth] write_auth_verified", { httpStatus: 200, attempt: attempt + 1 });
       return;
     }
 
     if (result.phase === "waiting_for_credentials" || result.phase === "waiting_for_mfa") {
+      stopRefreshObservation(ownedContext, result.phase === 'waiting_for_mfa' ? 'mfa' : 'credentials');
       browserReady = false;
       invalidateWriteAuthCooldown();
       await ownedWrite("authentication_failed", { status: result.phase });
@@ -576,7 +581,7 @@ async function pageHasVisiblePasswordInput(page: Page) {
   for (let i = 0; i < count; i++) {
     const input = inputs.nth(i);
     const visible = await input.isVisible().catch(() => false);
-    if (visible) return true;
+    if (visible) { stopRefreshObservation(ownedContext, 'credentials'); return true; }
   }
 
   return false;
@@ -594,20 +599,22 @@ async function pageHasMfaInput(page: Page) {
     const inputs = page.locator(selector);
     const count = await inputs.count().catch(() => 0);
     for (let i = 0; i < count; i++) {
-      if (await inputs.nth(i).isVisible().catch(() => false)) return true;
+      if (await inputs.nth(i).isVisible().catch(() => false)) { stopRefreshObservation(ownedContext, 'mfa'); return true; }
     }
   }
 
   const bodyText = await page.locator("body").innerText().catch(() => "");
   const lower = bodyText.toLowerCase();
 
-  return (
+  const mfaVisible = (
     lower.includes("verification code") ||
     lower.includes("multi-factor") ||
     lower.includes("multifactor") ||
     lower.includes("authentication code") ||
     lower.includes("one-time code")
   );
+  if (mfaVisible) stopRefreshObservation(ownedContext, "mfa");
+  return mfaVisible;
 }
 
 async function dismissBlockingDialogs(page: Page) {
@@ -1187,7 +1194,11 @@ async function refreshOnce() {
   );
 
   const context = await browserLaunch;
+  stopRefreshObservation(ownedContext, 'context_replaced');
   ownedContext = context;
+  if (process.env.PRAKTIKA_REFRESH_OBSERVER === "true") {
+    try { installRefreshObserver(context, { enabled: true, origin: PRAKTIKA_BASE_URL, generation: helperInstanceId!, emit: entry => console.log("[Praktika refresh observer]", JSON.stringify(entry)) }); } catch { /* Observation must not affect execution. */ }
+  }
   const stopHeartbeat = startHeartbeat(context);
 
   let page: Page | undefined;

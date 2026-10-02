@@ -35,7 +35,7 @@ for(const signal of ['SIGTERM','SIGINT'] as const) test(`real ${signal} invokes 
  const helper=readFileSync('scripts/refresh-praktika-session.ts','utf8');
  const ast=ts.createSourceFile('helper.ts',helper,ts.ScriptTarget.Latest,true);
  const handler=ts.transpileModule(ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='shutdown')!.getText(ast),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
- const source=`let shuttingDown=false;const invalidateWriteAuthCooldown=()=>{};const renewal={stop(){}};const shutdownCoordinator={start(){process.send('handled');setTimeout(()=>process.exit(0),20)}};${handler};process.on('SIGTERM',shutdown);process.on('SIGINT',shutdown);process.send('ready');setInterval(()=>{},1000);`;
+ const source=`const stopRefreshObservation=()=>{};const ownedContext=undefined;let shuttingDown=false;const invalidateWriteAuthCooldown=()=>{};const renewal={stop(){}};const shutdownCoordinator={start(){process.send('handled');setTimeout(()=>process.exit(0),20)}};${handler};process.on('SIGTERM',shutdown);process.on('SIGINT',shutdown);process.send('ready');setInterval(()=>{},1000);`;
  const child=spawn(process.execPath,['-e',source],{stdio:['ignore','ignore','pipe','ipc']});
  try {
   const result=await new Promise<string>((resolve,reject)=>{

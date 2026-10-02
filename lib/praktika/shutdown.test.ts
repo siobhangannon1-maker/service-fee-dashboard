@@ -27,7 +27,7 @@ test('watcher stops claims and releases late claim without spawning; repeated si
 });
 test('helper delegates signals once and disables Playwright signal ownership', () => {
  let starts=0, stops=0;
- const shutdown=runInNewContext(extract(helper,['shutdown'])+'\nshutdown', {invalidateWriteAuthCooldown:()=>{},shuttingDown:false,renewal:{stop(){stops++;}},shutdownCoordinator:{start(){starts++;}}});
+ const shutdown=runInNewContext(extract(helper,['shutdown'])+'\nshutdown', {stopRefreshObservation:()=>{},ownedContext:undefined,invalidateWriteAuthCooldown:()=>{},shuttingDown:false,renewal:{stop(){stops++;}},shutdownCoordinator:{start(){starts++;}}});
  shutdown();shutdown();assert.equal(starts,1);assert.equal(stops,0);
  const source=readFileSync(helper,'utf8');
  assert.match(source,/handleSIGTERM: false/);assert.match(source,/handleSIGINT: false/);

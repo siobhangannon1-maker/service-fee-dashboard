@@ -17,7 +17,7 @@ function fixture() {
   let afterProbe = () => {};
   const logs: unknown[] = [], writes: unknown[] = [];
   const ctx = {
-    pooledExecutionEnabled: () => false, PraktikaHelperUnavailable, PraktikaOwnershipLost,
+    stopRefreshObservation: () => {}, pooledExecutionEnabled: () => false, PraktikaHelperUnavailable, PraktikaOwnershipLost,
     WriteAuthCooldown: class extends WriteAuthCooldown { constructor(emit: ConstructorParameters<typeof WriteAuthCooldown>[0]) { super(emit, () => now); } },
     process: { env: { PRAKTIKA_PRACTICE_ID: '1181' } }, PRAKTIKA_BASE_URL: 'https://fixture.invalid',
     WRITE_AUTH_REFRESH_RETRIES: 2, WRITE_AUTH_REFRESH_RETRY_MS: 2000,
