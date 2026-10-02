@@ -16,12 +16,25 @@ export function typistMedirefPresentation(draft: WorkflowDraft | null | undefine
 }
 
 // Card wording only: never resolves completion, eligibility or list membership.
-export function typistApprovedPresentation(draft: WorkflowDraft & Pick<DraftListItem, 'workflow_continuation_context' | 'workflow_connection_block'>) {
+export function typistApprovedPresentation(draft: WorkflowDraft & Pick<DraftListItem, 'workflow_continuation_context' | 'workflow_connection_block' | 'workflow_current_presentation'>) {
   const workflow = approvedWorkflow(draft);
   if (draft.workflow_resolved && !workflow.lookupUnavailable) {
     if (workflow.status === 'not_started') return {
       kind: 'ready', tone: 'neutral', label: 'Ready for workflow',
       message: 'No workflow is currently recorded for this letter.',
+    };
+    const currentLabels = {
+      waiting_upload: 'Completing… Waiting for upload',
+      uploading: 'Completing… Uploading to Praktika',
+      waiting_icon: 'Completing… Waiting for icon update',
+      waiting_icon_delayed: 'Completing… Waiting for icon update',
+      waiting_mediref: 'Completing… Waiting for MediRef',
+      waiting_connection: 'Completing… Waiting for Praktika connection',
+    };
+    const current = draft.workflow_current_presentation;
+    if (['needs_attention','completing'].includes(workflow.status) && current && current !== 'unknown') return {
+      kind: 'current', tone: 'amber', label: currentLabels[current],
+      message: current === 'waiting_icon_delayed' ? 'Taking longer than expected.' : null,
     };
     if (['needs_attention','completing'].includes(workflow.status) &&
       draft.workflow_continuation_context==='present' && draft.workflow_connection_block==='praktika_credentials_required') return {

@@ -1,7 +1,8 @@
+import type { CurrentWorkflowPresentation } from './draft-contract';
 import {projectHistoricalAttention,historicalAttentionAction,historicalAttentionInvalidated} from './historical-attention';
 import {manualHistoricalMedirefActions,manualHistoricalMedirefAction,manualHistoricalMedirefContract} from './manual-historical-mediref';
 import { durableHistoricalWorkflow, historicalReconciliationAction, historicalInvalidationAction, historicalRetentionReleaseAction, type HistoricalReconciliationEvent } from './historical-reconciliation';
-import { resolveWorkflow, unavailableWorkflow, type ReadJob, type WorkflowDraft } from './resolved-workflow';
+import { resolveWorkflow, unavailableWorkflow, WORKFLOW_STALE_MS, type WorkflowEvidence, type ResolvedWorkflow, type ReadJob, type WorkflowDraft } from './resolved-workflow';
 import { hasLivePraktikaHelper } from '../praktika/helper-lease';
 import { manualVerification } from './manual-verification';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -68,6 +69,64 @@ function projectLegacyWorkflowRecovery<T extends { id: string; workflow_status?:
   });
 }
 
+// Presentation only: immutable creation/completion evidence bounds waiting; polling
+// timestamps never renew this window. Unknown retains the existing resolver UI.
+export function currentWorkflowPresentation(draft: WorkflowDraft, evidence: WorkflowEvidence,
+  resolved: ResolvedWorkflow, connectionBlocked: boolean, now: number): CurrentWorkflowPresentation {
+  const parent = evidence.parent;
+  const response = parent?.response as Record<string, unknown> | null;
+  if (!parent || parent.id !== continuationIntentId(draft.id || '') ||
+    parent.job_type !== 'complete_report_workflow' || parent.request?.reportDraftId !== draft.id ||
+    !parent.app_user_id || parent.request?.actorUserId !== parent.app_user_id ||
+    !['waiting', 'processing'].includes(parent.status) || !parent.created_at || evidence.hasOtherParent ||
+    resolved.lookupUnavailable || resolved.praktikaRecovery || resolved.medirefRecovery ||
+    !['needs_attention','completing'].includes(resolved.status) ||
+    Object.values(resolved.branches).includes('failed') || response?.retryUploadId ||
+    draft.periodontal_chart_attachment_error) return 'unknown';
+  const jobs = [...evidence.uploads, ...evidence.icons, ...evidence.mediref];
+  if (jobs.some(j => j.status === 'failed')) return 'unknown';
+  const stamps = [parent.created_at, ...jobs.map(j => j.created_at),
+    ...jobs.filter(j => j.status === 'completed').map(j => j.completed_at || j.updated_at)];
+  const times = stamps.filter(Boolean).map(v => Date.parse(v!));
+  if (times.some(t => !Number.isFinite(t) || t > now) || !times.length) return 'unknown';
+  const aged = now - Math.max(...times) >= WORKFLOW_STALE_MS;
+  if (evidence.uploads.length > 1 || evidence.icons.length > 1 || evidence.mediref.length > 1) return 'unknown';
+  for (const job of [...evidence.uploads,...evidence.icons]) {
+    if (job.id !== continuationChildId(parent.id, job.job_type as 'upload_report_to_praktika' | 'update_praktika_letter_icons') ||
+      job.request?.reportDraftId !== draft.id || job.request?.continuationId !== parent.id ||
+      job.app_user_id !== parent.app_user_id) return 'unknown';
+  }
+  if (evidence.mediref.some(j => j.payload?.draftId !== draft.id || j.payload?.workflowContinuationId !== parent.id)) return 'unknown';
+  // An exact, unlocked queued icon remains a known waiting stage even when aged.
+  // This is not evidence of authentication, invocation or eventual completion.
+  const icon = evidence.icons[0];
+  const noError = (job: ReadJob) => (job as ReadJob & { error_message?: unknown }).error_message === null;
+  const exactQueuedIcon = parent.status === 'waiting' && response?.stage === 'icon' && !response.issue &&
+    !parent.locked_at && !parent.locked_by && !parent.failed_at && noError(parent) &&
+    evidence.uploads.length === 1 && evidence.uploads[0].status === 'completed' &&
+    resolved.branches.praktika === 'completed' && evidence.icons.length === 1 &&
+    icon.status === 'pending' && icon.response === null && noError(icon) &&
+    !icon.locked_at && !icon.locked_by && !icon.failed_at && !icon.completed_at &&
+    ![parent, ...jobs].some(j => j.request?.manualRetry) &&
+    evidence.currentUploadId === evidence.uploads[0].id && evidence.currentIconId === icon.id;
+  if (aged && !exactQueuedIcon) return 'unknown';
+  if (response?.issue) return 'unknown';
+  if (aged) return 'waiting_icon_delayed';
+  if (connectionBlocked) return 'waiting_connection';
+  const upload = evidence.uploads[0];
+  if (response?.stage === 'upload') {
+    if (!upload && parent.status === 'waiting') return 'waiting_upload';
+    if (upload && ['pending','processing'].includes(upload.status) && resolved.branches.praktika === 'active' &&
+      evidence.livePraktikaActors.has(parent.app_user_id) && resolved.status === 'completing') return 'uploading';
+  }
+  if (response?.stage === 'icon' && resolved.branches.praktika === 'completed' &&
+    (parent.status === 'waiting' || resolved.status === 'completing')) return 'waiting_icon';
+  if (response?.stage === 'mediref' && resolved.branches.praktika === 'completed' &&
+    ['completed','skipped'].includes(resolved.branches.icon) &&
+    (parent.status === 'waiting' || resolved.status === 'completing')) return 'waiting_mediref';
+  return 'unknown';
+}
+
 // Additive display evidence only. Keep existing durable fields/audit data for History
 // and existing callers; neither this resolver nor its queries can execute a workflow.
 export async function projectWorkflowRecovery<T extends { id: string; workflow_status?: string | null }>(db: SupabaseClient, drafts: T[]): Promise<T[]> {
@@ -92,7 +151,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     const evidence = { uploads:[], icons:[], mediref:[], livePraktikaActors:new Set<string>(),
       liveMediref:false, reconciliations:events };
     const resolved = durableHistoricalWorkflow(draft as T & WorkflowDraft,evidence,historicalNow);
-    if (resolved?.status === 'completed') completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown',workflow_connection_block:'unknown'});
+    if (resolved?.status === 'completed') completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown',workflow_connection_block:'unknown',workflow_current_presentation:'unknown'});
   }
   // Discovery only: the existing resolver remains the authority for the full
   // verification contract. Source changes are covered by the audit invalidation
@@ -121,7 +180,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       reconciliations:eventsByDraft.get(draft.id) || [],livePraktikaActors:new Set<string>(),liveMediref:false};
     const resolved = resolveWorkflow(draft as T & WorkflowDraft,evidence,historicalNow);
     if (resolved.status==='completed' && resolved.historicalMedirefVerification)
-      completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown',workflow_connection_block:'unknown'});
+      completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown',workflow_connection_block:'unknown',workflow_current_presentation:'unknown'});
   }
   drafts = drafts.filter(d=>!completed.has(d.id));
   if (!drafts.length) return originalDrafts.map(d=>completed.get(d.id) || d);
@@ -131,10 +190,10 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
   const [parentRead, praktikaRead, medirefRead] = await Promise.all([
     // Two bounded ID lists: canonical IDs also detect malformed requests, while
     // reportDraftId finds noncanonical/superseding parents. Never all IDs at once.
-    reader.read<ReadJob>(drafts.map(d=>d.id),batch=>db.from('praktika_helper_jobs').select(workflowJobColumns)
+    reader.read<ReadJob>(drafts.map(d=>d.id),batch=>db.from('praktika_helper_jobs').select(`${workflowJobColumns},error_message`)
       .eq('job_type','complete_report_workflow')
       .or(`id.in.(${batch.map(continuationIntentId).join(',')}),request->>reportDraftId.in.(${batch.join(',')})`),50),
-    reader.read<ReadJob>(ids,batch=>db.from('praktika_helper_jobs').select(workflowJobColumns)
+    reader.read<ReadJob>(ids,batch=>db.from('praktika_helper_jobs').select(`${workflowJobColumns},error_message`)
       .in('job_type',['upload_report_to_praktika','update_praktika_letter_icons']).in('request->>reportDraftId',batch)),
     reader.read<ReadJob>(ids,batch=>db.from('mediref_helper_jobs')
       .select('id,job_type,status,payload,result,created_at,updated_at,locked_at,locked_by')
@@ -161,7 +220,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
   type MedirefLive = {status:string;helper_instance_id:string|null;helper_heartbeat_at:string|null;helper_expires_at:string|null;helper_stopping_at:string|null};
   const [childRead,praktikaLive,medirefLive] = await Promise.all([
     reader.read<ReadJob>([...childIds.values()].filter(id=>!uploads.has(id)),batch=>db.from('praktika_helper_jobs')
-      .select(workflowJobColumns).eq('job_type','upload_report_to_praktika').in('id',batch)),
+      .select(`${workflowJobColumns},error_message`).eq('job_type','upload_report_to_praktika').in('id',batch)),
     reader.read<PraktikaLive>(actors,batch=>db.from('praktika_sessions').select('id,app_user_id,status,helper_instance_id,helper_heartbeat_at')
       .eq('scope','user').in('app_user_id',batch)),
     reader.read<MedirefLive>(medirefRead.rows.some(active)?['practice']:[],()=>db.from('mediref_sessions')
@@ -184,7 +243,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     if (projectionUnavailable.has(d.id) || praktikaRead.failed.has(d.id) || medirefRead.failed.has(d.id) ||
       reconciliations.failed.has(d.id) ||
       jobs.some(j=>active(j) && j.app_user_id && praktikaLive.failed.has(j.app_user_id)) || mediref.some(active) && medirefLive.failed.size>0) {
-      output[i]={...staleWorkflowStatus(projected[i]),workflow_resolved:unavailableWorkflow()};continue;
+      output[i]={...staleWorkflowStatus(projected[i]),workflow_resolved:unavailableWorkflow(),workflow_current_presentation:'unknown'};continue;
     }
     const parent=parents.get(continuationIntentId(d.id));
     const response=parent?.response as {retryUploadId?:string}|null;
@@ -210,10 +269,13 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       !manualVerification(parent.response,'praktika',d.id,parent.id) &&
       !praktikaLive.failed.has(parent.app_user_id) && sessions.length===1 &&
       sessions[0].status==='waiting_for_credentials') connectionBlocked.add(d.id);
-    output[i]={...projected[i],workflow_resolved:resolveWorkflow(d,evidence,now),workflow_attention:projectHistoricalAttention(d,evidence,now)};
+    const resolved = resolveWorkflow(d,evidence,now);
+    output[i]={...projected[i],workflow_resolved:resolved,workflow_attention:projectHistoricalAttention(d,evidence,now),
+      workflow_current_presentation:currentWorkflowPresentation(d,evidence,resolved,connectionBlocked.has(d.id),now)};
   }
   const recovered = new Map(output.map(d=>[d.id,d]));
   return originalDrafts.map(d=>completed.get(d.id) || {...(recovered.get(d.id) || d),
+    workflow_current_presentation:(recovered.get(d.id) as T & {workflow_current_presentation?:CurrentWorkflowPresentation})?.workflow_current_presentation || 'unknown',
     workflow_continuation_context:continuationContexts.get(d.id) || 'unknown',
     workflow_connection_block:connectionBlocked.has(d.id)?'praktika_credentials_required':'unknown'});
 }
