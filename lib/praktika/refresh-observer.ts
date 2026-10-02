@@ -1,5 +1,6 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import type { BrowserContext, Request, Response, Page, Frame, Cookie } from 'playwright';
+import { domainCookieState, domainCookieComparison, praktikaDomainCookies, safeSetCookieMetadata, type DomainCookieState } from './observer-cookie-metadata';
 
 const paths = new Set(['/php/security/db_refreshToken.php', '/php/json/db_reportingDataWarehouse.php', '/v2/', '/v2/login', '/v2/logout', '/v2/scheduler']);
 const names = new Set(['UAT', 'PHPSESSID']);
@@ -44,6 +45,11 @@ export function installRefreshObserver(context: BrowserContext, options: {
     let disposed = false, authenticated = false, armedOnce = false, fallbackUsed = false;
     let active = false, triggered = false, capturingAt = 0, recorded = 0, captures = 0;
     let sampleVersion = 0, sampling = false, baseline: CookieState | undefined;
+    let domainBaseline: DomainCookieState | undefined;
+    let cookieReadPending = false;
+    let cookieReadTimer: ReturnType<typeof setTimeout> | undefined;
+    let cancelCookieRead: (() => void) | undefined;
+    let baselineVersion = 0;
     let keepaliveCount = 0, keepaliveSampling = false;
     let keepaliveTimer: ReturnType<typeof setTimeout> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -66,7 +72,10 @@ export function installRefreshObserver(context: BrowserContext, options: {
         recordedEvents: recorded, captures, fallbackUsed });
       if (final) {
         clearTimeout(keepaliveTimer);
-        disposed = true; authenticated = false; baseline?.clear(); baseline = undefined; key.fill(0);
+        clearTimeout(cookieReadTimer);
+        cancelCookieRead?.(); baselineVersion++;
+        disposed = true; authenticated = false; baseline?.clear(); baseline = undefined;
+        domainBaseline?.cookies.clear(); domainBaseline?.applicable.forEach(set => set.clear()); domainBaseline = undefined; key.fill(0);
         context.off('close', closed);
         // Keep only the inert object in the WeakMap: reinstall cannot revive a fenced context.
       }
@@ -82,18 +91,54 @@ export function installRefreshObserver(context: BrowserContext, options: {
       hash(JSON.stringify([cookie.name, cookie.domain, cookie.path])),
       { value: hash(cookie.value), attributes: hash(JSON.stringify([cookie.secure, cookie.httpOnly, cookie.sameSite, cookie.expires])), required: names.has(cookie.name) },
     ]));
+    // One local full-jar read for both legacy root diagnostics and domain analysis.
+    // The deadline releases diagnostics, not the transport lock: a hung read must
+    // never cause subsequent observation points to start overlapping reads.
+    const readJar = (): Promise<Cookie[] | undefined> => {
+      if (disposed || cookieReadPending) return Promise.resolve(undefined);
+      cookieReadPending = true;
+      return new Promise(resolve => {
+        let finished = false;
+        const finish = (jar?: Cookie[]) => {
+          if (finished) return;
+          finished = true; clearTimeout(cookieReadTimer); cancelCookieRead = undefined; resolve(jar);
+        };
+        cancelCookieRead = () => finish();
+        cookieReadTimer = setTimeout(() => finish(), 2_000); cookieReadTimer.unref?.();
+        try {
+          void context.cookies().then(jar => { cookieReadPending = false; finish(jar); },
+            () => { cookieReadPending = false; finish(); });
+        } catch { cookieReadPending = false; finish(); }
+      });
+    };
+    // Preserve V2's URL-filtered root view (Playwright's filter does not inspect expiry).
+    const rootJar = (jar: Cookie[]) => praktikaDomainCookies(jar, origin).filter(cookie => cookie.path === '/'
+      && (!cookie.secure || origin.startsWith('https:')));
     const sample = async (establishBaseline = false) => {
       if (disposed || sampling || (!active && !establishBaseline)) return;
       sampling = true;
       const version = sampleVersion;
+      const unavailable = (reason: 'cookie_read_unavailable' | 'cookie_limit') => {
+        record({ event: 'cookie_observation_unavailable', reason });
+        if (establishBaseline) emit({ event: 'full_domain_cookie_baseline', available: false, reason });
+      };
       try {
-        const jar = await context.cookies(origin);
+        const allCookies = await readJar();
         if (disposed || version !== sampleVersion) return;
+        if (!allCookies) { unavailable('cookie_read_unavailable'); return; }
+        const relevant = praktikaDomainCookies(allCookies, origin);
+        const jar = rootJar(relevant);
         // Never describe a truncated jar as unchanged.
-        if (jar.length > 100) { record({ event: 'cookie_observation_unavailable', reason: 'cookie_limit' }); return; }
+        if (allCookies.length > 1_000 || relevant.length > 100) { unavailable('cookie_limit'); return; }
         const next = state(jar);
+        const fullDomain = domainCookieState(relevant, origin, hash);
         const requiredCookieCount = new Set(jar.filter(c => names.has(c.name)).map(c => c.name)).size;
-        if (establishBaseline) { baseline = next; record({ event: 'cookie_baseline', available: true, requiredCookieCount, cookieCount: jar.length }); return; }
+        if (establishBaseline) {
+          baseline = next; domainBaseline = fullDomain;
+          record({ event: 'cookie_baseline', available: true, requiredCookieCount, cookieCount: jar.length });
+          emit({ event: 'full_domain_cookie_baseline', available: true, ...fullDomain.counts });
+          return;
+        }
         const select = (s: CookieState, required: boolean) => [...s].filter(([, v]) => v.required === required);
         const identitiesChanged = (required: boolean) => !!baseline && (
           select(baseline, required).length !== select(next, required).length || select(next, required).some(([id]) => !baseline!.has(id)));
@@ -101,8 +146,9 @@ export function installRefreshObserver(context: BrowserContext, options: {
         record({ event: 'cookie_state', baselineKnown: !!baseline, requiredCookieCount, cookieCount: jar.length,
           requiredIdentityChanged: identitiesChanged(true), requiredValueChanged: valuesChanged(true),
           additionalStateChanged: identitiesChanged(false) || valuesChanged(false),
-          attributesChanged: !!baseline && [...next].some(([id, v]) => baseline!.has(id) && baseline!.get(id)!.attributes !== v.attributes) });
-      } catch { if (!disposed && version === sampleVersion) record({ event: 'cookie_observation_unavailable', reason: 'cookie_read_unavailable' }); }
+          attributesChanged: !!baseline && [...next].some(([id, v]) => baseline!.has(id) && baseline!.get(id)!.attributes !== v.attributes),
+          ...domainCookieComparison(fullDomain, domainBaseline) });
+      } catch { if (!disposed && version === sampleVersion) unavailable('cookie_read_unavailable'); }
       finally { if (version === sampleVersion) sampling = false; }
     };
     const request = (r: Request) => {
@@ -145,11 +191,12 @@ export function installRefreshObserver(context: BrowserContext, options: {
         // Never infer a redirect or a destination from that generic failure.
         if (keepaliveSampling) { emit({ ...entry, cookieObservationAvailable: false }); return; }
         keepaliveSampling = true;
+        const version = baselineVersion;
         let finished = false;
         const finish = (fields: Entry) => {
           if (finished) return;
           finished = true; clearTimeout(keepaliveTimer);
-          if (!disposed) emit({ ...entry, ...fields });
+          if (!disposed && version === baselineVersion) emit({ ...entry, ...fields });
         };
         // Diagnostic deadline never delays the keepalive caller. A stuck cookie read
         // remains single-flight; future summaries report unavailable without more reads.
@@ -157,11 +204,15 @@ export function installRefreshObserver(context: BrowserContext, options: {
         keepaliveTimer.unref?.();
         void (async () => {
           try {
-            const jar = await context.cookies(origin);
+            const allCookies = await readJar();
             if (finished || disposed) return;
-            if (jar.length > 100) { finish({ cookieObservationAvailable: false }); return; }
+            if (!allCookies) { finish({ cookieObservationAvailable: false }); return; }
+            const relevant = praktikaDomainCookies(allCookies, origin);
+            const jar = rootJar(relevant);
+            if (allCookies.length > 1_000 || relevant.length > 100) { finish({ cookieObservationAvailable: false }); return; }
             const fields: Entry = { cookieObservationAvailable: !!baseline,
-              requiredCookieCount: new Set(jar.filter(c => names.has(c.name)).map(c => c.name)).size };
+              requiredCookieCount: new Set(jar.filter(c => names.has(c.name)).map(c => c.name)).size,
+              ...domainCookieComparison(domainCookieState(relevant, origin, hash), domainBaseline) };
             if (baseline) {
               const next = state(jar), before = baseline;
               const ids = new Set([...before.keys(), ...next.keys()]);
@@ -189,6 +240,8 @@ export function installRefreshObserver(context: BrowserContext, options: {
         if (reason === 'credentials' || reason === 'mfa') {
           if (!authenticated && !active) return;
           authenticated = false; baseline?.clear(); baseline = undefined;
+          baselineVersion++;
+          domainBaseline?.cookies.clear(); domainBaseline?.applicable.forEach(set => set.clear()); domainBaseline = undefined;
           terminate(reason);
           return;
         }
@@ -219,12 +272,7 @@ export function installRefreshObserver(context: BrowserContext, options: {
           redirectPath: destination ?? '[unavailable_or_external]' });
         if (active && triggered && setCookie) {
           const header = Object.entries(headers).find(([k]) => k.toLowerCase() === 'set-cookie')?.[1] ?? '';
-          for (const line of header.split('\n').slice(0, 20)) {
-            const name = line.slice(0, line.indexOf('=')).trim();
-            record({ event: 'set_cookie', name: names.has(name) ? name : '[other_cookie]',
-              secure: /;\s*secure(?:;|$)/i.test(line), httpOnly: /;\s*httponly(?:;|$)/i.test(line),
-              expiryInstructionPresent: /;\s*(?:expires|max-age)=/i.test(line) });
-          }
+          for (const metadata of safeSetCookieMetadata(header, url, origin)) record({ event: 'set_cookie', ...metadata });
         }
         if (active && triggered) void sample();
       },

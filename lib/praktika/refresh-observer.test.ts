@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import type { BrowserContext, Cookie } from 'playwright';
 import { installRefreshObserver, observeKeepalive, observeProbeResponse, safeObserverPath, stopRefreshObservation } from './refresh-observer';
 const origin = 'https://praktika.praktika.net.au';
-const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+const flush = async () => { for (let n = 0; n < 6; n++) await Promise.resolve(); };
 function fixture(enabled = true) {
   let reads = 0;
   let jar: Cookie[] = ['PHPSESSID', 'UAT'].map(name => ({ name, value: 'SECRET', domain: 'praktika.praktika.net.au', path: '/', secure: true, httpOnly: true, sameSite: 'Lax', expires: -1 }));
@@ -81,7 +81,11 @@ test('required unchanged values, value change, identity change, attributes and a
   assert.equal(states(f).at(-1)?.requiredValueChanged, false); assert.equal(states(f).at(-1)?.requiredIdentityChanged, false);
   f.setJar(f.jar().map(c => ({ ...c, value: 'NEW_SECRET' }))); f.trigger(); await flush(); assert.equal(states(f).at(-1)?.requiredValueChanged, true);
   f.setJar(f.jar().map(c => ({ ...c, path: '/PRIVATE_PATH', expires: 123456 }))); f.trigger(); await flush(); assert.equal(states(f).at(-1)?.requiredIdentityChanged, true);
-  f.setJar([{ ...f.jar()[0], name: 'PRIVATE_EXTRA', value: 'SECRET' }]); f.trigger(); await flush(); assert.equal(states(f).at(-1)?.additionalStateChanged, true);
+  f.setJar([{ ...f.jar()[0], name: 'PRIVATE_EXTRA', value: 'SECRET' }]); f.trigger(); await flush();
+  // Full-jar fixtures now honor root applicability; the private path is absent
+  // from the legacy root view but remains visible in the new domain aggregates.
+  assert.equal(states(f).at(-1)?.additionalStateChanged, false);
+  assert.equal(states(f).at(-1)?.otherCookiesAddedCount, 1);
   assert.doesNotMatch(JSON.stringify(f.logs), /SECRET|PRIVATE|fingerprint|cookieValue|query/); stopRefreshObservation(f.browser, 'shutdown');
 });
 test('attribute-only changes are distinct from value changes', async () => {
@@ -97,7 +101,7 @@ test('missing or oversized baseline fails closed', async () => {
 test('late baseline cannot be mislabeled as authenticated after trigger', async () => {
   const f = fixture(); let release!: (v: Cookie[]) => void;
   f.context.cookies = () => new Promise<Cookie[]>(r => { release = r; }); f.auth(); const baselineRelease = release;
-  f.trigger(); baselineRelease(f.jar()); await flush(); release(f.jar()); await flush();
+  f.trigger(); baselineRelease(f.jar()); await flush(); f.trigger(); release(f.jar()); await flush();
   assert.equal(states(f).at(-1)?.baselineKnown, false); stopRefreshObservation(f.browser, 'shutdown');
 });
 for (const reason of ['context_replaced', 'ownership_lost', 'shutdown', 'context_closed'] as const) test(reason + ' fences observer permanently and cleans listeners', async () => {
@@ -154,6 +158,7 @@ test('keepalive cookie changes expose only bounded booleans/counts against authe
   const summary = f.logs.find(e => e.event === 'keepalive_summary')!;
   assert.equal(summary.requiredValueChanged, true); assert.equal(summary.requiredIdentityChanged, true);
   assert.equal(summary.requiredAttributesChanged, true); assert.equal(summary.additionalCookieChangeCount, 1);
+  assert.equal(summary.otherCookiesAddedCount, 1);
   assert.doesNotMatch(JSON.stringify(summary), /SECRET|PRIVATE|hash|fingerprint/);
   stopRefreshObservation(f.browser, 'shutdown');
 });
@@ -222,4 +227,67 @@ test('shutdown fences a pending keepalive cookie result without emitting late di
   f.context.cookies = () => new Promise<Cookie[]>(r => { release = r; });
   observeKeepalive(f.browser, { ok: true, status: 200 }, 1); stopRefreshObservation(f.browser, 'shutdown');
   release(f.jar()); await flush(); assert.equal(f.logs.filter(e => e.event === 'keepalive_summary').length, 0);
+});
+
+test('full-domain baseline and delayed fallback see hidden PHP cookies while legacy root fields stay unchanged', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(); const original = f.jar();
+  f.setJar([...original, { ...original[0], path: '/php/', value: 'PRIVATE_PHP_BASELINE' },
+    { ...original[1], path: '/php/security/', value: 'PRIVATE_SECURITY_BASELINE' },
+    { ...original[0], name: 'PRIVATE_THIRD_PARTY', domain: '.outside.invalid', path: '/patient/PRIVATE' }]);
+  const cookies = f.context.cookies;
+  f.context.cookies = async (...args: unknown[]) => { assert.equal(args.length, 0); return cookies(); };
+  f.auth(); await flush();
+  const baseline = f.logs.find(e => e.event === 'full_domain_cookie_baseline')!;
+  assert.equal(baseline.available, true); assert.equal(baseline.praktikaCookieCount, 4);
+  assert.equal(baseline.PHPSESSIDCount, 2); assert.equal(baseline.UATCount, 2);
+  assert.equal(baseline.phpScopedCookieCount, 2); assert.equal(baseline.duplicateNameCount, 2);
+  assert.equal(baseline.requiredCookieSetDiffersBetweenV2AndPhpJson, true);
+  t.mock.timers.tick(300_001);
+  f.setJar(f.jar().map(c => c.path === '/php/' ? { ...c, value: 'PRIVATE_PHP_CHANGED', httpOnly: false } : c));
+  observeKeepalive(f.browser, { ok: true, status: 200 }, 1); await flush();
+  const summary = f.logs.filter(e => e.event === 'keepalive_summary').at(-1)!;
+  assert.equal(summary.requiredValueChanged, false); assert.equal(summary.requiredAttributesChanged, false);
+  assert.equal(summary.PHPSESSIDCookiesValueChangedCount, 1); assert.equal(summary.PHPSESSIDCookiesAttributesChangedCount, 1);
+  assert.equal(summary.v2CookieStateChanged, false); assert.equal(summary.phpJsonCookieStateChanged, true);
+  f.trigger(); await flush();
+  assert.equal(states(f).at(-1)?.fullDomainBaselineKnown, true);
+  assert.equal(states(f).at(-1)?.PHPSESSIDCookiesValueChangedCount, 1);
+  assert.equal(f.logs.find(e => e.event === 'start')?.fallback, true);
+  assert.equal(f.logs.filter(e => e.event === 'set_cookie').at(-1)?.pathCategory, 'php_json');
+  assert.doesNotMatch(JSON.stringify(f.logs), /PRIVATE|SECRET|outside|patient|[a-f0-9]{64}/i);
+  t.mock.timers.tick(15_001); const count = f.logs.length, reads = f.reads();
+  for (let n = 0; n < 30; n++) { t.mock.timers.tick(60_001); f.trigger(); }
+  assert.equal(f.logs.length, count); assert.equal(f.reads(), reads);
+  stopRefreshObservation(f.browser, 'shutdown');
+});
+
+test('baseline and keepalive reads share one lock; diagnostic timeout never starts overlapping reads', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(); let reads = 0;
+  f.context.cookies = () => { reads++; return new Promise<Cookie[]>(() => {}); };
+  f.auth(); observeKeepalive(f.browser, { ok: true, status: 200 }, 1); await flush();
+  assert.equal(reads, 1);
+  t.mock.timers.tick(2_001); await flush();
+  f.trigger(); await flush(); // Flush the pre-transition ring without another transport read.
+  assert.ok(f.logs.some(e => e.event === 'cookie_observation_unavailable'));
+  f.trigger(); observeKeepalive(f.browser, { ok: true, status: 200 }, 1); await flush();
+  assert.equal(reads, 1); assert.equal(f.logs.find(e => e.event === 'full_domain_cookie_baseline')?.available, false);
+  assert.ok(f.logs.filter(e => e.event === 'keepalive_summary').every(e => e.cookieObservationAvailable === false));
+  stopRefreshObservation(f.browser, 'shutdown');
+});
+
+test('credentials discard full-domain baseline and fence a pending keepalive result', async () => {
+  const f = fixture(); f.auth(); await flush();
+  let release!: (cookies: Cookie[]) => void;
+  f.context.cookies = () => new Promise<Cookie[]>(resolve => { release = resolve; });
+  observeKeepalive(f.browser, { ok: true, status: 200 }, 1);
+  stopRefreshObservation(f.browser, 'credentials');
+  const count = f.logs.length; release(f.jar()); await flush();
+  assert.equal(f.logs.length, count);
+  f.context.cookies = async () => f.jar();
+  observeKeepalive(f.browser, { ok: true, status: 200 }, 1); await flush();
+  assert.equal(f.logs.at(-1)?.fullDomainBaselineKnown, false);
+  assert.equal('PHPSESSIDCookiesValueChangedCount' in f.logs.at(-1)!, false);
+  stopRefreshObservation(f.browser, 'shutdown');
 });
