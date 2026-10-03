@@ -6,7 +6,8 @@ import { ManualVerificationButton } from "@/components/report-writing/ManualVeri
 import { RetryPraktikaButton } from "@/components/report-writing/RetryPraktikaButton";
 import { ResumeMedirefButton } from "@/components/report-writing/ResumeMedirefButton";
 import { ResumeWorkflowButton } from "@/components/report-writing/ResumeWorkflowButton";
-import { typistMedirefPresentation, typistApprovedPresentation } from "@/lib/report-writing/typist-mediref-presentation";
+import { typistCardPresentation } from "@/lib/report-writing/typist-card-presentation";
+import { typistMedirefPresentation } from "@/lib/report-writing/typist-mediref-presentation";
 import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
 import { partitionApprovedForVerification } from "@/lib/report-writing/typist-approved-partition";
 
@@ -5067,27 +5068,29 @@ export default function TypistPage() {
                         {formatReportType(draft.report_type)}
                       </div>
 
-                      <div className="mt-1 text-xs text-slate-400">
-                        {draft.status}
-                      </div>
-
-                      {listTab === "verification" ? <div className="mt-2 text-xs font-semibold text-amber-800">Requires Verification</div> : null}
-                      {typistApprovedPresentation(draft).label ? (
-                        <div className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                          typistApprovedPresentation(draft).tone === "neutral" ? "bg-slate-100 text-slate-700"
-                            : typistApprovedPresentation(draft).tone === "danger" ? "bg-red-100 text-red-700"
-                            : "bg-amber-100 text-amber-800"}`}>
-                          {typistApprovedPresentation(draft).label}
+                      {typistCardPresentation(draft).statusLabel ? (
+                        <div className="mt-1 text-xs text-slate-500">
+                          {typistCardPresentation(draft).statusLabel}
                         </div>
                       ) : null}
-                      {typistApprovedPresentation(draft).message && (
-                        <div className="mt-1 text-xs text-slate-500">{typistApprovedPresentation(draft).message}</div>
+
+                      {listTab === "verification" ? <div className="mt-2 text-xs font-semibold text-amber-800">Requires Verification</div> : null}
+                      {typistCardPresentation(draft).label ? (
+                        <div className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                          typistCardPresentation(draft).tone === "neutral" ? "bg-slate-100 text-slate-700"
+                            : typistCardPresentation(draft).tone === "danger" ? "bg-red-100 text-red-700"
+                            : "bg-amber-100 text-amber-800"}`}>
+                          {typistCardPresentation(draft).label}
+                        </div>
+                      ) : null}
+                      {typistCardPresentation(draft).message && (
+                        <div className="mt-1 text-xs text-slate-500">{typistCardPresentation(draft).message}</div>
                       )}
-                      {draft.workflow_reconciliation_warning && (
-                        <div className="text-xs text-amber-700">{draft.workflow_reconciliation_warning}</div>
+                      {typistCardPresentation(draft).reconciliationWarning && (
+                        <div className="text-xs text-amber-700">{typistCardPresentation(draft).reconciliationWarning}</div>
                       )}
 
-                      {typistMedirefPresentation(draft).showCardLabel && typistApprovedPresentation(draft).kind !== "historical_mediref" ? (
+                      {typistMedirefPresentation(draft).showCardLabel && typistCardPresentation(draft).kind !== "historical_mediref" ? (
                         <div className={`mt-1 text-xs font-semibold ${typistMedirefPresentation(draft).completed ? "text-emerald-600" : "text-amber-700"}`}>
                           {typistMedirefPresentation(draft).label}
                         </div>
