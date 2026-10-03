@@ -1305,6 +1305,9 @@ export default function TypistPage() {
   // provider when an older request returns late.
   const providerDataRequestRef = useRef(0);
   const selectedProviderIdRef = useRef("");
+  const queueListRequestSequenceRef = useRef(0);
+  const queueWorkspaceRef = useRef({ listTab, activeQueueItemId });
+  queueWorkspaceRef.current = { listTab, activeQueueItemId };
   const draftListRequestSequenceRef = useRef(0);
   const draftListMountedRef = useRef(false);
 
@@ -2934,6 +2937,11 @@ export default function TypistPage() {
     requestToken?: number,
   ) {
     const activeRequestToken = requestToken ?? providerDataRequestRef.current;
+    const sequence = ++queueListRequestSequenceRef.current;
+    const selectionToken = queueSelectionTokenRef.current;
+    const isCurrent = () => draftListMountedRef.current &&
+      sequence === queueListRequestSequenceRef.current &&
+      isCurrentProviderDataRequest(providerId, activeRequestToken);
 
     const params = new URLSearchParams();
     params.set("providerId", providerId);
@@ -2945,12 +2953,19 @@ export default function TypistPage() {
 
     const data = await response.json();
 
-    if (!isCurrentProviderDataRequest(providerId, activeRequestToken)) {
-      return;
-    }
+    if (!isCurrent()) return;
 
-    if (data.success) {
+    if (response.ok && data.success && Array.isArray(data.queue)) {
       setQueue(data.queue);
+      // Only an accepted authoritative Queue response can retire this selection.
+      // Never use acknowledgement state or the local visibleQueue filter here.
+      const workspace = queueWorkspaceRef.current;
+      if (status === "active" && workspace.listTab === "queue" &&
+          workspace.activeQueueItemId && selectionToken === queueSelectionTokenRef.current &&
+          !data.queue.some((item: QueueItem) => item.id === workspace.activeQueueItemId &&
+            ["queued", "started"].includes(item.status))) {
+        clearForm();
+      }
 
       const hydrationResult = await hydrateQueueInBackground(
         providerId,
@@ -4259,7 +4274,6 @@ export default function TypistPage() {
           ? mergeDraftWorkflow(savedDraft, { ...current, status: savedDraft.status,
               provider_approved_at: savedDraft.provider_approved_at })
           : savedDraft);
-        setListTab("completed");
       }
 
       /*
@@ -4283,14 +4297,16 @@ export default function TypistPage() {
         await loadQueue(selectedProviderId, queueStatusTab);
       }
 
+      // Refresh cards/counts even when the Queue refresh cleared the workspace.
+      if (status === "approved") await loadDrafts(selectedProviderId);
       if (!isCurrentSelection()) return;
       setSaveStatus("saved");
       setLastSavedAt(new Date().toISOString());
       lastAutosavedTextRef.current = finalLetterTextForSave;
       setImageDraftId(savedDraftId);
-      setActiveQueueItemId(null);
+      if (status !== "approved") setActiveQueueItemId(null);
 
-      await loadDrafts(selectedProviderId);
+      if (status !== "approved") await loadDrafts(selectedProviderId);
 
       if (!isCurrentSelection()) return;
       if (savedDraft && !approvalFinished) {
@@ -4298,7 +4314,7 @@ export default function TypistPage() {
       }
 
       if (status === "approved") {
-        // Tab was chosen at acknowledgement; preserve newer user tab changes.
+        // Preserve the user's current tab, including changes during approval.
         alert("Letter approved.");
       } else if (status === "awaiting_provider_approval") {
         setListTab("awaiting");

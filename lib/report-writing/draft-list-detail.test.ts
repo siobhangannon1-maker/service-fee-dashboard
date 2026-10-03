@@ -148,6 +148,8 @@ function queueFixture() {
  const handler=page.body!.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='loadQueue')!;
  let provider='a',hydrations=0;let reply!:(r:Response)=>void;let queue:unknown[]=[];const timers:number[]=[];
  const globals={providerDataRequestRef:{current:1},queueStatusTab:'active',URLSearchParams,
+ queueListRequestSequenceRef:{current:0},queueSelectionTokenRef:{current:0},draftListMountedRef:{current:true},
+ queueWorkspaceRef:{current:{listTab:'queue',activeQueueItemId:null}},clearForm:()=>assert.fail('No Queue selection to clear'),
  fetch:()=>new Promise<Response>(r=>{reply=r;}),setQueue:(q:unknown[])=>{queue=q;},
  isCurrentProviderDataRequest:(id:string)=>id===provider,
  hydrateQueueInBackground:async()=>{hydrations++;return {enqueued:1};},window:{setTimeout:(_fn:unknown,ms:number)=>timers.push(ms)}};
