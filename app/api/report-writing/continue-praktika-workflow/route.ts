@@ -1,3 +1,5 @@
+import { hasMedirefAcknowledgement } from '@/lib/mediref/manual-acknowledgement';
+import { safePreInsertionFailure } from '@/lib/mediref/pre-insertion-failure';
 import { manualVerification } from '@/lib/report-writing/manual-verification';
 import { isConfirmedPraktikaUpload } from "@/lib/report-writing/praktika-upload-result";
 import { NextResponse } from 'next/server';
@@ -38,10 +40,12 @@ export async function POST(req: Request) {
     .eq('response->>dispatched', 'false').select('id').maybeSingle();
   if (dispatchError || !dispatched) return NextResponse.json({ success: true, pending: true });
   const draftId = intent.request.reportDraftId;
+  const medirefAcknowledged = hasMedirefAcknowledgement(intent.response);
+  let medirefPreparationFailure: ReturnType<typeof safePreInsertionFailure> = null;
   async function finish(status: string, nextStage = stage, message?: string, issue?: string) {
     if (status === 'failed' && !message) message = 'Workflow needs reconciliation. The approved letter and intent are retained.';
     const { data: finished, error: finishError } = await db.from('praktika_helper_jobs').update({
-      status, response: { ...(intent.response?.manualVerification ? { manualVerification: intent.response.manualVerification } : {}), stage: nextStage, ...(retryUploadId ? { retryUploadId, retryExecutionUserId } : {}), ...(issue ? { issue } : {}) }, locked_by: null, locked_at: null,
+      status, response: { ...(medirefPreparationFailure ? { medirefPreparationFailure } : {}), ...(intent.response?.manualVerification ? { manualVerification: intent.response.manualVerification } : {}), stage: nextStage, ...(retryUploadId ? { retryUploadId, retryExecutionUserId } : {}), ...(issue ? { issue } : {}) }, locked_by: null, locked_at: null,
       ...(status === 'completed' ? { completed_at: new Date().toISOString() } : {}),
       ...(status === 'failed' ? { error_message: 'Workflow needs reconciliation.', failed_at: new Date().toISOString() } : {}),
       updated_at: new Date().toISOString(),
@@ -95,11 +99,11 @@ export async function POST(req: Request) {
     const options = intent.request.options;
     const findMediref = () => db.from('mediref_helper_jobs').select('id,status')
       .eq('job_type', 'send_mediref_letter').eq('payload->>draftId', draftId).limit(1);
-    let { data: medirefJobs, error: medirefError } = retryUploadId || draft.workflow_mediref_status === 'completed'
+    let { data: medirefJobs, error: medirefError } = medirefAcknowledged || retryUploadId || draft.workflow_mediref_status === 'completed'
       ? { data: [] as { id: string; status: string }[], error: null } : await findMediref();
     if (medirefError) throw new Error('MediRef lookup unavailable.');
     let perioWaiting = false;
-    if (!retryUploadId && !medirefJobs?.length && draft.workflow_mediref_status !== 'completed') {
+    if (!medirefAcknowledged && !retryUploadId && !medirefJobs?.length && draft.workflow_mediref_status !== 'completed') {
       const prepared = await withWorkflowExecution<Response>({ intentId, actor: options.actor }, () => mediref(new Request(req.url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...options, draftId }),
       })));
@@ -112,14 +116,17 @@ export async function POST(req: Request) {
           perioWaiting = true;
           await db.from('report_drafts').update({ workflow_status: 'running', workflow_error: null,
             workflow_mediref_status: 'waiting_for_periodontal', workflow_last_message: 'MediRef is waiting for the requested periodontal chart.' }).eq('id', draftId);
-        } else return await finish('failed', stage, 'MediRef preparation needs reconciliation. No replacement job was created.');
+        } else {
+          medirefPreparationFailure = safePreInsertionFailure(preparedResult);
+          return await finish('failed', stage, 'MediRef preparation needs reconciliation. No replacement job was created.');
+        }
       }
     }
     if (medirefJobs?.some(job => job.status === 'failed')) return await finish('failed', stage, 'MediRef needs reconciliation. No duplicate job was created.');
     // Re-read because MediRef can finish concurrently. Do not overwrite its step state.
     const { data: progress, error: progressError } = await db.from('report_drafts').select('workflow_mediref_status').eq('id', draftId).single();
     if (progressError) throw new Error('Workflow progress unavailable.');
-    const medirefComplete = progress?.workflow_mediref_status === 'completed';
+    const medirefComplete = medirefAcknowledged || progress?.workflow_mediref_status === 'completed';
     const praktikaStep = stage === 'icon' ? 'icon update' : 'upload';
     const waitingMessage = perioWaiting ? 'MediRef is waiting for the requested periodontal chart.'
       : medirefComplete ? `MediRef prepared. Praktika ${praktikaStep} is waiting for session verification and will continue automatically.`

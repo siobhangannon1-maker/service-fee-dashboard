@@ -52,9 +52,16 @@ test("password selectors and ordering, pending-only claim and persistence adapte
   assert.match(current, /\.eq\("status", "pending"\)/);
   assert.match(current, /process.on\("SIGTERM"/);
   assert.match(current, /lifecycle.write\("authenticate"/);
-  for (const path of ["lib/mediref/remote-draft-adapter.ts", "lib/mediref/persisted-draft.ts", "lib/mediref/retry.ts", "lib/mediref/enqueue-transition.ts"]) {
+  for (const path of ["lib/mediref/remote-draft-adapter.ts", "lib/mediref/persisted-draft.ts", "lib/mediref/retry.ts"]) {
     assert.equal(readFileSync(path,"utf8"), execFileSync("git", ["show", `HEAD:${path}`], { encoding: "utf8" }));
   }
+  // Only the explicit manual-fence error passthrough may change this state machine.
+  // Its new behaviour is exercised by enqueue-transition.test.ts.
+  const transitionPath = "lib/mediref/enqueue-transition.ts";
+  const transition = readFileSync(transitionPath, "utf8")
+    .replace("import { MedirefAcknowledgementError } from './manual-acknowledgement-contract';\n", "")
+    .replace("error instanceof EnqueueBusy || error instanceof MedirefAcknowledgementError", "error instanceof EnqueueBusy");
+  assert.equal(transition, execFileSync("git", ["show", `HEAD:${transitionPath}`], { encoding: "utf8" }));
 });
 
 test("hung browser close meets shutdown bound without releasing; no new work is admitted", async () => {

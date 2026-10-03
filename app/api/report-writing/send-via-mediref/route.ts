@@ -1,3 +1,4 @@
+import { assertMedirefNotAcknowledged, MedirefAcknowledgementError } from '@/lib/mediref/manual-acknowledgement';
 import { POST as generateLetterPdf } from "../generate-pdf/route";
 import { sensitiveApiAccess } from "@/lib/auth";
 import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
@@ -544,6 +545,8 @@ export async function POST(req: Request) {
       );
     }
 
+    await assertMedirefNotAcknowledged(supabase, draftId);
+
     const finalReferrerName =
       referrerName ||
       String(draft.referrer_name || "").trim();
@@ -574,6 +577,7 @@ export async function POST(req: Request) {
           .in("status", ["approved", "uploaded_to_praktika"])
           .or("emailed_to_referrer_resend_id.is.null,emailed_to_referrer_resend_id.not.like.mediref:preparing:%")
           .select("id").abortSignal(AbortSignal.timeout(10000)).maybeSingle();
+        if (error?.message === 'manually_acknowledged') throw new MedirefAcknowledgementError();
         if (error) throw new Error(enqueueFailure);
         return Boolean(data);
       },
@@ -860,6 +864,7 @@ export async function POST(req: Request) {
         "MediRef send has been queued. The Cloud helper will process it.",
     });
   } catch (error) {
+    if (error instanceof MedirefAcknowledgementError) return NextResponse.json({ success: false, code: error.code, error: error.message }, { status: 409 });
     const failure = diagnostics.failure();
     const insertionOutcome = insertionAttempted ? "unconfirmed" : "not_attempted";
     console.error("[MediRef enqueue] failed", { draftIdPresent, ...failure, insertionOutcome });

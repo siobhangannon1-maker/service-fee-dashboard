@@ -1,3 +1,4 @@
+import { assertMedirefNotAcknowledged, MedirefAcknowledgementError } from './manual-acknowledgement';
 import "server-only";
 
 import { createClient } from "@supabase/supabase-js";
@@ -42,6 +43,7 @@ export async function createMedirefHelperJob({
   request: MedirefHelperRequest;
   priority?: number;
 }) {
+  if (jobType === 'send_mediref_letter') await assertMedirefNotAcknowledged(supabaseAdmin, request.draftId);
   const { data, error } = await supabaseAdmin
     .from("mediref_helper_jobs")
     .insert({
@@ -61,6 +63,7 @@ export async function createMedirefHelperJob({
     .select("*")
     .single();
 
+  if (error?.message === 'manually_acknowledged') throw new MedirefAcknowledgementError();
   if (error || !data) {
     throw new Error(
       `Could not create MediRef helper job: ${error?.message || "No job returned."}`,

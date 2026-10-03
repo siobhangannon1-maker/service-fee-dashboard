@@ -166,7 +166,10 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
     praktikaRecovery: parent?.status === 'failed' && response.stage === 'upload' && upload?.status === 'failed' && !verifiedUpload
       && !competing && d.status === 'approved' && !d.uploaded_to_praktika,
     medirefRecovery: Boolean(parent && ['failed','waiting'].includes(parent.status) && med?.status === 'failed'
-      && d.workflow_mediref_status === 'failed' && !verifiedMed && e.mediref.every(j => j.status === 'failed')) };
+      && d.workflow_mediref_status === 'failed' && !verifiedMed && e.mediref.every(j => j.status === 'failed'))
+      || Boolean(parentValid && parent?.status === 'failed' && !e.hasOtherParent && !verifiedMed
+        && d.workflow_mediref_status === 'failed' && e.mediref.length === 0
+        && record(response.medirefPreparationFailure).contract === 'mediref-no-job-failure-v1') };
 }
 export function shouldAppearInApproved(draft: WorkflowDraft): boolean {
   return ['approved','uploaded_to_praktika'].includes(draft.status || '') && draft.workflow_resolved?.status !== 'completed'

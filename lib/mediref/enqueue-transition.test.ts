@@ -178,3 +178,9 @@ for (const mode of ["malformed", "unknown", "network"] as const) {
     await assert.rejects(requestMedirefEnqueue("fixture", {}, request), { message: enqueueFailure });
   });
 }
+
+test('a database fence rejection is preserved as controlled acknowledgement rather than generic preparation failure',async()=>{
+ const {MedirefAcknowledgementError}=await import('./manual-acknowledgement');const f=fixture();
+ f.actions.claim=async()=>{throw new MedirefAcknowledgementError();};await assert.rejects(enqueueMedirefTransition(f.actions),MedirefAcknowledgementError);
+ assert.deepEqual(f.events,[]);
+});

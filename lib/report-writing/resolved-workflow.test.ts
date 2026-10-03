@@ -195,3 +195,23 @@ for(const defect of ['modern_required','transport','generation','malformed','not
   if(defect==='attachment')f.d.periodontal_chart_attachment_name='unexpected-chart.pdf';
   assert.equal(appears(f),true);assert.notEqual(resolved(f).branches.periodontal,'skipped');
 });
+
+function noJobAcknowledgement(f:ReturnType<typeof fixture>) {
+ f.e.mediref=[];
+ f.parent.response={stage:'upload',manualVerification:{mediref:{integration:'mediref',action:'manually_verified_completed',actorUserId:'actor',verifiedAt:iso(),draftId:f.d.id,intentId:f.parent.id,verifiedSuccess:true,priorJobId:null,attempt:0,source:'manually_sent',recoveryClass:'no_prior_helper_job_v1',reason:'operator_confirmed_exact_approved_letter_sent',letterFingerprint:'a'.repeat(64),previewFingerprint:'b'.repeat(64),originalFailure:{category:'mediref_preparation_not_attempted'}}}};
+ f.d.workflow_mediref_status='completed';
+}
+test('investigated-target synthetic no-job acknowledgement stays Needs attention in Approved',()=>{
+ const f=fixture();f.parent.status='failed';f.upload.status='completed';f.upload.response={patient_communication:{iFileId:'42'}};
+ f.d.uploaded_to_praktika=false;f.d.workflow_praktika_upload_status='running';f.d.workflow_icon_update_status='pending';f.d.workflow_periodontal_chart_status='pending';f.parent.request={...f.parent.request,options:{attachPeriodontalChart:true}};
+ noJobAcknowledgement(f);const r=resolved(f);assert.equal(r.branches.praktika,'completed');assert.equal(r.branches.mediref,'completed');assert.equal(r.branches.icon,'unknown');assert.equal(r.branches.periodontal,'unknown');assert.equal(r.status,'needs_attention');assert.equal(appears(f),true);
+});
+test('no-job acknowledgement removes Approved card only with all branch and parent evidence',()=>{
+ const f=completed();f.d.workflow_praktika_upload_status='completed';f.d.uploaded_to_praktika=true;f.parent.completed_at=iso();noJobAcknowledgement(f);
+ assert.equal(resolved(f).status,'completed');assert.equal(appears(f),false);f.parent.status='failed';assert.equal(appears(f),true);
+});
+test('new no-job recovery visibility is advisory and does not change resolver completion',()=>{
+ const f=fixture();f.parent.status='failed';f.e.mediref=[];f.d.workflow_mediref_status='failed';
+ f.parent.response={stage:'upload',medirefPreparationFailure:{contract:'mediref-no-job-failure-v1'}};
+ assert.equal(resolved(f).medirefRecovery,true);assert.equal(appears(f),true);
+});

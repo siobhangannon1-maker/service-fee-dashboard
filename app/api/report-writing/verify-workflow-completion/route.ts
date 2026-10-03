@@ -1,3 +1,4 @@
+import { manualVerificationReason } from '@/lib/report-writing/manual-verification-reasons';
 import { NextResponse } from 'next/server';
 import { ApiAuthorizationError, requireActiveApiUser } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -11,18 +12,21 @@ async function handle(req: Request, confirm: boolean) {
   try {
     const input = confirm ? await req.json() : Object.fromEntries(new URL(req.url).searchParams);
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const noJobConfirmation = input.integration === 'mediref' && input.recoveryClass === 'no_prior_helper_job_v1'
+      && input.priorJobId === null && /^[0-9a-f]{64}$/.test(input.currentStateToken || '');
     if (!uuid.test(input.draftId || '') || !['praktika','mediref'].includes(input.integration)
-      || (confirm && (!uuid.test(input.priorJobId || '') || input.verifiedSuccess !== true)))
+      || (confirm && ((!uuid.test(input.priorJobId || '') && !noJobConfirmation) || input.verifiedSuccess !== true)))
       return NextResponse.json({ success: false, error: 'Explicit verification of the external operation is required.' }, { status: 400 });
     // Same RPC validates advisory eligibility and confirmation, under the draft lock.
     // Preview performs no updates; actor/provider authorization is revalidated in SQL.
     const { data, error } = await supabaseAdmin.rpc('verify_workflow_completion', {
       p_draft_id: input.draftId, p_integration: input.integration, p_prior_job_id: confirm ? input.priorJobId : null,
       p_actor_user_id: actorId, p_verified_success: confirm,
+      ...(input.integration === 'mediref' ? { p_expected_state: confirm ? input.currentStateToken || null : null } : {}),
     }).abortSignal(AbortSignal.timeout(5000));
     if (error) throw new Error();
     if (!data?.ok) return NextResponse.json({ success: false, eligible: false,
-      error: 'This operation cannot currently be marked completed. Refresh to check the workflow.' },
+      code: data?.code || 'not_eligible', error: manualVerificationReason(data?.code) },
       { status: data?.code === 'not_authorized' ? 403 : confirm ? 409 : 200 });
     return NextResponse.json({ ...data, success: true });
   } catch { return NextResponse.json({ success: false, error: 'Verification acknowledgement is unavailable. Refresh before confirming again; any saved verification will be retained.' }, { status: 503 }); }

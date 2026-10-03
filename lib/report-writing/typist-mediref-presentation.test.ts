@@ -144,3 +144,9 @@ test('connection block survives projection and refresh; old evidence is cleared'
   assert.equal(mergeDraftWorkflow(detail,toDraftListItem({...row,workflow_connection_block:'unknown'},null)).workflow_connection_block,'unknown');
   assert.equal(mergeDraftWorkflow(detail,toDraftListItem({id:'draft'},null)).workflow_connection_block,undefined);
 });
+
+test('manual sending has distinct label even with no automated emailed timestamp and unresolved branches',()=>{
+ const d=fixture();d.emailed_to_referrer_at=null;d.workflow_resolved!.branches.mediref='completed';
+ const input={...d,workflow_manual_verification:[{integration:'mediref' as const,action:'manually_verified_completed' as const,actorUserId:'actor',verifiedAt:stamp,draftId:'draft',intentId:'intent',verifiedSuccess:true as const,source:'manually_sent' as const,recoveryClass:'no_prior_helper_job_v1' as const,reason:'operator_confirmed_exact_approved_letter_sent' as const,priorJobId:null,attempt:0 as const,letterFingerprint:'a'.repeat(64),previewFingerprint:'b'.repeat(64),originalFailure:{}}]};
+ const display=typistMedirefPresentation(input);assert.equal(display.label,'Manually acknowledged as sent');assert.equal(display.showCardLabel,true);assert.equal(shouldAppearInApproved(input),true);
+});

@@ -1,3 +1,4 @@
+import { manualVerificationReason } from './manual-verification-reasons';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -106,7 +107,7 @@ function controlFixture(kind: 'retry' | 'praktika' | 'mediref') {
     return [state[slot], (value: any) => { state[slot] = typeof value === 'function' ? value(state[slot]) : value; }];
   };
   const component = runInNewContext(js + `\n${name}`, {
-    useState, useRef: (value: any) => useState({ current: value })[0],
+    manualVerificationReason, useState, useRef: (value: any) => useState({ current: value })[0],
     useEffect: (run: () => () => void, next: unknown[]) => {
       if (!deps || next.some((v, i) => v !== deps![i])) { cleanup?.(); deps = [...next]; cleanup = run(); }
     },
@@ -127,7 +128,7 @@ function controlFixture(kind: 'retry' | 'praktika' | 'mediref') {
     if (tree.type === 'button' && tree.props.children.join('') === label) return tree;
     return (tree.props?.children || []).flat(Infinity).map((n: any) => button(n, label)).find(Boolean);
   };
-  const openLabel = kind === 'retry' ? 'Retry Praktika' : `Mark ${kind === 'praktika' ? 'Praktika' : 'MediRef'} completed`;
+  const openLabel = kind === 'retry' ? 'Retry Praktika' : kind === 'mediref' ? 'Mark manually sent' : `Mark ${kind === 'praktika' ? 'Praktika' : 'MediRef'} completed`;
   const yesLabel = kind === 'retry' ? 'Yes — retry Praktika' : `Yes — mark ${kind === 'praktika' ? 'Praktika' : 'MediRef'} completed`;
   return { render, button, requests, openLabel, yesLabel, callbacks: () => callbacks,
     reply: (value: any, code = 200) => { result = value; status = code; },
@@ -186,3 +187,13 @@ for (const kind of ['retry', 'praktika', 'mediref'] as const) {
     assert.equal(f.button(f.render(), f.yesLabel), undefined); assert.equal(f.requests.length, 1); f.unmount();
   });
 }
+
+test('no-job confirmation carries current-state token and double-click acknowledges once',async()=>{
+ const f=controlFixture('mediref');f.reply({eligible:true,recoveryClass:'no_prior_helper_job_v1',priorJobId:null,currentStateToken:'a'.repeat(64)});
+ f.render();await f.button(f.render(),f.openLabel).props.onClick();
+ const tree=f.render();assert.match(JSON.stringify(tree),/Confirm that this exact approved letter has already been sent through MediRef\. This will record it as manually sent and will not send the letter again\./);
+ f.reply({success:true,verification:{source:'manually_sent'}});
+ const yes=f.button(tree,'Confirm manually sent');await Promise.all([yes.props.onClick(),yes.props.onClick()]);assert.equal(f.requests.length,2);
+ const body=JSON.parse(f.requests[1].options.body);assert.equal(body.currentStateToken,'a'.repeat(64));assert.equal(body.priorJobId,null);assert.equal(body.recoveryClass,'no_prior_helper_job_v1');assert.equal(f.callbacks(),1);
+ assert.match(JSON.stringify(f.render()),/Manually acknowledged as sent/);assert.ok(f.requests.every(r=>r.url.includes('verify-workflow-completion')));
+});

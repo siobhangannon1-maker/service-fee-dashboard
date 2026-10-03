@@ -1,3 +1,5 @@
+import { hasMedirefAcknowledgement } from '../mediref/manual-acknowledgement';
+import { safePreInsertionFailure } from '../mediref/pre-insertion-failure';
 import { manualVerification } from './manual-verification';
 import { projectWorkflowRecovery } from "./workflow-recovery";
 import assert from 'node:assert/strict';
@@ -48,7 +50,7 @@ function fixture(stage = 'upload') {
   } };
   let fresh = true, active = true;
   const handler = (name: string) => async () => { events.push(name); return Response.json({ success: true }); };
-  const mocks: Row = { manualVerification, db, validContinuationToken, validWorkflowAuthorization, continuationChildId, isConfirmedPraktikaUpload, Request, Date,
+  const mocks: Row = { manualVerification, hasMedirefAcknowledgement, safePreInsertionFailure, db, validContinuationToken, validWorkflowAuthorization, continuationChildId, isConfirmedPraktikaUpload, Request, Date,
     process: { env: { SUPABASE_SERVICE_ROLE_KEY: secret } }, NextResponse: { json: Response.json },
     workflowAccountState: async () => active ? "active" : "inactive", workflowAccountMessage: "Staff account status unavailable.", isUserPraktikaReady: async () => fresh,
     withWorkflowExecution: async (ctx: Row, run: () => Promise<unknown>) => { assert.equal(ctx.actor.actorUserId, intent.response?.retryExecutionUserId || actor); return run(); },
@@ -252,4 +254,23 @@ for (const integration of ['praktika','mediref'] as const) test('manual verifica
  assert.deepEqual(f.intent.response.manualVerification[integration],audit);
  assert.equal(f.events.includes('upload'),false);assert.equal(f.events.includes('mediref'),false);
  assert.equal(f.events.includes('icon'),true);
+});
+
+test('manual no-job marker fences continuation preparation even with stale raw MediRef flags', async()=>{
+  const f=fixture();f.rows.mediref_helper_jobs=[];
+  const entry={source:'manually_sent',recoveryClass:'no_prior_helper_job_v1'};
+  f.intent.response.manualVerification={mediref:entry};f.draft.workflow_mediref_status='failed';f.setFresh(false);
+  await f.call();assert.ok(!f.events.includes('mediref'));assert.deepEqual(f.intent.response.manualVerification.mediref,entry);
+});
+test('trusted safe preparation failure persists structured pre-insertion evidence',async()=>{
+  const f=fixture();f.rows.mediref_helper_jobs=[];
+  f.mocks.mediref=async()=>Response.json({success:false,stage:'pdf_generation',code:'MEDIREF_PDF_GENERATION_FAILED',insertionOutcome:'not_attempted',deadlineExceeded:false});
+  await f.call();assert.equal(f.intent.status,'failed');assert.deepEqual(f.intent.response.medirefPreparationFailure,safePreInsertionFailure({stage:'pdf_generation',code:'MEDIREF_PDF_GENERATION_FAILED',insertionOutcome:'not_attempted',deadlineExceeded:false}));
+});
+for(const result of [
+ {stage:'pdf_generation',code:'MEDIREF_PDF_GENERATION_FAILED',insertionOutcome:'not_attempted',deadlineExceeded:true},
+ {stage:'helper_insertion',code:'MEDIREF_HELPER_INSERTION_FAILED',insertionOutcome:'unconfirmed',deadlineExceeded:false},
+ {stage:'preparation_claim',code:'MEDIREF_PREPARATION_CLAIM_FAILED',insertionOutcome:'not_attempted',deadlineExceeded:false},
+])test(`uncertain/busy ${result.stage} never persists safe proof`,async()=>{
+ const f=fixture();f.rows.mediref_helper_jobs=[];f.mocks.mediref=async()=>Response.json(result);await f.call();assert.equal(f.intent.status,'failed');assert.equal(f.intent.response.medirefPreparationFailure,undefined);
 });

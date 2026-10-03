@@ -1,3 +1,4 @@
+import { assertMedirefNotAcknowledged, MedirefAcknowledgementError } from '@/lib/mediref/manual-acknowledgement';
 import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
@@ -12,6 +13,7 @@ const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPAB
 const bucket = process.env.MEDIREF_HELPER_UPLOAD_BUCKET || "report-assets";
 const store: RetryStore = {
   async draft(id) {
+    await assertMedirefNotAcknowledged(db, id);
     const { data, error } = await db.from("report_drafts").select("id,status,deleted_at,updated_at,patient_name,patient_dob,workflow_status,workflow_mediref_status,emailed_to_referrer_at,periodontal_chart_attachment_name,periodontal_chart_attachment_error,periodontal_chart_attached_at,workflow_periodontal_chart_status").eq("id", id).maybeSingle();
     if (error) throw error;
     return data;
@@ -37,6 +39,7 @@ const store: RetryStore = {
       // An uncertain Complete Workflow insert must not be retried using an older failed job.
       .or("emailed_to_referrer_resend_id.is.null,emailed_to_referrer_resend_id.not.like.mediref:preparing:%")
       .is("emailed_to_referrer_at", null).select("id");
+    if (error?.message === 'manually_acknowledged') throw new MedirefAcknowledgementError();
     if (error) throw error;
     return data?.length === 1;
   },
@@ -70,6 +73,7 @@ async function handle(req: Request, enqueue: boolean) {
     await prepareRetry(store, id, bucket);
     return NextResponse.json({ ok: true, eligible: true, warning: retryWarning });
   } catch (error) {
+    if (error instanceof MedirefAcknowledgementError) return NextResponse.json({ ok: false, eligible: false, code: error.code, error: error.message }, { status: 409 });
     return NextResponse.json({ ok: false, eligible: false, error: error instanceof RetryError ? error.message : "Unable to check or queue MediRef retry. No further retry should be attempted until the queue is checked." },
       { status: error instanceof RetryError ? error.status : 500 });
   }

@@ -1,3 +1,4 @@
+import { MedirefAcknowledgementError } from './manual-acknowledgement';
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -335,6 +336,7 @@ test("worker keeps normal and Retry recoverable when remote verification rejects
  for(const retryMediref of [false,true]) {
   const events:string[]=[];
   const run = runInNewContext(`${compiled}\nprocessOnePendingMedirefJob`,{
+   pendingMedirefExecutionAllowed:async()=>true, MedirefAcknowledgementError, assertMedirefNotAcknowledged:async()=>{}, supabase:{},
    console:{log(){},error(){}}, nowIso:()=>"fixture", isBrowserUiLoggedIn:async()=>true,validateSessionCookie:async()=>true,
    claimNextPendingMedirefJob:async()=>({id:"fixture",job_type:"send_mediref_letter",payload:{retryMediref}}),
    downloadStagedAttachments:async()=>({tempDir:"fixture-temp",files:[{localPath:"fixture.pdf"}]}),

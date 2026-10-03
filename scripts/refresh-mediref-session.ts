@@ -1,3 +1,4 @@
+import { assertMedirefNotAcknowledged, MedirefAcknowledgementError } from '../lib/mediref/manual-acknowledgement';
 import { claimMedirefGeneration, writeMedirefGeneration, createMedirefLifecycle } from "../lib/mediref/helper-generation";
 import { prepareRemoteDraftWithBrowser } from "../lib/mediref/remote-draft-adapter";
 import path from "node:path";
@@ -756,6 +757,10 @@ async function claimNextPendingMedirefJob() {
 
   const candidate = candidates?.[0] as MedirefHelperJob | undefined;
   if (!candidate) return null;
+  if (candidate.job_type === 'send_mediref_letter') {
+    try { await assertMedirefNotAcknowledged(supabase, String(candidate.payload?.draftId || '')); }
+    catch { return null; } // Fail closed before the DB claim; the trigger is the race boundary.
+  }
 
   if (lifecycle.stopping) return null;
   const { data: claimed, error: claimError } = await supabase
@@ -2110,7 +2115,21 @@ async function sendMedirefLetterWithBrowser(
   };
 }
 
+// Check a queued operation before session validation can make a MediRef request.
+// Claim and final execution recheck; DB triggers remain the authoritative mutex.
+async function pendingMedirefExecutionAllowed() {
+  const { data, error } = await supabase.from("mediref_helper_jobs").select("job_type,payload")
+    .eq("status", "pending").lte("available_at", nowIso()).order("priority", { ascending: true })
+    .order("created_at", { ascending: true }).limit(1);
+  if (error) return false;
+  const candidate = data?.[0];
+  if (candidate?.job_type !== "send_mediref_letter") return true;
+  try { await assertMedirefNotAcknowledged(supabase, String(candidate.payload?.draftId || "")); return true; }
+  catch { return false; }
+}
+
 async function processOnePendingMedirefJob(page: Page, context: BrowserContext) {
+  if (!await pendingMedirefExecutionAllowed()) return false;
   if (
     !(await isBrowserUiLoggedIn(page)) ||
     !(await validateSessionCookie(context))
@@ -2131,9 +2150,12 @@ async function processOnePendingMedirefJob(page: Page, context: BrowserContext) 
       throw new Error(`Unsupported MediRef job type: ${job.job_type}`);
     }
 
+    await assertMedirefNotAcknowledged(supabase, String(job.payload?.draftId || ''));
     const downloaded = await downloadStagedAttachments(job);
     tempDir = downloaded.tempDir;
 
+    // A processing job prevents acknowledgement under the shared draft mutex.
+    await assertMedirefNotAcknowledged(supabase, String(job.payload?.draftId || ''));
     const result = await sendMedirefLetterWithBrowser(
       page,
       job,
@@ -2150,6 +2172,10 @@ async function processOnePendingMedirefJob(page: Page, context: BrowserContext) 
     console.log(`Completed MediRef job ${job.id}.`);
     return true;
   } catch (error) {
+    if (error instanceof MedirefAcknowledgementError) {
+      console.error("MediRef execution blocked: manually_acknowledged");
+      return true;
+    }
     const message =
       error instanceof Error ? error.message : "MediRef job failed.";
 

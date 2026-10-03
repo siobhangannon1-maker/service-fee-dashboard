@@ -1,3 +1,4 @@
+import { MedirefAcknowledgementError } from './manual-acknowledgement-contract';
 import type { MedirefHelperRequest } from "./helper-jobs";
 
 export const enqueueFailure = "MediRef preparation or queueing failed. Check the helper queue before trying again.";
@@ -90,7 +91,7 @@ export async function enqueueMedirefTransition<T extends { request: MedirefHelpe
   } catch (error) {
     controller.abort();
     if (claimed) await actions.failed(insertionAttempted);
-    throw error instanceof EnqueueBusy ? error : new Error(enqueueFailure);
+    throw error instanceof EnqueueBusy || error instanceof MedirefAcknowledgementError ? error : new Error(enqueueFailure);
   } finally { clearTimeout(timer); }
 }
 
