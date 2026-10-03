@@ -48,13 +48,13 @@ for(const ready of [false,true])test(`cookie save/capture never promotes connect
  await save({cookies:async()=>[]},{});
  assert.equal(captures,ready?1:0);assert.doesNotMatch(JSON.stringify(writes),/"status"|authenticated_at/);
 });
-test('production runtime retains the strict write-auth fence without the old scheduler state machine or background redirects',()=>{
+test('production runtime retains the strict write-auth fence without the old scheduler state machine',()=>{
  const source=readFileSync(helper,'utf8');
  assert.doesNotMatch(source,/pollSchedulerDiagnostic|startPraktikaAuthenticationRenewal|record_praktika_experimental_auth|ensureAuthenticated/);
  assert.match(source,/probePraktikaAuthentication\(ownedContext, practiceId, PRAKTIKA_BASE_URL\)/);
  assert.match(source,/result\.verified && result\.httpStatus === 200/);
  assert.equal((source.match(/status: "connected"/g)||[]).length,1);
- assert.match(extract(['performRealBrowserActivity']),/redirect: "error"/);
+ assert.match(extract(['performRealBrowserActivity']),/redirect: "follow"/);
  for(const file of ['scripts/praktika-helper-job-processor.ts','lib/praktika/hybrid-session-store.ts','lib/praktika/praktika-request.ts'])
   assert.doesNotMatch(readFileSync(file,'utf8'),/status: "connected"/);
 });

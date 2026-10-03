@@ -186,7 +186,7 @@ test('unavailable cookie sample is bounded and cannot multiply hung reads', asyn
   stopRefreshObservation(f.browser, 'shutdown');
 });
 
-for (const enabled of [false, true]) for (const failed of [false, true]) test(`existing keepalive remains one redirect:error GET; flag=${enabled} failed=${failed}`, async () => {
+for (const enabled of [false, true]) for (const failed of [false, true]) test(`existing keepalive remains one redirect:follow GET; flag=${enabled} failed=${failed}`, async () => {
   const source = readFileSync('scripts/refresh-praktika-session.ts', 'utf8');
   const ast = ts.createSourceFile('helper.ts', source, ts.ScriptTarget.Latest, true);
   const fn = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'performRealBrowserActivity')!;
@@ -197,7 +197,9 @@ for (const enabled of [false, true]) for (const failed of [false, true]) test(`e
     pageHasVisiblePasswordInput: async () => false, dismissBlockingDialogs: async () => {}, console: { warn() {} },
     observeKeepalive: (_: unknown, result: any) => { summaries++; assert.deepEqual(Object.keys(result).sort(), ['ok', 'status']); },
     fetch: async (url: string, options: any) => {
-      requests++; assert.equal(url, origin + '/v2/'); assert.equal(options.redirect, 'error');
+      requests++; assert.equal(url, origin + '/v2/'); assert.equal(options.redirect, 'follow');
+      assert.deepEqual(Object.keys(options).sort(), ['cache', 'credentials', 'method', 'redirect']);
+      assert.equal(options.cache, 'no-store');
       assert.equal(options.method, 'GET'); assert.equal(options.credentials, 'include');
       if (failed) throw Error('SECRET'); return { ok: true, status: 200, url };
     },

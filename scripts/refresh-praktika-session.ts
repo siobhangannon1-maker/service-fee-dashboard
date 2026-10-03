@@ -874,7 +874,7 @@ async function performRealBrowserActivity(page: Page) {
         method: "GET",
         credentials: "include",
         cache: "no-store",
-        redirect: "error",
+        redirect: "follow",
       });
 
       return {
