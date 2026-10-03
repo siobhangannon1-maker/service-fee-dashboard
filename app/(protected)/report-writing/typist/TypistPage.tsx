@@ -1,4 +1,5 @@
 "use client";
+import { readApprovalResponse } from "@/lib/report-writing/typist-approval-stream";
 import { startActiveWorkflowPolling, workflowPollingMode } from '@/lib/report-writing/active-workflow-poll';
 import { type DraftDetail as Draft, type DraftListItem, mergeDraftWorkflow } from '@/lib/report-writing/draft-contract';
 import { createDraftDetailLoader } from '@/lib/report-writing/draft-detail-loader';
@@ -1586,6 +1587,7 @@ export default function TypistPage() {
         current && current.id === selectedDraft.id
           ? {
               ...current,
+              updated_at: data.draft?.updated_at || current.updated_at,
               referrer_name: currentReferrerName || null,
               referrer_address: currentReferrerAddress || null,
               patient_name: patientName || null,
@@ -1672,6 +1674,7 @@ export default function TypistPage() {
         current && current.id === selectedDraft.id
           ? {
               ...current,
+              updated_at: data.draft?.updated_at || current.updated_at,
               patient_name: currentPatientName || null,
               patient_dob: currentPatientDob || null,
               referrer_name: referrerName || null,
@@ -3045,6 +3048,7 @@ export default function TypistPage() {
             typistQueries,
             learnFromEdits: false,
             learningSource: "typist_autosave",
+            expectedUpdatedAt: selectedDraft.updated_at,
           }),
         });
 
@@ -3066,6 +3070,7 @@ export default function TypistPage() {
             ? {
                 ...current,
                 edited_text: finalLetterTextForSave,
+                updated_at: data.draft.updated_at,
                 typist_queries: typistQueries || null,
               }
             : current,
@@ -4129,7 +4134,7 @@ export default function TypistPage() {
   ) {
     if (loading) return;
     let approvalFinished = false;
-    const selectionToken = queueSelectionTokenRef.current;
+    let selectionToken = queueSelectionTokenRef.current;
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (!selectedProviderId) {
       alert("Please select a provider first.");
@@ -4162,6 +4167,15 @@ export default function TypistPage() {
       generatedAiLetterText.trim() !== finalLetterTextForSave.trim();
 
     setLoading(true);
+    if (status === "approved") {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+      delete pendingPatientSavesRef.current.letter;
+      const draftId = selectedDraft?.id || imageDraftId;
+      if (draftId) await patientSaveChainsRef.current.get(draftId)?.catch(() => {});
+      if (!isCurrentSelection()) return;
+      selectionToken = ++queueSelectionTokenRef.current;
+      if (draftId) localDraftEditsRef.current.delete(draftId);
+    }
 
     try {
       const endpoint = imageDraftId
@@ -4171,6 +4185,7 @@ export default function TypistPage() {
       const requestBody = imageDraftId
         ? {
             draftId: imageDraftId,
+            queueId: activeQueueItemId,
             editedText: finalLetterTextForSave,
             status,
             referrerName,
@@ -4213,7 +4228,9 @@ export default function TypistPage() {
         body: JSON.stringify(requestBody),
       });
 
-      const data = await response.json().catch(() => ({}));
+      const data = await readApprovalResponse(response, status === "approved"
+        ? { providerId: selectedProviderId, draftId: imageDraftId || undefined }
+        : undefined);
 
       if (!response.ok || !data.success) {
         if (!isCurrentSelection()) return;
@@ -4232,12 +4249,16 @@ export default function TypistPage() {
       }
 
       if (status === "approved" && isCurrentSelection()) {
-        // Approval is complete even if durable learning enqueue returned partial success.
+        // Authoritative approval acknowledgement received; learning continues in the stream.
         // Keep queue/list refreshes, but release the UI before those reads finish.
+        draftListRequestSequenceRef.current += 1;
         approvalFinished = true;
         setLoading(false);
         setImageDraftId(savedDraftId);
-        if (savedDraft) setSelectedDraft(savedDraft);
+        if (savedDraft) setSelectedDraft((current) => current && current.id === savedDraft.id
+          ? mergeDraftWorkflow(savedDraft, { ...current, status: savedDraft.status,
+              provider_approved_at: savedDraft.provider_approved_at })
+          : savedDraft);
         setListTab("completed");
       }
 
@@ -4246,17 +4267,19 @@ export default function TypistPage() {
         disappears from the active queue, which previously made a saved typist
         draft look as though it had been lost.
       */
-      if (activeQueueItemId) {
+      if (activeQueueItemId && status !== "approved") {
         await fetch("/api/report-writing/letter-queue", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             queueId: activeQueueItemId,
-            status: status === "approved" ? "completed" : "started",
+            status: "started",
             reportDraftId: savedDraftId,
           }),
         });
 
+        await loadQueue(selectedProviderId, queueStatusTab);
+      } else if (activeQueueItemId) {
         await loadQueue(selectedProviderId, queueStatusTab);
       }
 
@@ -4270,12 +4293,12 @@ export default function TypistPage() {
       await loadDrafts(selectedProviderId);
 
       if (!isCurrentSelection()) return;
-      if (savedDraft) {
+      if (savedDraft && !approvalFinished) {
         selectDraft(savedDraft);
       }
 
       if (status === "approved") {
-        setListTab("completed");
+        // Tab was chosen at acknowledgement; preserve newer user tab changes.
         alert("Letter approved.");
       } else if (status === "awaiting_provider_approval") {
         setListTab("awaiting");
@@ -4283,6 +4306,10 @@ export default function TypistPage() {
       } else {
         setListTab("drafts");
         alert("Draft saved. You can reopen it from Saved Drafts.");
+      }
+    } catch (error) {
+      if (!approvalFinished && isCurrentSelection()) {
+        alert(error instanceof Error ? error.message : "Failed to save letter");
       }
     } finally {
       if (!approvalFinished && isCurrentSelection()) setLoading(false);
@@ -4292,13 +4319,22 @@ export default function TypistPage() {
   async function updateExistingDraft(status: string) {
     if (loading) return;
     let approvalFinished = false;
-    const selectionToken = queueSelectionTokenRef.current;
+    let selectionToken = queueSelectionTokenRef.current;
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (!selectedDraft) return;
 
     const finalLetterTextForSave = getLetterTextForSave();
 
     setLoading(true);
+    if (status === "approved") {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+      delete pendingPatientSavesRef.current.letter;
+      const draftId = selectedDraft?.id || imageDraftId;
+      if (draftId) await patientSaveChainsRef.current.get(draftId)?.catch(() => {});
+      if (!isCurrentSelection()) return;
+      selectionToken = ++queueSelectionTokenRef.current;
+      if (draftId) localDraftEditsRef.current.delete(draftId);
+    }
 
     try {
       const response = await fetch("/api/report-writing/update-draft", {
@@ -4336,7 +4372,9 @@ export default function TypistPage() {
         }),
       });
 
-      const data = await response.json();
+      const data = await readApprovalResponse(response, status === "approved"
+        ? { providerId: selectedProviderId, draftId: selectedDraft.id }
+        : undefined);
       if (!isCurrentSelection()) return;
 
       if (!data.success) {
@@ -4345,9 +4383,14 @@ export default function TypistPage() {
       }
 
       if (status === "approved") {
+        draftListRequestSequenceRef.current += 1;
         approvalFinished = true;
         setLoading(false);
-        setSelectedDraft(data.draft as Draft);
+        const savedDraft = data.draft as Draft;
+        setSelectedDraft((current) => current && current.id === savedDraft.id
+          ? mergeDraftWorkflow(savedDraft, { ...current, status: savedDraft.status,
+              provider_approved_at: savedDraft.provider_approved_at })
+          : savedDraft);
       }
       alert("Draft updated.");
       setSaveStatus("saved");
@@ -4372,6 +4415,10 @@ export default function TypistPage() {
           status,
           typist_queries: typistQueries || null,
         });
+      }
+    } catch (error) {
+      if (!approvalFinished && isCurrentSelection()) {
+        alert(error instanceof Error ? error.message : "Failed to save letter");
       }
     } finally {
       if (!approvalFinished && isCurrentSelection()) setLoading(false);

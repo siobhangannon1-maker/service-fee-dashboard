@@ -52,6 +52,8 @@ function fixture() {
   const timers = new Map<number,()=>void>(); let timerId=0;
   const requests: Array<{url:string;body:Values;reply:(data:Values)=>void}> = [];
   Object.assign(globals, refs, {
+    readApprovalResponse: (response: Response) => response.json(),
+    draftListRequestSequenceRef: { current: 0 },
     console:{log(){},warn(){},error(){}}, alert(){}, confirm:()=>true,
     setTimeout:(fn:()=>void)=>{timers.set(++timerId,fn);return timerId;}, clearTimeout:(id:number)=>timers.delete(id),
     fetch:(url:string,init?:RequestInit)=>{

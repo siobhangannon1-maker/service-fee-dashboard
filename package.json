@@ -13,8 +13,7 @@
     "watch:mediref-refresh": "tsx scripts/watch-mediref-refresh.ts",
     "refresh:mediref-session": "tsx scripts/refresh-mediref-session.ts",
     "cloud:praktika-worker": "WORKER_TYPE=praktika WORKER_ID=praktika-worker-1 tsx scripts/cloud-automation-worker.ts",
-    "cloud:mediref-worker": "WORKER_TYPE=mediref WORKER_ID=mediref-worker-1 tsx scripts/cloud-automation-worker.ts",
-    "worker:typist-edit-learning": "tsx scripts/process-typist-edit-learning.ts"
+    "cloud:mediref-worker": "WORKER_TYPE=mediref WORKER_ID=mediref-worker-1 tsx scripts/cloud-automation-worker.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.93.0",

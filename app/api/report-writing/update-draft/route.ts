@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js"
 import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
 import { noLearningRequested, processApprovedEdit } from "@/lib/report-writing/edit-learning"
 
-import { enqueueTypistLearning, finishApprovalLearning, isTypistLearningApproval } from "@/lib/report-writing/typist-learning-queue"
+import { approvalResponse, isTypistApproval } from "@/lib/report-writing/typist-approval-stream"
 
 export const runtime = "nodejs"
 
@@ -29,6 +29,7 @@ async function updateLinkedQueueRows(params: {
   sourceText?: string | null
   praktikaPatientId?: string | null
   status?: string | null
+  approvalQueueId?: string | null
 }) {
   const queueUpdate: Record<string, unknown> = {
     updated_at: new Date().toISOString(),
@@ -48,15 +49,46 @@ async function updateLinkedQueueRows(params: {
     queueUpdate.status = "started"
   }
 
-  if (Object.keys(queueUpdate).length <= 1) return
+  if (Object.keys(queueUpdate).length <= 1 && !(params.approvalQueueId || "").trim()) return
 
-  const { error } = await supabase
-    .from("report_letter_queue")
-    .update(queueUpdate)
-    .eq("report_draft_id", params.draftId)
+  if (Object.keys(queueUpdate).length > 1) {
+    const { error } = await supabase
+      .from("report_letter_queue")
+      .update(queueUpdate)
+      .eq("report_draft_id", params.draftId)
 
-  if (error) {
-    console.warn("Draft updated, but linked queue row could not be updated:", error)
+    if (error) {
+      console.warn("Draft updated, but linked queue row could not be updated:", error)
+    }
+  }
+
+  // This is the image-workspace browser's former completion attempt, moved
+  // before acknowledgement. Existing-draft approvals retain their queue status.
+  const queueId = (params.approvalQueueId || "").trim()
+  if (!queueId) return
+  try {
+    const { data: queue, error } = await supabase.from("report_letter_queue")
+      .update({ status: "completed", report_draft_id: params.draftId,
+        updated_at: new Date().toISOString() })
+      .eq("id", queueId)
+      .select("id, provider_id, patient_first_name, patient_last_name").single()
+    if (error || !queue) {
+      console.warn("Approved image workspace, but linked queue completion could not be saved.")
+      return
+    }
+    const queueActor = await getAuditActor()
+    await createReportAuditEvent({
+      reportDraftId: params.draftId,
+      providerId: queue.provider_id,
+      patientName: [queue.patient_first_name, queue.patient_last_name].filter(Boolean).join(" "),
+      action: "Completed queue item",
+      details: { queueId: queue.id, queueStatus: "completed", reportDraftId: params.draftId,
+        actorInitials: queueActor.actorInitials, actorFullName: queueActor.actorFullName,
+        referrerCached: false, clinicalNotesCached: false },
+    })
+  } catch {
+    // Preserve best-effort queue/audit handling; approval is already persisted.
+    console.warn("Approved image workspace linked queue completion/audit attempt failed.")
   }
 }
 
@@ -181,18 +213,32 @@ export async function POST(req: Request) {
       }
 
       if (status === "approved") {
+        // Ensure approval changes the fence even when the clock shares the
+        // previous save's millisecond (including reapproval of an approved row).
+        updatePayload.updated_at = new Date(Math.max(
+          Date.now(), (Date.parse(existingDraft.updated_at || "") || 0) + 1
+        )).toISOString()
         updatePayload.provider_approved_at = existingDraft.provider_approved_at || now
         updatePayload.approved_by_initials = actor.actorInitials
         updatePayload.approved_by_name = actor.actorFullName
       }
     }
 
-    const { data, error } = await supabase
-      .from("report_drafts")
-      .update(updatePayload)
-      .eq("id", draftId)
-      .select()
-      .single()
+    const autosave = learningSource === "typist_autosave"
+    // Fence in the database statement, not just the earlier read: approval may
+    // commit between the read and this write. Never replay an old editor revision.
+    let write = supabase.from("report_drafts").update(updatePayload).eq("id", draftId)
+    if (autosave) {
+      if (typeof body.expectedUpdatedAt !== "string" ||
+          body.expectedUpdatedAt !== existingDraft.updated_at || status !== existingDraft.status) {
+        return NextResponse.json({ success: false, error: "Draft changed. Reload before saving." }, { status: 409 })
+      }
+      write = write.eq("updated_at", body.expectedUpdatedAt).eq("status", status)
+    }
+    const { data, error } = await write.select().maybeSingle()
+    if (!error && !data) {
+      return NextResponse.json({ success: false, error: "Draft changed. Reload before saving." }, { status: 409 })
+    }
 
     if (error) {
       console.error("Update draft failed:", error)
@@ -217,6 +263,8 @@ export async function POST(req: Request) {
         ? cleanOrNull(praktikaPatientId)
         : undefined,
       status: typeof status === "string" ? status : null,
+      approvalQueueId: status === "approved" &&
+        clean(learningSource) === "typist_image_workspace_final_save" ? cleanOrNull(body.queueId) : null,
     })
 
     const aiText =
@@ -228,8 +276,11 @@ export async function POST(req: Request) {
       clean(finalApprovedText) || clean(editedText) || clean(data.edited_text)
 
     const source = clean(learningSource) || "approval_edit"
-    const outcome = await finishApprovalLearning({
-      typist: isTypistLearningApproval(status, learnFromEdits, source),
+    return await approvalResponse({
+      draft: data,
+      initialLearning: { ...noLearningRequested(), requested: Boolean(learnFromEdits),
+        analysisStatus: learnFromEdits ? "pending" : "not_requested" },
+      typist: isTypistApproval(status, source),
       synchronous: async () => {
         let learning = noLearningRequested()
         if (status === "approved" && Boolean(learnFromEdits)) {
@@ -284,20 +335,7 @@ export async function POST(req: Request) {
           },
         })
       },
-      enqueue: () => enqueueTypistLearning(supabase, {
-        providerId: data.provider_id,
-        draftId: data.id,
-        reportType: data.report_type || "consultation_report",
-        originalText: aiText,
-        finalText: clean(data.edited_text),
-        source,
-        actor,
-        approvedByProvider:
-          actor.actorRole === "provider" || actor.actorRole === "admin",
-      }),
     })
-
-    return NextResponse.json({ success: true, draft: data, ...outcome })
   } catch (error) {
     console.error("Update draft server error:", error)
     return NextResponse.json(

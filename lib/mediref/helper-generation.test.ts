@@ -55,12 +55,10 @@ test("password selectors and ordering, pending-only claim and persistence adapte
   for (const path of ["lib/mediref/remote-draft-adapter.ts", "lib/mediref/persisted-draft.ts", "lib/mediref/retry.ts"]) {
     assert.equal(readFileSync(path,"utf8"), execFileSync("git", ["show", `HEAD:${path}`], { encoding: "utf8" }));
   }
-  // Only the explicit manual-fence error passthrough may change this state machine.
-  // Its new behaviour is exercised by enqueue-transition.test.ts.
+  // Committed manual fencing is baseline behaviour; preserve the complete state machine.
+  // Its fence behaviour is exercised by enqueue-transition.test.ts.
   const transitionPath = "lib/mediref/enqueue-transition.ts";
-  const transition = readFileSync(transitionPath, "utf8")
-    .replace("import { MedirefAcknowledgementError } from './manual-acknowledgement-contract';\n", "")
-    .replace("error instanceof EnqueueBusy || error instanceof MedirefAcknowledgementError", "error instanceof EnqueueBusy");
+  const transition = readFileSync(transitionPath, "utf8");
   assert.equal(transition, execFileSync("git", ["show", `HEAD:${transitionPath}`], { encoding: "utf8" }));
 });
 

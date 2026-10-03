@@ -1,8 +1,10 @@
+import { approvedDraftFixture } from './typist-approval-fixtures.test-helper'
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { readFileSync } from "node:fs"
 import { runInNewContext } from "node:vm"
 import ts from "typescript"
+import { approvalResponse, readApprovalResponse } from "./typist-approval-stream"
 import { toDraftListItem, type DraftListItem } from "./draft-contract"
 import { typistCardPresentation } from "./typist-card-presentation"
 import { startActiveWorkflowPolling } from "./active-workflow-poll"
@@ -25,11 +27,15 @@ const settle = () => new Promise(resolve => setImmediate(resolve))
 for (const learningStatus of ["pending", "processing"]) {
   test(`fast approval releases loading while learning is ${learningStatus}; authoritative UI reconciles independently`, async t => {
     t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 })
+    let releaseLearning!: () => void
+    const learningGate = new Promise<void>(resolve => { releaseLearning = resolve })
+    let learningFinished = false
+    t.after(() => releaseLearning())
     let releaseList!: () => void
     const listGate = new Promise<void>(resolve => { releaseList = resolve })
     let listStarted!: () => void
     const refreshing = new Promise<void>(resolve => { listStarted = resolve })
-    const saved = { id: "synthetic-draft", provider_id: "provider", status: "approved",
+    const saved = { ...approvedDraftFixture(), id: "synthetic-draft", provider_id: "provider", status: "approved",
       patient_name: "Synthetic fixture", report_type: "consultation_report",
       edited_text: "Synthetic final", ai_generated_text: "Synthetic original",
       workflow_status: "not_started", workflow_resolved: projection("not_started") }
@@ -40,6 +46,8 @@ for (const learningStatus of ["pending", "processing"]) {
     let listCalls = 0
     const queueState = { status: learningStatus }
     const box: Record<string, unknown> = {
+      readApprovalResponse, autosaveTimerRef: { current: null }, pendingPatientSavesRef: { current: {} },
+      patientSaveChainsRef: { current: new Map() }, localDraftEditsRef: { current: new Map() }, imageDraftId: null,
       loading: false, selectedDraft: selected, selectedProviderId: "provider",
       generatedAiLetterText: "Synthetic original", getLetterTextForSave: () => "Synthetic final",
       referrerName: "", referrerAddress: "", patientName: "Synthetic fixture", patientDob: null,
@@ -57,8 +65,15 @@ for (const learningStatus of ["pending", "processing"]) {
       setDraftListError: (error: unknown) => assert.equal(error, null),
       setSaveStatus() {}, setLastSavedAt() {}, alert() {},
       fetch: async (url: string) => {
-        if (url === "/api/report-writing/update-draft") return Response.json({
-          success: true, draft: saved, learningQueued: true, learning: { analysisStatus: queueState.status },
+        if (url === "/api/report-writing/update-draft") return approvalResponse({
+          typist: true, draft: saved,
+          initialLearning: { requested: false, exampleSaved: false, exampleId: null, duplicate: false,
+            analysisStatus: "ignored", behavioursCreated: 0, behavioursReinforced: 0, error: null },
+          audit: async () => {}, synchronous: async () => {
+            await learningGate; learningFinished = true
+            return { requested: true, exampleSaved: true, exampleId: "synthetic", duplicate: false,
+              analysisStatus: "processed", behavioursCreated: 0, behavioursReinforced: 1, error: null }
+          },
         })
         assert.ok(url.startsWith("/api/report-writing/get-drafts?"))
         listCalls++
@@ -96,6 +111,16 @@ for (const learningStatus of ["pending", "processing"]) {
     assert.equal(shouldAppearInApproved(rows[0]), false)
     assert.equal((selected.workflow_resolved as ResolvedWorkflow).status, "completed")
     assert.equal(queueState.status, learningStatus)
+    assert.equal(learningFinished, false)
+    // Switching to B/internal tabs leaves A's reader running; its completion
+    // cannot reselect A or overwrite newer workflow reconciliation.
+    selected = { id: "B", status: "approved", workflow_status: "running" }
+    box.selectedDraft = selected
+    ;(box.queueSelectionTokenRef as { current: number }).current += 1
+    const before = JSON.stringify(selected)
+    releaseLearning(); await settle()
+    assert.equal(learningFinished, true)
+    assert.equal(JSON.stringify(selected), before)
     const count = listCalls
     t.mock.timers.tick(60000); await settle()
     assert.equal(listCalls, count)

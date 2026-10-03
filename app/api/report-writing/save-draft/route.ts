@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js"
 import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
 import { noLearningRequested, processApprovedEdit } from "@/lib/report-writing/edit-learning"
 
-import { enqueueTypistLearning, finishApprovalLearning, isTypistLearningApproval } from "@/lib/report-writing/typist-learning-queue"
+import { approvalResponse, isTypistApproval } from "@/lib/report-writing/typist-approval-stream"
 
 export const runtime = "nodejs"
 
@@ -163,8 +163,11 @@ export async function POST(req: Request) {
     })
 
     const source = clean(learningSource) || "direct_approval"
-    const outcome = await finishApprovalLearning({
-      typist: isTypistLearningApproval(finalStatus, learnFromEdits, source),
+    return await approvalResponse({
+      draft: data,
+      initialLearning: { ...noLearningRequested(), requested: Boolean(learnFromEdits),
+        analysisStatus: learnFromEdits ? "pending" : "not_requested" },
+      typist: isTypistApproval(finalStatus, source),
       synchronous: async () => {
         let learning = noLearningRequested()
         if (finalStatus === "approved" && Boolean(learnFromEdits)) {
@@ -211,20 +214,7 @@ export async function POST(req: Request) {
           },
         })
       },
-      enqueue: () => enqueueTypistLearning(supabase, {
-        providerId,
-        draftId: data.id,
-        reportType: finalReportType,
-        originalText: aiText,
-        finalText: clean(data.edited_text),
-        source,
-        actor,
-        approvedByProvider:
-          actor.actorRole === "provider" || actor.actorRole === "admin",
-      }),
     })
-
-    return NextResponse.json({ success: true, draft: data, ...outcome })
   } catch (error) {
     console.error(error)
     return NextResponse.json(
