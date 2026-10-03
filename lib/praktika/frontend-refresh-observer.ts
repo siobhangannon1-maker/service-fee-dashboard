@@ -17,6 +17,33 @@ export function frontendPath(value: string, origin: string): string | undefined 
     if (url.pathname.startsWith('/php/json/')) return 'php_json';
   } catch { /* Unavailable. */ }
 }
+export type RedirectDestination =
+  | 'v2_root' | 'login' | 'v2_other' | 'php_json'
+  | 'php_security_refresh_token' | 'php_security_other' | 'php_other'
+  | 'same_origin_other' | 'cross_origin' | 'unparseable'
+  | 'unsupported_scheme' | 'not_observed';
+
+// Separate from request eligibility. Only fixed labels leave this function.
+export function classifyFrontendRedirectLocation(location: string | undefined, requestUrl: string): RedirectDestination {
+  if (location === undefined) return 'not_observed';
+  // URL parsing otherwise silently strips some controls. Reject them first.
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(location)) return 'unparseable';
+  try {
+    const destination = new URL(location, requestUrl);
+    if (destination.protocol !== 'http:' && destination.protocol !== 'https:') return 'unsupported_scheme';
+    if (destination.origin !== new URL(requestUrl).origin) return 'cross_origin';
+    const path = destination.pathname;
+    if (path === '/v2' || path === '/v2/') return 'v2_root';
+    if (path === '/v2/login') return 'login';
+    if (path.startsWith('/v2/')) return 'v2_other';
+    if (path.startsWith('/php/json/')) return 'php_json';
+    if (path === '/php/security/db_refreshToken.php') return 'php_security_refresh_token';
+    if (path.startsWith('/php/security/')) return 'php_security_other';
+    if (path.startsWith('/php/')) return 'php_other';
+    return 'same_origin_other';
+  } catch { return 'unparseable'; }
+}
+
 // Page events exclude APIRequestContext. Frame association additionally excludes
 // service workers and rejects ambiguous/missing attribution rather than guessing.
 export function frontendRequest(request: Request, page: Page, origin: string) {
@@ -127,7 +154,7 @@ export function installFrontendRefreshObserver(context: BrowserContext, options:
           const location = r.headers().location;
           record({ event: 'response', correlation: value.id, chain: value.chain, path: fields.path,
             method: fields.method, status, locationPresent: location !== undefined,
-            redirectDestination: location ? frontendPath(new URL(location, req.url()).href, origin) ?? 'outside_allowlist' : 'not_observed',
+            redirectDestination: classifyFrontendRedirectLocation(location, req.url()),
             setCookieCoverage: 'pending' });
           // headers() omits security headers. headerValue reads metadata of the
           // already received response over Playwright's protocol, never HTTP.

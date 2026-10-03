@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import type { BrowserContext, Request, Page } from 'playwright';
-import { installFrontendRefreshObserver, frontendRequest } from './frontend-refresh-observer';
+import { installFrontendRefreshObserver, frontendRequest, frontendPath, classifyFrontendRedirectLocation } from './frontend-refresh-observer';
 const origin = 'https://synthetic.invalid';
 const secret = 'Alice-Patient DOB-2001-02-03 alice@example.invalid SECRET-cookie Authorization';
 function fixture(enabled = true, captureMs = 30_000) {
@@ -57,7 +57,7 @@ test('POST 307 POST refresh onward redirect and independent subsequent success; 
   const requestLogs = f.logs.filter(e => e.event === 'request');
   assert.equal(requestLogs.length, 3); assert.equal(requestLogs[1].method, 'POST'); assert.equal(requestLogs[1].methodPreserved, true);
   assert.equal(requestLogs[1].redirectedFrom, requestLogs[0].correlation); assert.equal(requestLogs[2].chain, requestLogs[0].chain);
-  assert.equal(f.logs.find(e => e.event === 'response')?.redirectDestination, 'refresh_token');
+  assert.equal(f.logs.find(e => e.event === 'response')?.redirectDestination, 'php_security_refresh_token');
   assert.equal(f.logs.find(e => e.event === 'set_cookie')?.name, 'PHPSESSID');
   assert.equal(f.logs.find(e => Number(e.PHPSESSIDCookiesValueChangedCount) > 0)?.UATCookiesValueChangedCount, 1);
   assert.equal(f.logs.at(-1)?.subsequentPhpSuccess, 'observed');
@@ -114,4 +114,91 @@ test('concurrent pre-transition request success does not imply subsequent reques
   f.page.emit('response', f.response(first, 307, '/php/security/db_refreshToken.php'));
   f.page.emit('response', f.response(concurrent, 200)); await tick(); f.observer!.stop('shutdown');
   assert.equal(f.logs.at(-1)?.subsequentPhpSuccess, 'not_observed');
+});
+
+const destinations = [
+  ['/v2', 'v2_root'], ['/v2/', 'v2_root'], ['/v2/login', 'login'],
+  ['/v2/login/', 'v2_other'], ['/v2/patient-secret', 'v2_other'],
+  ['/php/json/patient-secret', 'php_json'],
+  ['/php/security/db_refreshToken.php', 'php_security_refresh_token'],
+  ['/php/security/other', 'php_security_other'], ['/php/other', 'php_other'],
+  ['/elsewhere', 'same_origin_other'], ['http://other.invalid/v2', 'cross_origin'],
+  ['https://other.invalid/v2', 'cross_origin'], ['http://[', 'unparseable'],
+  ['https://host.invalid:bad', 'unparseable'], ['javascript:secret', 'unsupported_scheme'],
+  ['data:text/plain,secret', 'unsupported_scheme'], ['file:///v2', 'unsupported_scheme'],
+  ['mailto:secret@example.invalid', 'unsupported_scheme'],
+  ['../../v2/login', 'login'], ['db_refreshToken.php', 'php_security_refresh_token'],
+  [origin + '/v2', 'v2_root'], ['//synthetic.invalid/v2/', 'v2_root'],
+  ['//other.invalid/php/json/x', 'cross_origin'],
+  ['/v20/x', 'same_origin_other'], ['/v2login', 'same_origin_other'],
+  ['/phpx/json/x', 'same_origin_other'], ['/php/jsonish/x', 'php_other'],
+  ['/php/json', 'php_other'], ['/php/securityish/x', 'php_other'],
+  ['/php/security', 'php_other'], ['/php/security/db_refreshToken.php.extra', 'php_security_other'],
+  ['/php', 'same_origin_other'], ['', 'php_security_refresh_token'],
+  [undefined, 'not_observed'],
+] as const;
+for (const [location, expected] of destinations) test(`fixed Location category case ${destinations.findIndex(c => c[0] === location)}`, () => {
+  assert.equal(classifyFrontendRedirectLocation(location, origin + '/php/security/db_refreshToken.php'), expected);
+});
+test('reject all ASCII and C1 control characters before URL normalization', () => {
+  for (const code of [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => i + 127)]) {
+    assert.equal(classifyFrontendRedirectLocation('/v2' + String.fromCharCode(code), origin), 'unparseable');
+  }
+});
+test('query, fragment and userinfo never influence fixed labels or appear in serialization', async () => {
+  const sensitive = ['Synthetic-Patient-Name', 'DOB-2001-02-03', 'patient@example.invalid',
+    'PHPSESSID=synthetic-session-secret', 'UAT=synthetic-uat-secret', 'Cookie=synthetic-cookie-secret',
+    'Authorization=Bearer-synthetic-token', 'token-like-string', 'sensitive-path-segment',
+    'query-value-secret', 'fragment-secret'];
+  const suffix = '?payload=' + encodeURIComponent(sensitive.join(' ')) + '#' + encodeURIComponent(sensitive.join(' '));
+  for (const [location, expected] of destinations) {
+    if (!location || expected === 'unparseable' || expected === 'unsupported_scheme') continue;
+    assert.equal(classifyFrontendRedirectLocation(location + suffix, origin + '/php/security/db_refreshToken.php'), expected);
+  }
+  const f = fixture(); const req = f.request('/php/security/db_refreshToken.php');
+  const location = 'https://synthetic-user:synthetic-password@synthetic.invalid/v2/' + encodeURIComponent(sensitive.join(' ')) + suffix;
+  assert.equal(classifyFrontendRedirectLocation(location, req.url()), 'v2_other');
+  f.page.emit('response', f.response(req, 307, location)); await tick(); f.observer!.stop('shutdown');
+  const serialized = JSON.stringify(f.logs.filter(e => e.event === 'response'));
+  assert.equal(f.logs.find(e => e.event === 'response')?.redirectDestination, 'v2_other');
+  for (const value of [...sensitive, location, suffix, 'synthetic-user', 'synthetic-password', 'synthetic.invalid', '/v2/', encodeURIComponent(sensitive.join(' '))]) {
+    assert.equal(serialized.includes(value), false, value);
+  }
+});
+test('malformed Location preserves sanitized response and subsequent metadata', async () => {
+  const f = fixture(), req = f.request('/php/security/db_refreshToken.php');
+  f.page.emit('response', f.response(req, 307, 'https://[patient-secret'));
+  await tick(); f.observer!.stop('shutdown');
+  assert.equal(f.logs.find(e => e.event === 'response')?.redirectDestination, 'unparseable');
+  assert.equal(f.logs.find(e => e.event === 'response')?.status, 307);
+  assert.ok(f.logs.some(e => e.event === 'response_cookie_metadata'));
+  assert.equal(JSON.stringify(f.logs).includes('patient-secret'), false);
+});
+test('classification never admits previously excluded requests or redirect children', async () => {
+  const f = fixture(), parent = f.request('/php/security/db_refreshToken.php');
+  f.page.emit('request', parent); f.page.emit('response', f.response(parent, 307, '/v2/login'));
+  const excluded = ['/v2', '/v2/', '/v2/login', '/v2/patient', '/php/security/other', '/php/other', '/elsewhere'];
+  for (const path of excluded) {
+    assert.equal(frontendPath(origin + path, origin), undefined);
+    const child = f.request(path, parent);
+    f.page.emit('request', child); f.page.emit('response', f.response(child, 200));
+  }
+  const crossOrigin = { ...f.request(), url: () => 'https://other.invalid/php/json/x' };
+  f.page.emit('request', crossOrigin); f.page.emit('response', { ...f.response(parent, 200), request: () => crossOrigin });
+  await tick(); f.observer!.stop('shutdown');
+  assert.equal(f.logs.filter(e => e.event === 'request').length, 1);
+  assert.equal(f.logs.filter(e => e.event === 'response').length, 1);
+  assert.equal(f.logs.at(-1)?.qualifyingRequests, 1);
+});
+test('Location classification retains four cookie samples and 100 response header reads', async () => {
+  const f = fixture(); let headerReads = 0;
+  for (let i = 0; i < 101; i++) {
+    const req = f.request('/php/security/db_refreshToken.php');
+    f.page.emit('response', { ...f.response(req, 307, '/v2/login'), headerValue: () => { headerReads++; return new Promise<string | null>(() => {}); } });
+    await tick();
+  }
+  assert.equal(headerReads, 100); assert.equal(f.reads(), 4);
+  assert.equal(f.logs.filter(e => e.event === 'response').length, 101);
+  assert.ok(f.logs.some(e => e.coverage === 'unavailable'));
+  f.observer!.stop('shutdown');
 });
