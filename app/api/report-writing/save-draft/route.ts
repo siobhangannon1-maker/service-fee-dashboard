@@ -4,6 +4,8 @@ import { createClient } from "@supabase/supabase-js"
 import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
 import { noLearningRequested, processApprovedEdit } from "@/lib/report-writing/edit-learning"
 
+import { enqueueTypistLearning, finishApprovalLearning, isTypistLearningApproval } from "@/lib/report-writing/typist-learning-queue"
+
 export const runtime = "nodejs"
 
 const supabase = createClient(
@@ -160,51 +162,69 @@ export async function POST(req: Request) {
       praktikaPatientId: finalPraktikaPatientId,
     })
 
-    let learning = noLearningRequested()
-
-    if (finalStatus === "approved" && Boolean(learnFromEdits)) {
-      learning = await processApprovedEdit({
+    const source = clean(learningSource) || "direct_approval"
+    const outcome = await finishApprovalLearning({
+      typist: isTypistLearningApproval(finalStatus, learnFromEdits, source),
+      synchronous: async () => {
+        let learning = noLearningRequested()
+        if (finalStatus === "approved" && Boolean(learnFromEdits)) {
+          learning = await processApprovedEdit({
+            providerId,
+            draftId: data.id,
+            reportType: finalReportType,
+            originalText: aiText,
+            finalText,
+            source,
+            actor,
+            approvedByProvider:
+              actor.actorRole === "provider" || actor.actorRole === "admin",
+          })
+        }
+        return learning
+      },
+      audit: async (learning) => {
+        await createReportAuditEvent({
+          reportDraftId: data.id,
+          providerId,
+          patientName,
+          action:
+            finalStatus === "approved"
+              ? "Created and approved report"
+              : finalStatus === "awaiting_provider_approval"
+                ? "Created and sent report for provider review"
+                : "Created draft report",
+          details: {
+            reportType: finalReportType,
+            sourceType: sourceType || "clinical_notes",
+            status: finalStatus,
+            sentForProviderReviewAt:
+              finalStatus === "awaiting_provider_approval" ? now : null,
+            referrerNameSaved: Boolean(finalReferrerName),
+            referrerAddressSaved: Boolean(finalReferrerAddress),
+            typistInstructionsSaved: Boolean(typistInstructions),
+            typistQueriesSaved: Boolean(typistQueries),
+            linkedQueueId: clean(queueId) || null,
+            actorInitials: actor.actorInitials,
+            actorFullName: actor.actorFullName,
+            actorRole: actor.actorRole,
+            learning,
+          },
+        })
+      },
+      enqueue: () => enqueueTypistLearning(supabase, {
         providerId,
         draftId: data.id,
         reportType: finalReportType,
         originalText: aiText,
-        finalText,
-        source: clean(learningSource) || "direct_approval",
+        finalText: clean(data.edited_text),
+        source,
         actor,
         approvedByProvider:
           actor.actorRole === "provider" || actor.actorRole === "admin",
-      })
-    }
-
-    await createReportAuditEvent({
-      reportDraftId: data.id,
-      providerId,
-      patientName,
-      action:
-        finalStatus === "approved"
-          ? "Created and approved report"
-          : finalStatus === "awaiting_provider_approval"
-            ? "Created and sent report for provider review"
-            : "Created draft report",
-      details: {
-        reportType: finalReportType,
-        sourceType: sourceType || "clinical_notes",
-        status: finalStatus,
-        sentForProviderReviewAt:
-          finalStatus === "awaiting_provider_approval" ? now : null,
-        referrerNameSaved: Boolean(finalReferrerName),
-        referrerAddressSaved: Boolean(finalReferrerAddress),
-        typistInstructionsSaved: Boolean(typistInstructions),
-        typistQueriesSaved: Boolean(typistQueries),
-        linkedQueueId: clean(queueId) || null,
-        actorInitials: actor.actorInitials,
-        actorFullName: actor.actorFullName,
-        actorRole: actor.actorRole,
-        learning,
-      },
+      }),
     })
 
-    return NextResponse.json({ success: true, draft: data, learning })
+    return NextResponse.json({ success: true, draft: data, ...outcome })
   } catch (error) {
     console.error(error)
     return NextResponse.json(

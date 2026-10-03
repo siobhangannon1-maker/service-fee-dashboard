@@ -4,6 +4,8 @@ import { createClient } from "@supabase/supabase-js"
 import { createReportAuditEvent, getAuditActor } from "@/lib/report-writing/audit"
 import { noLearningRequested, processApprovedEdit } from "@/lib/report-writing/edit-learning"
 
+import { enqueueTypistLearning, finishApprovalLearning, isTypistLearningApproval } from "@/lib/report-writing/typist-learning-queue"
+
 export const runtime = "nodejs"
 
 const supabase = createClient(
@@ -225,59 +227,77 @@ export async function POST(req: Request) {
     const finalText =
       clean(finalApprovedText) || clean(editedText) || clean(data.edited_text)
 
-    let learning = noLearningRequested()
-
-    if (status === "approved" && Boolean(learnFromEdits)) {
-      learning = await processApprovedEdit({
+    const source = clean(learningSource) || "approval_edit"
+    const outcome = await finishApprovalLearning({
+      typist: isTypistLearningApproval(status, learnFromEdits, source),
+      synchronous: async () => {
+        let learning = noLearningRequested()
+        if (status === "approved" && Boolean(learnFromEdits)) {
+          learning = await processApprovedEdit({
+            providerId: data.provider_id,
+            draftId: data.id,
+            reportType: data.report_type || "consultation_report",
+            originalText: aiText,
+            finalText,
+            source,
+            actor,
+            approvedByProvider:
+              actor.actorRole === "provider" || actor.actorRole === "admin",
+          })
+        }
+        return learning
+      },
+      audit: async (learning) => {
+        await createReportAuditEvent({
+          reportDraftId: data.id,
+          providerId: data.provider_id,
+          patientName: data.patient_name,
+          action:
+            Object.prototype.hasOwnProperty.call(body, "praktikaPatientId") && !status
+              ? "Updated Praktika patient match"
+              : isUnapproving
+                ? "Unapproved report"
+                : status === "approved"
+                  ? "Approved report"
+                  : status === "awaiting_provider_approval"
+                    ? "Sent report to provider for approval"
+                    : status === "edited_by_typist" || status === "draft"
+                      ? "Saved draft report"
+                      : "Updated report",
+          details: {
+            status: data.status,
+            unapproved: isUnapproving,
+            previousStatus: existingDraft.status,
+            sentForProviderReviewAt:
+              status === "awaiting_provider_approval"
+                ? data.sent_for_provider_review_at
+                : null,
+            praktikaPatientId: data.praktika_patient_id || null,
+            referrerNameSaved: Boolean(data.referrer_name),
+            referrerAddressSaved: Boolean(data.referrer_address),
+            typistInstructionsSaved: Boolean(data.typist_instructions),
+            typistQueriesSaved: Boolean(data.typist_queries),
+            actorInitials: actor.actorInitials,
+            actorFullName: actor.actorFullName,
+            actorRole: actor.actorRole,
+            learning,
+          },
+        })
+      },
+      enqueue: () => enqueueTypistLearning(supabase, {
         providerId: data.provider_id,
         draftId: data.id,
         reportType: data.report_type || "consultation_report",
         originalText: aiText,
-        finalText,
-        source: clean(learningSource) || "approval_edit",
+        finalText: clean(data.edited_text),
+        source,
         actor,
         approvedByProvider:
           actor.actorRole === "provider" || actor.actorRole === "admin",
-      })
-    }
-
-    await createReportAuditEvent({
-      reportDraftId: data.id,
-      providerId: data.provider_id,
-      patientName: data.patient_name,
-      action:
-        Object.prototype.hasOwnProperty.call(body, "praktikaPatientId") && !status
-          ? "Updated Praktika patient match"
-          : isUnapproving
-            ? "Unapproved report"
-            : status === "approved"
-              ? "Approved report"
-              : status === "awaiting_provider_approval"
-                ? "Sent report to provider for approval"
-                : status === "edited_by_typist" || status === "draft"
-                  ? "Saved draft report"
-                  : "Updated report",
-      details: {
-        status: data.status,
-        unapproved: isUnapproving,
-        previousStatus: existingDraft.status,
-        sentForProviderReviewAt:
-          status === "awaiting_provider_approval"
-            ? data.sent_for_provider_review_at
-            : null,
-        praktikaPatientId: data.praktika_patient_id || null,
-        referrerNameSaved: Boolean(data.referrer_name),
-        referrerAddressSaved: Boolean(data.referrer_address),
-        typistInstructionsSaved: Boolean(data.typist_instructions),
-        typistQueriesSaved: Boolean(data.typist_queries),
-        actorInitials: actor.actorInitials,
-        actorFullName: actor.actorFullName,
-        actorRole: actor.actorRole,
-        learning,
-      },
+      }),
     })
 
-    return NextResponse.json({ success: true, draft: data, learning })
+    return NextResponse.json({ success: true, draft: data, ...outcome })
   } catch (error) {
     console.error("Update draft server error:", error)
     return NextResponse.json(

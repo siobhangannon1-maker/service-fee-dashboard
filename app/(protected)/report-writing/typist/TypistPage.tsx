@@ -4127,6 +4127,8 @@ export default function TypistPage() {
       | "awaiting_provider_approval"
       | "approved" = "draft",
   ) {
+    if (loading) return;
+    let approvalFinished = false;
     const selectionToken = queueSelectionTokenRef.current;
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (!selectedProviderId) {
@@ -4229,6 +4231,16 @@ export default function TypistPage() {
         return;
       }
 
+      if (status === "approved" && isCurrentSelection()) {
+        // Approval is complete even if durable learning enqueue returned partial success.
+        // Keep queue/list refreshes, but release the UI before those reads finish.
+        approvalFinished = true;
+        setLoading(false);
+        setImageDraftId(savedDraftId);
+        if (savedDraft) setSelectedDraft(savedDraft);
+        setListTab("completed");
+      }
+
       /*
         Saving a draft must never complete its queue item. A completed queue row
         disappears from the active queue, which previously made a saved typist
@@ -4273,11 +4285,13 @@ export default function TypistPage() {
         alert("Draft saved. You can reopen it from Saved Drafts.");
       }
     } finally {
-      if (isCurrentSelection()) setLoading(false);
+      if (!approvalFinished && isCurrentSelection()) setLoading(false);
     }
   }
 
   async function updateExistingDraft(status: string) {
+    if (loading) return;
+    let approvalFinished = false;
     const selectionToken = queueSelectionTokenRef.current;
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (!selectedDraft) return;
@@ -4330,6 +4344,11 @@ export default function TypistPage() {
         return;
       }
 
+      if (status === "approved") {
+        approvalFinished = true;
+        setLoading(false);
+        setSelectedDraft(data.draft as Draft);
+      }
       alert("Draft updated.");
       setSaveStatus("saved");
       setLastSavedAt(new Date().toISOString());
@@ -4337,21 +4356,25 @@ export default function TypistPage() {
       await loadDrafts(selectedProviderId);
 
       if (!isCurrentSelection()) return;
-      setSelectedDraft({
-        ...selectedDraft,
-        patient_name: patientName,
-        patient_dob: patientDob,
-        referrer_name: referrerName || null,
-        referrer_address: referrerAddress || null,
-        report_type: reportType,
-        edited_text: finalLetterTextForSave,
-        ai_generated_text:
-          selectedDraft.ai_generated_text || generatedAiLetterText,
-        status,
-        typist_queries: typistQueries || null,
-      });
+      // Approval already installed the saved draft before the authoritative refresh.
+      // Do not replace refreshed workflow evidence with the earlier save response.
+      if (!approvalFinished) {
+        setSelectedDraft({
+          ...(data.draft || selectedDraft),
+          patient_name: patientName,
+          patient_dob: patientDob,
+          referrer_name: referrerName || null,
+          referrer_address: referrerAddress || null,
+          report_type: reportType,
+          edited_text: finalLetterTextForSave,
+          ai_generated_text:
+            selectedDraft.ai_generated_text || generatedAiLetterText,
+          status,
+          typist_queries: typistQueries || null,
+        });
+      }
     } finally {
-      if (isCurrentSelection()) setLoading(false);
+      if (!approvalFinished && isCurrentSelection()) setLoading(false);
     }
   }
 
