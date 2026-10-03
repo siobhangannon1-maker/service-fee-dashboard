@@ -1015,8 +1015,21 @@ async function keepBrowserOpenForever(context: BrowserContext, page: Page) {
       }
 
       if (now - lastRealActivityAt >= REAL_ACTIVITY_INTERVAL_MS) {
-        await performRealBrowserActivity(page);
+        // Consume this interval before dispatch: a failed reload is not retried next poll.
         lastRealActivityAt = now;
+        if (browserReady && !page.isClosed() && await checkBrowserAvailability(page)
+          && !shuttingDown && !ownershipLost && !page.isClosed()) {
+          try {
+            await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+            await page.waitForTimeout(2500);
+          } catch (error: unknown) {
+            const closed = page.isClosed() || /Target page, context or browser has been closed|browser has been closed|context or browser has been closed|Target closed/.test(
+              String(error instanceof Error ? error.message : ""),
+            );
+            console.warn("Praktika periodic browser reload failed.");
+            throw new Error(closed ? "Praktika browser has been closed." : "Praktika periodic browser reload failed.");
+          }
+        }
       }
 
       if (await isBrowserUiLoggedIn(page)) {
