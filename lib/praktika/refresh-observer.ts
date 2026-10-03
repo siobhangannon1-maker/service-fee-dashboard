@@ -1,3 +1,4 @@
+import { stopFrontendRefreshObservation } from "./frontend-refresh-observer";
 import { createHmac, randomBytes } from 'node:crypto';
 import type { BrowserContext, Request, Response, Page, Frame, Cookie } from 'playwright';
 import { domainCookieState, domainCookieComparison, praktikaDomainCookies, safeSetCookieMetadata, type DomainCookieState } from './observer-cookie-metadata';
@@ -20,6 +21,7 @@ export function observeProbeResponse(context: BrowserContext, method: string, ur
   try { observers.get(context)?.response('helper_probe', method, url, status, headers); } catch { /* Diagnostic only. */ }
 }
 export function stopRefreshObservation(context: BrowserContext | undefined, reason: End) {
+  if (reason !== "timeout") stopFrontendRefreshObservation(context, reason);
   // Existing authenticated signal occurs only after strict GST acceptance and the
   // owned authenticate write. It now arms diagnostics; it never grants authentication.
   try { if (context) observers.get(context)?.stop(reason); } catch { /* Diagnostic only. */ }

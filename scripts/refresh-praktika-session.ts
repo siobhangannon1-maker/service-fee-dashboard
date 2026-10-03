@@ -1,3 +1,4 @@
+import { installFrontendRefreshObserver } from "../lib/praktika/frontend-refresh-observer";
 import { installRefreshObserver, stopRefreshObservation, observeKeepalive } from "../lib/praktika/refresh-observer";
 import { WriteAuthCooldown } from "../lib/praktika/write-auth-cooldown";
 import { PraktikaLeaseExpired, createPraktikaOwnershipRecovery, isPraktikaTransientInfrastructureError } from "../lib/praktika/ownership-recovery";
@@ -299,6 +300,9 @@ async function markBrowserReady(page: Page) {
   if (shuttingDown || page.isClosed()) return false;
   await ownedWrite("update", { status: "connected", current_url: await safePageUrl(page),
     message: "Praktika helper browser is connected.", refreshed_at: nowIso() });
+  if (process.env.PRAKTIKA_FRONTEND_REFRESH_OBSERVER === "true") {
+    try { installFrontendRefreshObserver(page.context(), { enabled: true, page, origin: PRAKTIKA_BASE_URL, emit: entry => console.log("[Praktika frontend refresh observer]", JSON.stringify(entry)) }); } catch { /* Diagnostic only. */ }
+  }
   browserReady = true;
   operationalThisGeneration = true;
   loginTransition = false;

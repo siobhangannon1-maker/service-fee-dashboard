@@ -12,7 +12,7 @@ function extract(names:string[]) {
 }
 for(const ready of [false,true])test(`browser startup ready=${ready} controls the sole Connected promotion`,async()=>{
  const writes:unknown[]=[]; let checks=0;
- const scope={invalidateWriteAuthCooldown:()=>{},browserReady:false,operationalThisGeneration:false,loginTransition:true,verificationRequested:true,shuttingDown:false,
+ const scope={process:{env:{}},invalidateWriteAuthCooldown:()=>{},browserReady:false,operationalThisGeneration:false,loginTransition:true,verificationRequested:true,shuttingDown:false,
  checkBrowserAvailability:async()=>ready,assertOwned:async()=>{checks++;},safePageUrl:async()=>'/fixture',nowIso:()=> 'fixture-time',
  ownedWrite:async(action:string,values:unknown)=>writes.push({action,values})};
  const mark=runInNewContext(extract(['markBrowserReady'])+'\nmarkBrowserReady',scope);
