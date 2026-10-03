@@ -5,9 +5,11 @@ import { useEffect, useRef, useState } from "react";
 export function ResumeWorkflowButton({
   draftId,
   onQueued,
+  revision,
 }: {
   draftId: string;
   onQueued: () => void;
+  revision?: string;
 }) {
   const [eligible, setEligible] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -39,7 +41,7 @@ export function ResumeWorkflowButton({
     })();
 
     return () => controller.abort();
-  }, [draftId]);
+  }, [draftId, revision]);
 
   async function resume() {
     if (!eligible || !confirming || busy || submitting.current) return;
@@ -56,6 +58,9 @@ export function ResumeWorkflowButton({
       const result = await response.json().catch(() => ({}));
 
       if (!response.ok || result.success !== true) {
+        setConfirming(false);
+        setEligible(false);
+        onQueued();
         setMessage(result.error || "Workflow could not be resumed. Refresh before trying again.");
         return;
       }
@@ -64,6 +69,9 @@ export function ResumeWorkflowButton({
       setEligible(false);
       onQueued();
     } catch {
+      setConfirming(false);
+      setEligible(false);
+      onQueued();
       setMessage("Workflow resume acknowledgement is unavailable. Refresh before trying again.");
     } finally {
       submitting.current = false;
@@ -72,7 +80,9 @@ export function ResumeWorkflowButton({
   }
 
   // Fail closed. The server must explicitly prove an exhausted, replay-safe read.
-  if (!loaded || !eligible) return null;
+  if (!loaded || !eligible) {
+    return message ? <p className="mt-2 text-xs" role="status">{message}</p> : null;
+  }
 
   return (
     <div className="mt-2 text-xs" aria-label="Workflow recovery">

@@ -105,9 +105,10 @@ test('Typist integration retains normal list loads and detail merge; poll lifecy
   const source = readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx', 'utf8');
   const block = source.slice(source.indexOf('  const activeWorkflowDrafts'), source.indexOf('  async function loadDrafts'));
   assert.match(block, /if \(!selectedProviderId \|\| !activeWorkflowIds\) return/);
-  assert.match(block, /return startActiveWorkflowPolling/); assert.match(block, /\[selectedProviderId, activeWorkflowIds\]/);
-  assert.match(block, /mergeDraftWorkflow\(current, item\)/); assert.match(block, /isCurrentProviderDataRequest/);
-  assert.match(source, /async function loadDrafts\(providerId: string, requestToken\?: number\)/);
+  assert.match(block, /return startActiveWorkflowPolling/); assert.match(block, /\[selectedProviderId, activeWorkflowIds, workflowReconciliationEpoch\]/);
+  assert.match(block, /await loadDrafts\(selectedProviderId, requestToken, \{ signal, quiet: true \}\)/);
+  assert.match(source, /mergeDraftWorkflow\(current, item\)/); assert.match(source, /isCurrentProviderDataRequest/);
+  assert.match(source, /async function loadDrafts\(providerId: string, requestToken\?: number, options:/);
   assert.match(source, /approvedWorkflow\(draft\).praktikaRecovery/);
   assert.doesNotMatch(route, /\.rpc\(|\.update\(|\.insert\(|projectWorkflowRecovery|create.*Job|\.storage/);
 });

@@ -51,7 +51,7 @@ test("Resume Workflow UI is fail closed and automatic eligibility is server driv
   assert.match(button, /useEffect/);
   assert.match(button, /\/api\/report-writing\/resume-workflow\?draftId=/);
   assert.match(button, /response\.ok && result\.eligible === true/);
-  assert.match(button, /if \(!loaded \|\| !eligible\) return null/);
+  assert.match(button, /if \(!loaded \|\| !eligible\) \{\s*return message \?/);
   assert.match(button, /does not re-upload the letter to Praktika/);
 });
 

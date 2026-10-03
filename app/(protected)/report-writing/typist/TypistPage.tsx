@@ -1,5 +1,5 @@
 "use client";
-import { startActiveWorkflowPolling } from '@/lib/report-writing/active-workflow-poll';
+import { startActiveWorkflowPolling, workflowPollingMode } from '@/lib/report-writing/active-workflow-poll';
 import { type DraftDetail as Draft, type DraftListItem, mergeDraftWorkflow } from '@/lib/report-writing/draft-contract';
 import { createDraftDetailLoader } from '@/lib/report-writing/draft-detail-loader';
 import { ManualVerificationButton } from "@/components/report-writing/ManualVerificationButton";
@@ -1303,6 +1303,16 @@ export default function TypistPage() {
   // provider when an older request returns late.
   const providerDataRequestRef = useRef(0);
   const selectedProviderIdRef = useRef("");
+  const draftListRequestSequenceRef = useRef(0);
+  const draftListMountedRef = useRef(false);
+
+  useEffect(() => {
+    draftListMountedRef.current = true;
+    return () => {
+      draftListMountedRef.current = false;
+      draftListRequestSequenceRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     selectedDraftIdRef.current = selectedDraft?.id || null;
@@ -2603,6 +2613,7 @@ export default function TypistPage() {
       ),
     );
 
+    reconcileWorkflowAction(draftSnapshot.id);
     setMedirefModalOpen(false);
     setMedirefConfirmed(false);
     setAttachPeriodontalChart(false);
@@ -2723,29 +2734,12 @@ export default function TypistPage() {
       for (let attempt = 0; attempt < 120; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
 
-        const draftsResponse = await fetch(
-          `/api/report-writing/get-drafts?providerId=${params.providerId}`,
-        );
-
-        const draftsData = await draftsResponse.json().catch(() => ({}));
-
-        if (!draftsResponse.ok || !draftsData.success) {
-          continue;
-        }
-
-        const refreshedDrafts: DraftListItem[] = draftsData.drafts || [];
-        const refreshedDraft = refreshedDrafts.find(
-          (draft) => draft.id === params.draft.id,
-        );
-
-        if (params.providerId !== selectedProviderIdRef.current) return;
-        setDrafts(refreshedDrafts);
+        const refreshedDrafts = await loadDrafts(params.providerId, undefined, { quiet: true }).catch(() => undefined);
+        if (params.providerId !== selectedProviderIdRef.current || !draftListMountedRef.current) return;
+        if (!refreshedDrafts) continue;
+        const refreshedDraft = refreshedDrafts.find(draft => draft.id === params.draft.id);
 
         if (refreshedDraft) {
-          setSelectedDraft((current) =>
-            current?.id === refreshedDraft.id ? mergeDraftWorkflow(current, refreshedDraft) : current,
-          );
-
           if (
             refreshedDraft.workflow_status === "completed" ||
             refreshedDraft.workflow_status === "failed"
@@ -2875,45 +2869,58 @@ export default function TypistPage() {
     }
   }
 
+  const recentWorkflowActions = useRef(new Map<string, number>());
+  const [workflowReconciliationEpoch, setWorkflowReconciliationEpoch] = useState(0);
+  function reconcileWorkflowAction(draftId: string) {
+    recentWorkflowActions.current.set(draftId, Date.now() + 10 * 60_000);
+    setWorkflowReconciliationEpoch(value => value + 1);
+    void loadDrafts(selectedProviderId);
+  }
   const activeWorkflowDrafts = useRef(drafts);
   activeWorkflowDrafts.current = drafts;
-  const activeWorkflowIds = drafts.filter(draft => draft.provider_id === selectedProviderId && draft.workflow_status === "running")
+  const activeWorkflowIds = drafts.filter(draft => draft.provider_id === selectedProviderId && (workflowPollingMode(draft) || (recentWorkflowActions.current.get(draft.id) || 0) > Date.now()))
     .map(draft => draft.id).sort().join(',');
   useEffect(() => {
     if (!selectedProviderId || !activeWorkflowIds) return;
     const requestToken = providerDataRequestRef.current;
     return startActiveWorkflowPolling({
-      drafts: activeWorkflowDrafts.current.filter(draft => draft.provider_id === selectedProviderId),
+      drafts: activeWorkflowDrafts.current.filter(draft => draft.provider_id === selectedProviderId)
+        .map(draft => ({ ...draft, reconcileUntil: recentWorkflowActions.current.get(draft.id) })),
+      getDrafts: () => activeWorkflowDrafts.current.filter(draft => draft.provider_id === selectedProviderId)
+        .map(draft => ({ ...draft, reconcileUntil: recentWorkflowActions.current.get(draft.id) })),
       providerId: selectedProviderId,
       fetch,
       refresh: async signal => {
-        const response = await fetch(`/api/report-writing/get-drafts?providerId=${encodeURIComponent(selectedProviderId)}`, {
-          cache: "no-store", signal,
-        });
-        const data = await response.json();
-        if (signal.aborted || !isCurrentProviderDataRequest(selectedProviderId, requestToken)) return;
-        if (!response.ok || !data.success || !Array.isArray(data.drafts)) throw new Error();
-        setDrafts(data.drafts);
-        setSelectedDraft(current => {
-          const item = current && (data.drafts as DraftListItem[]).find(draft => draft.id === current.id);
-          return current && item ? mergeDraftWorkflow(current, item) : current;
-        });
+        await loadDrafts(selectedProviderId, requestToken, { signal, quiet: true });
       },
     });
-  }, [selectedProviderId, activeWorkflowIds]);
+  }, [selectedProviderId, activeWorkflowIds, workflowReconciliationEpoch]);
 
-  async function loadDrafts(providerId: string, requestToken?: number) {
+  async function loadDrafts(providerId: string, requestToken?: number, options: { signal?: AbortSignal; quiet?: boolean } = {}) {
     const activeRequestToken = requestToken ?? providerDataRequestRef.current;
+    if (!draftListMountedRef.current || options.signal?.aborted || !isCurrentProviderDataRequest(providerId, activeRequestToken)) return;
+    // Every authoritative list caller shares this sequence. Starting a newer
+    // request invalidates older responses, even if the newer request fails.
+    const sequence = ++draftListRequestSequenceRef.current;
+    const isCurrent = () => draftListMountedRef.current && !options.signal?.aborted &&
+      sequence === draftListRequestSequenceRef.current && isCurrentProviderDataRequest(providerId, activeRequestToken);
     try {
-      const response = await fetch(`/api/report-writing/get-drafts?providerId=${encodeURIComponent(providerId)}`, { cache: 'no-store' });
+      const response = await fetch(`/api/report-writing/get-drafts?providerId=${encodeURIComponent(providerId)}`, { cache: 'no-store', signal: options.signal });
       const data = await response.json();
-      if (!isCurrentProviderDataRequest(providerId, activeRequestToken)) return;
+      if (!isCurrent()) return;
       if (!response.ok || !data.success || !Array.isArray(data.drafts)) throw new Error();
-      setDrafts(data.drafts);
+      const items: DraftListItem[] = data.drafts;
+      setDrafts(items);
+      setSelectedDraft(current => {
+        const item = current && items.find(draft => draft.id === current.id);
+        return current && item ? mergeDraftWorkflow(current, item) : current;
+      });
       setDraftListError(null);
-    } catch {
-      if (isCurrentProviderDataRequest(providerId, activeRequestToken))
-        setDraftListError('Letters could not be loaded. Please refresh the list.');
+      return items;
+    } catch (error) {
+      if (!isCurrent()) return;
+      if (options.quiet) throw error;
+      setDraftListError('Letters could not be loaded. Please refresh the list.');
     }
   }
 
@@ -5103,8 +5110,9 @@ export default function TypistPage() {
                   />
                   <ResumeWorkflowButton
                     key={`${draft.id}:resume-workflow:${draft.workflow_last_message}`}
+                    revision={JSON.stringify([draft.workflow_status, draft.updated_at, draft.workflow_resolved])}
                     draftId={draft.id}
-                    onQueued={() => { void loadDrafts(selectedProviderId); }}
+                    onQueued={() => reconcileWorkflowAction(draft.id)}
                   />
                 </div>
               ))}
