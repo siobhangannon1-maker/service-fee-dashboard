@@ -817,7 +817,7 @@ export default function ProviderReportClient({
     setDictatedLetter(getReportText(draft));
     setGeneratedReport(getReportText(draft));
     setOriginalGeneratedReport(draft.ai_generated_text || "");
-    setClinicalNotes(draft.ai_generated_text || draft.edited_text || "");
+    setClinicalNotes(draft.clinical_notes || draft.source_clinical_notes || draft.source_text || "");
     setTypistInstructions(draft.typist_instructions || "");
     setActiveTab("drafts");
     setSidebarView("drafts");
@@ -1274,6 +1274,9 @@ export default function ProviderReportClient({
   }
 
   async function handleGenerateFromNotes() {
+    const selectionToken = detailSelectionRef.current;
+    const isCurrentSelection = () => selectionToken === detailSelectionRef.current && providerId === detailProviderRef.current;
+    if (loading || detailLoading) return;
     if (!validatePatientName()) return;
 
     if (!clinicalNotes.trim()) {
@@ -1304,6 +1307,7 @@ export default function ProviderReportClient({
       });
 
       const data = await readJsonSafely(response);
+      if (!isCurrentSelection()) return;
 
       console.log("Provider generation debug:", data.debug);
       console.log("Provider clinical scenario:", data.clinicalScenario);
@@ -1316,10 +1320,9 @@ export default function ProviderReportClient({
       setGeneratedReport(data.report);
       setOriginalGeneratedReport(data.report);
     } catch (error) {
-      console.error(error);
-      alert("Error generating report");
+      if (isCurrentSelection()) alert("Error generating report");
     } finally {
-      setLoading(false);
+      if (isCurrentSelection()) setLoading(false);
     }
   }
 
@@ -2146,12 +2149,13 @@ export default function ProviderReportClient({
                 className="h-64 w-full rounded-xl border border-slate-300 p-4"
                 placeholder="Paste clinical notes to generate a report..."
                 value={clinicalNotes}
+                disabled={detailLoading}
                 onChange={(e) => setClinicalNotes(e.target.value)}
               />
 
               <button
                 onClick={handleGenerateFromNotes}
-                disabled={loading}
+                disabled={loading || detailLoading || !clinicalNotes.trim()}
                 className="rounded-xl bg-slate-950 px-6 py-3 font-semibold text-white disabled:opacity-50"
               >
                 {loading ? "Working..." : "Generate Report From Clinical Notes"}

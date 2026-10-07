@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { canGenerateFromClinicalNotes } from './initial-clinical-notes';
 
 // Execute the actual page's handlers/effects with captured render values,
 // controllable network responses and timers. No production APIs are contacted.
@@ -30,7 +31,7 @@ function deferred<T>() {
   const promise = new Promise<T>(r => { resolve = r; });
   return { promise, resolve };
 }
-const A = { id: 'draft-a', provider_id:'provider', updated_at:'2026-01-01', patient_name: 'Synthetic A', patient_dob: '2000-01-01', referrer_name: 'Referrer A', referrer_address: 'Address A', edited_text: 'Letter A', report_type: 'consultation_report', status: 'edited_by_typist' };
+const A = { id: 'draft-a', provider_id:'provider', updated_at:'2026-01-01', patient_name: 'Synthetic A', patient_dob: '2000-01-01', referrer_name: 'Referrer A', referrer_address: 'Address A', edited_text: 'Letter A', source_text:'Synthetic clinical notes A', report_type: 'consultation_report', status: 'edited_by_typist' };
 const B = { ...A, id: 'draft-b', patient_name: 'Synthetic B', patient_dob: null, referrer_name: null, referrer_address: null, edited_text: '' };
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 function fixture() {
@@ -53,6 +54,7 @@ function fixture() {
   const requests: Array<{url:string;body:Values;reply:(data:Values)=>void}> = [];
   Object.assign(globals, refs, {
     readApprovalResponse: (response: Response) => response.json(),
+    canGenerateFromClinicalNotes,
     draftListRequestSequenceRef: { current: 0 },
     console:{log(){},warn(){},error(){}}, alert(){}, confirm:()=>true,
     setTimeout:(fn:()=>void)=>{timers.set(++timerId,fn);return timerId;}, clearTimeout:(id:number)=>timers.delete(id),

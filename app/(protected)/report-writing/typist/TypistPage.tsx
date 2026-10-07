@@ -1,4 +1,5 @@
 "use client";
+import { canGenerateFromClinicalNotes, loadInitialClinicalNotes, type ClinicalNotesLoadStatus } from "@/lib/report-writing/initial-clinical-notes";
 import { readApprovalResponse } from "@/lib/report-writing/typist-approval-stream";
 import { startActiveWorkflowPolling, workflowPollingMode } from '@/lib/report-writing/active-workflow-poll';
 import { type DraftDetail as Draft, type DraftListItem, mergeDraftWorkflow } from '@/lib/report-writing/draft-contract';
@@ -1187,6 +1188,9 @@ export default function TypistPage() {
   const [referralAutoFillError, setReferralAutoFillError] = useState("");
   const [reportType, setReportType] = useState("consultation_report");
   const [clinicalNotes, setClinicalNotes] = useState("");
+  const [clinicalNotesLoadStatus, setClinicalNotesLoadStatus] = useState<ClinicalNotesLoadStatus>("idle");
+  const [clinicalNotesLoadError, setClinicalNotesLoadError] = useState("");
+  const clinicalNotesRequestRef = useRef(0);
   const [typistQueries, setTypistQueries] = useState("");
   const [letterText, setLetterText] = useState("");
   const [generatedAiLetterText, setGeneratedAiLetterText] = useState("");
@@ -1511,7 +1515,7 @@ export default function TypistPage() {
 
   function getAutoGenerateStatusLabel() {
     if (autoGenerateStatus === "loading_notes") {
-      return "Loading appointment and same-day clinical notes...";
+      return "Loading clinical notes...";
     }
 
     if (autoGenerateStatus === "selecting_report_type") {
@@ -1527,7 +1531,7 @@ export default function TypistPage() {
     }
 
     if (autoGenerateStatus === "error") {
-      return "Clinical notes could not be fully loaded. You can still edit or generate manually.";
+      return "Clinical notes could not be loaded. Retry before generating.";
     }
 
     return "Select a queue item to begin.";
@@ -3270,6 +3274,8 @@ export default function TypistPage() {
 
   function clearForm(resetWorkflowOptions = true) {
     beginPatientSelection();
+    setClinicalNotesLoadStatus("idle");
+    setClinicalNotesLoadError("");
     setDetailLoading(false);
     setDetailError(null);
     setSelectedDraft(null);
@@ -3366,6 +3372,8 @@ export default function TypistPage() {
     // Do not clear the notes panel when opening an existing draft.
     // If the get-drafts API returns saved source notes, show them here.
     setClinicalNotes(getDraftClinicalNotes(draft));
+    setClinicalNotesLoadStatus("ready");
+    setClinicalNotesLoadError("");
     setTypistQueries(draft.typist_queries || "");
 
     const savedLetterText = draft.edited_text ?? draft.ai_generated_text ?? "";
@@ -3567,11 +3575,7 @@ export default function TypistPage() {
     beginPatientSelection();
     setDetailLoading(false);
     setDetailError(null);
-    const selectionToken = queueSelectionTokenRef.current;
     setLoading(false);
-
-    const isCurrentQueueSelection = () =>
-      queueSelectionTokenRef.current === selectionToken;
 
     setAutoGenerateStatus("loading_notes");
     setSaveStatus("idle");
@@ -3591,19 +3595,8 @@ export default function TypistPage() {
     const linkedPraktikaPatientId = item.praktika_patient_id || "";
     const raw = item.raw_json || {};
 
-    const appointmentId =
-      item.appointment_id ||
-      String(raw.iAppointmentId || raw.appointment_id || "").trim() ||
-      null;
-
-    const appointmentDate = item.appointment_time?.slice(0, 10) || "";
-
-    setAutoGenerateStatus("selecting_report_type");
-
     const inferredReportType = inferReportTypeFromQueueItem(item, reportTypes);
 
-    const appointmentNotes = getQueueAppointmentNotes(item);
-    const cachedClinicalNotes = getQueueSyncedClinicalNotes(item);
     const cachedReferrerName = getQueueReferrerName(item);
     const cachedReferrerAddress = getQueueReferrerAddress(item);
     const latestReferral = asPlainObject(
@@ -3617,7 +3610,6 @@ export default function TypistPage() {
     const hasCachedReferrer = Boolean(
       cachedReferrerName.trim() && cachedReferrerAddress.trim(),
     );
-    const hasCachedClinicalNotes = Boolean(cachedClinicalNotes.trim());
 
     setPatientFirstName(firstName);
     setPatientLastName(lastName);
@@ -3659,126 +3651,63 @@ export default function TypistPage() {
       setReferralAutoFillStatus("not_found");
     }
 
-    if (hasCachedClinicalNotes) {
-      setClinicalNotes(cachedClinicalNotes);
+    await loadInitialQueueNotes(item);
+  }
 
-      const aiReportType = await classifyReportTypeWithAi({
-        providerId: selectedProviderId,
-        clinicalNotes: cachedClinicalNotes,
-        appointmentNotes,
-        reportTypes,
-        fallbackReportType: inferredReportType,
+  async function loadInitialQueueNotes(item: QueueItem) {
+    const providerId = selectedProviderId;
+    const token = queueSelectionTokenRef.current;
+    const requestId = ++clinicalNotesRequestRef.current;
+    const isCurrent = () => token === queueSelectionTokenRef.current &&
+      requestId === clinicalNotesRequestRef.current && providerId === selectedProviderIdRef.current;
+    setClinicalNotesLoadStatus("loading");
+    setClinicalNotesLoadError("");
+    setAutoGenerateStatus("loading_notes");
+    const raw = item.raw_json || {};
+    const patientId = cleanString(item.praktika_patient_id);
+    const appointmentDate = item.appointment_time?.slice(0, 10) || "";
+    const appointmentId = item.appointment_id || cleanString(raw.iAppointmentId || raw.appointment_id) || null;
+    try {
+      const result = await loadInitialClinicalNotes({ providerId, queueId: item.id, isCurrent,
+        readLive: patientId && appointmentDate ? async () => cleanClinicalNoteText(
+          await pullSameDayClinicalNotes({ patientId, appointmentDate, appointmentId })
+        ) : undefined,
       });
-
-      if (!isCurrentQueueSelection()) return;
-
-      setReportType(aiReportType);
-      setAutoGenerateStatus("ready");
-      return;
-    }
-
-    // No genuine cached clinical notes yet. Do NOT seed the editable
-    // `clinicalNotes` state with appointment/admin `source_clinical_notes`.
-    // Show a subtle loading message in the UI instead by leaving
-    // `clinicalNotes` blank so the textarea remains empty for manual typing.
-    setClinicalNotes("");
-
-    let sameDayClinicalNotes = "";
-
-    if (linkedPraktikaPatientId && appointmentDate) {
-      try {
-        sameDayClinicalNotes = await pullSameDayClinicalNotes({
-          patientId: linkedPraktikaPatientId,
-          appointmentDate,
-          appointmentId,
-        });
-
-        if (!isCurrentQueueSelection()) return;
-
-        sameDayClinicalNotes = cleanClinicalNoteText(sameDayClinicalNotes);
-
-        if (sameDayClinicalNotes.trim()) {
-          await fetch("/api/report-writing/letter-queue", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              queueId: item.id,
-              cachedClinicalNotes: sameDayClinicalNotes,
-              cachedClinicalNotesSource: "praktika_live",
-            }),
-          });
-
-          if (!isCurrentQueueSelection()) return;
-
-          setQueue((current) =>
-            current.map((queueItem) => {
-              if (queueItem.id !== item.id) return queueItem;
-
-              return {
-                ...queueItem,
-                source_clinical_notes: sameDayClinicalNotes,
-                raw_json: {
-                  ...(queueItem.raw_json || {}),
-                  cached_clinical_notes: sameDayClinicalNotes,
-                  cached_clinical_notes_source: "praktika_live",
-                  cached_clinical_notes_at: new Date().toISOString(),
-                },
-              };
-            }),
-          );
-        }
-      } catch (error) {
-        if (!isCurrentQueueSelection()) return;
-
-        console.error("Failed to pull Praktika clinical notes:", error);
-
-        const fallbackCachedNotes = cleanClinicalNoteText(
-          raw.cached_clinical_notes,
-        );
-        const errorMessage =
-          error instanceof Error
-            ? error.message
-            : "Unknown clinical notes lookup error.";
-
-        if (fallbackCachedNotes) {
-          setClinicalNotes(fallbackCachedNotes);
-        } else {
-          const fallbackNotes = [
-            appointmentNotes,
-            `Same-day Praktika clinical notes could not be loaded: ${errorMessage}`,
-            "Existing appointment notes have been preserved.",
-          ]
-            .filter(Boolean)
-            .join("\n\n");
-
-          setClinicalNotes(fallbackNotes);
-        }
-
-        setAutoGenerateStatus("error");
-        return;
+      if (!result || !isCurrent()) return;
+      if (!result.fromCache) {
+        // Retain the existing live-note cache write. Failure to cache does not
+        // invalidate an authoritative note that was successfully loaded.
+        try {
+          await fetch("/api/report-writing/letter-queue", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ queueId: item.id, cachedClinicalNotes: result.text, cachedClinicalNotesSource: "praktika_live" }) });
+        } catch { /* A later selection/retry can load from the live source again. */ }
+        if (!isCurrent()) return;
       }
+      setQueue(current => current.map(row => row.id === item.id && row.provider_id === providerId
+        ? { ...row, raw_json: { ...(row.raw_json || {}), cached_clinical_notes: result.text } } : row));
+      setAutoGenerateStatus("selecting_report_type");
+      const aiReportType = await classifyReportTypeWithAi({ providerId, clinicalNotes: result.text,
+        appointmentNotes: getQueueAppointmentNotes(item), reportTypes,
+        fallbackReportType: inferReportTypeFromQueueItem(item, reportTypes) });
+      if (!isCurrent()) return;
+      // Installed once for this selection. Subsequent queue hydration cannot
+      // replace this field after the operator starts editing it.
+      setClinicalNotes(result.text);
+      setReportType(aiReportType);
+      setClinicalNotesLoadStatus("ready");
+      setAutoGenerateStatus("ready");
+    } catch {
+      if (!isCurrent()) return;
+      setClinicalNotesLoadStatus("error");
+      setClinicalNotesLoadError("Clinical notes could not be loaded. Retry before generating a letter.");
+      setAutoGenerateStatus("error");
     }
+  }
 
-    if (!isCurrentQueueSelection()) return;
-
-    const finalClinicalNotes = sameDayClinicalNotes || appointmentNotes;
-
-    setClinicalNotes(finalClinicalNotes);
-
-    const aiReportType = await classifyReportTypeWithAi({
-      providerId: selectedProviderId,
-      clinicalNotes: finalClinicalNotes,
-      appointmentNotes,
-      reportTypes,
-      fallbackReportType: inferredReportType,
-    });
-
-    if (!isCurrentQueueSelection()) return;
-
-    setReportType(aiReportType);
-    setAutoGenerateStatus("ready");
+  async function retryInitialQueueNotes() {
+    if (selectedDraft || clinicalNotesLoadStatus !== "error") return;
+    const item = queue.find(row => row.id === activeQueueItemId && row.provider_id === selectedProviderId);
+    if (item) await loadInitialQueueNotes(item);
   }
 
   async function updateQueueStatus(queueId: string, status: string) {
@@ -4164,7 +4093,10 @@ export default function TypistPage() {
 
   async function generateLetter() {
     const selectionToken = queueSelectionTokenRef.current;
-    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
+    const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken &&
+      selectedProviderIdRef.current === selectedProviderId;
+    if (!canGenerateFromClinicalNotes({ loading, detailLoading, queueSelected: Boolean(activeQueueItemId),
+      notesStatus: clinicalNotesLoadStatus, text: clinicalNotes })) return;
     if (!selectedProviderId) {
       alert("Please select a provider first.");
       return;
@@ -5643,12 +5575,23 @@ export default function TypistPage() {
                   className="h-40 w-full rounded-xl border p-4"
                   placeholder="Paste clinical notes here..."
                   value={clinicalNotes}
+                  disabled={detailLoading || Boolean(activeQueueItemId && clinicalNotesLoadStatus !== "ready")}
                   onChange={(e) => setClinicalNotes(e.target.value)}
                 />
 
+                {activeQueueItemId && clinicalNotesLoadStatus === "loading" ?
+                  <p className="text-sm text-slate-500" role="status">Loading clinical notes…</p> : null}
+                {clinicalNotesLoadError ? <div className="text-sm text-amber-800" role="alert">
+                  <p>{clinicalNotesLoadError}</p>
+                  <button type="button" onClick={retryInitialQueueNotes}
+                    disabled={clinicalNotesLoadStatus === "loading"}
+                    className="mt-2 rounded-lg border border-amber-300 px-3 py-1 disabled:opacity-50">Retry clinical notes</button>
+                </div> : null}
+
                 <button
                   onClick={generateLetter}
-                  disabled={loading}
+                  disabled={!canGenerateFromClinicalNotes({ loading, detailLoading, queueSelected: Boolean(activeQueueItemId),
+                    notesStatus: clinicalNotesLoadStatus, text: clinicalNotes })}
                   className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
                 >
                   {loading ? "Working..." : "Generate Letter From Notes"}
