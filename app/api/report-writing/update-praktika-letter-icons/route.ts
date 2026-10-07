@@ -1,3 +1,4 @@
+import { withWorkflowOperationRequest } from "@/lib/report-writing/workflow-operation";
 import { manualVerification } from '@/lib/report-writing/manual-verification';
 import { continuationIntentId } from '@/lib/report-writing/workflow-continuation-token';
 import { sensitiveApiAccess } from "@/lib/auth";
@@ -325,7 +326,7 @@ async function saveIconStatus(draftId: string, status: "running" | "completed" |
   if (error) throw new Error("Could not save appointment icon status.");
 }
 
-export async function POST(req: Request) {
+async function execute(req: Request) {
   // Only the existing service-authenticated in-process continuation may bypass browser login.
   const accessDenied = currentWorkflowExecution() ? null : await sensitiveApiAccess("/api/report-writing/update-praktika-letter-icons");
   if (accessDenied) return accessDenied;
@@ -356,13 +357,19 @@ export async function POST(req: Request) {
       const { data: intent, error: verificationError } = await supabase.from('praktika_helper_jobs')
         .select('response').eq('id', intentId).eq('job_type', 'complete_report_workflow').maybeSingle();
       manuallyVerified = !verificationError && Boolean(manualVerification(intent?.response, 'praktika', draftId, intentId));
+      if(!manuallyVerified && currentWorkflowExecution()) {
+        const proof=await supabase.rpc('workflow_resolution_fenced',{p_draft_id:draftId,p_branch:'praktika'});
+        manuallyVerified=!proof.error && proof.data===true;
+      }
     }
     if (uploadError || (!manuallyVerified && (!uploads?.length || !isConfirmedPraktikaUpload(uploads[0].response)))) {
       return NextResponse.json({ success: false, error: "A confirmed report upload is required before updating the appointment icon." }, { status: 409 });
     }
-    const { data: claimed, error: claimError } = await supabase.from("report_drafts")
+    let claim=supabase.from("report_drafts")
       .update({ workflow_icon_update_status: "running", updated_at: new Date().toISOString() })
-      .eq("id", draftId).eq("uploaded_to_praktika", true).eq("workflow_praktika_upload_status", "completed")
+      .eq("id", draftId);
+    if(!manuallyVerified)claim=claim.eq("uploaded_to_praktika", true).eq("workflow_praktika_upload_status", "completed");
+    const { data: claimed, error: claimError } = await claim
       .is("deleted_at", null)
       .or(currentWorkflowExecution() ? "workflow_icon_update_status.in.(pending,running,failed)" : "workflow_icon_update_status.is.null,workflow_icon_update_status.in.(pending,not_requested)")
       .select("id").maybeSingle();
@@ -642,4 +649,8 @@ export async function POST(req: Request) {
     }).catch(() => NextResponse.json({ success: false, iconUpdated: false,
       error: "Appointment icon update failed and workflow status could not be saved." }, { status: 500 }));
   }
+}
+
+export async function POST(req: Request) {
+  return withWorkflowOperationRequest(req,"icon","/api/report-writing/update-praktika-letter-icons",()=>execute(req));
 }

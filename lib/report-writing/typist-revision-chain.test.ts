@@ -6,6 +6,8 @@ import ts from 'typescript'
 import { approvalResponse, isTypistApproval, readApprovalResponse } from './typist-approval-stream'
 import { approvedDraftFixture } from './typist-approval-fixtures.test-helper'
 import { mergeDraftWorkflow, type DraftDetail } from './draft-contract'
+import { partitionApprovedForVerification } from './typist-approved-partition'
+import { resolveWorkflow } from './resolved-workflow'
 
 const path = 'app/(protected)/report-writing/typist/TypistPage.tsx'
 const source = readFileSync(path, 'utf8')
@@ -117,11 +119,12 @@ function fixture(status = 'draft') {
     pendingPatientSavesRef: { current: {} as Record<string, () => void> },
     queueSelectionTokenRef: { current: 0 }, selectedProviderIdRef: { current: 'P' }, providerDataRequestRef: { current: 0 },
     draftListMountedRef: { current: true }, draftListRequestSequenceRef: { current: 0 },
+    draftWorkspaceRef: { current: { listTab: 'drafts', selectedDraftId: 'A' } },
     lastAutosavedTextRef: { current: 'Initial' }, autosaveTimerRef: { current: null },
     patientDetailsAutosaveTimerRef: { current: null }, referrerAutosaveTimerRef: { current: null },
     autoImageDraftQueueIdRef: { current: null },
   }
-  const globals: Record<string, unknown> = { ...refs, detailLoaderRef: { current: async (id: string) => ({ ...rows.get(id)! }) }, Response, Date: FrozenDate, readApprovalResponse, mergeDraftWorkflow,
+  const globals: Record<string, unknown> = { ...refs, partitionApprovedForVerification, detailLoaderRef: { current: async (id: string) => ({ ...rows.get(id)! }) }, Response, Date: FrozenDate, readApprovalResponse, mergeDraftWorkflow,
     console: { error() {}, warn() {} }, alert: (message: string) => alerts.push(message), confirm: () => true,
     clearTimeout() {}, setTimeout: () => 1, cleanString: (v: unknown) => String(v ?? '').trim(),
     buildLetterTextForSave: (text: string) => text, stripPdfMarkers: (text: string) => text,
@@ -342,6 +345,39 @@ test('manual existing-draft save is serialized behind an outstanding autosave', 
 test('actual reselection after 409 loads authoritative text instead of replaying rejected edits on a new token', async () => {
   const f = fixture()
   await f.direct({ status: 'draft', expectedUpdatedAt: R0, editedText: 'Authoritative other-tab text' })
+
+test('Resolve completion in Approved removes the card, invalidates pending saves, and preserves the tab', async () => {
+  const f = fixture('approved'), hold = f.holdResponse('Own edit')
+  f.refs.draftWorkspaceRef.current.listTab = 'completed'
+  f.autosave('Own edit'); await waitFor(() => f.rows.get('A')!.updated_at === revision(1))
+  const queued = f.api().savePatientDraft('A', { body: JSON.stringify({ draftId: 'A', status: 'approved', expectedUpdatedAt: R0, editedText: 'Queued stale edit' }) })
+  const row = f.rows.get('A')!
+  const completed = resolveWorkflow(row, { uploads: [], icons: [], mediref: [], livePraktikaActors: new Set(), liveMediref: false,
+    resolution: { draftId: 'A', letterFingerprint: 'synthetic-letter', executionSafe: true, events: [{ id: 'closure', action: 'workflow_resolution_completed',
+      details: { contract: 'workflow-resolution-v1', version: 1, draftId: 'A', letterFingerprint: 'synthetic-letter', actorUserId: 'authenticated-operator', completedAt: R0 } }] } })
+  assert.equal(completed.status, 'completed')
+  f.rows.set('A', { ...row, updated_at: revision(2), workflow_resolved: completed })
+  await f.api().loadDrafts('P')
+  assert.equal(f.state.selectedDraft, null); assert.equal(f.refs.draftWorkspaceRef.current.listTab, 'completed')
+  hold.release(); assert.equal((await queued).status, 409)
+  // The existing cross-selection contract allows the queued request to finish
+  // with its captured revision. Server fencing rejects it without side effects.
+  assert.equal(f.requests.length, 2); assert.equal(f.requests[1].expectedUpdatedAt, R0)
+  assert.equal(f.rows.get('A')!.updated_at, revision(2))
+  assert.equal(f.rows.get('A')!.approved_by_name, 'Original provider')
+})
+
+test('Resolve verification refresh still fences a stale approval behind its pending saves', async () => {
+  const f = fixture(), hold = f.holdResponse('Own edit')
+  f.autosave('Own edit'); await waitFor(() => f.rows.get('A')!.updated_at === revision(1))
+  f.state.letterText = 'Approval waiting'
+  const approving = f.api().updateExistingDraft('approved')
+  // The committed Resolve snapshot changes the revision without changing text.
+  f.rows.set('A', { ...f.rows.get('A')!, updated_at: revision(2) })
+  await f.api().loadDrafts('P'); hold.release(); await approving
+  assert.equal(f.requests.length, 1); assert.equal(f.rows.get('A')!.status, 'draft')
+  assert.equal(f.state.saveStatus, 'conflict'); assert.match(f.alerts[0], /Reload the letter/)
+})
   f.autosave('Rejected local text'); await waitFor(() => f.state.saveStatus === 'conflict')
   await f.api().selectDraft({ id: 'A' })
   assert.equal(f.state.letterText, 'Authoritative other-tab text'); assert.equal(f.selected().updated_at, revision(1))

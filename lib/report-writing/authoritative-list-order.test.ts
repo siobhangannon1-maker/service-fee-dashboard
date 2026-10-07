@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import {partitionApprovedForVerification} from './typist-approved-partition';
 import { shouldAppearInApproved, type WorkflowDraft } from './resolved-workflow';
 
 const source = readFileSync(resolve(process.env.TYPIST_CANDIDATE_ROOT || '.', 'app/(protected)/report-writing/typist/TypistPage.tsx'), 'utf8');
@@ -16,16 +17,20 @@ const pollRefresh = nodes.find((n): n is ts.PropertyAssignment => ts.isPropertyA
 const mount = nodes.find((n): n is ts.CallExpression => ts.isCallExpression(n) && n.expression.getText(ast) === 'useEffect' && n.arguments[0]?.getText(ast).includes('draftListMountedRef.current = true'));
 type Row = WorkflowDraft & { id: string; provider_id: string };
 const rows = (completed: boolean, ids = ['one']): Row[] => ids.map(id => ({ id, provider_id: 'provider', status: 'uploaded_to_praktika', workflow_status: 'completed', workflow_resolved: { status: completed ? 'completed' : 'needs_attention', branches: { praktika: 'completed', icon: 'skipped', mediref: completed ? 'completed' : 'unknown', periodontal: 'skipped' }, lookupUnavailable: false, message: null, lastProgressAt: null, praktikaRecovery: false, medirefRecovery: false } }));
-function fixture() {
+function fixture(tab='drafts') {
   const pending: Array<{ resolve: (r: Response) => void; reject: (e: Error) => void }> = [];
   let state = rows(false), selected = state[0], error: string | null = null, writes = 0, restarts = 0;
   const provider = { current: 'provider' }, token = { current: 1 }, mounted = { current: true }, sequence = { current: 0 };
+  const selection={current:1},workspace={current:{listTab:tab,selectedDraftId:'one' as string|null}};
   const code = [fn('isCurrentProviderDataRequest').getText(ast), fn('loadDrafts').getText(ast), fn('reconcileWorkflowAction').getText(ast),
     `const refresh = ${pollRefresh.initializer.getText(ast)};`,
     `const unmount = ${mount ? '(' + mount.arguments[0].getText(ast) + ')()' : '() => { draftListMountedRef.current = false; }'};`,
     '({loadDrafts, refresh, reconcileWorkflowAction, unmount})'].join('\n');
   const api = runInNewContext(ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, {
-    patientSaveChainsRef: { current: new Map() }, providerDataRequestRef: token, selectedProviderIdRef: provider, draftListMountedRef: mounted, draftListRequestSequenceRef: sequence,
+    patientSaveChainsRef: { current: new Map() },
+    queueSelectionTokenRef:selection,draftWorkspaceRef:workspace,partitionApprovedForVerification,
+    clearForm:()=>{selected=null as unknown as Row;workspace.current.selectedDraftId=null;selection.current++;},
+    providerDataRequestRef: token, selectedProviderIdRef: provider, draftListMountedRef: mounted, draftListRequestSequenceRef: sequence,
     selectedProviderId: 'provider', requestToken: 1, recentWorkflowActions: { current: new Map() },
     setWorkflowReconciliationEpoch: () => { restarts++; },
     fetch: () => new Promise<Response>((resolve, reject) => pending.push({ resolve, reject })),
@@ -34,7 +39,7 @@ function fixture() {
     mergeDraftWorkflow: (current: Row, item: Row) => ({ ...current, ...item }),
     setDraftListError: (next: string | null) => { error = next; },
   }) as { loadDrafts: (provider: string, token?: number, options?: { quiet?: boolean; signal?: AbortSignal }) => Promise<unknown>; refresh: (signal: AbortSignal) => Promise<void>; reconcileWorkflowAction: (id: string) => void; unmount: () => void };
-  return { ...api, pending, provider, token, state: () => state, selected: () => selected, error: () => error, writes: () => writes, restarts: () => restarts,
+  return { ...api, pending, provider, token,selection,workspace, state: () => state, selected: () => selected, error: () => error, writes: () => writes, restarts: () => restarts,
     reply: (index: number, completed: boolean, ids = ['one']) => pending[index].resolve(Response.json({ success: true, drafts: rows(completed, ids) })) };
 }
 
@@ -88,4 +93,26 @@ test('every authoritative get-drafts call in Typist uses common loader; no loadi
   assert.equal((source.match(/\/api\/report-writing\/get-drafts\?/g) || []).length, 1);
   const loader = fn('loadDrafts').getText(ast); assert.doesNotMatch(loader, /setLoading|finally|setWorkflowReconciliationEpoch|setSelectedProvider/);
   assert.match(source, /loadDrafts\(params.providerId, undefined, \{ quiet: true \}\)/);
+});
+
+test('Approved selection clears only after authoritative removal, without selecting next or changing tab',async()=>{
+ const f=fixture('completed');const request=f.loadDrafts('provider');assert.equal(f.selected().id,'one');
+ f.pending[0].resolve(Response.json({success:true,drafts:[...rows(true),...rows(false,['two'])]}));await request;
+ assert.equal(f.selected(),null);assert.equal(f.workspace.current.listTab,'completed');assert.equal(f.state().filter(shouldAppearInApproved).length,1);
+});
+test('another selected item and a selection made while refresh is pending survive',async()=>{
+ for(const changed of [false,true]){const f=fixture('completed');const request=f.loadDrafts('provider');
+ if(changed){f.workspace.current.selectedDraftId='two';f.selection.current++;}
+ f.reply(0,changed);await request;assert.ok(f.selected());}
+});
+test('failed or stale refreshed evidence never clears Approved selection',async()=>{
+ for(const stale of [false,true]){const f=fixture('completed');const request=f.loadDrafts('provider');
+ if(stale)f.pending[0].resolve(Response.json({success:true,drafts:rows(true).map(r=>({...r,workflowStatusStale:true}))}));else f.pending[0].reject(new Error('synthetic'));
+ await request;assert.ok(f.selected());}
+});
+test('older removal cannot clear selection after newer valid membership',async()=>{
+ const f=fixture('completed');const older=f.loadDrafts('provider'),newer=f.loadDrafts('provider');f.reply(1,false);await newer;f.reply(0,true);await older;assert.ok(f.selected());
+});
+test('Requires Verification authoritative removal clears details; changing tabs is respected',async()=>{
+ for(const changed of [false,true]){const f=fixture('verification');const request=f.loadDrafts('provider');if(changed)f.workspace.current.listTab='drafts';f.reply(0,true);await request;assert.equal(Boolean(f.selected()),changed);assert.equal(f.workspace.current.listTab,changed?'drafts':'verification');}
 });

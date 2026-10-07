@@ -986,6 +986,7 @@ export default function ReportWritingHistoryPage() {
                       </div>
 
                       <ManualVerificationHistory entries={draft.workflow_manual_verification} />
+                      {draft.workflow_resolved?.operatorCompletion && <p className="text-xs text-slate-600">{draft.workflow_resolved.operatorCompletion.source==='operator_manual_completion'?'Workflow manually completed':'Workflow resolved through controlled continuation'} by staff ({draft.workflow_resolved.operatorCompletion.actorUserId}) at {new Date(draft.workflow_resolved.operatorCompletion.completedAt).toLocaleString()}. {draft.workflow_resolved.operatorCompletion.attestedBranches?.length ? `Verified branches: ${draft.workflow_resolved.operatorCompletion.attestedBranches.join(', ')}. ` : ''}Earlier automation evidence is retained.</p>}
                       <RetentionBadges draft={draft} />
                     </div>
 

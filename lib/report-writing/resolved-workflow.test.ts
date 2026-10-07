@@ -85,7 +85,11 @@ test('valid manual proof remains accepted and no raw error emitted',()=>{
 test('legacy failed MediRef does not broaden Mark eligibility',()=>{const f=fixture();delete f.e.parent;f.med.status='failed';delete f.med.payload!.workflowContinuationId;f.d.workflow_mediref_status='failed';assert.equal(resolved(f).medirefRecovery,false);});
 test('read resolver contains no mutation/execution entry points',()=>{
   const source=readFileSync('lib/report-writing/resolved-workflow.ts','utf8')+readFileSync('lib/report-writing/workflow-recovery.ts','utf8');
-  assert.doesNotMatch(source,/\.(insert|update|upsert|delete|rpc)\s*\(/);
+  assert.doesNotMatch(source,/\.(insert|update|upsert|delete)\s*\(/);
+  const rpcCalls=[...source.matchAll(/\.rpc\('([^']+)'/g)].map(m=>m[1]);assert.deepEqual(rpcCalls,['workflow_resolution_projection']);
+  const migration=readFileSync('supabase/migrations/20261005111723_workflow_resolution.sql','utf8');
+  const readOnly=migration.slice(migration.indexOf('create function public.workflow_resolution_projection'),migration.indexOf('revoke all on function public.workflow_resolution_projection'));
+  assert.match(readOnly,/language sql stable security invoker/);assert.doesNotMatch(readOnly,/\b(insert|update|delete|perform)\b/i);
   const ui=readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx','utf8');
   const start=ui.indexOf('{filteredDrafts.map((draft)'),end=ui.indexOf('<div className="col-span-6',start);
   assert.ok(start>=0 && end>start);
@@ -132,7 +136,7 @@ function kimFixture() {
   f.d.workflow_periodontal_chart_status='skipped';f.d.periodontal_chart_attached_at=iso(40*86400000);
   f.d.periodontal_chart_attachment_name='synthetic-chart.pdf';f.d.emailed_to_referrer_at=iso(40*86400000);
   f.upload.request={reportDraftId:f.d.id};f.upload.id='legacy-upload';
-  f.e.icons=[{...f.upload,id:'legacy-icon',job_type:'update_praktika_letter_icons',response:{success:true}}];
+  f.e.icons=[{...f.upload,id:'legacy-icon',job_type:'update_praktika_letter_icons',response:{appointment_icon1id:6597,appointment_icon2id:0,appointment_icon3id:0,appointment_icon4id:0}}];
   f.med.payload={draftId:f.d.id,attachments:[{fileName:'synthetic-chart.pdf'}]};
   f.med.result={prepared:true,remoteDraftSaved:true,sent:false,recipientMatchingSkipped:true};
   for(const j of [f.upload,...f.e.icons,f.med]){j.created_at=iso(40*86400000);j.updated_at=iso(40*86400000);}

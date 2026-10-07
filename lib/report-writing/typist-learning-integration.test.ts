@@ -53,6 +53,7 @@ for (const learningStatus of ["pending", "processing"]) {
       referrerName: "", referrerAddress: "", patientName: "Synthetic fixture", patientDob: null,
       reportType: "consultation_report", clinicalNotes: "", typistQueries: "",
       queueSelectionTokenRef: { current: 1 }, providerDataRequestRef: { current: 1 },
+      draftWorkspaceRef:{current:{listTab:"drafts",selectedDraftId:"synthetic-draft"}},
       draftListMountedRef: { current: true }, draftListRequestSequenceRef: { current: 0 },
       isCurrentProviderDataRequest: () => true, lastAutosavedTextRef: { current: "" }, Date,
       setLoading: (value: boolean) => { box.loading = value },

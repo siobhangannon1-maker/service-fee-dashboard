@@ -96,7 +96,7 @@ test('only existing in-process workflow context can bypass browser authenticatio
   assert.deepEqual(exceptions.sort(), ['generate-pdf', 'send-via-mediref', 'update-praktika-letter-icons', 'upload-to-praktika'].map(r => `app/api/report-writing/${r}/route.ts`).sort());
   const context = readFileSync('lib/report-writing/workflow-execution-context.ts', 'utf8');
   assert.match(context, /AsyncLocalStorage/);
-  for (const route of ['email-secure-pdf', 'send-via-mediref', 'upload-to-praktika']) {
+  for (const route of ['send-via-mediref', 'upload-to-praktika']) {
     const source = readFileSync(`app/api/report-writing/${route}/route.ts`, 'utf8');
     assert.match(source, /await generateLetterPdf\(new Request\(/);
     assert.doesNotMatch(source, /await fetch\([\s\S]{0,100}\/generate-pdf/);

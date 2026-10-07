@@ -1,3 +1,4 @@
+import { withWorkflowOperationRequest } from "@/lib/report-writing/workflow-operation";
 import { POST as generateLetterPdf } from "../generate-pdf/route";
 import { sensitiveApiAccess } from "@/lib/auth";
 import { currentWorkflowExecution } from "@/lib/report-writing/workflow-execution-context";
@@ -213,7 +214,7 @@ async function verifyStagedUploadExists(storagePath: string) {
   return true;
 }
 
-export async function POST(req: Request) {
+async function execute(req: Request) {
   // Only the existing service-authenticated in-process continuation may bypass browser login.
   const accessDenied = currentWorkflowExecution() ? null : await sensitiveApiAccess("/api/report-writing/upload-to-praktika");
   if (accessDenied) return accessDenied;
@@ -501,4 +502,8 @@ export async function POST(req: Request) {
       { status: 500 },
     );
   }
+}
+
+export async function POST(req: Request) {
+  return withWorkflowOperationRequest(req,"praktika","/api/report-writing/upload-to-praktika",()=>execute(req));
 }

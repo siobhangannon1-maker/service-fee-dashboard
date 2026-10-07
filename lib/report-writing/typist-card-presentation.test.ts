@@ -31,6 +31,7 @@ const box = {
   formatReportType: () => 'Consultation Report',
   typistCardPresentation, typistMedirefPresentation, approvedWorkflow,
   ManualVerificationButton: () => null, RetryPraktikaButton: () => null,
+  ResolveWorkflowButton:()=>null,
   ResumeMedirefButton: () => null, ResumeWorkflowButton: () => null,
 };
 runInNewContext(ts.transpileModule(`exports.render = ${callback};`, {

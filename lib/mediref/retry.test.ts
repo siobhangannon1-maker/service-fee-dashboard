@@ -143,7 +143,7 @@ test("worker records retry completion/failure without changing Praktika or ordin
     const end = source.indexOf("\nasync function ", start + 1);
     const compiled = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
     const updates: Record<string, unknown>[] = [];
-    const db = { from: () => ({ update: (values: Record<string, unknown>) => { updates.push(values); return { eq: async () => ({ error: null }) }; } }) };
+    const db = { rpc:async(name:string,args:Record<string,unknown>)=>{assert.equal(name,'record_mediref_preparation_completion');updates.push(args.p_values as Record<string,unknown>);return{error:null};}, from: () => ({ update: (values: Record<string, unknown>) => { updates.push(values); return { eq: async () => ({ error: null }) }; } }) };
     const run = runInNewContext(`${compiled}\n${name}`, { supabase: db, nowIso: () => "now", console: { warn() {} } });
     await run({ id: "job", payload: { draftId: id, attachments: [attachment] } }, success ? { prepared: true } : "Safe failure");
     assert.equal(updates[0].workflow_mediref_status, success ? "completed" : "failed");
@@ -170,7 +170,7 @@ test('independent MediRef success never completes or overwrites the other workfl
   const { readFile } = await import('node:fs/promises'); const {runInNewContext}=await import('node:vm'); const ts=await import('typescript');
   const source=await readFile('scripts/refresh-mediref-session.ts','utf8'); const start=source.indexOf('async function updateDraftAfterMedirefSuccess(');
   const code=ts.transpileModule(source.slice(start,source.indexOf('\nasync function ',start+1)),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
-  const patches:any[]=[]; const supabase={from:()=>({update:(p:any)=>{patches.push(p);return{eq:async()=>({error:null})};}})};
+  const patches:any[]=[]; const supabase={rpc:async(name:string,args:any)=>{assert.equal(name,'record_mediref_preparation_completion');patches.push(args.p_values);return{error:null};},from:()=>({update:(p:any)=>{patches.push(p);return{eq:async()=>({error:null})};}})};
   await runInNewContext(code+'\nupdateDraftAfterMedirefSuccess',{supabase,nowIso:()=> 'now',console:{warn(){}}})({id:'job',payload:{draftId:'draft',workflowContinuationId:'intent'}},{});
   assert.equal(patches[0].workflow_mediref_status,'completed');assert.equal(patches[0].workflow_status,undefined);assert.equal(patches[0].workflow_completed_at,undefined);
 });

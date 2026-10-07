@@ -1527,6 +1527,10 @@ export async function processOnePraktikaHelperJob(
         updated_at: nowIso(),
       }).eq("id", job.id).eq("status", "processing").eq("locked_by", WORKER_ID);
       if (releaseError) throw new Error("Could not preserve waiting Praktika job.");
+      if(job.request?.reportDraftId) {
+        const settled=await supabase.rpc('settle_workflow_resolution_execution',{p_draft_id:job.request.reportDraftId,p_job_id:job.id,p_owner:WORKER_ID,p_safe_before_execution:true});
+        if(settled.error)throw new Error('Safe pre-dispatch release could not be acknowledged.');
+      }
       return { outcome: "none" };
     }
     if (externalStarted && !retrieval) {

@@ -1,3 +1,4 @@
+import { continueResolvedWorkflow } from '@/lib/report-writing/resolution-continuation';
 import { hasMedirefAcknowledgement } from '@/lib/mediref/manual-acknowledgement';
 import { safePreInsertionFailure } from '@/lib/mediref/pre-insertion-failure';
 import { manualVerification } from '@/lib/report-writing/manual-verification';
@@ -39,6 +40,10 @@ export async function POST(req: Request) {
     .update({ response: { ...intent.response, stage, dispatched: true } }).eq('id', intentId).eq('locked_by', lock)
     .eq('response->>dispatched', 'false').select('id').maybeSingle();
   if (dispatchError || !dispatched) return NextResponse.json({ success: true, pending: true });
+  if (intent.response?.resolution) {
+    try { return await continueResolvedWorkflow(db,intent,lock,req.url,{praktika:upload,icon,mediref}); }
+    catch { return NextResponse.json({success:false,pending:true},{status:503}); }
+  }
   const draftId = intent.request.reportDraftId;
   const medirefAcknowledged = hasMedirefAcknowledgement(intent.response);
   let medirefPreparationFailure: ReturnType<typeof safePreInsertionFailure> = null;
@@ -51,6 +56,8 @@ export async function POST(req: Request) {
       updated_at: new Date().toISOString(),
     }).eq('id', intentId).eq('locked_by', lock).select('id').maybeSingle();
     if (finishError || !finished) throw new Error('Could not save continuation state.');
+    const settled=await db.rpc('settle_workflow_resolution_execution',{p_draft_id:draftId,p_job_id:intentId,p_owner:lock,p_safe_before_execution:true});
+    if(settled.error) throw new Error('Continuation execution acknowledgement unavailable.');
     if (message) await db.from('report_drafts').update({ workflow_last_message: message,
       ...(status === 'failed' ? { workflow_status: 'failed', workflow_error: message, ...(issue === 'upload_verification' ? { workflow_praktika_upload_status: 'failed' } : {}) } : status === 'waiting' ? { workflow_status: 'running', workflow_error: null } : {}),
       updated_at: new Date().toISOString() }).eq('id', draftId);
@@ -104,7 +111,7 @@ export async function POST(req: Request) {
     if (medirefError) throw new Error('MediRef lookup unavailable.');
     let perioWaiting = false;
     if (!medirefAcknowledged && !retryUploadId && !medirefJobs?.length && draft.workflow_mediref_status !== 'completed') {
-      const prepared = await withWorkflowExecution<Response>({ intentId, actor: options.actor }, () => mediref(new Request(req.url, {
+      const prepared = await withWorkflowExecution<Response>({ intentId, draftId, actor: options.actor }, () => mediref(new Request(req.url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...options, draftId }),
       })));
       const preparedResult = await prepared.json();
@@ -171,7 +178,7 @@ export async function POST(req: Request) {
     }
     if (!await isUserPraktikaReady(db, executionUserId)) return await finish('waiting', stage, waitingMessage, perioWaiting ? 'periodontal_unavailable' : undefined);
     const handler = stage === 'upload' ? upload : icon;
-    const response = await withWorkflowExecution<Response>({ intentId, actor: executionActor, ...(retryUploadId ? { retryUploadId } : {}) }, () => handler(new Request(req.url, {
+    const response = await withWorkflowExecution<Response>({ intentId, draftId, actor: executionActor, ...(retryUploadId ? { retryUploadId } : {}) }, () => handler(new Request(req.url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...options, draftId }),
     })));
     const result = await response.json();

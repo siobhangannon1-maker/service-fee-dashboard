@@ -83,7 +83,7 @@ export async function createPraktikaHelperJob({
   }
 
   const id = durableWorkflowChild && workflow ? continuationChildId(workflow.intentId, jobType) : undefined;
-  const workflowRequest = durableWorkflowChild && workflow ? { ...request, continuationId: workflow.intentId } : request;
+  const workflowRequest = durableWorkflowChild && workflow ? { ...request, ...(workflow.draftId?{reportDraftId:workflow.draftId}:{}), continuationId: workflow.intentId,...(workflow.resolutionEventId?{resolutionEventId:workflow.resolutionEventId}:{}) } : request;
 
   const { data, error } = await supabaseAdmin
     .from("praktika_helper_jobs")

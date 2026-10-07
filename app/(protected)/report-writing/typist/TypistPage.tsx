@@ -1,5 +1,6 @@
 "use client";
 import { canGenerateFromClinicalNotes, loadInitialClinicalNotes, type ClinicalNotesLoadStatus } from "@/lib/report-writing/initial-clinical-notes";
+import { ResolveWorkflowButton } from "@/components/report-writing/ResolveWorkflowButton";
 import { readApprovalResponse } from "@/lib/report-writing/typist-approval-stream";
 import { startActiveWorkflowPolling, workflowPollingMode } from '@/lib/report-writing/active-workflow-poll';
 import { type DraftDetail as Draft, type DraftListItem, mergeDraftWorkflow } from '@/lib/report-writing/draft-contract';
@@ -1384,6 +1385,8 @@ export default function TypistPage() {
   const queueListRequestSequenceRef = useRef(0);
   const queueWorkspaceRef = useRef({ listTab, activeQueueItemId });
   queueWorkspaceRef.current = { listTab, activeQueueItemId };
+  const draftWorkspaceRef = useRef({listTab,selectedDraftId:selectedDraft?.id || null});
+  draftWorkspaceRef.current = {listTab,selectedDraftId:selectedDraft?.id || null};
   const draftListRequestSequenceRef = useRef(0);
   const draftListMountedRef = useRef(false);
 
@@ -2992,6 +2995,7 @@ export default function TypistPage() {
     // Every authoritative list caller shares this sequence. Starting a newer
     // request invalidates older responses, even if the newer request fails.
     const sequence = ++draftListRequestSequenceRef.current;
+    const selectionToken = queueSelectionTokenRef.current;
     const isCurrent = () => draftListMountedRef.current && !options.signal?.aborted &&
       sequence === draftListRequestSequenceRef.current && isCurrentProviderDataRequest(providerId, activeRequestToken);
     try {
@@ -3001,6 +3005,14 @@ export default function TypistPage() {
       if (!response.ok || !data.success || !Array.isArray(data.drafts)) throw new Error();
       const items: DraftListItem[] = data.drafts;
       setDrafts(items);
+      const workspace=draftWorkspaceRef.current;
+      if (['completed','verification'].includes(workspace.listTab) && workspace.selectedDraftId && selectionToken===queueSelectionTokenRef.current) {
+        const partition=partitionApprovedForVerification(items);
+        const active=workspace.listTab==='verification'?partition.verificationItems:partition.approved;
+        const selected=items.find(item=>item.id===workspace.selectedDraftId);
+        // A failed/stale enrichment never proves authoritative list removal.
+        if ((!selected || (!selected.workflowStatusStale && selected.workflow_resolved && !selected.workflow_resolved.lookupUnavailable)) && !active.some(item=>item.id===workspace.selectedDraftId)) clearForm();
+      }
       setSelectedDraft(current => {
         const item = current && items.find(draft => draft.id === current.id);
         const pending = current && patientSaveChainsRef.current.get(current.id);
@@ -5266,6 +5278,9 @@ export default function TypistPage() {
                       ) : null}
                     </button>
                   </div>
+                  {approvedWorkflow(draft).status==='needs_attention' && <ResolveWorkflowButton
+                    draftId={draft.id} revision={JSON.stringify([draft.updated_at,draft.workflow_resolved])}
+                    onResolved={()=>reconcileWorkflowAction(draft.id)} />}
                   {approvedWorkflow(draft).medirefRecovery && <>
                     <p className="mt-1 text-xs text-slate-500">MediRef needs verification.</p>
                     <ManualVerificationButton key={`${draft.id}:mediref:${draft.workflow_last_message}`} draftId={draft.id} integration="mediref" onVerified={() => { void loadDrafts(selectedProviderId); }} />

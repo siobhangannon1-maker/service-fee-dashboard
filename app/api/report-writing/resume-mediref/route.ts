@@ -100,7 +100,7 @@ export async function POST(req:Request){
 
     const parent=s.parent!;
     const options=parent.request.options;
-    const response=await withWorkflowExecution<Response>({intentId:parent.id,actor:options.actor},()=>sendViaMediref(new Request(req.url,{
+    const response=await withWorkflowExecution<Response>({intentId:parent.id,draftId,actor:options.actor},()=>sendViaMediref(new Request(req.url,{
       method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...options,draftId})
     })));
     const result=await response.clone().json().catch(()=>({}));

@@ -16,7 +16,11 @@ export const PERIO_READ_FIELDS = {
 } as const;
 type ReadType = keyof typeof PERIO_READ_FIELDS;
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-const positiveId = (v: unknown) => (typeof v === 'number' || typeof v === 'string') && /^\d+$/.test(String(v)) && Number.isSafeInteger(Number(v)) && Number(v) > 0;
+// IDs denote positive integers, not formatted text. Digit strings (including
+// leading zeros) and safe integer numbers have the same canonical decimal ID.
+// No whitespace, signs, decimal strings, coercion of null, or unsafe integers.
+export const positivePraktikaReadId = (v: unknown) => (typeof v === 'number' || typeof v === 'string') && /^\d+$/.test(String(v)) && Number.isSafeInteger(Number(v)) && Number(v) > 0;
+const positiveId = positivePraktikaReadId;
 export function allowedPraktikaRead(jobType: string, request: unknown): request is Record<string, unknown> {
   if (!(jobType in PERIO_READ_FIELDS) || !Object.hasOwn(PERIO_READ_FIELDS, jobType) || !record(request)) return false;
   if (request.method !== 'POST' || request.path !== '/php/forms/db_getFormData.php' || request.contentType !== 'json') return false;
@@ -52,14 +56,14 @@ export function validatePraktikaRead(jobType: string, request: unknown, status: 
     // Live single-exam responses may be an object. Wrappers and multi-exam
     // object responses are not accepted; all existing record checks still apply.
     if (body.parameters.length === 1 && record(data) && Object.hasOwn(data, 'perioexam_id')) data = rows;
-    const expected = new Set(body.parameters.map(p => String(p.perioexam_id)));
+    const expected = new Set(body.parameters.map(p => String(Number(p.perioexam_id))));
     const seen = new Set<string>();
     if (!Array.isArray(data) || !rows.every(row => {
-      if (!record(row) || !positiveId(row.perioexam_id) || !expected.has(String(row.perioexam_id))
-        || seen.has(String(row.perioexam_id)) || !positiveId(row.perioexam_patientid)
+      if (!record(row) || !positiveId(row.perioexam_id) || !expected.has(String(Number(row.perioexam_id)))
+        || seen.has(String(Number(row.perioexam_id))) || !positiveId(row.perioexam_patientid)
         || typeof row.perioexam_date !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(row.perioexam_date)
         || !Array.isArray(row.perioexam_toothdata) || !row.perioexam_toothdata.every(record)) return false;
-      seen.add(String(row.perioexam_id)); return true;
+      seen.add(String(Number(row.perioexam_id))); return true;
     })) return unavailable();
     if (seen.size !== expected.size) return unavailable('missing_exam_id');
   }

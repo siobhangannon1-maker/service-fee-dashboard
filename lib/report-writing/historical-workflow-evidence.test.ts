@@ -13,11 +13,11 @@ function fixture() {
   const d: WorkflowDraft & {id:string}={id,status:'approved',workflow_status:'completed',workflow_praktika_upload_status:'completed',
     workflow_icon_update_status:'completed',workflow_mediref_status:'completed',workflow_periodontal_chart_status:'skipped',
     praktika_patient_id:'123',praktika_letter_icon_appointment_id:'456',praktika_letter_icon_updated_at:stamp,
-    praktika_letter_icon_update_response_preview:'{"saved":true}'};
+    praktika_letter_icon_update_response_preview:'{"appointment_icon1id":6597,"appointment_icon2id":0,"appointment_icon3id":0,"appointment_icon4id":0}'};
   const file={path:`report-uploads/${actor}/${id}/123-letter.pdf`,fileName:'letter.pdf',bucket:'private',contentType:'application/pdf',fieldName:'patient_communication[file][file]'};
   const upload: ReadJob={id:'upload',job_type:'upload_report_to_praktika',status:'completed',app_user_id:actor,updated_at:stamp,
     request:{method:'POST',path:'/php/forms/db_updateFormData.php',contentType:'multipart_storage',body:{file,fields:{patient_id:'123','patient_communication[file][name]':'letter.pdf'}}},response:{patient_communication:{iFileId:42}}};
-  const icon: ReadJob={id:'icon',job_type:'update_praktika_letter_icons',status:'completed',app_user_id:actor,created_at:stamp,updated_at:stamp,request:{body:[{appointment_id:'456'}]},response:{saved:true}};
+  const icon: ReadJob={id:'icon',job_type:'update_praktika_letter_icons',status:'completed',app_user_id:actor,created_at:stamp,updated_at:stamp,request:{method:'POST',path:'/php/forms/db_commitFormData.php',contentType:'json',body:[{practice_id:1181,appointment_id:'456',appointment_icon1id:6597,appointment_icon2id:0,appointment_icon3id:0,appointment_icon4id:0}]},response:{appointment_icon1id:6597,appointment_icon2id:0,appointment_icon3id:0,appointment_icon4id:0}};
   const audit={id:'audit',entity_type:'report_draft',entity_id:id,action:'Queued report upload to Praktika',helperJobId:upload.id,storagePath:file.path,bucket:file.bucket,fileName:file.fileName,contentType:file.contentType,patientId:'123',actorUserId:actor};
   const med: ReadJob={id:'med',job_type:'send_mediref_letter',status:'completed',updated_at:stamp,payload:{draftId:id},result:{prepared:true,remoteDraftSaved:true,sent:false,recipientMatchingSkipped:true}};
   const h={uploads:[upload],icons:[icon],audits:[audit],hasParent:false};

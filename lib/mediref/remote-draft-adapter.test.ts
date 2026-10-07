@@ -237,7 +237,7 @@ test("periodontal completion requires saved remote files matching the staged cha
   const compiled = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   for (const [remoteSaved, count, storedName, expected] of [[true, 2, "chart.pdf", "completed-at"], [false, 2, "chart.pdf", null], [true, 1, "chart.pdf", null], [true, 2, "unrelated.pdf", null]] as const) {
     let attachedAt: unknown = null;
-    const supabase = { from: () => ({ update: (values: Record<string, unknown>) => {
+    const supabase = { rpc:async()=>({error:null}), from: () => ({ update: (values: Record<string, unknown>) => {
       let matched = true;
       const query = { eq: () => query, in: (_field: string, names: string[]) => { matched = names.includes(storedName); return query; }, then: (resolve: (value: unknown) => void) => {
         if (matched && "periodontal_chart_attached_at" in values) attachedAt = values.periodontal_chart_attached_at;

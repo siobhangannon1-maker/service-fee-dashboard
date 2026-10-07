@@ -1,3 +1,5 @@
+import { resolutionActions } from './workflow-resolution';
+import type { ResolutionProjection } from './resolution-evidence';
 import type { CurrentWorkflowPresentation } from './draft-contract';
 import {projectHistoricalAttention,historicalAttentionAction,historicalAttentionInvalidated} from './historical-attention';
 import {manualHistoricalMedirefActions,manualHistoricalMedirefAction,manualHistoricalMedirefContract} from './manual-historical-mediref';
@@ -135,12 +137,15 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
   const originalDrafts = drafts;
   const approvedIds = drafts.filter(d=>['approved','uploaded_to_praktika'].includes((d as T & WorkflowDraft).status || '')).map(d=>d.id);
   const reconciliations = await reader.read<HistoricalReconciliationEvent>(approvedIds,batch=>db.from('report_writing_audit_events')
-    .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction,...manualHistoricalMedirefActions,historicalAttentionAction,historicalAttentionInvalidated]).in('entity_id',batch));
+    .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction,...manualHistoricalMedirefActions,historicalAttentionAction,historicalAttentionInvalidated,...resolutionActions]).in('entity_id',batch));
   const eventsByDraft = new Map<string, HistoricalReconciliationEvent[]>();
   for (const event of reconciliations.rows) {
     const events = eventsByDraft.get(event.entity_id) || [];
     events.push(event); eventsByDraft.set(event.entity_id,events);
   }
+  const resolutionIds=approvedIds.filter(id=>(eventsByDraft.get(id)||[]).some(e=>['workflow_resolution_verification','workflow_resolution_resume','workflow_resolution_completed'].includes(e.action)));
+  const resolutionRead=await reader.read<ResolutionProjection>(resolutionIds,batch=>db.rpc('workflow_resolution_projection',{p_draft_ids:batch}));
+  const resolutionByDraft=new Map(resolutionRead.rows.map(r=>[r.draftId,r]));
   const completed = new Map<string,T>();
   const historicalNow = Date.now();
   for (const draft of drafts) {
@@ -241,13 +246,14 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     const jobs=praktikaRead.rows.filter(j=>j.request?.reportDraftId===d.id);
     const mediref=medirefRead.rows.filter(j=>j.payload?.draftId===d.id);
     if (projectionUnavailable.has(d.id) || praktikaRead.failed.has(d.id) || medirefRead.failed.has(d.id) ||
-      reconciliations.failed.has(d.id) ||
+      reconciliations.failed.has(d.id) || resolutionRead.failed.has(d.id) ||
       jobs.some(j=>active(j) && j.app_user_id && praktikaLive.failed.has(j.app_user_id)) || mediref.some(active) && medirefLive.failed.size>0) {
       output[i]={...staleWorkflowStatus(projected[i]),workflow_resolved:unavailableWorkflow(),workflow_current_presentation:'unknown'};continue;
     }
     const parent=parents.get(continuationIntentId(d.id));
     const response=parent?.response as {retryUploadId?:string}|null;
     const evidence = {
+      resolution:resolutionByDraft.get(d.id),
       parent,hasOtherParent:parentRead.rows.some(j=>j.request?.reportDraftId===d.id && j.id!==parent?.id),
       uploads:jobs.filter(j=>j.job_type==='upload_report_to_praktika'),icons:jobs.filter(j=>j.job_type==='update_praktika_letter_icons'),mediref,
       currentUploadId:parent?response?.retryUploadId || continuationChildId(parent.id,'upload_report_to_praktika'):undefined,

@@ -1,0 +1,14 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {runInNewContext} from 'node:vm';
+import * as crypto from 'node:crypto';
+import ts from 'typescript';
+const box={exports:{}};
+const code=ts.transpileModule(readFileSync('lib/report-writing/workflow-resolution-server.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+runInNewContext(code,{...box,Buffer,require:(name:string)=>name==='node:crypto'?crypto:{}});
+const api=box.exports as {sealResolutionPreview:(value:object,key:string)=>string;openResolutionPreview:(value:string,key:string)=>{actorId:string;draftId:string}};
+const value=()=>({draftId:'synthetic-draft',actorId:'synthetic-actor',fingerprint:'state',letterFingerprint:'letter',expiresAt:Date.now()+300000});
+test('opaque preview round-trips actor/draft/state without exposing their plaintext',()=>{const token=api.sealResolutionPreview(value(),'synthetic-key');assert.equal(api.openResolutionPreview(token,'synthetic-key').actorId,'synthetic-actor');assert.equal(Buffer.from(token,'base64url').includes(Buffer.from('synthetic')),false);});
+test('altered token and wrong signing key fail authentication',()=>{const token=api.sealResolutionPreview(value(),'synthetic-key');assert.throws(()=>api.openResolutionPreview((token[0]==='A'?'B':'A')+token.slice(1),'synthetic-key'));assert.throws(()=>api.openResolutionPreview(token,'wrong-key'));});
+test('expired and oversized previews fail closed',()=>{const token=api.sealResolutionPreview({...value(),expiresAt:Date.now()-1},'synthetic-key');assert.throws(()=>api.openResolutionPreview(token,'synthetic-key'));assert.throws(()=>api.openResolutionPreview('A'.repeat(2049),'synthetic-key'));});

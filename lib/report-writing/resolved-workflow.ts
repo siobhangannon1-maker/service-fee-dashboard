@@ -1,8 +1,10 @@
+import { applyResolutionEvidence, type ResolutionProjection } from './resolution-evidence';
 import type {WorkflowAttention} from './historical-attention';
 import {nonOperationalDraftIds} from './non-operational-drafts';
 import {manualHistoricalMedirefWorkflow, type HistoricalMedirefProvenance} from './manual-historical-mediref';
 import { durableHistoricalWorkflow, type HistoricalReconciliationEvent } from './historical-reconciliation';
 import { manualVerification } from './manual-verification';
+import { isConfirmedPraktikaIcon } from './praktika-icon-result';
 import { isConfirmedPraktikaUpload } from './praktika-upload-result';
 import { historicalWorkflowAssociation, type HistoricalEvidence } from './historical-workflow-evidence';
 
@@ -19,6 +21,8 @@ export type ResolvedWorkflow = {
   medirefRecovery: boolean;
   // Retention only: never inferred from approval, job creation or polling.
   completedAt?: number | null;
+  branchEvidence?: Partial<Record<'praktika'|'mediref'|'icon'|'periodontal',{automated:BranchState;manual?:'completed'|'incomplete';actorUserId?:string;verifiedAt?:string;executionUncertain?:boolean}>>;
+  operatorCompletion?: {eventId:string;actorUserId:string;completedAt:string;source?:string;attestedBranches?:string[]};
   historicalMedirefVerification?: HistoricalMedirefProvenance;
   historicalRetention?: { reconciliationId: string; released: boolean };
 };
@@ -41,6 +45,7 @@ export type ReadJob = {
   completed_at?: string | null; failed_at?: string | null; updated_at?: string | null;
 };
 export type WorkflowEvidence = {
+  resolution?: ResolutionProjection;
   parent?: ReadJob; hasOtherParent?: boolean; uploads: ReadJob[]; icons: ReadJob[]; mediref: ReadJob[];
   currentUploadId?: string; currentIconId?: string;
   historical?: HistoricalEvidence;
@@ -69,7 +74,10 @@ export function unavailableWorkflow(): ResolvedWorkflow {
     branches: { praktika: 'unknown', mediref: 'unknown', icon: 'unknown', periodontal: 'unknown' },
     lastProgressAt: null, lookupUnavailable: true, praktikaRecovery: false, medirefRecovery: false };
 }
-export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Date.now()): ResolvedWorkflow {
+export function resolveWorkflow(d: WorkflowDraft,e:WorkflowEvidence,now=Date.now()):ResolvedWorkflow {
+  return applyResolutionEvidence(d,e,resolveAutomatedWorkflow(d,e,now));
+}
+function resolveAutomatedWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Date.now()): ResolvedWorkflow {
   const durable=durableHistoricalWorkflow(d,e,now);
   if (durable) return durable;
   const human=manualHistoricalMedirefWorkflow(d,e,now);
@@ -106,7 +114,7 @@ export function resolveWorkflow(d: WorkflowDraft, e: WorkflowEvidence, now = Dat
   const branches: ResolvedWorkflow['branches'] = {
     praktika: verifiedUpload ? 'completed' : childState(upload, j => isConfirmedPraktikaUpload(j.response)),
     mediref: verifiedMed ? 'completed' : med ? childState(med, medSuccess) : skipped(d.workflow_mediref_status) ? 'skipped' : 'unknown',
-    icon: icon ? childState(icon, j => { const r = record(j.response); return Object.keys(r).length > 0 && !r.error && r.success !== false && r.empty !== true; })
+    icon: icon ? childState(icon, j => isConfirmedPraktikaIcon(j.response))
       : skipped(d.workflow_icon_update_status) ? 'skipped' : d.workflow_icon_update_status === 'failed' ? 'failed' : 'unknown',
     periodontal: skipped(d.workflow_periodontal_chart_status) ? 'skipped' : 'unknown',
   };

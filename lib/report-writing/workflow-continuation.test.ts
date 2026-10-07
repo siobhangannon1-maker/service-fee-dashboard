@@ -28,7 +28,7 @@ function fixture(stage = 'upload') {
     workflow_praktika_upload_status: 'waiting_for_authentication', workflow_icon_update_status: 'pending', edited_text: 'synthetic approved text' };
   const rows: Record<string, Row[]> = { user_roles: [{user_id:'retry-actor',role:'typist'}], profiles:[{id:'retry-actor',full_name:'Retry Typist',role:'staff'}], providers:[{id:'provider',is_active:true}], praktika_helper_jobs: [intent], report_drafts: [draft], mediref_helper_jobs: [{ id: 'existing', status: 'pending', job_type: 'send_mediref_letter', payload: { draftId: 'draft' } }] };
   const events: string[] = [];
-  const db = { from(table: string) {
+  const db = { rpc:async(name:string)=>{assert.equal(name,'settle_workflow_resolution_execution');return{error:null};}, from(table: string) {
     const filters: Array<(row: Row) => boolean> = []; let patch: Row | null = null; let limit = Infinity;
     const field = (row: Row, key: string) => { const [root, sub] = key.split('->>'); return sub ? String(row[root]?.[sub]) : row[root]; };
     const q: any = {

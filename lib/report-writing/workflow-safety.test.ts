@@ -17,9 +17,10 @@ type Row = Record<string, any>;
 function extract(path: string, name: string) {
   const source = readFileSync(path, "utf8");
   const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
-  const fn = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name)!;
+  const hasExecute=ast.statements.some(n=>ts.isFunctionDeclaration(n)&&n.name?.text==="execute");
+  const fn = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === (name==="POST"&&hasExecute?"execute":name))!;
   assert.ok(fn, name);
-  return ts.transpileModule(fn.getText(ast).replace(/^export /, ""), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return ts.transpileModule(fn.getText(ast).replace(/^export /, "").replace(/async function execute\(/,"async function POST("), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 }
 function database(tables: Record<string, Row[]>, events: string[], lookupError?: unknown, throws = false) {
   return { from(table: string) {

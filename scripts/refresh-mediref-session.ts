@@ -876,10 +876,9 @@ async function updateDraftAfterMedirefSuccess(
     }
   }
 
-  const { error } = await supabase
-    .from("report_drafts")
-    .update(values)
-    .eq("id", draftId);
+  const { error } = await supabase.rpc("record_mediref_preparation_completion", {
+    p_draft_id: draftId, p_job_id: job.id, p_values: values,
+  });
 
   if (error) {
     throw new Error(

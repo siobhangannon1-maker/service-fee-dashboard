@@ -11,8 +11,9 @@ const id='11111111-1111-4111-8111-111111111111';
 const marker={manualVerification:{mediref:{source:'manually_sent',recoveryClass:'no_prior_helper_job_v1'}}};
 function declaration(path:string,name:string) {
  const ast=ts.createSourceFile(path,readFileSync(path,'utf8'),ts.ScriptTarget.Latest,true);
- const node=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name)!;
- return ts.transpileModule(node.getText(ast).replace(/^export /,''),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const selected=name==='POST' && ast.statements.some(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='execute')?'execute':name;
+ const node=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===selected)!;
+ return ts.transpileModule(node.getText(ast).replace(/^export /,'').replace(/async function execute\(/,'async function POST('),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 }
 function fakeDb(response:unknown=marker,error:unknown=null) {
  let inserts=0,updates=0;

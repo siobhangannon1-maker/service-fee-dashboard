@@ -42,5 +42,11 @@ for(const mode of ['normal','lookup_error','throw','one_bad','base_error'])test(
 });
 test('History route and reconciliation contain no mutation operations',()=>{
   const recovery=readFileSync('lib/report-writing/workflow-recovery.ts','utf8');
-  assert.doesNotMatch(source+recovery,/\.(insert|update|upsert|delete|rpc)\s*\(/);
+  assert.doesNotMatch(source+recovery,/\.(insert|update|upsert|delete)\s*\(/);
+});
+
+test('History enrichment uses only the read-only resolution projection RPC', () => {
+ const source=readFileSync('lib/report-writing/workflow-recovery.ts','utf8');
+ const calls=[...source.matchAll(/\.rpc\s*\(\s*['"]([^'"]+)/g)].map(m=>m[1]);
+ assert.deepEqual(calls,['workflow_resolution_projection']);
 });

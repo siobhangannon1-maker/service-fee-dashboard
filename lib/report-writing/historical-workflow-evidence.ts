@@ -1,4 +1,5 @@
 import type { ReadJob, WorkflowDraft, WorkflowEvidence } from './resolved-workflow';
+import { isConfirmedPraktikaIcon } from './praktika-icon-result';
 import { isConfirmedPraktikaUpload } from './praktika-upload-result';
 
 export type HistoricalUploadAudit = {
@@ -66,7 +67,7 @@ export function historicalWorkflowAssociation(d: WorkflowDraft, e: WorkflowEvide
     const completed = Date.parse(j.completed_at || j.updated_at || '');
     return j.job_type === 'update_praktika_letter_icons' && j.status === 'completed' && !modern(j.request) && !modern(j.response) &&
       Array.isArray(b) && b.length === 1 && String(obj(b[0]).appointment_id ?? '') === d.praktika_letter_icon_appointment_id &&
-      j.app_user_id === upload.app_user_id && Object.keys(r).length > 0 && !r.error && r.success !== false && r.empty !== true &&
+      j.app_user_id === upload.app_user_id && isConfirmedPraktikaIcon(r,j.request) &&
       equalJson(preview,j.response) && Number.isFinite(auditTime) && completed <= auditTime && auditTime - completed <= 60_000;
   });
   // An appointment's unrelated older icon changes are not this draft's workflow.

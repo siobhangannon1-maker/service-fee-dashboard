@@ -1,3 +1,4 @@
+import { withWorkflowOperationRequest } from "@/lib/report-writing/workflow-operation";
 import { assertMedirefNotAcknowledged, MedirefAcknowledgementError } from '@/lib/mediref/manual-acknowledgement';
 import { POST as generateLetterPdf } from "../generate-pdf/route";
 import { sensitiveApiAccess } from "@/lib/auth";
@@ -414,7 +415,7 @@ async function generateAndStageLetterPdf(params: {
   });
 }
 
-export async function POST(req: Request) {
+async function execute(req: Request) {
   // Only the existing service-authenticated in-process continuation may bypass browser login.
   const accessDenied = currentWorkflowExecution() ? null : await sensitiveApiAccess("/api/report-writing/send-via-mediref");
   if (accessDenied) return accessDenied;
@@ -903,4 +904,7 @@ export async function POST(req: Request) {
       },
     );
   }
+}
+export async function POST(req: Request) {
+  return withWorkflowOperationRequest(req,"mediref","/api/report-writing/send-via-mediref",()=>execute(req));
 }

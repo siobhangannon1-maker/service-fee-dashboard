@@ -13,7 +13,7 @@ function fixture(stage='upload') {
  const evidence:WorkflowEvidence={parent,uploads:[],icons:[],mediref:[],livePraktikaActors:new Set(['actor']),liveMediref:true,
  currentUploadId:continuationChildId(parent.id,'upload_report_to_praktika'),currentIconId:continuationChildId(parent.id,'update_praktika_letter_icons')};
  const child=(type:string,status:string)=>({id:continuationChildId(parent.id,type as 'upload_report_to_praktika'),job_type:type,status,app_user_id:'actor',created_at:stamp,completed_at:status==='completed'?stamp:null,
- request:{reportDraftId:draft.id,continuationId:parent.id},response:type==='upload_report_to_praktika'?{patient_communication:{iFileId:123}}:{success:true}});
+ request:{reportDraftId:draft.id,continuationId:parent.id},response:type==='upload_report_to_praktika'?{patient_communication:{iFileId:123}}:{appointment_icon1id:6597,appointment_icon2id:0,appointment_icon3id:0,appointment_icon4id:0}});
  const project=()=>currentWorkflowPresentation(draft,evidence,resolveWorkflow(draft,evidence,now),false,now);
  return {draft,parent,evidence,child,project};
 }

@@ -1,3 +1,4 @@
+import { currentWorkflowExecution } from "../report-writing/workflow-execution-context";
 import { assertMedirefNotAcknowledged, MedirefAcknowledgementError } from './manual-acknowledgement';
 import "server-only";
 
@@ -11,6 +12,7 @@ const supabaseAdmin = createClient(
 
 export type MedirefHelperRequest = {
   workflowContinuationId?: string;
+  resolutionEventId?: string;
   action: "send_letter";
   retryMediref?: true;
   draftId: string;
@@ -50,7 +52,7 @@ export async function createMedirefHelperJob({
       app_user_id: null,
       session_id: sessionId,
       job_type: jobType,
-      payload: request,
+      payload: {...request,...(currentWorkflowExecution()?.resolutionEventId?{resolutionEventId:currentWorkflowExecution()!.resolutionEventId}:{})},
       result: null,
       error: null,
       status: "pending",
