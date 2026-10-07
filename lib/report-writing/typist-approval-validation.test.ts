@@ -51,8 +51,8 @@ for (const [name, event] of malformed) {
     const initial = { ...draft, status: 'draft', workflow_status: 'not_started' }
     const sequence = { current: 3 }
     const client = runInNewContext(code, {
-      loading, selectedDraft: initial, selectedProviderId: draft.provider_id,
-      imageDraftId: null, autosaveTimerRef: { current: null }, pendingPatientSavesRef: { current: {} },
+      loading, saveStatus: "idle", selectedDraft: initial, selectedProviderId: draft.provider_id,
+      imageDraftId: null, autosaveTimerRef: { current: null }, patientDetailsAutosaveTimerRef: { current: null }, referrerAutosaveTimerRef: { current: null }, pendingPatientSavesRef: { current: {} },
       patientSaveChainsRef: { current: new Map() }, localDraftEditsRef: { current: new Map() },
       queueSelectionTokenRef: { current: 0 }, draftListRequestSequenceRef: sequence,
       getLetterTextForSave: () => draft.edited_text, generatedAiLetterText: draft.ai_generated_text,

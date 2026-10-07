@@ -859,6 +859,7 @@ export default function ProviderReportClient({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           draftId: draft.id,
+          expectedUpdatedAt: draft.updated_at,
           editedText: getReportText(draft),
           status: "awaiting_provider_approval",
           unapprove: true,
@@ -921,6 +922,7 @@ export default function ProviderReportClient({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           draftId: selectedDraft.id,
+          expectedUpdatedAt: selectedDraft.updated_at,
           editedText: text,
           status: options?.status || selectedDraft.status,
           patientName,
@@ -1172,6 +1174,7 @@ export default function ProviderReportClient({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             draftId: selectedDraft.id,
+            expectedUpdatedAt: selectedDraft.updated_at,
             editedText: finalApprovedText,
             status: "approved",
             originalAiText,
@@ -1467,6 +1470,7 @@ export default function ProviderReportClient({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           draftId: selectedApprovalDraft.id,
+          expectedUpdatedAt: selectedApprovalDraft.updated_at,
           editedText: finalText,
           status: "approved",
           originalAiText,
@@ -1518,6 +1522,7 @@ export default function ProviderReportClient({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           draftId: selectedApprovalDraft.id,
+          expectedUpdatedAt: selectedApprovalDraft.updated_at,
           editedText: selectedApprovalDraft.edited_text || "",
           status: "edited_by_typist",
           learnFromEdits: false,

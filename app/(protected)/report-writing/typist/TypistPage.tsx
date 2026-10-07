@@ -80,7 +80,18 @@ type AutoGenerateStatus =
   | "ready"
   | "error";
 
-type SaveStatus = "idle" | "unsaved" | "saving" | "saved" | "error";
+type SaveStatus = "idle" | "unsaved" | "saving" | "saved" | "error" | "conflict";
+type PendingDraftSave = Promise<Response> & {
+  providerId: string;
+  selectionToken: number;
+  revisions: Set<string | null>;
+  states: Map<string | null, string | null>;
+  observedState?: { revision: string | null; status: string | null };
+  savedRevision?: string | null;
+  failed?: boolean;
+  conflict?: boolean;
+  invalidated?: boolean;
+};
 
 type PraktikaCandidate = {
   id: string;
@@ -1256,25 +1267,81 @@ export default function TypistPage() {
   const [praktikaSyncingReferrers, setPraktikaSyncingReferrers] =
     useState(false);
   const [imageDraftId, setImageDraftId] = useState<string | null>(null);
+  const [imageDraftUpdatedAt, setImageDraftUpdatedAt] = useState<string | null>(null);
   const [imageDraftCreating, setImageDraftCreating] = useState(false);
   const [imageDraftError, setImageDraftError] = useState<string | null>(null);
   const autoImageDraftQueueIdRef = useRef<string | null>(null);
   const queueSelectionTokenRef = useRef(0);
   const pendingPatientSavesRef = useRef<Partial<Record<"letter" | "patient" | "referrer", () => void>>>({});
   const localDraftEditsRef = useRef(new Map<string, Partial<Draft>>());
-  const patientSaveChainsRef = useRef(new Map<string, Promise<unknown>>());
+  const patientSaveChainsRef = useRef(new Map<string, PendingDraftSave>());
 
-  function savePatientDraft(draftId: string, request: RequestInit) {
-    // Returning to A and editing again must not let an older A save arrive last.
-    // B has its own chain and selection never waits for either request.
-    const previous = patientSaveChainsRef.current.get(draftId) ?? Promise.resolve();
-    const next = previous.catch(() => {}).then(async () => {
-      const response = await fetch("/api/report-writing/update-draft", request);
-      const result = await response.clone().json().catch(() => null);
-      if (response.ok && result?.success && patientSaveChainsRef.current.get(draftId) === next)
-        localDraftEditsRef.current.delete(draftId);
-      return response;
-    });
+  function savePatientDraft(draftId: string, request: RequestInit, context: { providerId: string; selectionToken: number; status?: string | null } = {
+    providerId: selectedProviderIdRef.current,
+    selectionToken: queueSelectionTokenRef.current,
+  }) {
+    // Preserve per-draft ordering, but never borrow a revision across selections.
+    const body = JSON.parse(String(request.body));
+    const queuedRevision = body.expectedUpdatedAt as string | null;
+    const previous = patientSaveChainsRef.current.get(draftId);
+    const next: PendingDraftSave = Object.assign(
+      (previous ?? Promise.resolve(undefined)).catch(() => undefined).then(async (prior) => {
+        const sameChain = previous && previous.providerId === context.providerId &&
+          previous.selectionToken === context.selectionToken;
+        const currentContext = selectedProviderIdRef.current === context.providerId &&
+          queueSelectionTokenRef.current === context.selectionToken;
+        next.invalidated = next.invalidated || !currentContext;
+        if (sameChain && currentContext && prior?.ok) next.states = new Map([...previous.states, ...next.states]);
+        if (next.observedState && next.states.get(next.observedState.revision) !== next.observedState.status)
+          next.invalidated = true;
+        if (currentContext && (next.invalidated || (sameChain && (previous.failed || previous.invalidated)))) {
+          next.failed = true;
+          next.conflict = Boolean(next.invalidated || previous?.conflict || previous?.invalidated);
+          if (next.conflict) localDraftEditsRef.current.delete(draftId);
+          return Response.json({ success: false, reloadRequired: true,
+            error: "The preceding save could not be confirmed. Reload the letter before continuing.",
+            code: next.conflict ? "draft_revision_conflict" : "draft_save_chain_interrupted",
+          }, { status: next.conflict ? 409 : 503 });
+        }
+        if (sameChain && currentContext && prior?.ok && previous.savedRevision !== undefined &&
+            previous.revisions.has(queuedRevision)) {
+          // Include both original and dispatched revisions from proven local
+          // predecessors. A later render may already have installed one of them.
+          next.revisions = new Set(previous.revisions);
+          body.expectedUpdatedAt = previous.savedRevision;
+        }
+        next.revisions.add(body.expectedUpdatedAt);
+        try {
+          const response = await fetch("/api/report-writing/update-draft", {
+            ...request, body: JSON.stringify(body),
+          });
+          const result = await response.clone().json().catch(() => null);
+          if (response.ok && result?.success && result.draft?.id === draftId &&
+              (typeof result.draft.updated_at === "string" || result.draft.updated_at === null)) {
+            next.savedRevision = result.draft.updated_at;
+            next.revisions.add(result.draft.updated_at);
+            next.states.set(result.draft.updated_at, result.draft.status);
+            if (next.observedState && next.states.get(next.observedState.revision) !== next.observedState.status)
+              next.invalidated = true;
+            if (patientSaveChainsRef.current.get(draftId) === next)
+              localDraftEditsRef.current.delete(draftId);
+          } else {
+            next.failed = true;
+            next.conflict = response.status === 409;
+            if (next.conflict) localDraftEditsRef.current.delete(draftId);
+          }
+          return response;
+        } catch (error) {
+          next.failed = true;
+          throw error;
+        }
+      }), {
+        providerId: context.providerId,
+        selectionToken: context.selectionToken,
+        revisions: new Set([queuedRevision]),
+        states: new Map<string | null, string | null>(context.status === undefined ? [] : [[queuedRevision, context.status]]),
+      },
+    );
     patientSaveChainsRef.current.set(draftId, next);
     void next.finally(() => {
       if (patientSaveChainsRef.current.get(draftId) === next) patientSaveChainsRef.current.delete(draftId);
@@ -1285,15 +1352,20 @@ export default function TypistPage() {
   function beginPatientSelection() {
     // Keep the latest local edit available if this draft is reopened before its
     // captured save finishes. Never overlay identity/status fields from another row.
-    if (selectedDraft && (Object.keys(pendingPatientSavesRef.current).length > 0 ||
+    if (selectedDraft && saveStatus === "conflict") {
+      // Reload must not silently replay rejected local text on a fresh token.
+      localDraftEditsRef.current.delete(selectedDraft.id);
+    } else if (selectedDraft && (Object.keys(pendingPatientSavesRef.current).length > 0 ||
       patientSaveChainsRef.current.has(selectedDraft.id) || saveStatus === 'error' || saveStatus === 'unsaved'))
       localDraftEditsRef.current.set(selectedDraft.id, {
       edited_text: getLetterTextForSave(), typist_queries: typistQueries || null,
+      updated_at: selectedDraft.updated_at,
       patient_name: patientName || null, patient_dob: patientDob || null,
       referrer_name: referrerName || null, referrer_address: referrerAddress || null,
     });
     const pending = Object.values(pendingPatientSavesRef.current);
     pendingPatientSavesRef.current = {};
+    for (const pending of patientSaveChainsRef.current.values()) pending.invalidated = true;
     queueSelectionTokenRef.current += 1;
     // Start captured saves without awaiting them or delaying selection.
     pending.forEach(save => save());
@@ -1468,6 +1540,7 @@ export default function TypistPage() {
 
     if (saveStatus === "saving") return "Saving edits...";
     if (saveStatus === "unsaved") return "Unsaved changes";
+    if (saveStatus === "conflict") return "This letter changed elsewhere and could not be saved. Reload the letter before continuing.";
     if (saveStatus === "error") return "Autosave failed";
 
     if (lastSavedAt) {
@@ -1541,6 +1614,7 @@ export default function TypistPage() {
 
   async function persistCurrentReferrerDetails(options?: { quiet?: boolean; selectionToken?: number }) {
     if (!selectedDraft) return true;
+    if (saveStatus === "conflict") return false;
     const selectionToken = options?.selectionToken ?? queueSelectionTokenRef.current;
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
 
@@ -1567,6 +1641,7 @@ export default function TypistPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           draftId: selectedDraft.id,
+          expectedUpdatedAt: selectedDraft.updated_at,
           referrerName: currentReferrerName,
           referrerAddress: currentReferrerAddress,
           patientName,
@@ -1574,14 +1649,14 @@ export default function TypistPage() {
           reportType,
           clinicalNotes,
         }),
-      });
+      }, { providerId: selectedDraft.provider_id, selectionToken, status: selectedDraft.status });
 
       const data = await response.json();
 
       if (!data.success) {
         console.error("Failed to save referrer details:", data);
-        if (isCurrentSelection() && !options?.quiet) {
-          setSaveStatus("error");
+        if (isCurrentSelection() && (response.status === 409 || !options?.quiet)) {
+          setSaveStatus(response.status === 409 ? "conflict" : "error");
         }
         return false;
       }
@@ -1628,6 +1703,7 @@ export default function TypistPage() {
 
   async function persistCurrentPatientDetails(options?: { quiet?: boolean; selectionToken?: number }) {
     if (!selectedDraft) return true;
+    if (saveStatus === "conflict") return false;
     const selectionToken = options?.selectionToken ?? queueSelectionTokenRef.current;
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
 
@@ -1654,6 +1730,7 @@ export default function TypistPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           draftId: selectedDraft.id,
+          expectedUpdatedAt: selectedDraft.updated_at,
           patientName: currentPatientName,
           patientDob: currentPatientDob,
           referrerName,
@@ -1661,14 +1738,14 @@ export default function TypistPage() {
           reportType,
           clinicalNotes,
         }),
-      });
+      }, { providerId: selectedDraft.provider_id, selectionToken, status: selectedDraft.status });
 
       const data = await response.json();
 
       if (!response.ok || !data.success) {
         console.error("Failed to save patient details:", data);
-        if (isCurrentSelection() && !options?.quiet) {
-          setSaveStatus("error");
+        if (isCurrentSelection() && (response.status === 409 || !options?.quiet)) {
+          setSaveStatus(response.status === 409 ? "conflict" : "error");
         }
         return false;
       }
@@ -1740,6 +1817,7 @@ export default function TypistPage() {
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     if (selectedDraft?.id) {
       setImageDraftId(selectedDraft.id);
+      setImageDraftUpdatedAt(selectedDraft.updated_at);
       setImageDraftError(null);
       return selectedDraft.id;
     }
@@ -1832,6 +1910,7 @@ export default function TypistPage() {
 
       if (!isCurrentSelection()) return createdDraftId;
       setImageDraftId(createdDraftId);
+      setImageDraftUpdatedAt(data.draft.updated_at);
       await loadDrafts(selectedProviderId);
       return createdDraftId;
     } catch (error) {
@@ -2920,6 +2999,14 @@ export default function TypistPage() {
       setDrafts(items);
       setSelectedDraft(current => {
         const item = current && items.find(draft => draft.id === current.id);
+        const pending = current && patientSaveChainsRef.current.get(current.id);
+        if (current && pending && item && (item.status !== current.status || item.updated_at !== current.updated_at)) {
+          // A list read may observe our own committed write before its response
+          // arrives. Validate that observation against the eventual local ack.
+          pending.observedState = { revision: item.updated_at, status: item.status };
+          if (pending.savedRevision !== undefined && pending.states.get(item.updated_at) !== item.status)
+            pending.invalidated = true;
+        }
         return current && item ? mergeDraftWorkflow(current, item) : current;
       });
       setDraftListError(null);
@@ -3034,7 +3121,7 @@ export default function TypistPage() {
   }, [selectedProviderId, reportType]);
 
   useEffect(() => {
-    if (!selectedDraft) return;
+    if (!selectedDraft || loading || saveStatus === "conflict") return;
 
     const selectionToken = queueSelectionTokenRef.current;
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
@@ -3065,13 +3152,13 @@ export default function TypistPage() {
             learningSource: "typist_autosave",
             expectedUpdatedAt: selectedDraft.updated_at,
           }),
-        });
+        }, { providerId: selectedDraft.provider_id, selectionToken, status: selectedDraft.status });
 
         const data = await response.json();
 
         if (!data.success) {
           console.error("Autosave failed:", data);
-          if (isCurrentSelection()) setSaveStatus("error");
+          if (isCurrentSelection()) setSaveStatus(response.status === 409 ? "conflict" : "error");
           return;
         }
 
@@ -3104,10 +3191,10 @@ export default function TypistPage() {
       clearTimeout(timer);
       if (pendingPatientSavesRef.current.letter === run) delete pendingPatientSavesRef.current.letter;
     };
-  }, [letterText, pdfCcText, pdfLetterDate, pdfFontSize, typistQueries, selectedDraft]);
+  }, [letterText, pdfCcText, pdfLetterDate, pdfFontSize, typistQueries, selectedDraft, loading, saveStatus === "conflict"]);
 
   useEffect(() => {
-    if (!selectedDraft) return;
+    if (!selectedDraft || loading || saveStatus === "conflict") return;
 
     const currentReferrerName = cleanString(referrerName);
     const currentReferrerAddress = cleanString(referrerAddress);
@@ -3140,10 +3227,10 @@ export default function TypistPage() {
       if (pendingPatientSavesRef.current.referrer === run) delete pendingPatientSavesRef.current.referrer;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDraft?.id, referrerName, referrerAddress]);
+  }, [selectedDraft?.id, referrerName, referrerAddress, loading, saveStatus === "conflict"]);
 
   useEffect(() => {
-    if (!selectedDraft) return;
+    if (!selectedDraft || loading || saveStatus === "conflict") return;
 
     const currentPatientName = cleanString(patientName);
     const currentPatientDob = cleanString(patientDob);
@@ -3179,7 +3266,7 @@ export default function TypistPage() {
       if (pendingPatientSavesRef.current.patient === run) delete pendingPatientSavesRef.current.patient;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDraft?.id, patientName, patientDob]);
+  }, [selectedDraft?.id, patientName, patientDob, loading, saveStatus === "conflict"]);
 
   function clearForm(resetWorkflowOptions = true) {
     beginPatientSelection();
@@ -3226,6 +3313,7 @@ export default function TypistPage() {
       setMedirefConfirmed(false);
     }
     setImageDraftId(null);
+    setImageDraftUpdatedAt(null);
     setImageDraftError(null);
     setImageDraftCreating(false);
     autoImageDraftQueueIdRef.current = null;
@@ -3243,9 +3331,10 @@ export default function TypistPage() {
       // A pending local edit remains visible on reselection without waiting for
       // or cancelling its server save. Only this draft's captured edit is merged.
       const localEdit = localDraftEditsRef.current.get(item.id);
+      const pendingSave = patientSaveChainsRef.current.get(item.id);
       const loaded = await detailLoaderRef.current(item.id, providerId);
       if (!isCurrentSelection()) return;
-      const draft = { ...loaded, ...localEdit };
+      const draft = { ...loaded, ...(pendingSave?.conflict ? undefined : localEdit) };
       applyDraftDetail(draft, queueId);
     } catch {
       if (isCurrentSelection()) setDetailError('Letter could not be loaded. Please select it again.');
@@ -3255,6 +3344,8 @@ export default function TypistPage() {
   }
 
   function applyDraftDetail(draft: Draft, queueId: string | null = null) {
+    const pending = patientSaveChainsRef.current.get(draft.id);
+    if (pending) pending.invalidated = true;
     setActiveQueueItemId(queueId);
     setLoading(false);
     setReferralAutoFillError("");
@@ -3294,6 +3385,7 @@ export default function TypistPage() {
     setMatchingPatient(false);
     setSelectedPraktikaPatientId(draft.praktika_patient_id || "");
     setImageDraftId(draft.id);
+    setImageDraftUpdatedAt(draft.updated_at);
     setImageDraftError(null);
     setImageDraftCreating(false);
     autoImageDraftQueueIdRef.current = null;
@@ -3488,6 +3580,7 @@ export default function TypistPage() {
     setActiveQueueItemId(item.id);
     setSelectedDraft(null);
     setImageDraftId(item.report_draft_id || null);
+    setImageDraftUpdatedAt(null);
     setImageDraftError(null);
     setImageDraftCreating(false);
     autoImageDraftQueueIdRef.current = null;
@@ -4148,6 +4241,10 @@ export default function TypistPage() {
       | "approved" = "draft",
   ) {
     if (loading) return;
+    if (saveStatus === "conflict") {
+      alert("This letter changed elsewhere and could not be saved. Reload the letter before continuing.");
+      return;
+    }
     let approvalFinished = false;
     let selectionToken = queueSelectionTokenRef.current;
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
@@ -4181,12 +4278,30 @@ export default function TypistPage() {
       Boolean(generatedAiLetterText.trim()) &&
       generatedAiLetterText.trim() !== finalLetterTextForSave.trim();
 
+    let expectedUpdatedAt = selectedDraft?.updated_at ?? imageDraftUpdatedAt;
     setLoading(true);
     if (status === "approved") {
-      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-      delete pendingPatientSavesRef.current.letter;
+      for (const timer of [autosaveTimerRef.current, patientDetailsAutosaveTimerRef.current, referrerAutosaveTimerRef.current])
+        if (timer) clearTimeout(timer);
+      pendingPatientSavesRef.current = {};
       const draftId = selectedDraft?.id || imageDraftId;
-      if (draftId) await patientSaveChainsRef.current.get(draftId)?.catch(() => {});
+      let pending = draftId ? patientSaveChainsRef.current.get(draftId) : undefined;
+      while (pending) {
+        const prior = await pending.catch(() => undefined);
+        if (!isCurrentSelection()) return;
+        const sameChain = pending.providerId === selectedProviderId && pending.selectionToken === selectionToken;
+        if (sameChain && (pending.failed || pending.invalidated)) {
+          setSaveStatus(pending.conflict || pending.invalidated ? "conflict" : "error");
+          setLoading(false);
+          alert("The preceding save could not be confirmed. Reload the letter before saving or approving.");
+          return;
+        }
+        if (sameChain && prior?.ok && pending.savedRevision !== undefined && pending.revisions.has(expectedUpdatedAt))
+          expectedUpdatedAt = pending.savedRevision;
+        const following = draftId ? patientSaveChainsRef.current.get(draftId) : undefined;
+        if (!following || following === pending) break;
+        pending = following;
+      }
       if (!isCurrentSelection()) return;
       selectionToken = ++queueSelectionTokenRef.current;
       if (draftId) localDraftEditsRef.current.delete(draftId);
@@ -4200,6 +4315,7 @@ export default function TypistPage() {
       const requestBody = imageDraftId
         ? {
             draftId: imageDraftId,
+            expectedUpdatedAt,
             queueId: activeQueueItemId,
             editedText: finalLetterTextForSave,
             status,
@@ -4237,11 +4353,14 @@ export default function TypistPage() {
             status,
           };
 
-      const response = await fetch(endpoint, {
+      const request: RequestInit = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
-      });
+      };
+      const response = imageDraftId && status !== "approved"
+        ? await savePatientDraft(imageDraftId, request, { providerId: selectedProviderId, selectionToken, status: selectedDraft?.status })
+        : await fetch(endpoint, request);
 
       const data = await readApprovalResponse(response, status === "approved"
         ? { providerId: selectedProviderId, draftId: imageDraftId || undefined }
@@ -4249,6 +4368,7 @@ export default function TypistPage() {
 
       if (!response.ok || !data.success) {
         if (!isCurrentSelection()) return;
+        if (response.status === 409) setSaveStatus("conflict");
         alert(data.error || "Failed to save letter");
         return;
       }
@@ -4270,6 +4390,7 @@ export default function TypistPage() {
         approvalFinished = true;
         setLoading(false);
         setImageDraftId(savedDraftId);
+        setImageDraftUpdatedAt(savedDraft?.updated_at ?? null);
         if (savedDraft) setSelectedDraft((current) => current && current.id === savedDraft.id
           ? mergeDraftWorkflow(savedDraft, { ...current, status: savedDraft.status,
               provider_approved_at: savedDraft.provider_approved_at })
@@ -4304,6 +4425,7 @@ export default function TypistPage() {
       setLastSavedAt(new Date().toISOString());
       lastAutosavedTextRef.current = finalLetterTextForSave;
       setImageDraftId(savedDraftId);
+      setImageDraftUpdatedAt(savedDraft?.updated_at ?? null);
       if (status !== "approved") setActiveQueueItemId(null);
 
       if (status !== "approved") await loadDrafts(selectedProviderId);
@@ -4334,6 +4456,10 @@ export default function TypistPage() {
 
   async function updateExistingDraft(status: string) {
     if (loading) return;
+    if (saveStatus === "conflict") {
+      alert("This letter changed elsewhere and could not be saved. Reload the letter before continuing.");
+      return;
+    }
     let approvalFinished = false;
     let selectionToken = queueSelectionTokenRef.current;
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
@@ -4341,23 +4467,42 @@ export default function TypistPage() {
 
     const finalLetterTextForSave = getLetterTextForSave();
 
+    let expectedUpdatedAt = selectedDraft?.updated_at ?? imageDraftUpdatedAt;
     setLoading(true);
     if (status === "approved") {
-      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-      delete pendingPatientSavesRef.current.letter;
+      for (const timer of [autosaveTimerRef.current, patientDetailsAutosaveTimerRef.current, referrerAutosaveTimerRef.current])
+        if (timer) clearTimeout(timer);
+      pendingPatientSavesRef.current = {};
       const draftId = selectedDraft?.id || imageDraftId;
-      if (draftId) await patientSaveChainsRef.current.get(draftId)?.catch(() => {});
+      let pending = draftId ? patientSaveChainsRef.current.get(draftId) : undefined;
+      while (pending) {
+        const prior = await pending.catch(() => undefined);
+        if (!isCurrentSelection()) return;
+        const sameChain = pending.providerId === selectedProviderId && pending.selectionToken === selectionToken;
+        if (sameChain && (pending.failed || pending.invalidated)) {
+          setSaveStatus(pending.conflict || pending.invalidated ? "conflict" : "error");
+          setLoading(false);
+          alert("The preceding save could not be confirmed. Reload the letter before saving or approving.");
+          return;
+        }
+        if (sameChain && prior?.ok && pending.savedRevision !== undefined && pending.revisions.has(expectedUpdatedAt))
+          expectedUpdatedAt = pending.savedRevision;
+        const following = draftId ? patientSaveChainsRef.current.get(draftId) : undefined;
+        if (!following || following === pending) break;
+        pending = following;
+      }
       if (!isCurrentSelection()) return;
       selectionToken = ++queueSelectionTokenRef.current;
       if (draftId) localDraftEditsRef.current.delete(draftId);
     }
 
     try {
-      const response = await fetch("/api/report-writing/update-draft", {
+      const request: RequestInit = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           draftId: selectedDraft.id,
+          expectedUpdatedAt,
           editedText: finalLetterTextForSave,
           status,
           referrerName,
@@ -4386,7 +4531,10 @@ export default function TypistPage() {
             ).trim() !== finalLetterTextForSave.trim(),
           learningSource: "typist_existing_draft_approval",
         }),
-      });
+      };
+      const response = status === "approved"
+        ? await fetch("/api/report-writing/update-draft", request)
+        : await savePatientDraft(selectedDraft.id, request, { providerId: selectedDraft.provider_id, selectionToken, status: selectedDraft.status });
 
       const data = await readApprovalResponse(response, status === "approved"
         ? { providerId: selectedProviderId, draftId: selectedDraft.id }
@@ -4394,6 +4542,7 @@ export default function TypistPage() {
       if (!isCurrentSelection()) return;
 
       if (!data.success) {
+        if (response.status === 409) setSaveStatus("conflict");
         alert(data.error || "Failed to update draft");
         return;
       }
@@ -4712,31 +4861,33 @@ export default function TypistPage() {
     const isCurrentSelection = () => queueSelectionTokenRef.current === selectionToken;
     setSelectedPraktikaPatientId(praktikaPatientId || "");
 
-    if (!selectedDraft) return;
+    if (!selectedDraft || saveStatus === "conflict") return;
 
     try {
-      const response = await fetch("/api/report-writing/update-draft", {
+      const response = await savePatientDraft(selectedDraft.id, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           draftId: selectedDraft.id,
+          expectedUpdatedAt: selectedDraft.updated_at,
           praktikaPatientId: praktikaPatientId || null,
           learnFromEdits: false,
           learningSource: "typist_praktika_match",
         }),
-      });
+      }, { providerId: selectedDraft.provider_id, selectionToken, status: selectedDraft.status });
 
       const data = await response.json();
       if (!isCurrentSelection()) return;
 
       if (!data.success) {
+        if (response.status === 409) setSaveStatus("conflict");
         alert(data.error || "Failed to save Praktika patient match.");
         return;
       }
 
       setSelectedDraft((current) =>
         current && current.id === selectedDraft.id
-          ? { ...current, praktika_patient_id: praktikaPatientId || null }
+          ? { ...current, updated_at: data.draft.updated_at, praktika_patient_id: praktikaPatientId || null }
           : current,
       );
 
@@ -5242,13 +5393,14 @@ export default function TypistPage() {
               </div>
 
               <div
+                role={saveStatus === "conflict" ? "alert" : undefined}
                 className={[
                   "rounded-xl border px-3 py-2 text-xs font-semibold",
                   saveStatus === "saved"
                     ? "border-emerald-200 bg-emerald-50 text-emerald-700"
                     : saveStatus === "saving"
                       ? "border-blue-200 bg-blue-50 text-blue-700"
-                      : saveStatus === "error"
+                      : (saveStatus === "error" || saveStatus === "conflict")
                         ? "border-red-200 bg-red-50 text-red-700"
                         : saveStatus === "unsaved"
                           ? "border-amber-200 bg-amber-50 text-amber-700"

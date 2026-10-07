@@ -40,7 +40,7 @@ for (const lateWrite of [false,true]) test(`actual route fences stale autosave; 
   }
   let old: Promise<Response> | undefined
   if (lateWrite) { old = post(request({ draftId: 'A', editedText: 'Stale', status: 'draft', learningSource: 'typist_autosave', expectedUpdatedAt: '2026-01-01T00:00:00.000Z' })); await writing }
-  const approved = await post(request({ draftId: 'A', editedText: 'Final', status: 'approved', learningSource: 'typist_existing_draft_approval' }))
+  const approved = await post(request({ draftId: 'A', expectedUpdatedAt: row.updated_at, editedText: 'Final', status: 'approved', learningSource: 'typist_existing_draft_approval' }))
   assert.equal(audit,true)
   const reader = approved.body!.getReader(); const ack = JSON.parse(new TextDecoder().decode((await reader.read()).value))
   assert.ok(Date.parse(row.updated_at) > Date.parse('2026-01-01T00:00:00.000Z'));

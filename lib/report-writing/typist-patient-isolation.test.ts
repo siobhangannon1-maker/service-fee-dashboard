@@ -35,7 +35,7 @@ const B = { ...A, id: 'draft-b', patient_name: 'Synthetic B', patient_dob: null,
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 function fixture() {
   const state: Values = {};
-  const globals: Values = {};
+  const globals: Values = { Response };
   for (const name of new Set((handlers + effects.join()).match(/\bset[A-Z]\w+/g))) {
     if (name === 'setTimeout') continue;
     const key = name.slice(3,4).toLowerCase() + name.slice(4);
@@ -45,7 +45,7 @@ function fixture() {
   Object.assign(state, { selectedDraft:null, activeQueueItemId:null, selectedProviderId:'provider', drafts:[A,B], queue:[],
     patientName:'', patientFirstName:'', patientLastName:'', patientDob:'', referrerName:'', referrerAddress:'',
     letterText:'', generatedAiLetterText:'', typistQueries:'', clinicalNotes:'', pdfCcText:'', pdfLetterDate:'2026-01-01', pdfFontSize:10,
-    saveStatus:'idle', reportType:'consultation_report', reportTypes:[], preferredExampleId:'', queueStatusTab:'active', imageDraftId:null });
+    saveStatus:'idle', reportType:'consultation_report', reportTypes:[], preferredExampleId:'', queueStatusTab:'active', imageDraftId:null, imageDraftUpdatedAt:null });
   const stored = new Map([[A.id,{...A}],[B.id,{...B}]]);
   const refs = { selectedProviderIdRef:{current:'provider'}, detailLoaderRef:{current:async(id:string)=>({...stored.get(id)!})}, queueSelectionTokenRef:{current:0}, pendingPatientSavesRef:{current:{} as Values}, localDraftEditsRef:{current:new Map()}, patientSaveChainsRef:{current:new Map()},
     lastAutosavedTextRef:{current:''}, autosaveTimerRef:{current:null}, referrerAutosaveTimerRef:{current:null}, patientDetailsAutosaveTimerRef:{current:null}, autoImageDraftQueueIdRef:{current:null} };
@@ -57,7 +57,11 @@ function fixture() {
     console:{log(){},warn(){},error(){}}, alert(){}, confirm:()=>true,
     setTimeout:(fn:()=>void)=>{timers.set(++timerId,fn);return timerId;}, clearTimeout:(id:number)=>timers.delete(id),
     fetch:(url:string,init?:RequestInit)=>{
-      const d=deferred<unknown>(); requests.push({url,body:init?.body?JSON.parse(String(init.body)):{},reply:data=>{const body=init?.body?JSON.parse(String(init.body)):{};if(data.success && stored.has(body.draftId) && typeof body.editedText==='string')stored.get(body.draftId)!.edited_text=body.editedText;d.resolve({ok:true,clone:()=>({json:async()=>data}),json:async()=>data,text:async()=>JSON.stringify(data)});}}); return d.promise;
+      const d=deferred<unknown>(); requests.push({url,body:init?.body?JSON.parse(String(init.body)):{},reply:data=>{const body=init?.body?JSON.parse(String(init.body)):{};if(data.success && stored.has(body.draftId)) {
+        const row=stored.get(body.draftId)!;if(typeof body.editedText==='string')row.edited_text=body.editedText;
+        row.updated_at=new Date(Date.parse(row.updated_at)+1).toISOString();
+        if(!data.draft)data={...data,draft:{...row}};
+      }d.resolve({ok:true,clone:()=>({json:async()=>data}),json:async()=>data,text:async()=>JSON.stringify(data)});}}); return d.promise;
     },
     cleanString:(x:unknown)=>String(x??'').trim(), splitPatientName:(x:string)=>{const [firstName='',...rest]=(x||'').split(' ');return {firstName,lastName:rest.join(' ')};},
     buildLetterTextForSave:(text:string)=>text, stripPdfMarkers:(text:string)=>text,
@@ -89,9 +93,9 @@ test('A edit -> immediate B -> return A -> rapid switches retain isolated values
 });
 test('same-draft saves remain ordered while another patient can save independently',async()=>{
  const f=fixture();const api=f.render();
- const first=api.savePatientDraft(A.id,{body:JSON.stringify({draftId:A.id,editedText:'old'})});
- const second=api.savePatientDraft(A.id,{body:JSON.stringify({draftId:A.id,editedText:'new'})});
- const other=api.savePatientDraft(B.id,{body:JSON.stringify({draftId:B.id})});await settle();
+ const first=api.savePatientDraft(A.id,{body:JSON.stringify({draftId:A.id,expectedUpdatedAt:A.updated_at,editedText:'old'})});
+ const second=api.savePatientDraft(A.id,{body:JSON.stringify({draftId:A.id,expectedUpdatedAt:A.updated_at,editedText:'new'})});
+ const other=api.savePatientDraft(B.id,{body:JSON.stringify({draftId:B.id,expectedUpdatedAt:B.updated_at})});await settle();
  assert.equal(f.requests.length,2);assert.equal(f.requests[1].body.draftId,B.id);
  f.requests[0].reply({success:true});await first;await settle();assert.equal(f.requests[2].body.editedText,'new');
  f.requests[1].reply({success:true});f.requests[2].reply({success:true});await Promise.all([second,other]);

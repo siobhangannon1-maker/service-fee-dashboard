@@ -224,6 +224,7 @@ export default function ProviderClinicalScribeClient({
   const [letterText, setLetterText] = useState("");
   const [originalLetterText, setOriginalLetterText] = useState("");
   const [letterDraftId, setLetterDraftId] = useState("");
+  const [letterDraftUpdatedAt, setLetterDraftUpdatedAt] = useState<string | null>(null);
   const [letterSaveStatus, setLetterSaveStatus] = useState<
     "idle" | "saving" | "saved" | "error"
   >("idle");
@@ -380,6 +381,7 @@ export default function ProviderClinicalScribeClient({
     setLetterText("");
     setOriginalLetterText("");
     setLetterDraftId("");
+    setLetterDraftUpdatedAt(null);
     setLetterSaveStatus("idle");
   }
 
@@ -977,6 +979,7 @@ async function updateNoteFromStructuredData() {
           },
           body: JSON.stringify({
             draftId: letterDraftId,
+            expectedUpdatedAt: letterDraftUpdatedAt,
             editedText: letterText,
             status,
             patientName,
@@ -1004,6 +1007,7 @@ async function updateNoteFromStructuredData() {
           return;
         }
 
+        setLetterDraftUpdatedAt(data.draft.updated_at);
         setLetterSaveStatus("saved");
         setMessage(
           status === "approved"
@@ -1057,6 +1061,7 @@ async function updateNoteFromStructuredData() {
 
       const draftId = String(data.draft?.id || data.draftId || data.id || "");
       setLetterDraftId(draftId);
+      setLetterDraftUpdatedAt(data.draft.updated_at);
       setLetterSaveStatus("saved");
 
       setMessage(

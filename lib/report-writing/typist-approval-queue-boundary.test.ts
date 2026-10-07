@@ -56,7 +56,7 @@ for (const [route, source, completesQueue] of [
     }) as (req: Request) => Promise<Response>
     let responseReady = false
     const request = new Request('http://fixture/approval', { method: 'POST', body: JSON.stringify({
-      draftId: row.id, providerId: row.provider_id, queueId: queue.id, patientName: row.patient_name,
+      draftId: row.id, expectedUpdatedAt: row.updated_at, providerId: row.provider_id, queueId: queue.id, patientName: row.patient_name,
       status: 'approved', learningSource: source, learnFromEdits: true,
       generatedReport: 'Original', originalAiText: 'Original', editedText: 'Final', finalApprovedText: 'Final',
     }) })
@@ -92,18 +92,18 @@ for (const image of [true, false]) test(`actual ${image ? 'image-workspace' : 'd
   const response = await approvalResponse({ typist: true, draft, initialLearning: { ...initial, analysisStatus: 'not_requested' },
     audit: async () => {}, synchronous: async () => { await learning.promise; learningFinished = true; return { ...initial, analysisStatus: 'not_requested' } } })
   const client = runInNewContext(code, {
-    loading, selectedDraft: selected, selectedProviderId: draft.provider_id, imageDraftId: image ? draft.id : null,
+    loading, saveStatus: "idle", selectedDraft: selected, selectedProviderId: draft.provider_id, imageDraftId: image ? draft.id : null, imageDraftUpdatedAt: draft.updated_at,
     patientFirstName: 'Synthetic', patientLastName: 'Fixture', patientName: 'Synthetic Fixture', patientDob: null, patientGender: 'neutral',
     letterText: draft.edited_text, generatedAiLetterText: draft.ai_generated_text,
     referrerName: '', referrerAddress: '', reportType: draft.report_type, clinicalNotes: '', typistQueries: '', selectedPraktikaPatientId: null,
     activeQueueItemId: 'queue', queueStatusTab: 'active',
-    queueSelectionTokenRef: { current: 0 }, autosaveTimerRef: { current: null }, pendingPatientSavesRef: { current: {} },
+    queueSelectionTokenRef: { current: 0 }, autosaveTimerRef: { current: null }, patientDetailsAutosaveTimerRef: { current: null }, referrerAutosaveTimerRef: { current: null }, pendingPatientSavesRef: { current: {} },
     patientSaveChainsRef: { current: new Map() }, localDraftEditsRef: { current: new Map() }, draftListRequestSequenceRef: { current: 0 }, lastAutosavedTextRef: { current: '' },
     getLetterTextForSave: () => draft.edited_text, confirm: () => true, alert() {}, Date, Error,
     setLoading: (v: boolean) => { loading = v }, readApprovalResponse,
     setSelectedDraft: (update: (current: typeof selected) => typeof selected) => { selected = update(selected) },
     mergeDraftWorkflow: (saved: typeof selected) => saved,
-    setImageDraftId() {}, setListTab() {}, setSaveStatus() {}, setLastSavedAt() {}, setActiveQueueItemId() {},
+    setImageDraftId() {}, setImageDraftUpdatedAt() {}, setListTab() {}, setSaveStatus() {}, setLastSavedAt() {}, setActiveQueueItemId() {},
     loadDrafts: async () => { calls.push('read drafts') }, loadQueue: async () => { calls.push('read queue') },
     fetch: async (url: string, init: RequestInit) => {
       calls.push(url); assert.equal(url, image ? '/api/report-writing/update-draft' : '/api/report-writing/save-draft')

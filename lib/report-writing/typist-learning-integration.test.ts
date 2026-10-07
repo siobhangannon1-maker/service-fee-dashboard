@@ -46,9 +46,9 @@ for (const learningStatus of ["pending", "processing"]) {
     let listCalls = 0
     const queueState = { status: learningStatus }
     const box: Record<string, unknown> = {
-      readApprovalResponse, autosaveTimerRef: { current: null }, pendingPatientSavesRef: { current: {} },
+      readApprovalResponse, autosaveTimerRef: { current: null }, patientDetailsAutosaveTimerRef: { current: null }, referrerAutosaveTimerRef: { current: null }, pendingPatientSavesRef: { current: {} },
       patientSaveChainsRef: { current: new Map() }, localDraftEditsRef: { current: new Map() }, imageDraftId: null,
-      loading: false, selectedDraft: selected, selectedProviderId: "provider",
+      loading: false, saveStatus: "idle", selectedDraft: selected, selectedProviderId: "provider",
       generatedAiLetterText: "Synthetic original", getLetterTextForSave: () => "Synthetic final",
       referrerName: "", referrerAddress: "", patientName: "Synthetic fixture", patientDob: null,
       reportType: "consultation_report", clinicalNotes: "", typistQueries: "",

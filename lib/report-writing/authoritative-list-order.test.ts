@@ -25,7 +25,7 @@ function fixture() {
     `const unmount = ${mount ? '(' + mount.arguments[0].getText(ast) + ')()' : '() => { draftListMountedRef.current = false; }'};`,
     '({loadDrafts, refresh, reconcileWorkflowAction, unmount})'].join('\n');
   const api = runInNewContext(ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, {
-    providerDataRequestRef: token, selectedProviderIdRef: provider, draftListMountedRef: mounted, draftListRequestSequenceRef: sequence,
+    patientSaveChainsRef: { current: new Map() }, providerDataRequestRef: token, selectedProviderIdRef: provider, draftListMountedRef: mounted, draftListRequestSequenceRef: sequence,
     selectedProviderId: 'provider', requestToken: 1, recentWorkflowActions: { current: new Map() },
     setWorkflowReconciliationEpoch: () => { restarts++; },
     fetch: () => new Promise<Response>((resolve, reject) => pending.push({ resolve, reject })),

@@ -139,7 +139,30 @@ export async function POST(req: Request) {
       )
     }
 
-    const updatePayload: Record<string, unknown> = { updated_at: now }
+    const conflict = () => NextResponse.json({
+      success: false,
+      code: "draft_revision_conflict",
+      error: "Draft changed. Reload the letter before saving or approving. Your changes have not been saved.",
+      reloadRequired: true,
+      draftId: existingDraft.id,
+    }, { status: 409 })
+
+    // Preserve the exact database timestamp (including microseconds) as the token.
+    // Missing tokens must never fall back to the revision read by this request.
+    if (!Object.prototype.hasOwnProperty.call(body, "expectedUpdatedAt") ||
+        body.expectedUpdatedAt !== existingDraft.updated_at ||
+        (body.expectedUpdatedAt !== null &&
+          (typeof body.expectedUpdatedAt !== "string" || !Number.isFinite(Date.parse(body.expectedUpdatedAt))))) {
+      return conflict()
+    }
+
+    // Every write advances the revision, even with a frozen/backward clock.
+    // Parsing is only for choosing a strictly later millisecond, never equality.
+    const updatePayload: Record<string, unknown> = {
+      updated_at: new Date(Math.max(
+        Date.now(), (Date.parse(existingDraft.updated_at || "") || 0) + 1
+      )).toISOString(),
+    }
 
     if (typeof editedText === "string") updatePayload.edited_text = editedText
 
@@ -197,6 +220,8 @@ export async function POST(req: Request) {
       existingDraft.status === "approved" &&
       status === "awaiting_provider_approval"
 
+    const isApproving = status === "approved" && existingDraft.status !== "approved"
+
     if (typeof status === "string" && status.trim()) {
       updatePayload.status = status
 
@@ -213,31 +238,29 @@ export async function POST(req: Request) {
       }
 
       if (status === "approved") {
-        // Ensure approval changes the fence even when the clock shares the
-        // previous save's millisecond (including reapproval of an approved row).
-        updatePayload.updated_at = new Date(Math.max(
-          Date.now(), (Date.parse(existingDraft.updated_at || "") || 0) + 1
-        )).toISOString()
-        updatePayload.provider_approved_at = existingDraft.provider_approved_at || now
-        updatePayload.approved_by_initials = actor.actorInitials
-        updatePayload.approved_by_name = actor.actorFullName
+        if (isApproving) {
+          updatePayload.provider_approved_at = now
+          updatePayload.approved_by_initials = actor.actorInitials
+          updatePayload.approved_by_name = actor.actorFullName
+        }
       }
     }
 
     const autosave = learningSource === "typist_autosave"
-    // Fence in the database statement, not just the earlier read: approval may
-    // commit between the read and this write. Never replay an old editor revision.
+    if (autosave && status !== existingDraft.status) return conflict()
+
+    // All content/status/metadata writes compare the client's loaded revision and
+    // the authoritative status read above in the same database UPDATE.
     let write = supabase.from("report_drafts").update(updatePayload).eq("id", draftId)
-    if (autosave) {
-      if (typeof body.expectedUpdatedAt !== "string" ||
-          body.expectedUpdatedAt !== existingDraft.updated_at || status !== existingDraft.status) {
-        return NextResponse.json({ success: false, error: "Draft changed. Reload before saving." }, { status: 409 })
-      }
-      write = write.eq("updated_at", body.expectedUpdatedAt).eq("status", status)
-    }
+    write = existingDraft.status == null
+      ? write.is("status", null)
+      : write.eq("status", existingDraft.status)
+    write = existingDraft.updated_at == null
+      ? write.is("updated_at", null)
+      : write.eq("updated_at", body.expectedUpdatedAt)
     const { data, error } = await write.select().maybeSingle()
     if (!error && !data) {
-      return NextResponse.json({ success: false, error: "Draft changed. Reload before saving." }, { status: 409 })
+      return conflict()
     }
 
     if (error) {
@@ -308,7 +331,7 @@ export async function POST(req: Request) {
               ? "Updated Praktika patient match"
               : isUnapproving
                 ? "Unapproved report"
-                : status === "approved"
+                : isApproving
                   ? "Approved report"
                   : status === "awaiting_provider_approval"
                     ? "Sent report to provider for approval"
