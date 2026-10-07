@@ -47,7 +47,7 @@ async function handle(req:Request,confirm:boolean) {
     if(result.error || !result.data?.ok) return NextResponse.json({success:false,error:'Confirmation could not be acknowledged. Reconcile the letter before trying again.'},{status:409});
     return NextResponse.json({success:true,...result.data});
   } catch(error) {
-    return NextResponse.json({success:false,error:error instanceof ApiAuthorizationError ? 'An active authorized account is required.' : 'Workflow resolution is unavailable. Check again before confirming.'},{status:error instanceof ApiAuthorizationError ? error.status : 503});
+    return NextResponse.json({success:false,error:error instanceof ApiAuthorizationError ? 'An active authorized account is required.' : 'The workflow check failed because of a technical error. No recovery action was taken. Try checking again.'},{status:error instanceof ApiAuthorizationError ? error.status : 503});
   }
 }
 export const GET=(req:Request)=>handle(req,false);

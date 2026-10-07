@@ -23,6 +23,8 @@ class Tests(unittest.TestCase):
   sql(next((ROOT/'supabase/migrations').glob('*_workflow_resolution_safety_correction.sql')).read_text())
   sql(next((ROOT/'supabase/migrations').glob('*_workflow_resolution_production_evidence.sql')).read_text())
   sql(next((ROOT/'supabase/migrations').glob('*_workflow_resolution_parity_correction.sql')).read_text())
+  sql("create index praktika_upload_report_draft_idx on praktika_helper_jobs ((request->>'reportDraftId')) where job_type='upload_report_to_praktika';")
+  sql(next((ROOT/'supabase/migrations').glob('*_workflow_resolution_snapshot_performance.sql')).read_text())
  def setUp(self):
   self.d,self.actor,self.provider=[str(uuid.uuid4()) for _ in range(3)]
   self.parent=str(uuid.UUID(hashlib.md5(('praktika-complete-workflow:v1:'+self.d).encode()).hexdigest()))
