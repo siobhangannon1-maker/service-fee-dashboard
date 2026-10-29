@@ -1,5 +1,5 @@
 import { perioStructureDiagnostic } from "../lib/praktika/perio-structure-diagnostic";
-import { praktikaUploadResponseDiagnostic } from "../lib/praktika/authentication-probe";
+import { classifyPraktikaRedirect, praktikaUploadResponseDiagnostic } from "../lib/praktika/authentication-probe";
 import { praktikaJobEligibility } from "../lib/praktika/job-eligibility";
 import { PraktikaReadFailure, type PraktikaReadFailureCategory, allowedPraktikaRead, validatePraktikaRead, PERIO_READ_FIELDS, verifiedReadOperation, PRAKTIKA_RETRIEVAL_JOB_TYPES } from "../lib/praktika/read-operations";
 import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
@@ -29,6 +29,35 @@ type UploadDiagnostic = Partial<ReturnType<typeof praktikaUploadResponseDiagnost
   requestInvoked: boolean;
   httpStatus?: number;
 };
+
+// Fixed categories only: never retain identifiers, bodies, URLs or error messages.
+type IconDiagnostic = {
+  stage: "pre_dispatch" | "request_invoked" | "response_read" | "response_validation" | "result_persistence";
+  requestInvoked: boolean;
+  httpStatus?: number;
+  responseCategory: "not_received" | "unread" | "empty" | "html" | "json" | "malformed_json";
+  redirectCategory?: "login_redirect" | "same_origin_other_redirect" | "external_redirect" | "redirect_destination_unavailable";
+};
+
+function logIconDiagnostic(icon: IconDiagnostic | undefined, error?: unknown) {
+  if (!icon) return;
+  try {
+    const failureCategory = !error ? "none"
+      : error instanceof PraktikaOwnershipLost ? "ownership_lost"
+      : error instanceof PraktikaHelperUnavailable ? "browser_or_auth_unavailable"
+      : icon.stage === "result_persistence" ? "result_persistence_failure"
+      : typeof error === "object" && error !== null && "name" in error && (error.name === "TimeoutError" || error.name === "AbortError") ? "request_timeout"
+      : icon.httpStatus !== undefined && (icon.httpStatus < 200 || icon.httpStatus >= 300) ? "http_error"
+      : icon.stage === "response_read" ? "response_read_failure"
+      : icon.stage === "response_validation" ? "response_validation_failure"
+      : icon.requestInvoked ? "transport_or_context_failure" : "pre_dispatch_failure";
+    console.log("[Praktika icon] diagnostic", {
+      jobType: "update_praktika_letter_icons", outcome: error ? "failed" : "completed",
+      ...icon, boundary: icon.stage === "result_persistence" ? "result_persistence"
+        : icon.requestInvoked ? "after_dispatch" : "before_dispatch", failureCategory,
+    });
+  } catch { /* Observation must never affect write handling or replay decisions. */ }
+}
 
 type ReportReferrer = {
   id?: string;
@@ -270,7 +299,7 @@ function parsePraktikaResponse(text: string, status: number) {
   }
 }
 
-async function runJsonOrFormRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>, upload?: UploadDiagnostic) {
+async function runJsonOrFormRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>, upload?: UploadDiagnostic, icon?: IconDiagnostic) {
   const method = request.method || "POST";
   const contentType = request.contentType || "json";
   const referer =
@@ -319,6 +348,7 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
   };
   // Diagnostic boundary only; the existing externalStarted replay guard is unchanged.
   if (upload) { upload.stage = "request_invoked"; upload.requestInvoked = true; }
+  if (icon) { icon.stage = "request_invoked"; icon.requestInvoked = true; }
   const response = await context.request.post(requestUrl, requestOptions);
 
   if (upload) { upload.stage = "response_read"; upload.httpStatus = response.status(); }
@@ -326,7 +356,25 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
     try { Object.assign(upload, praktikaUploadResponseDiagnostic(response.status(), response.headers(), response.url(), requestUrl)); }
     catch { /* Diagnostics must not change upload handling. */ }
   }
+  if (icon) {
+    icon.stage = "response_read"; icon.httpStatus = response.status(); icon.responseCategory = "unread";
+    // Reuse sanitised redirect labels only; never emit headers or destinations.
+    try {
+      if (response.status() >= 300 && response.status() < 400) {
+        icon.redirectCategory = classifyPraktikaRedirect(response.headers().location, requestUrl).redirect_category;
+      }
+    } catch { /* Diagnostics cannot change request handling. */ }
+  }
   const text = await response.text();
+  if (icon) {
+    icon.stage = "response_validation";
+    if (!text.trim()) icon.responseCategory = "empty";
+    else if (looksLikeHtml(text)) icon.responseCategory = "html";
+    else {
+      try { JSON.parse(text); icon.responseCategory = "json"; }
+      catch { icon.responseCategory = "malformed_json"; }
+    }
+  }
   if (upload) upload.stage = "response_validation";
 
   if (!response.ok()) {
@@ -417,12 +465,12 @@ async function runMultipartStorageRequest(context: BrowserContext, request: any,
   return parsed;
 }
 
-async function runPraktikaRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>, upload?: UploadDiagnostic) {
+async function runPraktikaRequest(context: BrowserContext, request: any, beforeRequest?: () => Promise<void>, upload?: UploadDiagnostic, icon?: IconDiagnostic) {
   if (request.contentType === "multipart_storage") {
     return await runMultipartStorageRequest(context, request, beforeRequest, upload);
   }
 
-  return await runJsonOrFormRequest(context, request, beforeRequest, upload);
+  return await runJsonOrFormRequest(context, request, beforeRequest, upload, icon);
 }
 
 function isoDateOnly(value: unknown) {
@@ -1389,6 +1437,8 @@ export async function processOnePraktikaHelperJob(
 
   const upload: UploadDiagnostic | undefined = job.job_type === "upload_report_to_praktika"
     ? { jobId: job.id, stage: "preparation", requestInvoked: false } : undefined;
+  const icon: IconDiagnostic | undefined = job.job_type === "update_praktika_letter_icons"
+    ? { stage: "pre_dispatch", requestInvoked: false, responseCategory: "not_received" } : undefined;
   let reportUploadStarted = false;
   let externalStarted = false;
   let readStage: "transport_failure" | "invalid_structure" | "result_persistence_failure" = "transport_failure";
@@ -1469,7 +1519,7 @@ export async function processOnePraktikaHelperJob(
       await beforeRequest();
       response = await hydrateReportLetterQueueItem(context, job);
     } else {
-      response = await runPraktikaRequest(context, job.request, beforeRequest, upload);
+      response = await runPraktikaRequest(context, job.request, beforeRequest, upload, icon);
     }
 
     await ownership.assertOwned();
@@ -1478,14 +1528,17 @@ export async function processOnePraktikaHelperJob(
     }
     readStage = "result_persistence_failure";
     if (upload) upload.stage = "result_persistence";
+    if (icon) icon.stage = "result_persistence";
     await completeJob(job.id, response);
     // Observation must never change successful persistence or replay behavior.
     if (!retrieval) {
       try { ownership.observeWriteCompleted?.(job); } catch { /* diagnostic only */ }
     }
+    logIconDiagnostic(icon);
     console.log(`Completed Praktika helper job ${job.id}`);
     return { outcome: "completed", jobId: job.id };
   } catch (error: any) {
+    logIconDiagnostic(icon, error);
     // Diagnostics never participate in eligibility, ownership or replay decisions.
     const uploadFailure: (UploadDiagnostic & { failureCategory: UploadFailureCategory }) | undefined = upload ? {
       ...upload,
