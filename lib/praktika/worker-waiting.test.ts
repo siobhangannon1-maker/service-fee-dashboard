@@ -15,7 +15,7 @@ type Row = Record<string, any>;
 const path = 'scripts/praktika-helper-job-processor.ts';
 const source = readFileSync(path, 'utf8');
 const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
-const names = ['logIconDiagnostic', 'runPraktikaRequest', 'looksLoggedOut', 'looksLikeHtml', 'parsePraktikaResponse', 'runJsonOrFormRequest', 'runMultipartStorageRequest', 'jobEligible', 'claimNextJob', 'completeJob', 'failJob', 'processOnePraktikaHelperJob'];
+const names = ['classifyIconHttpError', 'logIconDiagnostic', 'runPraktikaRequest', 'looksLoggedOut', 'looksLikeHtml', 'parsePraktikaResponse', 'runJsonOrFormRequest', 'runMultipartStorageRequest', 'jobEligible', 'claimNextJob', 'completeJob', 'failJob', 'processOnePraktikaHelperJob'];
 const code = names.map(name => {
   const fn = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name)!;
   return ts.transpileModule(fn.getText(ast).replace(/^export /, '').replace('function runPraktikaRequest(', 'function actualRunPraktikaRequest('), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -36,6 +36,9 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   const logs: unknown[][] = [];
   const sent: Array<{ url: string; options: Row }> = [];
   let diagnosticLogFails = false;
+  let clockMs = 0;
+  const advanceClock = (ms: number) => { clockMs += ms; };
+  let requestMs = 0, responseReadMs = 0, persistenceMs = 0;
   const supabase = { storage: { from: () => ({ download: async () => ({ data: new Blob(['synthetic']), error: null }), remove: async () => ({error:null}) }) }, from(table: string) {
     const rows = table === 'praktika_sessions' ? [session] : table === 'report_drafts' ? verificationDraft ? [verificationDraft] : [] : jobs;
     const filters: Array<(r: Row) => boolean> = []; let patch: Row | null = null; let limit = Infinity;
@@ -47,6 +50,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
       update: (p: Row) => { patch = p; return q; },
       execute(single = false) {
         calls.push(table + (patch ? ':update' : ':select'));
+        if (patch?.status === 'completed') advanceClock(persistenceMs);
         if (persistenceFails && patch?.status === 'completed') return {data: null, error: {message: 'private database detail'}};
         const matches = rows.filter(r => filters.every(f => f(r))).slice(0, limit);
         if (table === 'praktika_helper_jobs' && !patch) afterDiscovery();
@@ -63,7 +67,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   let owned = true, operations = 0, connectedWrites = 0, httpStatus = 200;
   let responseUrl = "https://praktika.praktika.net.au/php/forms/db_getFormData.php", responseText = '{"patient_perioexamids":[12]}';
   const globals = { classifyPraktikaRedirect, praktikaUploadResponseDiagnostic, PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, PRAKTIKA_RETRIEVAL_JOB_TYPES, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
-    isConfirmedPraktikaUpload, Date, AbortSignal, URLSearchParams, Buffer, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
+    performance: { now: () => clockMs }, isConfirmedPraktikaUpload, Date, AbortSignal, URLSearchParams, Buffer, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
     console: { log(...args: unknown[]) { if (diagnosticLogFails && args[0] === "[Praktika icon] diagnostic") throw new Error("private logger failure"); logs.push(args); }, error() {} },
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>, upload?: unknown, icon?: unknown) => { prepareRequest(_r as Row); if(realTransport) return api.actualRunPraktikaRequest(_c, _r, before, upload, icon); await before(); operations++; return { patient_communication: { iFileId: 12 } }; },
     markSessionConnectedForJob: async () => { connectedWrites++; },
@@ -72,9 +76,10 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   const ownership = { isBrowserReady: async () => browserReady, assertOwned: async () => { calls.push('ownership:check'); if(nextOwnershipError){ const error=nextOwnershipError;nextOwnershipError=undefined;throw error; } if (!owned || session.helper_instance_id !== 'generation' || !hasLivePraktikaHelper(session)) throw new PraktikaOwnershipLost(); }, ensureAuthenticated: async () => assert.fail('claim must not change GST renewal cadence'), updateSession: async () => {} };
   const context = { request: { post: async (_url: string, options: Row) => {
     sent.push({ url: _url, options });
+    advanceClock(requestMs);
     operations++; assert.equal(options.maxRedirects, 0); assert.equal(options.timeout, 120_000);
     if (transportFails) throw transportError;
-    return { headers: () => responseHeaders, ok: () => httpStatus >= 200 && httpStatus < 300, status: () => httpStatus, url: () => responseUrl, text: async () => { if (readFails) throw new Error("private response body"); return responseText; } };
+    return { headers: () => responseHeaders, ok: () => httpStatus >= 200 && httpStatus < 300, status: () => httpStatus, url: () => responseUrl, text: async () => { advanceClock(responseReadMs); if (readFails) throw new Error("private response body"); return responseText; } };
   } } };
   const helperPath = 'scripts/refresh-praktika-session.ts';
   const helperAst = ts.createSourceFile(helperPath, readFileSync(helperPath, 'utf8'), ts.ScriptTarget.Latest, true);
@@ -91,6 +96,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   return { setVerificationDraft: (d: Row) => { verificationDraft=d; }, jobs, calls, empty: () => { jobs.length = 0; }, disconnect: () => { browserReady = false; },
     onDiscovery: (fn: () => void) => { afterDiscovery = fn; },
     idleCycle: async () => { await helper.getSession(); return helper.drainAvailableHelperJobs(context, actor, {}); },
+    advanceClock, setTiming: (request: number, read: number, persistence: number) => { requestMs = request; responseReadMs = read; persistenceMs = persistence; },
     ownership, job, session, logs, sent, failDiagnosticLog: () => { diagnosticLogFails = true; }, setHeaders: (headers: Record<string,string>) => { responseHeaders=headers; }, prepareRequest: (fn: (request: Row) => void) => {prepareRequest=fn;}, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failRead: () => { readFails = true; }, setTransportError: (error: Error) => { transportFails = true; transportError = error; }, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
     failNextOwnership: (error: Error) => {nextOwnershipError=error;}, connectedWrites: () => connectedWrites, loseOwnership: () => { owned = false; }, onClaim: (fn: () => void) => { afterClaim = fn; }, setHttp: (v: number) => { httpStatus = v; } };
 }
@@ -500,7 +506,7 @@ for (const scenario of ['200', '307', '500', 'malformed', 'timeout', 'persistenc
     if (scenario === '307') assert.equal(diagnostic.redirectCategory, 'same_origin_other_redirect');
     assert.doesNotMatch(JSON.stringify(entries), /PRIVATE_|private database|private response/);
     assert.deepEqual(Object.keys(diagnostic).sort(), ['jobType', 'outcome', 'stage', 'requestInvoked', 'httpStatus',
-      'responseCategory', 'redirectCategory', 'boundary', 'failureCategory'].filter(key => key in diagnostic).sort());
+      'responseCategory', 'redirectCategory', 'boundary', 'failureCategory', 'httpErrorCategory', 'requestDurationMs', 'requestTimingEnd'].filter(key => key in diagnostic).sort());
     assert.equal(f.calls.filter(call => call === 'strict-auth').length, scenario === 'pre_dispatch' ? 0 : 1);
     if (f.sent.length) {
       assert.equal(f.sent[0].url, 'https://praktika.praktika.net.au/php/forms/db_commitFormData.php');
@@ -552,4 +558,61 @@ for (const fail of [false, true]) test(`icon logger failure leaves ${fail ? 'fai
   if (fail) f.setHttp(500);
   assert.equal((await f.run()).outcome, fail ? 'failed' : 'completed');
   await f.run(); assert.equal(f.operations(), 1);
+});
+
+const iconErrorCases: Array<[string, unknown, string]> = [
+  ['auth object', { exception: { name: 'DBUnauthorisedException', message: 'PRIVATE_PATIENT', code: 'PRIVATE_CODE' } }, 'authentication'],
+  ['auth string', { error: 'authentication required PRIVATE_TOKEN' }, 'authentication'],
+  ['validation object', { exception: { type: 'ValidationException', message: 'PRIVATE_APPOINTMENT', code: 'PRIVATE_CODE' } }, 'validation'],
+  ['validation fields', { validationErrors: [{ message: 'PRIVATE_RESPONSE' }] }, 'validation'],
+  ['internal exception', { exception: { message: 'PRIVATE_RESPONSE', code: 'PRIVATE_CODE' } }, 'internal_exception'],
+  ['generic error', { error: 'PRIVATE_RESPONSE' }, 'generic_error'],
+  ['explicit failure', { success: false }, 'generic_error'],
+  ['unknown object', { patient: 'PRIVATE_PATIENT', code: 'PRIVATE_CODE' }, 'unknown'],
+  ['unknown scalar', 'PRIVATE_RESPONSE', 'unknown'],
+  ['unknown null', null, 'unknown'],
+  ['empty error containers', { errors: [], validationErrors: [], exception: {} }, 'unknown'],
+  ['named internal exception', { error: { type: 'DatabaseException', code: 'PRIVATE_CODE' } }, 'internal_exception'],
+  ['array envelope', [{ exception: { message: 'validation failed PRIVATE_RESPONSE' } }], 'validation'],
+  ['unrelated patient text', { patient: { message: 'validation failed' } }, 'unknown'],
+  ['auth priority', [{ exception: { message: 'PRIVATE_RESPONSE' } }, { error: 'expired session PRIVATE_TOKEN' }], 'authentication'],
+];
+for (const [label, body, expected] of iconErrorCases) test(`icon HTTP 500 envelope: ${label}`, async () => {
+  const f = fixture(false, 'actor', true);
+  f.session.authenticated_at = new Date().toISOString(); f.job.job_type = 'update_praktika_letter_icons';
+  f.job.request = { method: 'POST', path: '/php/forms/db_commitFormData.php', body: [{ appointment_id: 'PRIVATE_APPOINTMENT' }] };
+  Object.assign(f.ownership, { ensureWriteAuthenticated: async () => { f.advanceClock(9000); } });
+  f.advanceClock(30000); // Queue time before invocation must not enter the measurement.
+  f.setTiming(3200, 7000, 11000);
+  f.setHttp(500); f.setResponse(JSON.stringify(body));
+  await f.run(); await f.run();
+  const events = f.logs.filter(e => e[0] === '[Praktika icon] diagnostic');
+  assert.equal(events.length, 1);
+  const d = events[0][1] as Row;
+  assert.equal(d.httpErrorCategory, expected); assert.equal(d.responseCategory, 'json');
+  assert.equal(d.requestDurationMs, 3200); assert.equal(d.requestTimingEnd, 'response_received');
+  assert.equal(d.failureCategory, 'http_error'); assert.equal(d.boundary, 'after_dispatch');
+  assert.equal(f.operations(), 1); assert.equal(f.job.status, 'failed');
+  assert.equal(f.job.error_message, 'Praktika write outcome is unconfirmed. Reconcile before retrying.');
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE_|https?:|code|message|appointment_id|patient|cookie|token/i);
+});
+
+for (const failure of ['none', 'persistence', 'timeout', 'pre_dispatch']) test(`icon request timing excludes other stages: ${failure}`, async () => {
+  const f = fixture(false, 'actor', true);
+  f.session.authenticated_at = new Date().toISOString(); f.job.job_type = 'update_praktika_letter_icons';
+  f.job.request = { method: 'POST', path: '/php/forms/db_commitFormData.php', body: {} };
+  Object.assign(f.ownership, { ensureWriteAuthenticated: async () => {
+    f.advanceClock(9000);
+    if (failure === 'pre_dispatch') throw new PraktikaHelperUnavailable();
+  } });
+  f.setTiming(3200, 7000, 11000); f.setResponse('{"success":true}');
+  if (failure === 'persistence') f.failPersistence();
+  if (failure === 'timeout') { const error = new Error('PRIVATE_TIMEOUT'); error.name = 'TimeoutError'; f.setTransportError(error); }
+  await f.run();
+  const d = f.logs.find(e => e[0] === '[Praktika icon] diagnostic')![1] as Row;
+  assert.equal(d.httpErrorCategory, undefined); // Success/transport failures have no HTTP error envelope.
+  assert.equal(d.requestDurationMs, failure === 'pre_dispatch' ? undefined : 3200);
+  assert.equal(d.requestTimingEnd, failure === 'pre_dispatch' ? undefined : failure === 'timeout' ? 'request_failed' : 'response_received');
+  assert.equal(f.operations(), failure === 'pre_dispatch' ? 0 : 1);
+  if (failure !== 'pre_dispatch') { await f.run(); assert.equal(f.operations(), 1); }
 });

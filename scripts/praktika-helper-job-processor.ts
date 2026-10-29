@@ -5,7 +5,7 @@ import { PraktikaReadFailure, type PraktikaReadFailureCategory, allowedPraktikaR
 import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
 import { PraktikaHelperUnavailable } from "../lib/praktika/helper-lease";
 import { PraktikaOwnershipLost, type PraktikaJobOwnership } from "../lib/praktika/helper-lease";
-import { type BrowserContext } from "playwright";
+import { type APIResponse, type BrowserContext } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 
 const PRAKTIKA_BASE_URL = "https://praktika.praktika.net.au";
@@ -36,8 +36,39 @@ type IconDiagnostic = {
   requestInvoked: boolean;
   httpStatus?: number;
   responseCategory: "not_received" | "unread" | "empty" | "html" | "json" | "malformed_json";
+  httpErrorCategory?: "authentication" | "validation" | "internal_exception" | "generic_error" | "unknown";
+  requestDurationMs?: number;
+  requestTimingEnd?: "response_received" | "request_failed";
   redirectCategory?: "login_redirect" | "same_origin_other_redirect" | "external_redirect" | "redirect_destination_unavailable";
 };
+
+// Inspect only recognised envelope fields. Never return server-provided strings or codes.
+function classifyIconHttpError(value: unknown): NonNullable<IconDiagnostic["httpErrorCategory"]> {
+  const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+  const present = (v: unknown) => Array.isArray(v) ? v.length > 0
+    : record(v) ? Object.keys(v).length > 0 : v !== undefined && v !== null && v !== false && v !== "";
+  let authentication = false, validation = false, exception = false, generic = false;
+  for (const entry of (Array.isArray(value) ? value.slice(0, 16) : [value])) {
+    if (!record(entry)) continue;
+    exception ||= present(entry.exception);
+    generic ||= present(entry.error) || present(entry.errors) || entry.success === false || entry.ok === false;
+    validation ||= present(entry.validationErrors);
+    const envelopes = [entry, entry.error, entry.exception].filter(record);
+    for (const envelope of envelopes) {
+      generic ||= typeof envelope.message === "string" && envelope.message.length > 0;
+      exception ||= [envelope.name, envelope.type].some(v => typeof v === "string" &&
+        /^(?:DBException|DatabaseException|RuntimeException|ErrorException|InternalServerError)$/i.test(v));
+    }
+    const fields = [entry.error, entry.exception, ...envelopes.flatMap(e => [e.name, e.type, e.message, e.error])];
+    for (const field of fields) {
+      if (typeof field !== "string") continue;
+      const text = field.slice(0, 4096);
+      authentication ||= /dbunauthorisedexception|dbunauthorizedexception|not logged in|logged[- ]out|expired session|session expired|login failed|authentication (?:failed|required)/i.test(text);
+      validation ||= /validation(?:error|exception)|validation failed|invalid (?:appointment|practice|icon)(?:[ _-]?id)?\b|missing required field/i.test(text);
+    }
+  }
+  return authentication ? "authentication" : validation ? "validation" : exception ? "internal_exception" : generic ? "generic_error" : "unknown";
+}
 
 function logIconDiagnostic(icon: IconDiagnostic | undefined, error?: unknown) {
   if (!icon) return;
@@ -349,7 +380,18 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
   // Diagnostic boundary only; the existing externalStarted replay guard is unchanged.
   if (upload) { upload.stage = "request_invoked"; upload.requestInvoked = true; }
   if (icon) { icon.stage = "request_invoked"; icon.requestInvoked = true; }
-  const response = await context.request.post(requestUrl, requestOptions);
+  // Start after authentication/dispatch guards; stop when the request settles.
+  const requestStarted = icon ? performance.now() : undefined;
+  let response: APIResponse;
+  try {
+    response = await context.request.post(requestUrl, requestOptions);
+    if (icon) icon.requestTimingEnd = "response_received";
+  } finally {
+    if (icon && requestStarted !== undefined) {
+      icon.requestDurationMs = Math.max(0, Math.round(performance.now() - requestStarted));
+      icon.requestTimingEnd ??= "request_failed";
+    }
+  }
 
   if (upload) { upload.stage = "response_read"; upload.httpStatus = response.status(); }
   if (upload && !response.ok()) {
@@ -371,7 +413,11 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
     if (!text.trim()) icon.responseCategory = "empty";
     else if (looksLikeHtml(text)) icon.responseCategory = "html";
     else {
-      try { JSON.parse(text); icon.responseCategory = "json"; }
+      try {
+        const parsed: unknown = JSON.parse(text);
+        icon.responseCategory = "json";
+        if (response.status() >= 400) icon.httpErrorCategory = classifyIconHttpError(parsed);
+      }
       catch { icon.responseCategory = "malformed_json"; }
     }
   }
