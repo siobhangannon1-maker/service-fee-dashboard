@@ -15,8 +15,15 @@ async function handle(req: Request, confirm: boolean) {
     const secret=process.env.SUPABASE_SERVICE_ROLE_KEY || '';
     const preview=confirm ? openResolutionPreview(String(input.preview || ''),secret) : null;
     if (preview && (preview.actorId!==user.id || preview.draftId!==draftId)) throw new Error('Invalid preview');
-    const {data:s,error}=await db.rpc('inspect_manual_letter_icon',{p_draft_id:draftId,p_actor_user_id:user.id}).abortSignal(AbortSignal.timeout(5000));
-    if (error || !s?.fingerprint || !s.parent?.app_user_id ||
+    const snapshotDeadline=AbortSignal.timeout(5000);
+    const {data:s,error}=await db.rpc('inspect_manual_letter_icon',{p_draft_id:draftId,p_actor_user_id:user.id}).abortSignal(snapshotDeadline);
+    if (error) {
+      const timedOut=snapshotDeadline.aborted || error.code==='57014';
+      console.warn('[manual-icon-check]',{stage:'snapshot',outcome:timedOut?'timeout':'unavailable'});
+      return NextResponse.json({success:false,code:timedOut?'manual_icon_check_timeout':'manual_icon_check_unavailable',
+        error:timedOut?'The workflow check timed out. No completion was requested.':'The workflow could not be checked.'},{status:503});
+    }
+    if (!s?.fingerprint || !s.parent?.app_user_id ||
       !validWorkflowAuthorization(draftId,s.parent.app_user_id,s.parent.request?.options,secret)) throw new Error('Unavailable contract');
     if (!confirm) {
       const med=s.mediref?.[0]?.result;

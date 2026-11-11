@@ -35,3 +35,27 @@ test('icon-only UI requires confirmation, submits once, and History retains the 
   assert.ok(paths.every(path=>['/','/api/report-writing/complete-manual-icon','/api/report-writing/get-providers','/api/report-writing/get-drafts'].includes(path)));
  } finally {await browser.close();}
 });
+
+test('eligibility errors distinguish authentication, timeout and blocked checks without exposing server text',async()=>{
+ const bundle=await build({stdin:{contents:`import React from 'react';import {createRoot} from 'react-dom/client';import {ManualIconCompletionButton} from './components/report-writing/ManualIconCompletionButton';createRoot(document.getElementById('root')).render(<ManualIconCompletionButton draftId="00000000-0000-4000-8000-000000000001" revision="synthetic" onResolved={()=>{throw new Error('Unexpected completion')}}/>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,platform:'browser',jsx:'automatic',define:{'process.env.NODE_ENV':'"production"'}});
+ const browser=await chromium.launch({headless:true});let posts=0;
+ try{
+  for(const [status,code,expected] of [[401,'','Your session expired'],[403,'','not authorised'],[503,'manual_icon_check_timeout','took too long'],[503,'manual_icon_check_unavailable','contact an administrator'],[200,'','Completion is blocked']] as const){
+   const page=await browser.newPage();page.setDefaultTimeout(5000);
+   await page.route('**/*',async route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path==='/')return route.fulfill({contentType:'text/html',body:'<div id="root"></div>'});
+    if(path==='/api/report-writing/complete-manual-icon'){
+     if(route.request().method()!=='GET')posts++;
+     return route.fulfill({status,json:status===200?{success:true,eligible:false,reason:'Completion is blocked: an unrelated step needs attention.',preview:'opaque'}:{success:false,code,error:'PRIVATE_PATIENT PRIVATE_DATABASE_ERROR'}});
+    }
+    throw new Error('Unexpected synthetic request');
+   });
+   await page.goto('http://manual-icon-check.test/');await page.addScriptTag({content:bundle.outputFiles[0].text});
+   await page.getByRole('button',{name:'Mark Workflow Complete',exact:true}).click();await page.getByText(expected,{exact:false}).waitFor();
+   assert.doesNotMatch(await page.locator('body').innerText(),/PRIVATE/);assert.equal(await page.getByRole('button',{name:'Confirm completion',exact:true}).count(),0);
+   await page.close();
+  }
+  assert.equal(posts,0);
+ }finally{await browser.close();}
+});

@@ -6,6 +6,7 @@ spec=importlib.util.spec_from_file_location('existing_resolution',ROOT/'scripts/
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 b=f.b;sql=f.sql;rpc=f.rpc
 MIGRATION=ROOT/'supabase/migrations/20261111021821_letters_icon_manual_completion.sql'
+PERFORMANCE=next((ROOT/'supabase/migrations').glob('*_manual_icon_eligibility_performance.sql'))
 class ManualIconTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
@@ -16,6 +17,8 @@ class ManualIconTests(unittest.TestCase):
   before=sql("select jsonb_build_array((select count(*) from report_drafts),(select count(*) from praktika_helper_jobs),(select count(*) from report_writing_audit_events));")
   # Repeat application is supported; neither application changes existing data.
   sql(MIGRATION.read_text());sql(MIGRATION.read_text())
+  (b.CLUSTER/'eligibility-pre-fix-definitions.json').write_text(sql("select jsonb_object_agg(proname,md5(pg_get_functiondef(oid))) from pg_proc where pronamespace='public'::regnamespace and proname in ('workflow_resolution_snapshot','workflow_resolution_legacy_draft_safe','manual_letter_icon_closed','workflow_resolution_job_associated');"))
+  sql(PERFORMANCE.read_text());sql(PERFORMANCE.read_text())
   assert before==sql("select jsonb_build_array((select count(*) from report_drafts),(select count(*) from praktika_helper_jobs),(select count(*) from report_writing_audit_events));")
  def snapshot(self):return f.Tests.snapshot(self)
  def setUp(self):
@@ -71,7 +74,7 @@ assert.equal(s.praktika.find(j=>j.job_type==='update_praktika_letter_icons').sta
  def test_repeat_migration_preserves_an_existing_manual_completion(self):
   self.assertTrue(self.confirm()['ok']);before=self.jobs()
   events=sql(f"select jsonb_agg(to_jsonb(a) order by id) from report_writing_audit_events a where entity_id='{self.d}';")
-  sql(MIGRATION.read_text())
+  sql(MIGRATION.read_text());sql(PERFORMANCE.read_text())
   self.assertEqual(before,self.jobs());self.assertEqual(events,sql(f"select jsonb_agg(to_jsonb(a) order by id) from report_writing_audit_events a where entity_id='{self.d}';"))
   self.assertTrue(rpc(f"select to_jsonb(p) from workflow_resolution_projection(array['{self.d}'::uuid]) p;")['executionSafe'])
   self.assertTrue(self.confirm()['reconciled'])
@@ -82,6 +85,35 @@ assert.equal(s.praktika.find(j=>j.job_type==='update_praktika_letter_icons').sta
      sql(f"update {table} set status='{status}' where id='{job}';")
      self.assertFalse(self.preview()['manualIconReady']);self.assertFalse(self.confirm()['ok'])
      sql(f"update {table} set status='{restore}' where id='{job}';")
+ def test_candidate_discovery_matches_original_authority_for_scoped_conflicts_and_paths(self):
+  other=str(uuid.uuid4());b.insert('report_drafts',{**self.s['draft'],'id':other})
+  for kind,request in [('synthetic_unknown',dict(reportDraftId=self.d.upper())),('synthetic_unknown',dict(reportDraftId=other,continuationId=self.parent)),('upload_report_to_praktika',dict(body=dict(file=dict(path=f'report-uploads/synthetic/{self.d}/letter.pdf')))),('upload_report_to_praktika',dict(body=dict(file=dict(path=f'wrong-root/synthetic/{self.d}/letter.pdf')))),('synthetic_unknown',{})]:
+   b.insert('praktika_helper_jobs',dict(id=str(uuid.uuid4()),job_type=kind,status='failed',request=request))
+  self.assertEqual(sql(f"select count(*) from ((select id from workflow_resolution_associated_jobs('{self.d}') except select id from praktika_helper_jobs j where workflow_resolution_job_associated(to_jsonb(j),'{self.d}')) union all (select id from praktika_helper_jobs j where workflow_resolution_job_associated(to_jsonb(j),'{self.d}') except select id from workflow_resolution_associated_jobs('{self.d}'))) differences;"),'0')
+  self.assertFalse(self.preview()['manualIconReady'])
+ def test_missing_draft_candidate_discovery_agrees_with_original_empty_set(self):
+  missing=str(uuid.uuid4())
+  self.assertEqual(sql(f"select count(*) from workflow_resolution_associated_jobs('{missing}');"),'0')
+  self.assertEqual(sql(f"select count(*) from praktika_helper_jobs j where workflow_resolution_job_associated(to_jsonb(j),'{missing}');"),'0')
+ def test_z_large_unrelated_helper_history_keeps_real_snapshot_inside_five_seconds(self):
+  for start in range(1,106001,500):
+   sql(f"insert into praktika_helper_jobs(id,job_type,status,request,response) select md5('synthetic-perf-'||i)::uuid,'synthetic_unrelated','completed',jsonb_build_object('unrelated',i),jsonb_build_object('padding',repeat('synthetic',256)) from generate_series({start},{start+499}) i;")
+  try:
+   checked=sql('begin;set local role service_role;set local statement_timeout=5000;'+f"select inspect_manual_letter_icon('{self.d}','{self.actor}');"+'commit;')
+   snapshot=json.loads(checked.splitlines()[-1]);self.assertTrue(snapshot['manualIconReady']);self.assertEqual(len(snapshot['praktika']),3)
+  finally:
+   for start in range(1,106001,500):sql(f"delete from praktika_helper_jobs where id in (select md5('synthetic-perf-'||i)::uuid from generate_series({start},{start+499}) i);")
+ def test_retained_completed_upload_lease_uses_existing_terminal_proof(self):
+  sql(f"update praktika_helper_jobs set locked_at=now(),locked_by='synthetic-retained-owner' where id='{self.upload}';")
+  self.s=self.preview();self.assertTrue(self.s['manualIconReady']);before=self.jobs()
+  self.assertTrue(self.confirm()['ok']);self.assertEqual(before,self.jobs())
+  self.assertTrue(rpc(f"select to_jsonb(p) from workflow_resolution_projection(array['{self.d}'::uuid]) p;")['executionSafe'])
+ def test_retained_upload_lock_never_overrides_active_or_uncertain_results(self):
+  for changes in ["status='processing'","response='{}'","response="+b.literal(dict(patient_communication=dict(iFileId=42),externalExecution='uncertain'))]:
+   with self.subTest(changes=changes):
+    sql(f"update praktika_helper_jobs set locked_at=now(),locked_by='synthetic-owner',{changes} where id='{self.upload}';")
+    self.assertFalse(self.preview()['manualIconReady']);self.assertFalse(self.confirm()['ok'])
+    sql(f"update praktika_helper_jobs set status='completed',locked_at=null,locked_by=null,response='{{\"patient_communication\":{{\"iFileId\":42}}}}' where id='{self.upload}';")
  def test_missing_confirmation_writes_nothing(self):
   before=self.jobs()
   for v in ['false','null']:sql('set role service_role;'+self.call(v),False)

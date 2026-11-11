@@ -10,7 +10,13 @@ export function ManualIconCompletionButton({draftId,revision,onResolved}:{draftI
     try {
       const response=await fetch(`/api/report-writing/complete-manual-icon?draftId=${encodeURIComponent(draftId)}`,{cache:'no-store',signal:controller.signal});const data=await response.json();
       if(controller.signal.aborted)return;
-      if(!response.ok||!data.success)throw new Error();
+      if(!response.ok||!data.success){
+        setMessage(response.status===401?'Your session expired. Sign in again before checking the workflow.':
+          response.status===403?'Your account is not authorised to complete this workflow.':
+          data.code==='manual_icon_check_timeout'?'The workflow check took too long. No completion was recorded. Check again later.':
+          'The workflow could not be checked. Please try again later or contact an administrator.');
+        return;
+      }
       setValue(data);
     }catch{if(!controller.signal.aborted)setMessage('The workflow could not be checked. Refresh the letter.');}
     finally{if(request.current===controller)setBusy(false);}
