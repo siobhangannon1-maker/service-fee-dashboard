@@ -1,5 +1,7 @@
 "use client";
 
+import { merchantFeeCategoryLabel, ZIP_MONEY_HUMM_FEES_LABEL } from "@/lib/billing/merchant-fee-labels";
+
 import Link from "next/link";
 import PageLayout from "@/components/ui/PageLayout";
 import {
@@ -405,16 +407,7 @@ export default function BillingDetailsPage() {
   }
 
   function categoryLabel(category: DetailCategory) {
-    switch (category) {
-      case "humm_fee":
-        return "Humm Merchant Fee";
-      case "afterpay_fee":
-        return "Afterpay Merchant Fee";
-      case "incorrect_payment":
-        return "Incorrect Payment";
-      default:
-        return category;
-    }
+    return merchantFeeCategoryLabel(category);
   }
 
   function providerName(id: string) {
@@ -477,7 +470,7 @@ export default function BillingDetailsPage() {
                 </h2>
 
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75">
-                  Add Humm, Afterpay, and incorrect payment detail entries for the selected billing period.
+                  Add {ZIP_MONEY_HUMM_FEES_LABEL}, Afterpay fees, and incorrect payment detail entries for the selected billing period.
                   These entries flow into provider billing calculations.
                 </p>
               </div>
@@ -687,7 +680,7 @@ export default function BillingDetailsPage() {
                 }
                 disabled={activePeriodStatus === "locked"}
               >
-                <option value="humm_fee">Humm Merchant Fee</option>
+                <option value="humm_fee">{ZIP_MONEY_HUMM_FEES_LABEL}</option>
                 <option value="afterpay_fee">Afterpay Merchant Fee</option>
               </select>
             </div>
@@ -762,7 +755,7 @@ export default function BillingDetailsPage() {
             >
               <option value="">All categories</option>
               <option value="afterpay_fee">Afterpay Fee</option>
-              <option value="humm_fee">Humm Fee</option>
+              <option value="humm_fee">{ZIP_MONEY_HUMM_FEES_LABEL}</option>
             </select>
 
             <select

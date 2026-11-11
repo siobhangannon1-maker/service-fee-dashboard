@@ -1,3 +1,7 @@
+import {
+  savePaymentEntry,
+  PaymentEntryError,
+} from "@/lib/billing/save-payment-entry";
 import { sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
@@ -38,6 +42,7 @@ type PatientFinancialEntry = {
   verified_by?: string | null;
   verified_by_initials?: string | null;
   is_review_locked?: boolean;
+  receipt_required?: boolean;
 };
 
 function normaliseRole(role: string | null | undefined) {
@@ -203,8 +208,7 @@ export async function POST(request: Request) {
       if (entry.is_review_locked) {
         return NextResponse.json(
           {
-            error:
-              "This entry is reviewed and locked, so it cannot be edited.",
+            error: "This entry is reviewed and locked, so it cannot be edited.",
           },
           { status: 400 },
         );
@@ -274,17 +278,44 @@ export async function POST(request: Request) {
             : null,
       };
 
-      const { data: updatedEntry, error: updateError } = await supabaseAdmin
-        .from("patient_financial_entries")
-        .update(payload)
-        .eq("id", entryId)
-        .select("*")
-        .single();
-
-      if (updateError || !updatedEntry) {
+      let updatedEntry: PatientFinancialEntry;
+      try {
+        const receiptWorkflow =
+          (body.category === "paid_to_wrong_provider" ||
+            entry.category === "paid_to_wrong_provider" ||
+            entry.receipt_required) &&
+          !(
+            entry.category === "paid_to_wrong_provider" &&
+            !entry.receipt_required &&
+            !entry.billing_period_id &&
+            !body.receiptIds?.length
+          );
+        if (receiptWorkflow)
+          updatedEntry = await savePaymentEntry(
+            user.id,
+            entryId,
+            { ...payload, billing_period_id: entry.billing_period_id },
+            body.receiptIds,
+          );
+        else {
+          const saved = await supabaseAdmin
+            .from("patient_financial_entries")
+            .update(payload)
+            .eq("id", entryId)
+            .select("*")
+            .single();
+          if (saved.error) throw new Error("Entry update failed.");
+          updatedEntry = saved.data;
+        }
+      } catch (error) {
         return NextResponse.json(
-          { error: updateError?.message || "Failed to update entry." },
-          { status: 500 },
+          {
+            error:
+              error instanceof PaymentEntryError
+                ? error.message
+                : "Entry update failed.",
+          },
+          { status: error instanceof PaymentEntryError ? error.status : 500 },
         );
       }
 
@@ -310,7 +341,8 @@ export async function POST(request: Request) {
         );
       }
 
-      const displayName = typedProfile.full_name?.trim() || user.email || user.id;
+      const displayName =
+        typedProfile.full_name?.trim() || user.email || user.id;
       const initials = getInitials(displayName);
 
       const { data: updatedEntry, error: updateError } = await supabaseAdmin

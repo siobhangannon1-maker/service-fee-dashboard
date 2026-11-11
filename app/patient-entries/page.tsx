@@ -1,9 +1,10 @@
 "use client";
 
+import IncorrectPaymentReceipts from "@/components/patient-entries/IncorrectPaymentReceipts";
 import Link from "next/link";
 import PageLayout from "@/components/ui/PageLayout";
 import { ensureCurrentBillingPeriod } from "@/lib/billingPeriods";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { writeAuditLog } from "@/lib/audit";
 import Toast from "@/components/ui/Toast";
@@ -56,6 +57,7 @@ type PatientFinancialEntry = {
   verified_by?: string | null;
   verified_by_initials?: string | null;
   is_review_locked?: boolean;
+  receipt_required?: boolean;
 };
 
 type EntryForm = {
@@ -380,6 +382,24 @@ export default function PatientEntriesPage() {
   const [message, setMessage] = useState("");
   const [tone, setTone] = useState<"default" | "success" | "error">("default");
   const [saving, setSaving] = useState(false);
+  const [receiptBusy, setReceiptBusy] = useState(false);
+  const [paymentReceiptIds, setPaymentReceiptIds] = useState<string[]>([]);
+  const [draftReceiptIds, setDraftReceiptIds] = useState<string[]>([]);
+  const [newEntryId, setNewEntryId] = useState("");
+  useEffect(() => {
+    setNewEntryId(crypto.randomUUID());
+  }, []);
+  const recordDraftReceipt = useCallback(
+    (id: string) =>
+      setDraftReceiptIds((ids) => (ids.includes(id) ? ids : [...ids, id])),
+    [],
+  );
+  const editingEntry = entries.find((entry) => entry.id === editingEntryId);
+  const requiresPaymentReceipt =
+    form.category === "paid_to_wrong_provider" &&
+    (!editingEntryId ||
+      editingEntry?.receipt_required === true ||
+      editingEntry?.category !== "paid_to_wrong_provider");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<null | (() => void)>(null);
 
@@ -616,7 +636,37 @@ export default function PatientEntriesPage() {
     setScanCandidateMatches([]);
   }
 
+  async function discardDraftReceipts(except: string[] = []) {
+    for (const id of draftReceiptIds.filter((id) => !except.includes(id))) {
+      const response = await fetch(`/api/incorrect-payment-receipts/${id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok)
+        throw new Error(
+          "Some draft receipts could not be removed. Retry Cancel or remove them from the receipt list.",
+        );
+      setDraftReceiptIds((ids) => ids.filter((current) => current !== id));
+    }
+  }
+  async function cancelPaymentEntry() {
+    if (
+      draftReceiptIds.length &&
+      !window.confirm("Cancel this entry and remove its unused draft receipts?")
+    )
+      return;
+    try {
+      await discardDraftReceipts();
+      resetForm(selectedPeriodId);
+    } catch (error) {
+      setTone("error");
+      setMessage(
+        error instanceof Error ? error.message : "Draft cleanup failed.",
+      );
+    }
+  }
   function resetForm(nextPeriodId?: string) {
+    setNewEntryId(crypto.randomUUID());
+    setPaymentReceiptIds([]);
     setEditingEntryId(null);
     setSelectedMaterialId("");
     setMaterialSearch("");
@@ -894,6 +944,13 @@ export default function PatientEntriesPage() {
       return;
     }
 
+    if (requiresPaymentReceipt && !paymentReceiptIds.length) {
+      setTone("error");
+      setMessage(
+        "Upload at least one Tyro or Stripe receipt for this payment before saving.",
+      );
+      return;
+    }
     setSaving(true);
 
     const payload = {
@@ -912,7 +969,33 @@ export default function PatientEntriesPage() {
 
     let savedEntryId = editingEntryId;
 
-    if (editingEntryId) {
+    if (
+      form.category === "paid_to_wrong_provider" ||
+      editingEntry?.category === "paid_to_wrong_provider" ||
+      editingEntry?.receipt_required
+    ) {
+      try {
+        const response = await fetch("/api/patient-entries/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entryId: editingEntryId || newEntryId,
+            entry: payload,
+            receiptIds: paymentReceiptIds,
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Entry save failed.");
+        savedEntryId = result.entry.id;
+      } catch (error) {
+        setTone("error");
+        setMessage(
+          error instanceof Error ? error.message : "Entry save failed.",
+        );
+        setSaving(false);
+        return;
+      }
+    } else if (editingEntryId) {
       const { error } = await supabase
         .from("patient_financial_entries")
         .update(payload)
@@ -957,8 +1040,17 @@ export default function PatientEntriesPage() {
       },
     });
 
+    let cleanupWarning = "";
+    try {
+      await discardDraftReceipts(form.category === "paid_to_wrong_provider" ? paymentReceiptIds : []);
+      setDraftReceiptIds([]);
+    } catch {
+      cleanupWarning = " Unused drafts remain removable from the receipt list.";
+    }
     setTone("success");
-    setMessage(editingEntryId ? "Entry updated." : "Entry saved.");
+    setMessage(
+      (editingEntryId ? "Entry updated." : "Entry saved.") + cleanupWarning,
+    );
     setSaving(false);
     resetForm(form.billing_period_id);
     await loadData(form.billing_period_id);
@@ -1147,6 +1239,8 @@ export default function PatientEntriesPage() {
           <div className="grid gap-3 sm:grid-cols-2">
             <select
               className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm"
+              disabled={receiptBusy}
+              aria-label="Page billing year"
               value={selectedYear}
               onChange={(e) => handlePageYearChange(Number(e.target.value))}
             >
@@ -1159,6 +1253,8 @@ export default function PatientEntriesPage() {
 
             <select
               className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm"
+              disabled={receiptBusy}
+              aria-label="Page billing month"
               value={selectedPeriod?.month || ""}
               onChange={(e) => handlePageMonthChange(Number(e.target.value))}
             >
@@ -1219,10 +1315,13 @@ export default function PatientEntriesPage() {
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-700">
-              Provider
+              {form.category === "paid_to_wrong_provider"
+                ? "Provider who received payment in error"
+                : "Provider"}
             </label>
             <select
               className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
+              aria-label="Entry provider"
               value={form.provider_id}
               onChange={(e) =>
                 setForm((prev) => ({
@@ -1234,7 +1333,7 @@ export default function PatientEntriesPage() {
                       : prev.related_provider_id,
                 }))
               }
-              disabled={activePeriodStatus === "locked"}
+              disabled={activePeriodStatus === "locked" || receiptBusy}
             >
               <option value="">Select provider</option>
               {providers.map((provider) => (
@@ -1252,9 +1351,10 @@ export default function PatientEntriesPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <select
                 className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
+                aria-label="Entry billing year"
                 value={formSelectedYear}
                 onChange={(e) => handleFormYearChange(Number(e.target.value))}
-                disabled={activePeriodStatus === "locked"}
+                disabled={activePeriodStatus === "locked" || receiptBusy}
               >
                 {yearOptions.map((year) => (
                   <option key={year} value={year}>
@@ -1265,9 +1365,10 @@ export default function PatientEntriesPage() {
 
               <select
                 className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
+                aria-label="Entry billing month"
                 value={formSelectedPeriod?.month || ""}
                 onChange={(e) => handleFormMonthChange(Number(e.target.value))}
-                disabled={activePeriodStatus === "locked"}
+                disabled={activePeriodStatus === "locked" || receiptBusy}
               >
                 <option value="">Select month</option>
                 {monthOptionsForFormYear.map((month) => (
@@ -1291,7 +1392,7 @@ export default function PatientEntriesPage() {
               onChange={(e) =>
                 setForm((prev) => ({ ...prev, entry_date: e.target.value }))
               }
-              disabled={activePeriodStatus === "locked"}
+              disabled={activePeriodStatus === "locked" || receiptBusy}
             />
           </div>
 
@@ -1305,7 +1406,7 @@ export default function PatientEntriesPage() {
               onChange={(e) =>
                 setForm((prev) => ({ ...prev, patient_name: e.target.value }))
               }
-              disabled={activePeriodStatus === "locked"}
+              disabled={activePeriodStatus === "locked" || receiptBusy}
               placeholder="Enter patient name"
             />
           </div>
@@ -1316,6 +1417,7 @@ export default function PatientEntriesPage() {
             </label>
             <select
               className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
+              aria-label="Entry category"
               value={form.category}
               onChange={(e) =>
                 setForm((prev) => ({
@@ -1327,7 +1429,7 @@ export default function PatientEntriesPage() {
                       : "",
                 }))
               }
-              disabled={activePeriodStatus === "locked"}
+              disabled={activePeriodStatus === "locked" || receiptBusy}
             >
               <option value="lab_implant_materials">
                 Lab / Implants / Materials
@@ -1441,7 +1543,7 @@ export default function PatientEntriesPage() {
                     onFocus={() => setMaterialDropdownOpen(true)}
                     placeholder="Search preset name, barcode, or REF number"
                     className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
-                    disabled={activePeriodStatus === "locked"}
+                    disabled={activePeriodStatus === "locked" || receiptBusy}
                   />
 
                   {materialDropdownOpen && activePeriodStatus !== "locked" && (
@@ -1548,7 +1650,7 @@ export default function PatientEntriesPage() {
               onChange={(e) =>
                 setForm((prev) => ({ ...prev, amount: e.target.value }))
               }
-              disabled={activePeriodStatus === "locked"}
+              disabled={activePeriodStatus === "locked" || receiptBusy}
               placeholder="0.00"
             />
           </div>
@@ -1560,6 +1662,7 @@ export default function PatientEntriesPage() {
               </label>
               <select
                 className="w-full rounded-2xl border border-slate-300 px-3 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
+                aria-label="Provider actually owed"
                 value={form.related_provider_id}
                 onChange={(e) =>
                   setForm((prev) => ({
@@ -1567,7 +1670,7 @@ export default function PatientEntriesPage() {
                     related_provider_id: e.target.value,
                   }))
                 }
-                disabled={activePeriodStatus === "locked"}
+                disabled={activePeriodStatus === "locked" || receiptBusy}
               >
                 <option value="">Select provider</option>
                 {relatedProviderOptions.map((provider) => (
@@ -1589,15 +1692,37 @@ export default function PatientEntriesPage() {
               onChange={(e) =>
                 setForm((prev) => ({ ...prev, notes: e.target.value }))
               }
-              disabled={activePeriodStatus === "locked"}
+              disabled={activePeriodStatus === "locked" || receiptBusy}
               placeholder="Optional notes"
             />
           </div>
         </div>
 
+        {form.category === "paid_to_wrong_provider" && (
+          <IncorrectPaymentReceipts
+            key={`${editingEntryId || newEntryId}:${form.provider_id}:${form.related_provider_id}:${form.billing_period_id}`}
+            providers={providers}
+            periods={billingPeriods}
+            providerId={form.provider_id}
+            intendedProviderId={form.related_provider_id}
+            periodId={form.billing_period_id}
+            entryId={editingEntryId || newEntryId}
+            paymentMode
+            required={requiresPaymentReceipt}
+            onBusyChange={setReceiptBusy}
+            onSelectionChange={setPaymentReceiptIds}
+            onDraftCreated={recordDraftReceipt}
+          />
+        )}
+
         <div className="mt-5 flex flex-col gap-3 sm:flex-row">
           <button
-            disabled={saving || activePeriodStatus === "locked"}
+            disabled={
+              saving ||
+              receiptBusy ||
+              activePeriodStatus === "locked" ||
+              (requiresPaymentReceipt && !paymentReceiptIds.length)
+            }
             className="inline-flex w-full items-center justify-center rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white disabled:opacity-50 sm:w-auto"
           >
             {saving
@@ -1607,10 +1732,11 @@ export default function PatientEntriesPage() {
                 : "Save entry"}
           </button>
 
-          {editingEntryId && (
+          {(editingEntryId || form.category === "paid_to_wrong_provider") && (
             <button
               type="button"
-              onClick={() => resetForm(selectedPeriodId)}
+              disabled={receiptBusy || saving}
+              onClick={cancelPaymentEntry}
               className="inline-flex w-full items-center justify-center rounded-2xl border px-4 py-3 text-sm font-medium sm:w-auto"
             >
               Cancel
@@ -1618,6 +1744,16 @@ export default function PatientEntriesPage() {
           )}
         </div>
       </form>
+      {form.category !== "paid_to_wrong_provider" && (
+        <IncorrectPaymentReceipts
+          key={`${form.provider_id}:${form.billing_period_id}`}
+          providers={providers}
+          periods={billingPeriods}
+          providerId={form.provider_id}
+          periodId={form.billing_period_id}
+          onBusyChange={setReceiptBusy}
+        />
+      )}
 
       <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="mb-4">
@@ -1782,7 +1918,9 @@ export default function PatientEntriesPage() {
                         <button
                           type="button"
                           onClick={() => beginEdit(entry)}
-                          disabled={activePeriodStatus === "locked"}
+                          disabled={
+                            activePeriodStatus === "locked" || receiptBusy
+                          }
                           className="rounded-xl border px-4 py-2.5 text-sm font-medium disabled:opacity-50"
                         >
                           Edit
@@ -1795,7 +1933,9 @@ export default function PatientEntriesPage() {
                             );
                             setConfirmOpen(true);
                           }}
-                          disabled={activePeriodStatus === "locked"}
+                          disabled={
+                            activePeriodStatus === "locked" || receiptBusy
+                          }
                           className="rounded-xl border px-4 py-2.5 text-sm font-medium text-red-600 disabled:opacity-50"
                         >
                           Delete

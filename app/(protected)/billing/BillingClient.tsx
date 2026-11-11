@@ -1,5 +1,9 @@
 "use client";
 
+import { calculateStatementCharges } from "@/lib/service-fees/statement-charge-totals";
+import { ZIP_MONEY_HUMM_FEES_LABEL } from "@/lib/billing/merchant-fee-labels";
+import { providerStatementHeadings } from "@/lib/billing/receipt-contract";
+import { BillingReceiptStatus, usePaymentReceipts } from "@/components/patient-entries/IncorrectPaymentReceipts";
 import PraktikaSessionPanel from "@/components/PraktikaSessionPanel";
 import Link from "next/link";
 import {
@@ -171,6 +175,9 @@ export default function BillingClient() {
   const [savingAll, setSavingAll] = useState(false);
   const [loadingMetrics, setLoadingMetrics] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [receiptRefresh, setReceiptRefresh] = useState(0);
+  const [invoiceAttachmentErrors,setInvoiceAttachmentErrors] = useState<Record<string,string>>({});
+  const receiptState = usePaymentReceipts(selectedPeriodId, receiptRefresh);
   const [creatingXeroInvoices, setCreatingXeroInvoices] = useState(false);
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -1176,11 +1183,11 @@ export default function BillingClient() {
                 <td style="padding:6px 0;text-align:right;">${money(autoTotals.labImplantMaterials)}</td>
               </tr>
               <tr>
-                <td style="padding:6px 0;">Humm merchant fees</td>
+                <td style="padding:6px 0;">${ZIP_MONEY_HUMM_FEES_LABEL}</td>
                 <td style="padding:6px 0;text-align:right;">${money(autoTotals.hummFees)}</td>
               </tr>
               <tr>
-                <td style="padding:6px 0;">Afterpay merchant fees</td>
+                <td style="padding:6px 0;">Afterpay fees (deducted from gross; not added back)</td>
                 <td style="padding:6px 0;text-align:right;">${money(autoTotals.afterpayFees)}</td>
               </tr>
               <tr>
@@ -1222,7 +1229,7 @@ export default function BillingClient() {
         )}
 
         ${sectionTable(
-          "Humm merchant fee entries",
+          `${ZIP_MONEY_HUMM_FEES_LABEL} entries`,
           hummEntries,
           autoTotals.hummFees
         )}
@@ -1234,15 +1241,20 @@ export default function BillingClient() {
         )}
 
         ${sectionTable(
-          "Patient fees paid to Focus",
+          providerStatementHeadings(provider.name)[0],
           paidToFocusEntries,
           autoTotals.feesPaidToFocus
         )}
 
         ${sectionTable(
-          `Patient fees paid to ${provider.name} in error`,
+          providerStatementHeadings(provider.name)[1],
           paidInErrorEntries,
           autoTotals.feesPaidInError
+        )}
+        ${sectionTable(
+          providerStatementHeadings(provider.name)[2],
+          entries.filter((entry) => entry.category === "paid_to_wrong_provider" && entry.related_provider_id === provider.id && entry.billing_period_id === selectedPeriodId),
+          autoTotals.feesOwed
         )}
       </div>
     `;
@@ -1389,26 +1401,15 @@ export default function BillingClient() {
           (entry) => entry.category === "afterpay_fee"
         );
 
-        const labMaterialsGst = autoTotals.labImplantMaterials * 0.1;
-        const hummFeesGst = autoTotals.hummFees * 0.1;
-        const afterpayFeesGst = autoTotals.afterpayFees * 0.1;
-        const totalGst = gst + labMaterialsGst + hummFeesGst + afterpayFeesGst;
-
-        const feesAndCostsTotalIncGst =
-          totalFeesDue +
-          autoTotals.labImplantMaterials +
-          labMaterialsGst +
-          autoTotals.hummFees +
-          hummFeesGst +
-          autoTotals.afterpayFees +
-          afterpayFeesGst;
-
-        const finalTotalDueWithExpenseGst =
-          feesAndCostsTotalIncGst -
-          autoTotals.feesPaidToFocus -
-          autoTotals.feesOwed +
-          autoTotals.feesPaidInError +
-          manualInputs.ivFacilityFees;
+        const charges = calculateStatementCharges({
+          serviceFeeExGst: serviceFee,
+          labMaterialsExGst: autoTotals.labImplantMaterials,
+          hummFeesExGst: autoTotals.hummFees,
+          patientFeesPaidToFocusNoGst: autoTotals.feesPaidToFocus,
+          patientFeesReceivedInErrorNoGst: autoTotals.feesPaidInError,
+          patientFeesPaidToAnotherProviderNoGst: autoTotals.feesOwed,
+          ivFacilityFeesNoGst: manualInputs.ivFacilityFees,
+        });
 
         return {
           providerId: provider.id,
@@ -1426,24 +1427,13 @@ export default function BillingClient() {
             provider,
             feeBase
           ),
-          serviceFeeExGst: serviceFee,
-          serviceFeeGst: gst,
-          serviceFeeIncGst: totalFeesDue,
-
-          labMaterialsExGst: autoTotals.labImplantMaterials,
-          labMaterialsGst,
-          hummFeesExGst: autoTotals.hummFees,
-          hummFeesGst,
+          ...charges,
           afterpayFeesExGst: autoTotals.afterpayFees,
-          afterpayFeesGst,
           ivFacilityFeesNoGst: manualInputs.ivFacilityFees,
-          totalGst,
-          feesAndCostsTotalIncGst,
 
           patientFeesPaidToFocusNoGst: autoTotals.feesPaidToFocus,
           patientFeesReceivedInErrorNoGst: autoTotals.feesPaidInError,
           patientFeesPaidToAnotherProviderNoGst: autoTotals.feesOwed,
-          finalTotalDue: finalTotalDueWithExpenseGst,
 
           implantEntries,
           hummEntries,
@@ -1465,6 +1455,7 @@ export default function BillingClient() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          billingPeriodId: selectedPeriodId,
           invoiceDate,
           dueDate,
           reference: selectedPeriod.label,
@@ -1485,6 +1476,7 @@ try {
   throw new Error(`API response was not valid JSON: ${text.slice(0, 500)}`);
 }
 
+      if (data?.attachmentResults) setInvoiceAttachmentErrors(Object.fromEntries(data.attachmentResults.filter((item:{providerId?:string;error?:string})=>item.providerId&&item.error).map((item:{providerId:string;error:string})=>[item.providerId,item.error])));
       if (!res.ok || !data?.success) {
         console.error("Xero invoice API failed:", data);
 
@@ -1509,6 +1501,10 @@ try {
       });
 
       const attachmentResults = data.attachmentResults || data.attachments || [];
+      setReceiptRefresh((v) => v + 1);
+      setInvoiceAttachmentErrors(Object.fromEntries(attachmentResults.filter((item:{providerId?:string;error?:string})=>item.providerId&&item.error).map((item:{providerId:string;error:string})=>[item.providerId,item.error])));
+      const hasAttachmentFailures = attachmentResults.some((item: { error?: string }) => !!item.error);
+      const receiptResults = attachmentResults.flatMap((item: { receiptResults?: { attached: boolean }[] }) => item.receiptResults || []);
       const statementAttachedCount = attachmentResults.filter(
         (item: any) => item.statementAttached !== false
       ).length;
@@ -1523,10 +1519,11 @@ try {
           statementAttachedCount === 1 ? "" : "s"
         } and ${productionAttachedCount} Praktika production report${
           productionAttachedCount === 1 ? "" : "s"
-        }.`,
-        "success"
+        }. Reused ${data.reusedCount || 0} existing invoices. Receipts attached: ${receiptResults.filter((r: { attached: boolean }) => r.attached).length}.${hasAttachmentFailures ? " Some attachments failed. Review provider status and retry this action; saved invoices will be reused." : ""}`,
+        hasAttachmentFailures ? "error" : "success"
       );
     } catch (error: any) {
+      setReceiptRefresh((v) => v + 1);
       showToast(
         `Xero draft invoice creation failed: ${
           error?.message || "Unknown error"
@@ -1716,7 +1713,7 @@ try {
         addLabeledValueRow(
           worksheet,
           row,
-          "Humm merchant fees (ex GST)",
+          `${ZIP_MONEY_HUMM_FEES_LABEL} (ex GST)`,
           autoTotals.hummFees
         );
         row += 1;
@@ -1724,7 +1721,7 @@ try {
         addLabeledValueRow(
           worksheet,
           row,
-          "Plus GST on lab/materials and Humm",
+          `Plus GST on lab/materials and ${ZIP_MONEY_HUMM_FEES_LABEL}`,
           gstOnExpenses
         );
         row += 1;
@@ -1828,7 +1825,7 @@ try {
         addLabeledValueRow(
           worksheet,
           row,
-          "Less Afterpay and Humm Merchant Fees",
+          `Less Afterpay and ${ZIP_MONEY_HUMM_FEES_LABEL}`,
           autoTotals.afterpayFees + autoTotals.hummFees
         );
         row += 1;
@@ -1965,7 +1962,7 @@ try {
           addSubtotal(afterpayTotal);
         }
 
-        addSectionHeader("Humm Merchant Fees NET excluding GST");
+        addSectionHeader(`${ZIP_MONEY_HUMM_FEES_LABEL} NET excluding GST`);
 
         const hummEntries = providerDetailEntries.filter(
           (e) => e.category === "humm_fee"
@@ -1995,7 +1992,7 @@ try {
           addSubtotal(manualInputs.ivFacilityFees);
         }
 
-        addSectionHeader("Patient fees paid to Focus");
+        addSectionHeader(providerStatementHeadings(provider.name)[0]);
 
         const paidToFocusEntries = providerPatientEntries.filter(
           (e) => e.category === "fees_paid_to_focus"
@@ -2015,7 +2012,7 @@ try {
           addSubtotal(focusTotal);
         }
 
-        addSectionHeader(`Patient fees paid to ${provider.name} in error`);
+        addSectionHeader(providerStatementHeadings(provider.name)[1]);
 
         const paidToThisProviderInErrorEntries = providerPatientEntries.filter(
           (e) => e.category === "paid_to_wrong_provider"
@@ -2042,7 +2039,7 @@ try {
           addSubtotal(paidToThisProviderInErrorTotal);
         }
 
-        addSectionHeader("Patient fees paid to another provider in error");
+        addSectionHeader(providerStatementHeadings(provider.name)[2]);
 
         const paidToAnotherProviderEntries = entries.filter(
           (e) =>
@@ -2309,7 +2306,7 @@ try {
                 openConfirm({
                   title: "Create Xero draft invoices?",
                   description:
-                    "This will create draft invoices in Xero for all providers in the selected billing month and attach each provider statement PDF. Your bookkeeper can review and approve them in Xero before anything is approved.",
+                    "This will create or reuse draft invoices for this month and attach statements, Praktika reports and incorrect payment receipts from both locations. Retrying reuses saved invoices and retries incomplete attachments. Your bookkeeper can review them in Xero.",
                   action: () => {
                     createXeroDraftInvoices();
                   },
@@ -2439,6 +2436,8 @@ try {
                   <div>
                     <h2 className="text-xl font-semibold tracking-tight text-slate-950">{provider.name}</h2>
                     <p className="text-sm text-slate-600">{provider.specialty}</p>
+                    {invoiceAttachmentErrors[provider.id] && <p role="alert" className="mt-2 text-sm text-red-700">{invoiceAttachmentErrors[provider.id]}</p>}
+                    <BillingReceiptStatus {...receiptState} providerId={provider.id} />
                     {provider.email && (
                       <p className="mt-1 text-xs text-slate-500">{provider.email}</p>
                     )}
@@ -2554,7 +2553,7 @@ try {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-medium text-slate-700">Humm merchant fees</label>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">{ZIP_MONEY_HUMM_FEES_LABEL}</label>
                     <input
                       type="number"
                       className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 shadow-inner"

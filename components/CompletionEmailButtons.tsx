@@ -1,5 +1,7 @@
 "use client";
 
+import { ZIP_MONEY_HUMM_FEES_LABEL } from "@/lib/billing/merchant-fee-labels";
+
 import { useState } from "react";
 
 type EmailTemplate = {
@@ -34,7 +36,7 @@ const EMAIL_TEMPLATES: EmailTemplate[] = [
       "All incorrect payments entries reviewed for correctness",
       "Focus Tyro portal reviewed to identify any payments into the Focus account",
       "Check that no Xestro payments have been received into the Focus account",
-      "Humm merchant fees entered into portal (surgical fee - (Humm remittance/1.1)",
+      `${ZIP_MONEY_HUMM_FEES_LABEL} entered into portal (surgical fee - (Humm remittance/1.1)`,
       "Humm surgeon fee entered as a payment to Focus",
       "Review debtors, deposits and refunds",
     ],

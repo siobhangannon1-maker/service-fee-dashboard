@@ -1,5 +1,7 @@
 "use client";
 
+import { ZIP_MONEY_HUMM_FEES_LABEL } from "@/lib/billing/merchant-fee-labels";
+
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { calculateServiceFee } from "@/lib/calculations";
@@ -1117,7 +1119,7 @@ export default function FinancialsClient() {
               <MetricCard
                 label="Merchant fees"
                 value={`$${formatMoney(displayedTotals.merchantFees)}`}
-                subtext={`Humm + Afterpay fees for ${displayedTotals.label}`}
+                subtext={`${ZIP_MONEY_HUMM_FEES_LABEL} + Afterpay fees for ${displayedTotals.label}`}
               />
               <MetricCard
                 label="Final total due"

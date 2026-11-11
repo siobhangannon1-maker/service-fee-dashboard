@@ -1,7 +1,8 @@
 "use client";
 
+import IncorrectPaymentReceipts from "@/components/patient-entries/IncorrectPaymentReceipts";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import PageLayout from "@/components/ui/PageLayout";
 import Toast from "@/components/ui/Toast";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -42,6 +43,7 @@ type PatientFinancialEntry = {
   verified_by?: string | null;
   verified_by_initials?: string | null;
   is_review_locked?: boolean;
+  receipt_required?: boolean;
 };
 
 type ReviewerInfo = {
@@ -226,6 +228,14 @@ export default function PatientEntriesReviewClient({
     notes: "",
   });
 
+  const [receiptBusy, setReceiptBusy] = useState(false);
+  const [paymentReceiptIds, setPaymentReceiptIds] = useState<string[]>([]);
+  const [draftReceiptIds, setDraftReceiptIds] = useState<string[]>([]);
+  const recordDraftReceipt = useCallback(
+    (id: string) =>
+      setDraftReceiptIds((ids) => (ids.includes(id) ? ids : [...ids, id])),
+    [],
+  );
   const [message, setMessage] = useState("");
   const [tone, setTone] = useState<"default" | "success" | "error">("default");
   const [savingEntryId, setSavingEntryId] = useState<string | null>(null);
@@ -292,7 +302,21 @@ export default function PatientEntriesReviewClient({
     });
   }
 
-  function cancelEdit() {
+  async function cancelEdit(keepIds: string[] = []) {
+    for (const id of draftReceiptIds.filter((id) => !keepIds.includes(id))) {
+      const response = await fetch(`/api/incorrect-payment-receipts/${id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        setTone("error");
+        setMessage(
+          "Some unused draft receipts could not be removed. Retry Cancel or remove them from the receipt list.",
+        );
+        return;
+      }
+    }
+    setDraftReceiptIds([]);
+    setPaymentReceiptIds([]);
     setEditingEntryId(null);
     setEditForm({
       provider_id: "",
@@ -333,8 +357,8 @@ export default function PatientEntriesReviewClient({
         reviewFilter === "all"
           ? true
           : reviewFilter === "reviewed_locked"
-          ? isReviewedLocked
-          : !isReviewedLocked;
+            ? isReviewedLocked
+            : !isReviewedLocked;
 
       return (
         matchesPeriod &&
@@ -364,7 +388,10 @@ export default function PatientEntriesReviewClient({
     (entry) => entry.billing_period_id === selectedPeriodId,
   ).length;
 
-  async function submitReviewAction(entryId: string, mode: "review" | "unlock") {
+  async function submitReviewAction(
+    entryId: string,
+    mode: "review" | "unlock",
+  ) {
     setSavingEntryId(entryId);
     setMessage("");
 
@@ -389,7 +416,9 @@ export default function PatientEntriesReviewClient({
       const updatedEntry = result.entry as PatientFinancialEntry;
 
       setEntries((prev) =>
-        prev.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry)),
+        prev.map((entry) =>
+          entry.id === updatedEntry.id ? updatedEntry : entry,
+        ),
       );
 
       if (mode === "review") {
@@ -433,6 +462,7 @@ export default function PatientEntriesReviewClient({
           entryId,
           action: "update",
           ...editForm,
+          receiptIds: paymentReceiptIds,
         }),
       });
 
@@ -445,12 +475,14 @@ export default function PatientEntriesReviewClient({
       const updatedEntry = result.entry as PatientFinancialEntry;
 
       setEntries((prev) =>
-        prev.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry)),
+        prev.map((entry) =>
+          entry.id === updatedEntry.id ? updatedEntry : entry,
+        ),
       );
 
       setTone("success");
       setMessage("Entry updated. You can now review and lock it.");
-      cancelEdit();
+      await cancelEdit(editForm.category === "paid_to_wrong_provider" ? paymentReceiptIds : []);
     } catch (error) {
       setTone("error");
       setMessage(error instanceof Error ? error.message : "Update failed.");
@@ -548,7 +580,9 @@ export default function PatientEntriesReviewClient({
             <select
               className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm"
               value={selectedPeriod?.month || ""}
-              onChange={(event) => handleMonthChange(Number(event.target.value))}
+              onChange={(event) =>
+                handleMonthChange(Number(event.target.value))
+              }
             >
               <option value="">Select month</option>
               {monthOptionsForSelectedYear.map((month) => (
@@ -581,9 +615,7 @@ export default function PatientEntriesReviewClient({
           <div className="mt-2 text-3xl font-semibold text-slate-900">
             {reviewedCount}/{totalForPeriod}
           </div>
-          <div className="mt-1 text-sm text-slate-500">
-            reviewed and locked
-          </div>
+          <div className="mt-1 text-sm text-slate-500">reviewed and locked</div>
         </div>
       </div>
 
@@ -701,7 +733,10 @@ export default function PatientEntriesReviewClient({
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div className="min-w-0 flex-1">
                     {isEditing ? (
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      <fieldset
+                        disabled={receiptBusy || savingEntryId === entry.id}
+                        className="grid gap-3 md:grid-cols-2 xl:grid-cols-3"
+                      >
                         <div>
                           <label className="mb-2 block text-sm font-medium text-slate-700">
                             Provider
@@ -714,7 +749,8 @@ export default function PatientEntriesReviewClient({
                                 ...prev,
                                 provider_id: event.target.value,
                                 related_provider_id:
-                                  prev.related_provider_id === event.target.value
+                                  prev.related_provider_id ===
+                                  event.target.value
                                     ? ""
                                     : prev.related_provider_id,
                               }))
@@ -774,7 +810,8 @@ export default function PatientEntriesReviewClient({
                                 ...prev,
                                 category: event.target.value as EntryCategory,
                                 related_provider_id:
-                                  event.target.value === "paid_to_wrong_provider"
+                                  event.target.value ===
+                                  "paid_to_wrong_provider"
                                     ? prev.related_provider_id
                                     : "",
                               }))
@@ -859,7 +896,28 @@ export default function PatientEntriesReviewClient({
                             }
                           />
                         </div>
-                      </div>
+                        {editForm.category === "paid_to_wrong_provider" && (
+                          <div className="md:col-span-2 xl:col-span-3">
+                            <IncorrectPaymentReceipts
+                              key={`${entry.id}:${editForm.provider_id}:${editForm.related_provider_id}:${entry.billing_period_id}`}
+                              providers={providers}
+                              periods={billingPeriods}
+                              providerId={editForm.provider_id}
+                              intendedProviderId={editForm.related_provider_id}
+                              periodId={entry.billing_period_id || ""}
+                              entryId={entry.id}
+                              paymentMode
+                              required={
+                                entry.receipt_required === true ||
+                                entry.category !== "paid_to_wrong_provider"
+                              }
+                              onSelectionChange={setPaymentReceiptIds}
+                              onBusyChange={setReceiptBusy}
+                              onDraftCreated={recordDraftReceipt}
+                            />
+                          </div>
+                        )}
+                      </fieldset>
                     ) : (
                       <>
                         <div className="flex flex-wrap items-center gap-2">
@@ -952,7 +1010,15 @@ export default function PatientEntriesReviewClient({
                         <>
                           <button
                             type="button"
-                            disabled={savingEntryId === entry.id}
+                            disabled={
+                              receiptBusy ||
+                              savingEntryId === entry.id ||
+                              (editForm.category === "paid_to_wrong_provider" &&
+                                (entry.receipt_required === true ||
+                                  entry.category !==
+                                    "paid_to_wrong_provider") &&
+                                !paymentReceiptIds.length)
+                            }
                             onClick={() => saveEditedEntry(entry.id)}
                             className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
                           >
@@ -963,7 +1029,8 @@ export default function PatientEntriesReviewClient({
 
                           <button
                             type="button"
-                            onClick={cancelEdit}
+                            disabled={receiptBusy || savingEntryId === entry.id}
+                            onClick={() => cancelEdit()}
                             className="rounded-xl border px-4 py-2 text-sm font-medium"
                           >
                             Cancel

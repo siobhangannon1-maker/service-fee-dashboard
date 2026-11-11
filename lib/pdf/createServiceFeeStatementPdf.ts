@@ -1,3 +1,6 @@
+import { providerStatementHeadings } from "@/lib/billing/receipt-contract";
+import { ZIP_MONEY_HUMM_FEES_LABEL } from "@/lib/billing/merchant-fee-labels";
+import { calculateStatementCharges } from "@/lib/service-fees/statement-charge-totals";
 import "server-only";
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -82,6 +85,7 @@ function sanitizeText(value: string) {
 export async function createServiceFeeStatementPdf(
   input: ServiceFeeStatementPdfInput
 ): Promise<Buffer> {
+  input = { ...input, ...calculateStatementCharges(input) };
   const pdf = await PDFDocument.create();
   const regularFont = await pdf.embedFont(StandardFonts.Helvetica);
   const boldFont = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -285,9 +289,8 @@ export async function createServiceFeeStatementPdf(
 
   sectionTitle("Add");
   row("Lab/materials expenses", input.labMaterialsExGst);
-  row("Humm merchant fees", input.hummFeesExGst);
-  row("Afterpay fees", input.afterpayFeesExGst);
-  row("Plus GST", input.labMaterialsGst + input.hummFeesGst + input.afterpayFeesGst);
+  row(ZIP_MONEY_HUMM_FEES_LABEL, input.hummFeesExGst);
+  row("Plus GST", input.labMaterialsGst + input.hummFeesGst);
   row("Total fees and costs", input.feesAndCostsTotalIncGst, { bold: true });
   row("Includes GST", input.totalGst, { bold: true });
 
@@ -316,18 +319,18 @@ row("TOTAL DUE TO FOCUS DENTAL", input.finalTotalDue, { bold: true });
   row("Gross production", input.grossProduction);
   row("Patient billings adjustment", input.adjustments);
   row("Less implants/materials expenses", -input.labMaterialsExGst);
-  row("Less Humm fees", -input.hummFeesExGst);
+  row(`Less ${ZIP_MONEY_HUMM_FEES_LABEL}`, -input.hummFeesExGst);
   row("Less Afterpay fees", -input.afterpayFeesExGst);
   row("Less IV Facility Fees", -input.ivFacilityFeesNoGst);
   row("Less other deductions", -input.otherDeductions);
   row("NET PATIENT FEES", input.feeBase, { bold: true });
 
   detailSection("Implant/Grafting Materials/Guides NET excluding GST", input.implantEntries, input.labMaterialsExGst);
-  detailSection("Humm Merchant Fees NET excluding GST", input.hummEntries, input.hummFeesExGst);
+  detailSection(`${ZIP_MONEY_HUMM_FEES_LABEL} NET excluding GST`, input.hummEntries, input.hummFeesExGst);
   detailSection("Afterpay Fees NET excluding GST", input.afterpayEntries, input.afterpayFeesExGst);
-  detailSection("Patient fees owed to provider", input.paidToFocusEntries, input.patientFeesPaidToFocusNoGst);
-  detailSection(`Patient fee paid to ${input.providerName} in error`, input.paidToThisProviderInErrorEntries, input.patientFeesReceivedInErrorNoGst);
-  detailSection("Facility fees paid to another provider, owed to Focus", input.paidToAnotherProviderEntries, input.patientFeesPaidToAnotherProviderNoGst);
+  detailSection(providerStatementHeadings(input.providerName)[0], input.paidToFocusEntries, input.patientFeesPaidToFocusNoGst);
+  detailSection(providerStatementHeadings(input.providerName)[1], input.paidToThisProviderInErrorEntries, input.patientFeesReceivedInErrorNoGst);
+  detailSection(providerStatementHeadings(input.providerName)[2], input.paidToAnotherProviderEntries, input.patientFeesPaidToAnotherProviderNoGst);
 
   const pdfBytes = await pdf.save();
   return Buffer.from(pdfBytes);

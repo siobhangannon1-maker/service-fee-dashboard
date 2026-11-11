@@ -1,5 +1,6 @@
 "use client";
 
+import XeroMappingValidation from "@/components/providers/XeroMappingValidation";
 import { useEffect, useState } from "react";
 import PageLayout from "@/components/ui/PageLayout";
 import PageSection from "@/components/ui/PageSection";
@@ -350,6 +351,7 @@ export default function ProvidersPage() {
       title="Providers"
       description="Manage provider profiles, service fee formulas, deductions, and archived providers."
     >
+      <XeroMappingValidation />
       <section className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-sm">
         <div className="bg-gradient-to-br from-slate-950 via-blue-950 to-blue-700 px-6 py-7">
           <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr] lg:items-end">
@@ -459,10 +461,10 @@ export default function ProvidersPage() {
                   xero_contact_id: e.target.value,
                 }))
               }
-              placeholder="Optional: paste the provider's Xero ContactID here"
+              placeholder="Paste the provider's Xero ContactID here"
             />
             <p className="mt-1 text-xs text-slate-500">
-              Optional but recommended. If blank, invoices will match by provider name in Xero.
+              Required before creating billing invoices. Paste the exact ContactID from the intended contact in the connected Xero organisation.
             </p>
           </div>
 
@@ -649,10 +651,10 @@ export default function ProvidersPage() {
                           xero_contact_id: e.target.value,
                         })
                       }
-                      placeholder="Optional: paste the provider's Xero ContactID here"
+                      placeholder="Paste the provider's Xero ContactID here"
                     />
                     <p className="mt-1 text-xs text-slate-500">
-                      Optional but recommended. If blank, draft invoices will match by provider name in Xero.
+                      Required before creating billing invoices. Paste the exact ContactID from the intended contact in the connected Xero organisation.
                     </p>
                   </div>
 
