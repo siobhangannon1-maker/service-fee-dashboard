@@ -1,4 +1,3 @@
-import { resolutionActions } from './workflow-resolution';
 import type { ResolutionProjection } from './resolution-evidence';
 import type { CurrentWorkflowPresentation } from './draft-contract';
 import {projectHistoricalAttention,historicalAttentionAction,historicalAttentionInvalidated} from './historical-attention';
@@ -21,6 +20,10 @@ export async function workflowAccountState(db: SupabaseClient, actorId: string):
     return data.is_active ? 'active' : 'inactive';
   } catch { return 'unavailable'; }
 }
+// Only these events trigger the existing fingerprint/safety projection. Execution,
+// settlement and branch-fence journals are checked inside that RPC, not downloaded
+// for every list request (their volume can exhaust the shared evidence deadline).
+const resolutionProjectionActions = ['workflow_resolution_verification', 'workflow_resolution_resume', 'workflow_resolution_completed'] as const;
 export const workflowStatusWarning = 'Workflow status may be temporarily out of date.';
 export function staleWorkflowStatus<T>(draft: T) {
   return { ...draft, workflowStatusStale: true, workflow_reconciliation_warning: workflowStatusWarning };
@@ -137,13 +140,13 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
   const originalDrafts = drafts;
   const approvedIds = drafts.filter(d=>['approved','uploaded_to_praktika'].includes((d as T & WorkflowDraft).status || '')).map(d=>d.id);
   const reconciliations = await reader.read<HistoricalReconciliationEvent>(approvedIds,batch=>db.from('report_writing_audit_events')
-    .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction,...manualHistoricalMedirefActions,historicalAttentionAction,historicalAttentionInvalidated,...resolutionActions]).in('entity_id',batch));
+    .select('id,action,entity_id,details').in('action',[historicalReconciliationAction,historicalInvalidationAction,historicalRetentionReleaseAction,...manualHistoricalMedirefActions,historicalAttentionAction,historicalAttentionInvalidated,...resolutionProjectionActions]).in('entity_id',batch));
   const eventsByDraft = new Map<string, HistoricalReconciliationEvent[]>();
   for (const event of reconciliations.rows) {
     const events = eventsByDraft.get(event.entity_id) || [];
     events.push(event); eventsByDraft.set(event.entity_id,events);
   }
-  const resolutionIds=approvedIds.filter(id=>(eventsByDraft.get(id)||[]).some(e=>['workflow_resolution_verification','workflow_resolution_resume','workflow_resolution_completed'].includes(e.action)));
+  const resolutionIds=approvedIds.filter(id=>(eventsByDraft.get(id)||[]).some(e=>(resolutionProjectionActions as readonly string[]).includes(e.action)));
   const resolutionRead=await reader.read<ResolutionProjection>(resolutionIds,batch=>db.rpc('workflow_resolution_projection',{p_draft_ids:batch}));
   const resolutionByDraft=new Map(resolutionRead.rows.map(r=>[r.draftId,r]));
   const completed = new Map<string,T>();
