@@ -12,6 +12,7 @@ import { ResumeWorkflowButton } from "@/components/report-writing/ResumeWorkflow
 import { typistCardPresentation } from "@/lib/report-writing/typist-card-presentation";
 import { typistMedirefPresentation } from "@/lib/report-writing/typist-mediref-presentation";
 import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
+import { startTypistListRefresh } from "@/lib/report-writing/typist-list-refresh";
 import { partitionApprovedForVerification } from "@/lib/report-writing/typist-approved-partition";
 
 import { DEFAULT_PDF_BODY_FONT_SIZE, extractPdfBodyFontSize, pdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
@@ -2988,6 +2989,11 @@ export default function TypistPage() {
       },
     });
   }, [selectedProviderId, activeWorkflowIds, workflowReconciliationEpoch]);
+
+  useEffect(() => {
+    if (!selectedProviderId || !['drafts','awaiting','completed','verification'].includes(listTab)) return;
+    return startTypistListRefresh(signal => loadDrafts(selectedProviderId, undefined, { signal, quiet: true }));
+  }, [selectedProviderId, listTab]);
 
   async function loadDrafts(providerId: string, requestToken?: number, options: { signal?: AbortSignal; quiet?: boolean } = {}) {
     const activeRequestToken = requestToken ?? providerDataRequestRef.current;

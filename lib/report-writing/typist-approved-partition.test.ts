@@ -7,7 +7,7 @@ import { typistApprovedPresentation } from './typist-mediref-presentation';
 import { requiresWorkflowVerification, partitionApprovedForVerification } from './typist-approved-partition';
 
 function fixture(id='draft') {
-  return toDraftListItem({id,status:'approved',workflow_continuation_context:'absent',workflow_resolved:{
+  return toDraftListItem({id,status:'approved',provider_approved_at:'2026-10-01T00:00:00Z',created_at:'2026-10-01T00:00:00Z',workflow_continuation_context:'absent',workflow_resolved:{
     ...unavailableWorkflow(),lookupUnavailable:false,
   }},null);
 }

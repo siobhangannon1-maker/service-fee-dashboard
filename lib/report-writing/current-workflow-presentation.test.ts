@@ -7,7 +7,7 @@ import { typistApprovedPresentation } from './typist-mediref-presentation';
 import { toDraftListItem, mergeDraftWorkflow, toDraftDetail } from './draft-contract';
 const now = Date.now(), stamp = new Date(now - 1000).toISOString();
 function fixture(stage='upload') {
- const draft={id:'synthetic',status:'approved'};
+ const draft={id:'synthetic',status:'approved',provider_approved_at:stamp};
  const parent={id:continuationIntentId(draft.id),job_type:'complete_report_workflow',status:'waiting',app_user_id:'actor',created_at:stamp,
  request:{reportDraftId:draft.id,actorUserId:'actor',options:{attachPeriodontalChart:false}},response:{stage}};
  const evidence:WorkflowEvidence={parent,uploads:[],icons:[],mediref:[],livePraktikaActors:new Set(['actor']),liveMediref:true,

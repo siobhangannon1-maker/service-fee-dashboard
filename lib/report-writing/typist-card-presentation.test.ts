@@ -10,7 +10,7 @@ import { toDraftListItem } from './draft-contract';
 import { typistCardPresentation } from './typist-card-presentation';
 import { typistApprovedPresentation, typistMedirefPresentation } from './typist-mediref-presentation';
 import { approvedWorkflow, shouldAppearInApproved, unavailableWorkflow } from './resolved-workflow';
-import { partitionApprovedForVerification } from './typist-approved-partition';
+import { hasClinicalApproval, partitionApprovedForVerification } from './typist-approved-partition';
 import { workflowPollingMode } from './active-workflow-poll';
 
 const source = readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx', 'utf8');
@@ -31,7 +31,7 @@ const box = {
   formatReportType: () => 'Consultation Report',
   typistCardPresentation, typistMedirefPresentation, approvedWorkflow,
   ManualVerificationButton: () => null, RetryPraktikaButton: () => null,
-  ResolveWorkflowButton:()=>null,
+  ResolveWorkflowButton:()=>null, ManualIconCompletionButton:()=>null, hasClinicalApproval,
   ResumeMedirefButton: () => null, ResumeWorkflowButton: () => null,
 };
 runInNewContext(ts.transpileModule(`exports.render = ${callback};`, {
@@ -40,7 +40,7 @@ runInNewContext(ts.transpileModule(`exports.render = ${callback};`, {
 const render = (draft: ReturnType<typeof toDraftListItem>) => renderToStaticMarkup(box.exports.render(draft));
 function fixture(status = 'draft', extra: Record<string, unknown> = {}) {
   return toDraftListItem({ id: 'synthetic-card', provider_id: 'synthetic-provider', patient_name: 'Synthetic Patient',
-    report_type: 'consultation', status, ...extra }, true);
+    report_type: 'consultation', status, ...(['approved','uploaded_to_praktika'].includes(status) ? {provider_approved_at:'2026-10-01T00:00:00Z'} : {}), ...extra }, true);
 }
 function noWarning(html: string) {
   assert.doesNotMatch(html, /Needs attention|Workflow status may be temporarily out of date|bg-red-100/);
