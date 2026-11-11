@@ -1,9 +1,21 @@
-import { sensitiveApiAccess } from "@/lib/auth";
+import { ApiAuthorizationError, sensitiveApiAccess } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
+import {
+  DictationUploadError,
+  DICTATION_MAX_BYTES,
+} from "@/lib/report-writing/dictation-upload-contract";
+import {
+  boundedJson,
+  referenceFor,
+  retrieveDictationAudio,
+  sameOrigin,
+} from "@/lib/report-writing/dictation-upload-server";
+
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -31,7 +43,10 @@ async function loadUniversalRules() {
     .join("\n");
 }
 
-function buildPatientNameInstruction(patientFirstName: string, patientLastName: string) {
+function buildPatientNameInstruction(
+  patientFirstName: string,
+  patientLastName: string,
+) {
   if (!patientFirstName && !patientLastName) {
     return "No patient name was provided by the app.";
   }
@@ -53,10 +68,15 @@ CRITICAL PATIENT NAME RULE:
 }
 
 export async function POST(req: Request) {
-  const accessDenied = await sensitiveApiAccess("/api/report-writing/transcribe");
+  const accessDenied = await sensitiveApiAccess(
+    "/api/report-writing/transcribe",
+  );
   if (accessDenied) return accessDenied;
 
+  const storageBacked =
+    req.headers.get("content-type")?.includes("application/json") === true;
   try {
+    const deadline = storageBacked ? AbortSignal.timeout(270_000) : undefined;
     if (!process.env.OPENAI_API_KEY) {
       return NextResponse.json(
         { success: false, error: "Missing OPENAI_API_KEY." },
@@ -64,45 +84,57 @@ export async function POST(req: Request) {
       );
     }
 
-    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    if (
+      !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      !process.env.SUPABASE_SERVICE_ROLE_KEY
+    ) {
       return NextResponse.json(
         { success: false, error: "Missing Supabase environment variables." },
         { status: 500 },
       );
     }
 
-    const formData = await req.formData();
-    const audio = formData.get("audio") || formData.get("file");
-
-    const patientFirstName = String(formData.get("patientFirstName") || "").trim();
-    const patientLastName = String(formData.get("patientLastName") || "").trim();
-
-    if (!(audio instanceof File)) {
-      return NextResponse.json(
-        { success: false, error: "No audio file provided." },
-        { status: 400 },
-      );
+    let audio: File;
+    let patientFirstName: string;
+    let patientLastName: string;
+    if (storageBacked) {
+      sameOrigin(req);
+      const reference = await referenceFor(await boundedJson(req));
+      audio = await retrieveDictationAudio(reference);
+      patientFirstName = reference.context.patientFirstName;
+      patientLastName = reference.context.patientLastName;
+    } else {
+      // Preserve existing callers, including Smart Dictate, while Provider Letters switches to references.
+      const formData = await req.formData();
+      const file = formData.get("audio") || formData.get("file");
+      if (!(file instanceof File))
+        return NextResponse.json(
+          { success: false, error: "No audio file provided." },
+          { status: 400 },
+        );
+      audio = file;
+      patientFirstName = String(formData.get("patientFirstName") || "").trim();
+      patientLastName = String(formData.get("patientLastName") || "").trim();
     }
+    if (storageBacked && audio.size > DICTATION_MAX_BYTES)
+      throw new DictationUploadError(
+        "AUDIO_TOO_LARGE",
+        "The recording exceeds the 24 MB limit. Keep or download the recording; it has not been transcribed.",
+        413,
+      );
 
     const universalRules = await loadUniversalRules();
-    const patientNameInstruction = buildPatientNameInstruction(patientFirstName, patientLastName);
-
-    console.log("Audio received:", {
-      name: audio.name,
-      type: audio.type,
-      size: audio.size,
-    });
-
-    console.log("Patient details sent to transcription:", {
+    const patientNameInstruction = buildPatientNameInstruction(
       patientFirstName,
       patientLastName,
-    });
+    );
 
-    const transcription = await openai.audio.transcriptions.create({
-      file: audio,
-      model: "gpt-4o-transcribe",
-      language: "en",
-      prompt: `
+    const transcription = await openai.audio.transcriptions.create(
+      {
+        file: audio,
+        model: "gpt-4o-transcribe",
+        language: "en",
+        prompt: `
 Specialist Australian dental dictation.
 
 Use Australian English.
@@ -116,19 +148,27 @@ periodontal, osseointegration, periapical, radiolucency, suppuration, leukoplaki
 Saved app rules:
 ${universalRules}
 `,
-    });
+      },
+      storageBacked ? { signal: deadline, maxRetries: 0 } : undefined,
+    );
 
     const rawText = transcription.text || "";
 
-    console.log("RAW TRANSCRIPTION:", rawText);
+    if (storageBacked && !rawText.trim())
+      throw new DictationUploadError(
+        "EMPTY_TRANSCRIPT",
+        "No speech was returned. Your recording is retained; retry or download it.",
+        422,
+      );
 
-    const cleanup = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      temperature: 0,
-      messages: [
-        {
-          role: "system",
-          content: `
+    const cleanup = await openai.chat.completions.create(
+      {
+        model: "gpt-4.1-mini",
+        temperature: 0,
+        messages: [
+          {
+            role: "system",
+            content: `
 You are a specialist Australian dental transcription formatter.
 
 Correct the transcript only.
@@ -159,35 +199,50 @@ Extra mandatory formatting:
 - five percent = 5%
 - Use Australian English.
 `,
-        },
-        {
-          role: "user",
-          content: rawText,
-        },
-      ],
-    });
+          },
+          {
+            role: "user",
+            content: rawText,
+          },
+        ],
+      },
+      storageBacked ? { signal: deadline, maxRetries: 0 } : undefined,
+    );
 
     const cleanedText = cleanup.choices[0]?.message?.content?.trim() || rawText;
 
-    console.log("CLEANED TRANSCRIPTION:", cleanedText);
-
-    return NextResponse.json({
-      success: true,
-      text: cleanedText,
-      rawText,
-      rulesApplied: universalRules,
-      patientFirstName,
-      patientLastName,
-    });
-  } catch (error: any) {
-    console.error("Transcription failed:", error);
-
+    return NextResponse.json(
+      {
+        success: true,
+        text: cleanedText,
+        rawText,
+        rulesApplied: universalRules,
+        patientFirstName,
+        patientLastName,
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  } catch (error) {
+    const known =
+      error instanceof DictationUploadError ||
+      error instanceof ApiAuthorizationError;
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || "Failed to transcribe audio. Check terminal logs.",
+        code:
+          error instanceof DictationUploadError
+            ? error.code
+            : "TRANSCRIPTION_FAILED",
+        error: known
+          ? error.message
+          : storageBacked
+            ? "Transcription did not complete. Your recording has been kept. Retry transcription or download the recording."
+            : "Transcription did not complete. Please try again.",
       },
-      { status: 500 },
+      {
+        status: known ? error.status : 502,
+        headers: { "Cache-Control": "no-store" },
+      },
     );
   }
 }

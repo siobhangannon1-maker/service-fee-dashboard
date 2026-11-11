@@ -2079,6 +2079,10 @@ export default function ProviderReportClient({
 />
 
               <OpenAIDictationBox
+                patientDob={patientDob}
+                editorKey={String(detailSelectionRef.current)}
+                draftId={selectedDraft?.id || null}
+                existingText={dictatedLetter}
                 providerId={providerId}
                 patientFirstName={patientFirstName}
                 patientLastName={patientLastName}
