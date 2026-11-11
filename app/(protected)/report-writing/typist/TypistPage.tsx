@@ -12,8 +12,9 @@ import { ResumeWorkflowButton } from "@/components/report-writing/ResumeWorkflow
 import { typistCardPresentation } from "@/lib/report-writing/typist-card-presentation";
 import { typistMedirefPresentation } from "@/lib/report-writing/typist-mediref-presentation";
 import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
+import { ManualIconCompletionButton } from "@/components/report-writing/ManualIconCompletionButton";
 import { startTypistListRefresh } from "@/lib/report-writing/typist-list-refresh";
-import { partitionApprovedForVerification } from "@/lib/report-writing/typist-approved-partition";
+import { hasClinicalApproval, partitionApprovedForVerification } from "@/lib/report-writing/typist-approved-partition";
 
 import { DEFAULT_PDF_BODY_FONT_SIZE, extractPdfBodyFontSize, pdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
 
@@ -5284,6 +5285,7 @@ export default function TypistPage() {
                       ) : null}
                     </button>
                   </div>
+                  {hasClinicalApproval(draft) && approvedWorkflow(draft).status==='needs_attention' && <ManualIconCompletionButton draftId={draft.id} revision={String(draft.updated_at)} onResolved={()=>reconcileWorkflowAction(draft.id)} />}
                   {approvedWorkflow(draft).status==='needs_attention' && <ResolveWorkflowButton
                     draftId={draft.id} revision={JSON.stringify([draft.updated_at,draft.workflow_resolved])}
                     onResolved={()=>reconcileWorkflowAction(draft.id)} />}

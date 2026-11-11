@@ -175,12 +175,18 @@ function getWorkflowIssues(draft: Draft) {
   return Array.from(unique.values())
 }
 
+function manuallyCompleted(draft: Draft) {
+  return draft.workflow_resolved?.status === "completed" && draft.workflow_resolved.operatorCompletion?.source === "operator_manual_completion"
+}
+
 function hasWorkflowIssue(draft: Draft) {
+  if (manuallyCompleted(draft)) return false
   return getWorkflowIssues(draft).length > 0
 }
 
 function getStatusLabel(draft: Draft) {
   if (draft.workflow_attention) return draft.workflow_attention.message
+  if (manuallyCompleted(draft)) return "Workflow manually completed"
   if (hasWorkflowIssue(draft)) return "Workflow issue"
   if (draft.completed_at) return "Completed"
   if (draft.emailed_to_referrer_at) return "Emailed"
@@ -192,6 +198,7 @@ function getStatusLabel(draft: Draft) {
 }
 
 function getStatusClass(draft: Draft) {
+  if (manuallyCompleted(draft)) return "bg-slate-900 text-white"
   const issues = getWorkflowIssues(draft)
 
   if (issues.some((issue) => issue.tone === "red")) {
@@ -458,7 +465,7 @@ export default function ReportWritingHistoryPage() {
         }
 
         if (statusFilter === "approved") {
-          return draft.status === "approved"
+          return draft.status === "approved" && !manuallyCompleted(draft)
         }
 
         if (statusFilter === "uploaded") {
@@ -471,7 +478,7 @@ export default function ReportWritingHistoryPage() {
 
         if (statusFilter === "completed") {
           return Boolean(
-            draft.completed_at ||
+            manuallyCompleted(draft) || draft.completed_at ||
               draft.emailed_to_referrer_at ||
               isUploadedToPraktika(draft)
           )
@@ -511,7 +518,7 @@ export default function ReportWritingHistoryPage() {
       awaiting: drafts.filter(
         (draft) => draft.status === "awaiting_provider_approval"
       ).length,
-      approved: drafts.filter((draft) => draft.status === "approved").length,
+      approved: drafts.filter((draft) => draft.status === "approved" && !manuallyCompleted(draft)).length,
       issues: drafts.filter((draft) => hasWorkflowIssue(draft)).length,
     }
   }, [drafts])
@@ -946,6 +953,7 @@ export default function ReportWritingHistoryPage() {
                           MediRef: {({ failed: "Failed", error: "Failed", pending: "Queued", running: "In progress", completed: "Completed" } as Record<string, string>)[draft.workflow_mediref_status] || draft.workflow_mediref_status}
                         </div>
                       ) : null}
+                      {manuallyCompleted(draft) && <p className="mt-2 text-xs text-slate-500">Earlier automation evidence (retained):</p>}
                       <WorkflowIssueBadges draft={draft} />
 
                       {draft.workflow_last_message ? (
