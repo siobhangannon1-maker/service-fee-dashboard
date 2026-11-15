@@ -6,12 +6,13 @@ spec=importlib.util.spec_from_file_location('icon_fixture',ROOT/'scripts/letters
 old=importlib.util.module_from_spec(spec);spec.loader.exec_module(old)
 f=old.f;b=old.b;sql=old.sql;rpc=old.rpc
 MIGRATION=next((ROOT/'supabase/migrations').glob('*_manual_workflow_administrative_completion.sql'))
+STARTED=next((ROOT/'supabase/migrations').glob('*_manual_workflow_started_guard.sql'))
 class AdministrativeCompletionTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   old.ManualIconTests.setUpClass()
   before=sql("select jsonb_build_array((select count(*) from report_drafts),(select count(*) from praktika_helper_jobs),(select count(*) from report_writing_audit_events));")
-  sql(MIGRATION.read_text());sql(MIGRATION.read_text())
+  sql(MIGRATION.read_text());sql(MIGRATION.read_text());sql(STARTED.read_text());sql(STARTED.read_text())
   assert before==sql("select jsonb_build_array((select count(*) from report_drafts),(select count(*) from praktika_helper_jobs),(select count(*) from report_writing_audit_events));")
  def setUp(self):f.Tests.setUp(self)
  def snapshot(self):return rpc(f"select inspect_manual_workflow_completion('{self.d}','{self.actor}');")
@@ -40,7 +41,20 @@ class AdministrativeCompletionTests(unittest.TestCase):
   for value in ['false','null']:sql('set role service_role;'+self.call(value),False)
   self.assertEqual(sql(f"select count(*) from report_writing_audit_events where entity_id='{self.d}' and action='workflow_resolution_completed';"),'0')
  def test_no_automation_parent_or_artifact_is_required(self):
-  sql(f"delete from praktika_helper_jobs where id='{self.parent}';update report_drafts set edited_text=null,ai_generated_text=null,source_text=null,workflow_status=null where id='{self.d}';")
+  sql(f"delete from praktika_helper_jobs where id='{self.parent}';update report_drafts set edited_text=null,ai_generated_text=null,source_text=null,workflow_status=null,workflow_started_at='2026-10-01T12:00:00Z' where id='{self.d}';")
+  self.s=self.snapshot();self.assertTrue(self.s['eligible']);self.assertTrue(self.confirm()['ok'])
+ def test_never_started_rejects_direct_confirmation_without_mutation(self):
+  sql(f"delete from praktika_helper_jobs where id='{self.parent}';update report_drafts set workflow_status=null,workflow_started_at=null,workflow_praktika_upload_status=null,workflow_mediref_status=null,workflow_icon_update_status=null,workflow_periodontal_chart_status=null where id='{self.d}';")
+  before=self.records();self.s=self.snapshot();self.assertFalse(self.s['eligible']);self.assertEqual(self.s['reasonCode'],'workflow_not_started');self.assertFalse(self.confirm()['ok']);self.assertEqual(before,self.records())
+ def test_raw_failed_flags_do_not_invent_workflow_start(self):
+  sql(f"delete from praktika_helper_jobs where id='{self.parent}';update report_drafts set workflow_started_at=null where id='{self.d}';")
+  self.s=self.snapshot();self.assertFalse(self.s['eligible']);self.assertEqual(self.s['reasonCode'],'workflow_not_started');self.assertFalse(self.confirm()['ok'])
+ def test_stale_started_preview_cannot_bypass_locked_guard(self):
+  sql(f"update report_drafts set workflow_started_at='{self.stamp}' where id='{self.d}';delete from praktika_helper_jobs where id='{self.parent}';")
+  self.s=self.snapshot();self.assertTrue(self.s['eligible']);sql(f"update report_drafts set workflow_started_at=null where id='{self.d}';")
+  self.assertFalse(self.confirm()['ok'])
+ def test_uploaded_partially_completed_letter_with_failed_job_stays_eligible(self):
+  sql(f"update report_drafts set status='uploaded_to_praktika',workflow_praktika_upload_status='completed',workflow_icon_update_status='failed' where id='{self.d}';")
   self.s=self.snapshot();self.assertTrue(self.s['eligible']);self.assertTrue(self.confirm()['ok'])
  def test_actor_permissions_and_inactive_account_are_enforced(self):
   for role in ['anon','authenticated']:sql('set role '+role+';'+self.call(),False)
@@ -92,7 +106,7 @@ class AdministrativeCompletionTests(unittest.TestCase):
  def test_projection_preserves_failed_branch_outcomes_and_moves_to_history(self):
   before=self.records();self.assertTrue(self.confirm()['ok']);projection=rpc(f"select to_jsonb(p) from workflow_resolution_projection(array['{self.d}'::uuid]) p;")
   self.assertTrue(projection['executionSafe'])
-  code="""const fs=require('node:fs'),assert=require('node:assert/strict');const {resolveWorkflow}=require('./lib/report-writing/resolved-workflow.ts');const {partitionApprovedForVerification}=require('./lib/report-writing/typist-approved-partition.ts');const {toDraftListItem}=require('./lib/report-writing/draft-contract.ts');const {s,p}=JSON.parse(fs.readFileSync(0,'utf8'));const d={...s.draft,workflow_resolved:resolveWorkflow(s.draft,{parent:s.praktika[0],uploads:[],icons:[],mediref:[],resolution:p,livePraktikaActors:new Set(),liveMediref:false})};assert.equal(d.status,'approved');assert.equal(d.workflow_resolved.status,'completed');assert.equal(d.workflow_resolved.operatorCompletion.source,'operator_manual_completion');assert.equal(d.workflow_resolved.branches.praktika,'unknown');assert.deepEqual(partitionApprovedForVerification([toDraftListItem(d,true)]),{approved:[],verificationItems:[]});"""
+  code="""const fs=require('node:fs'),assert=require('node:assert/strict');const {resolveWorkflow}=require('./lib/report-writing/resolved-workflow.ts');const {partitionApprovedForVerification}=require('./lib/report-writing/typist-approved-partition.ts');const {toDraftListItem}=require('./lib/report-writing/draft-contract.ts');const {s,p}=JSON.parse(fs.readFileSync(0,'utf8'));const d={...s.draft,workflow_resolved:resolveWorkflow(s.draft,{parent:s.praktika[0],uploads:[],icons:[],mediref:[],resolution:p,livePraktikaActors:new Set(),liveMediref:false})};assert.equal(d.status,'approved');assert.equal(d.workflow_resolved.status,'completed');assert.equal(d.workflow_resolved.operatorCompletion.source,'operator_manual_completion');assert.equal(d.workflow_resolved.branches.praktika,'unknown');assert.deepEqual(partitionApprovedForVerification([toDraftListItem(d,true)]),{approved:[],verificationItems:[],uncertaintyItems:[]});"""
   result=subprocess.run(['node','--import','tsx','-e',code],cwd=ROOT,input=json.dumps(dict(s=json.loads(before),p=projection)),capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr)
  def test_existing_icon_only_completion_remains_closed_and_is_not_duplicated(self):
   legacy=old.ManualIconTests('test_complete_preserves_all_jobs_clinical_content_and_original_evidence');legacy.setUp();self.assertTrue(legacy.confirm()['ok'])
@@ -101,7 +115,7 @@ class AdministrativeCompletionTests(unittest.TestCase):
   result=rpc(f"select confirm_manual_workflow_completion('{legacy.d}','{legacy.actor}','{preview['fingerprint']}','{preview['letterFingerprint']}',true);");self.assertTrue(result['reconciled'])
   self.assertEqual(sql(f"select count(*) from report_writing_audit_events where entity_id='{legacy.d}' and action='workflow_resolution_completed';"),'1')
  def test_migration_reapplication_keeps_completion_and_fences(self):
-  self.assertTrue(self.confirm()['ok']);before=self.records();sql(MIGRATION.read_text());self.assertEqual(before,self.records());self.assertTrue(self.confirm()['reconciled'])
+  self.assertTrue(self.confirm()['ok']);before=self.records();sql(STARTED.read_text());self.assertEqual(before,self.records());self.assertTrue(self.confirm()['reconciled'])
 class ExistingResolutionTests(f.Tests):
  @classmethod
  def setUpClass(cls):pass

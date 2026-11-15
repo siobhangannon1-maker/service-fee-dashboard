@@ -147,8 +147,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
     events.push(event); eventsByDraft.set(event.entity_id,events);
   }
   const resolutionIds=approvedIds.filter(id=>(eventsByDraft.get(id)||[]).some(e=>(resolutionProjectionActions as readonly string[]).includes(e.action)));
-  const resolutionRead=await reader.read<ResolutionProjection>(resolutionIds,batch=>db.rpc('workflow_resolution_projection',{p_draft_ids:batch}));
-  const resolutionByDraft=new Map(resolutionRead.rows.map(r=>[r.draftId,r]));
+  const resolutionReadPromise=reader.read<ResolutionProjection>(resolutionIds,batch=>db.rpc('workflow_resolution_projection',{p_draft_ids:batch}));
   const completed = new Map<string,T>();
   const historicalNow = Date.now();
   for (const draft of drafts) {
@@ -191,7 +190,7 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
       completed.set(draft.id,{...draft,workflow_resolved:resolved,workflow_continuation_context:'unknown',workflow_connection_block:'unknown',workflow_current_presentation:'unknown'});
   }
   drafts = drafts.filter(d=>!completed.has(d.id));
-  if (!drafts.length) return originalDrafts.map(d=>completed.get(d.id) || d);
+  if (!drafts.length) { await resolutionReadPromise; return originalDrafts.map(d=>completed.get(d.id) || d); }
   const indexes = drafts.map((d,i)=>({d:d as T & WorkflowDraft,i}))
     .filter(({d})=>['approved','uploaded_to_praktika'].includes(d.status || ''));
   const ids = indexes.map(({d})=>d.id);
@@ -237,6 +236,10 @@ export async function projectWorkflowRecovery<T extends { id: string; workflow_s
   for (const j of childRead.rows) uploads.set(j.id,j);
   const projectionUnavailable = new Set(parentRead.failed);
   for (const [draftId,jobId] of childIds) if (childRead.failed.has(jobId)) projectionUnavailable.add(draftId);
+  // Completion projection and helper discovery are independent reads. They share
+  // the original deadline/limiter; neither may bypass the other's safety result.
+  const resolutionRead = await resolutionReadPromise;
+  const resolutionByDraft = new Map(resolutionRead.rows.map(r=>[r.draftId,r]));
   const projected = projectLegacyWorkflowRecovery(drafts,parents,uploads,projectionUnavailable);
   const output = [...projected],now=Date.now();
   const connectionBlocked = new Set<string>();

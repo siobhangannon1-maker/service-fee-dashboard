@@ -9,15 +9,15 @@ import ts from 'typescript';
 const approved=()=>toDraftListItem({id:'synthetic',provider_id:'synthetic-provider',status:'approved',provider_approved_at:'2026-11-11T00:00:00Z',created_at:'2026-11-11T00:00:00Z'},true);
 test('new provider approval with no workflow remains Approved',()=>{
  const d=approved();d.workflow_resolved=resolveWorkflow(d,{uploads:[],icons:[],mediref:[],livePraktikaActors:new Set(),liveMediref:false});
- assert.equal(d.workflow_resolved.status,'not_started');assert.deepEqual(partitionApprovedForVerification([d]),{approved:[d],verificationItems:[]});
+ assert.equal(d.workflow_resolved.status,'not_started');assert.deepEqual(partitionApprovedForVerification([d]),{approved:[d],verificationItems:[],uncertaintyItems:[]});
 });
 for(const status of ['draft','edited_by_typist','awaiting_provider_approval'])test(`${status} cannot enter Approved through a failure/verification flag`,()=>{
  const d=approved();d.status=status;d.workflow_status='failed';d.workflow_resolved=unavailableWorkflow();
- assert.deepEqual(partitionApprovedForVerification([d]),{approved:[],verificationItems:[]});
+ assert.deepEqual(partitionApprovedForVerification([d]),{approved:[],verificationItems:[],uncertaintyItems:[]});
 });
 test('an approved-looking row without clinical approval proof requires verification',()=>{
  const d=approved();d.provider_approved_at=null;
- assert.deepEqual(partitionApprovedForVerification([d]),{approved:[],verificationItems:[d]});assert.equal(d.provider_approved_at,null);
+ assert.deepEqual(partitionApprovedForVerification([d]),{approved:[],verificationItems:[d],uncertaintyItems:[]});assert.equal(d.provider_approved_at,null);
 });
 for(const state of ['failed','active','unknown'] as const)test(`current ${state} workflow stays Approved`,()=>{
  const d=approved();d.workflow_continuation_context='present';d.workflow_status='failed';d.workflow_resolved={...unavailableWorkflow(),lookupUnavailable:false};d.workflow_resolved.branches.icon=state;
@@ -25,11 +25,11 @@ for(const state of ['failed','active','unknown'] as const)test(`current ${state}
 });
 for(const context of ['absent','unknown'] as const)for(const state of ['failed','running','completed'])test(`historical ${state} verification stays out of Approved with ${context} stale projection`,()=>{
  const d=approved();d.created_at='2026-08-01T00:00:00Z';d.workflow_status=state;d.uploaded_to_praktika=true;d.workflowStatusStale=true;d.workflow_continuation_context=context;d.workflow_resolved=unavailableWorkflow();
- assert.deepEqual(partitionApprovedForVerification([d]),{approved:[],verificationItems:[d]});
+ assert.deepEqual(partitionApprovedForVerification([d]),{approved:[],verificationItems:[],uncertaintyItems:[d]});
 });
 test('authoritatively completed approved letters leave Approved without changing clinical status',()=>{
  const d=approved();d.workflow_resolved={...unavailableWorkflow(),status:'completed',lookupUnavailable:false};
- assert.deepEqual(partitionApprovedForVerification([d]),{approved:[],verificationItems:[]});assert.equal(d.status,'approved');assert.ok(d.provider_approved_at);
+ assert.deepEqual(partitionApprovedForVerification([d]),{approved:[],verificationItems:[],uncertaintyItems:[]});assert.equal(d.status,'approved');assert.ok(d.provider_approved_at);
 });
 test('idle/focus refresh is read-only, avoids overlap and stops after cleanup',async()=>{
  const listeners=new Map<string,()=>void>();let tick!:()=>void;let stopped=false,calls=0,release!:()=>void;

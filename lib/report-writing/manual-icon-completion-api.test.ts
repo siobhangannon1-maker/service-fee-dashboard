@@ -7,8 +7,8 @@ const source=readFileSync('app/api/report-writing/complete-manual-workflow/route
 const code=ts.transpileModule(source.slice(source.indexOf('async function handle')).replaceAll('export const','const')+'\n({GET,POST})',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 const id='00000000-0000-4000-8000-000000000001';
 class ApiAuthorizationError extends Error {constructor(public status=403){super();}}
-function fixture(options:{denied?:boolean;rpcCode?:string;blocked?:boolean;actor?:string;persistError?:boolean}={}){
- const calls:string[]=[],logs:unknown[]=[];const state={fingerprint:'preview',letterFingerprint:'letter',eligible:!options.blocked,reasonCode:options.blocked?'active_job':null,private:'PRIVATE_PATIENT PRIVATE_TOKEN'};
+function fixture(options:{denied?:boolean;rpcCode?:string;blocked?:boolean;actor?:string;persistError?:boolean;notStarted?:boolean}={}){
+ const calls:string[]=[],logs:unknown[]=[];const state={fingerprint:'preview',letterFingerprint:'letter',eligible:!options.blocked&&!options.notStarted,reasonCode:options.notStarted?'workflow_not_started':options.blocked?'active_job':null,private:'PRIVATE_PATIENT PRIVATE_TOKEN'};
  const handlers=runInNewContext(code,{Request,Response,URL,AbortSignal,NextResponse:Response,process:{env:{SUPABASE_SERVICE_ROLE_KEY:'synthetic-only'}},console:{warn:(...args:unknown[])=>logs.push(args)},
  ApiAuthorizationError,requireActiveApiUser:async(roles:string[])=>{assert.deepEqual(Array.from(roles),['typist','practice_manager','admin','super_admin']);if(options.denied)throw new ApiAuthorizationError();return {user:{id:'synthetic-actor'}};},
  openResolutionPreview:()=>({actorId:options.actor||'synthetic-actor',draftId:id,fingerprint:'preview',letterFingerprint:'letter'}),sealResolutionPreview:()=> 'opaque',
@@ -41,4 +41,8 @@ test('cached icon-only clients must refresh and cannot submit an old attestation
  const old=readFileSync('app/api/report-writing/complete-manual-icon/route.ts','utf8');assert.doesNotMatch(old,/\.rpc\(/);
  const oldCode=ts.transpileModule(old.slice(old.indexOf('async function retired')).replaceAll('export const','const')+'\n({GET,POST})',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
  const h=runInNewContext(oldCode,{NextResponse:Response,requireActiveApiUser:async()=>({}),ApiAuthorizationError}) as {POST:()=>Promise<Response>};assert.equal((await h.POST()).status,409);
+});
+
+test('never-started administrative preview is blocked with a specific safe reason',async()=>{
+ const f=fixture({notStarted:true}),r=await f.get(),body=await r.json();assert.equal(r.status,200);assert.equal(body.eligible,false);assert.match(body.reason,/No workflow has started/);assert.deepEqual(f.calls,['inspect_manual_workflow_completion']);
 });

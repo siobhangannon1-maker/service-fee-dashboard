@@ -1,3 +1,4 @@
+import { createDraftListInflight } from '@/lib/report-writing/draft-list-inflight';
 import { readDraftList, readDocumentAvailability } from '@/lib/report-writing/draft-list-reader';
 import { toDraftListItem } from '@/lib/report-writing/draft-contract';
 import { sensitiveApiAccess } from "@/lib/auth";
@@ -12,6 +13,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+const readInflight = createDraftListInflight();
+
 export async function GET(req: Request) {
   const accessDenied = await sensitiveApiAccess("/api/report-writing/get-drafts");
   if (accessDenied) return accessDenied;
@@ -20,17 +23,22 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url)
     const providerId = searchParams.get("providerId")
 
-    const [durableDrafts, availability] = await Promise.all([
-      readDraftList(supabase, providerId), readDocumentAvailability(supabase, providerId),
-    ])
-    // Auxiliary status enrichment must never discard successfully loaded History.
-    let recovered = durableDrafts
-    try { recovered = await projectWorkflowRecovery(supabase, durableDrafts) }
-    catch { recovered = durableDrafts.map(staleWorkflowStatus) }
-    const drafts = recovered.map((draft) => {
-      const state = availability.get(String(draft.id))
-      return toDraftListItem(draft, state && state.revision === draft.updated_at ? state.available : null)
-    })
+    const load = async () => {
+      const [durableDrafts, availability] = await Promise.all([
+        readDraftList(supabase, providerId), readDocumentAvailability(supabase, providerId),
+      ])
+      // Auxiliary status enrichment must never discard successfully loaded History.
+      let recovered = durableDrafts
+      try { recovered = await projectWorkflowRecovery(supabase, durableDrafts) }
+      catch { recovered = durableDrafts.map(staleWorkflowStatus) }
+      return recovered.map((draft) => {
+        const state = availability.get(String(draft.id))
+        return toDraftListItem(draft, state && state.revision === draft.updated_at ? state.available : null)
+      })
+    };
+    // Staff actions need a fresh read, never a snapshot begun before their write.
+    const drafts = searchParams.get('background') === '1'
+      ? await readInflight(providerId || 'all', load) : await load();
     return NextResponse.json({ success: true, drafts }, { headers: { 'Cache-Control': 'private, no-store' } })
 
   } catch {

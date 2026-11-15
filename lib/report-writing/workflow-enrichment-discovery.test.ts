@@ -50,10 +50,10 @@ test('audit journal flood cannot turn 33 ready letters and 67 proven completions
  assert.ok(mock.auditActions.every(a=>!a.includes('workflow_resolution_execution')&&!a.includes('workflow_resolution_settled')&&!a.includes('workflow_resolution_branch_fence')));
  assert.equal(mock.rpcCalls,0);assert.equal(JSON.stringify(drafts),before);
 });
-test('real enrichment timeout retains uncertain evidence: reproduces 73 / 27, never ready or completed',async()=>{
+test('real enrichment timeout never turns completed letters into Approved or verification work',async()=>{
  const {drafts,events}=fixture(),mock=database(events,{timeout:true});
  const projected=await projectWorkflowRecovery(mock.db,drafts);const items=projected.map(d=>toDraftListItem(d,null)),partition=partitionApprovedForVerification(items);
- assert.equal(partition.approved.length,73);assert.equal(partition.verificationItems.length,27);
+ assert.equal(partition.approved.length,0);assert.equal(partition.verificationItems.length,0);assert.equal(partition.uncertaintyItems.length,100);
  assert.ok(items.every(d=>d.workflowStatusStale&&d.workflow_resolved?.lookupUnavailable));
  assert.ok(items.every(d=>typistCardPresentation(d).kind!=='ready'&&d.workflow_resolved?.status!=='completed'));
 });
@@ -68,4 +68,21 @@ for(const executionSafe of [true,false])test(`manual closure still respects exec
 test('historical invalidation remains visible and cannot be suppressed by filtering journal events',async()=>{
  const {drafts,events}=fixture(),d=drafts[99];events.push({id:'synthetic-invalidation',entity_id:d.id,action:historicalInvalidationAction,details:{epoch:historicalEpoch(d)}});
  const [out]=await projectWorkflowRecovery(database(events).db,[d]);assert.notEqual(toDraftListItem(out,null).workflow_resolved?.status,'completed');
+});
+
+test('helper discovery starts while completion projection is pending; safety RPC still awaited',async()=>{
+ const {drafts}=fixture(),draft=drafts[0];let release!:()=>void,started=false,helperStarted=false,projectionDone=false,timedOut=false;
+ const pending=new Promise<void>(r=>release=r);
+ const db=createClient('https://synthetic.invalid','synthetic',{auth:{persistSession:false},global:{fetch:async(input,init)=>{
+  const u=new URL(String(input)),table=u.pathname.split('/').at(-1);
+  if(table==='workflow_resolution_projection'){
+   started=true;if(helperStarted)release();await pending;projectionDone=true;
+   return Response.json([{id:draft.id,draftId:draft.id,letterFingerprint:'synthetic',executionSafe:false,events:[]}]);
+  }
+  if(table==='praktika_helper_jobs') {helperStarted=true;if(started)release();}
+  if(table==='report_writing_audit_events')return Response.json([{id:'synthetic-event',entity_id:draft.id,action:'workflow_resolution_completed',details:{}}]);
+  return Response.json([]);
+ }}});
+ const timer=setTimeout(()=>{timedOut=true;release();},1000);
+ const t=performance.now();try{const [out]=await projectWorkflowRecovery(db,[draft]);assert.equal(projectionDone,true);assert.equal(timedOut,false);assert.equal(helperStarted,true);assert.notEqual(toDraftListItem(out,null).workflow_resolved?.status,'completed');}finally{clearTimeout(timer);}
 });

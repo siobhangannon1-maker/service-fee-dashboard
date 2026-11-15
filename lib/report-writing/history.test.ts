@@ -1,3 +1,4 @@
+import {createDraftListInflight} from './draft-list-inflight';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -23,7 +24,7 @@ async function run(mode: string) {
         return Promise.resolve({data,error:error?{message:'SECRET_DATABASE_ERROR'}:null}).then(resolve,reject);
       }};return q;
   }};
-  const route=runInNewContext(code+'\nGET',{sensitiveApiAccess:async()=>null,supabase:db,readDraftList,readDocumentAvailability,toDraftListItem,projectWorkflowRecovery,staleWorkflowStatus,URL,NextResponse:{json:Response.json}});
+  const route=runInNewContext(code+'\nGET',{readInflight:createDraftListInflight(),sensitiveApiAccess:async()=>null,supabase:db,readDraftList,readDocumentAvailability,toDraftListItem,projectWorkflowRecovery,staleWorkflowStatus,URL,NextResponse:{json:Response.json}});
   const response=await route(new Request('https://fixture.invalid/api/report-writing/get-drafts?providerId=all'));
   return {response,body:await response.json(),drafts};
 }

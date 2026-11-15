@@ -18,7 +18,7 @@ for(const branch of ['failed','unknown','completed'] as const)test(`authoritativ
   assert.ok(['historical_mediref','historical_review'].includes(text.kind));
   assert.doesNotMatch(text.message || '',/was sent|is absent|upload missing|workflow completed/i);
 });
-for(const defect of ['present','unknown','not_started','completing','lookup_failed','stale','missing_projection'] as const)test(`${defect} remains operational Approved`,()=>{
+for(const defect of ['present','unknown','not_started','completing','lookup_failed','stale','missing_projection'] as const)test(`${defect} uses authoritative or unavailable partition`,()=>{
   const d=fixture();
   if(defect==='present'||defect==='unknown')d.workflow_continuation_context=defect;
   if(defect==='not_started'||defect==='completing')d.workflow_resolved!.status=defect;
@@ -26,7 +26,8 @@ for(const defect of ['present','unknown','not_started','completing','lookup_fail
   if(defect==='stale')d.workflowStatusStale=true;
   if(defect==='missing_projection')delete d.workflow_resolved;
   assert.equal(requiresWorkflowVerification(d),false);
-  assert.deepEqual(partitionApprovedForVerification([d]),{approved:[d],verificationItems:[]});
+  const uncertain=['lookup_failed','stale','missing_projection'].includes(defect);
+  assert.deepEqual(partitionApprovedForVerification([d]),{approved:uncertain?[]:[d],verificationItems:[],uncertaintyItems:uncertain?[d]:[]});
 });
 test('Aaron-style blocked modern upload remains current with unchanged recovery flags',()=>{
   const d=fixture();d.workflow_continuation_context='present';d.workflow_connection_block='praktika_credentials_required';

@@ -1,4 +1,5 @@
 import type { DraftListItem } from './draft-contract';
+import { workflowStatusUnavailable } from './typist-approved-partition';
 import { typistApprovedPresentation } from './typist-mediref-presentation';
 
 const statusLabels = new Map([
@@ -29,7 +30,11 @@ export function typistCardPresentation(draft: DraftListItem) {
   const normalPreApproval = preApproval && !recordedWorkflow && (
     !resolved || resolved.lookupUnavailable || resolved.status === 'not_started'
   );
-  const workflow = normalPreApproval
+  const uncertain = !preApproval && workflowStatusUnavailable(draft);
+  const workflow = uncertain
+    ? {kind: 'status_unavailable', tone: 'amber', label: 'Status unavailable',
+       message: 'Workflow evidence could not be verified. This does not confirm completion or unfinished work. Refresh to check again.'}
+    : normalPreApproval
     ? { kind: 'pre_approval', tone: 'neutral', label: null, message: null }
     : typistApprovedPresentation(draft);
   return {

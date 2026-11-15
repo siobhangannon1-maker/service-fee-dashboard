@@ -10,7 +10,7 @@ import { toDraftListItem } from './draft-contract';
 import { typistCardPresentation } from './typist-card-presentation';
 import { typistApprovedPresentation, typistMedirefPresentation } from './typist-mediref-presentation';
 import { approvedWorkflow, shouldAppearInApproved, unavailableWorkflow } from './resolved-workflow';
-import { hasClinicalApproval, partitionApprovedForVerification } from './typist-approved-partition';
+import { hasClinicalApproval, canOfferManualWorkflowCompletion, partitionApprovedForVerification, workflowStatusUnavailable } from './typist-approved-partition';
 import { workflowPollingMode } from './active-workflow-poll';
 
 const source = readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx', 'utf8');
@@ -29,9 +29,9 @@ const box = {
   selectedDraft: null, selectedDraftIds: [], listTab: 'drafts',
   toggleDraftSelection: () => {}, selectDraft: () => {},
   formatReportType: () => 'Consultation Report',
-  typistCardPresentation, typistMedirefPresentation, approvedWorkflow,
+  typistCardPresentation, typistMedirefPresentation, approvedWorkflow, workflowStatusUnavailable,
   ManualVerificationButton: () => null, RetryPraktikaButton: () => null,
-  ResolveWorkflowButton:()=>null, ManualWorkflowCompletionButton:()=>null, hasClinicalApproval,
+  ResolveWorkflowButton:()=>null, ManualWorkflowCompletionButton:()=>null, hasClinicalApproval, canOfferManualWorkflowCompletion,
   ResumeMedirefButton: () => null, ResumeWorkflowButton: () => null,
 };
 runInNewContext(ts.transpileModule(`exports.render = ${callback};`, {
@@ -105,7 +105,7 @@ for (const status of ['future_internal_state', 'toString', 'constructor']) test(
   const draft = fixture(status), html = render(draft);
   assert.equal(typistCardPresentation(draft).statusLabel, null);
   assert.doesNotMatch(html, /future_internal_state|future internal state/i);
-  assert.match(html, /Needs attention/);
+  assert.match(html, /Status unavailable/);
 });
 for (const status of ['approved', 'uploaded_to_praktika']) {
   for (const state of ['not_started', 'completing', 'needs_attention', 'completed'] as const) {
@@ -127,7 +127,7 @@ test('historical verification presentation and partition stay intact', () => {
   const draft = fixture('approved', { workflow_resolved: { ...unavailableWorkflow(), lookupUnavailable: false },
     workflow_continuation_context: 'absent' });
   assert.equal(typistCardPresentation(draft).kind, 'historical_mediref');
-  assert.deepEqual(partitionApprovedForVerification([draft]), { approved: [], verificationItems: [draft] });
+  assert.deepEqual(partitionApprovedForVerification([draft]), {approved:[],verificationItems:[draft],uncertaintyItems:[]});
   assert.match(render(draft), /MediRef delivery not confirmed/);
 });
 test('current approved waiting presentation stays amber and retains polling membership', () => {
@@ -140,7 +140,7 @@ test('current approved waiting presentation stays amber and retains polling memb
 });
 test('actual tab classification and Queue membership are unchanged by card presentation', () => {
   const rows = [fixture('draft'), fixture('edited_by_typist'), fixture('awaiting_provider_approval'),
-    fixture('approved', { id: 'approved', workflow_resolved: { ...unavailableWorkflow(), status: 'not_started' } }),
+    fixture('approved', { id: 'approved', workflow_resolved: { ...unavailableWorkflow(), lookupUnavailable:false, status: 'not_started' } }),
     fixture('approved', { id: 'verify', workflow_resolved: { ...unavailableWorkflow(), lookupUnavailable: false }, workflow_continuation_context: 'absent' }),
     fixture('approved', { id: 'done', workflow_resolved: { ...unavailableWorkflow(), status: 'completed', lookupUnavailable: false } })];
   const select = (tab: string) => {

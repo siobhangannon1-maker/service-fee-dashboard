@@ -14,7 +14,7 @@ import { typistMedirefPresentation } from "@/lib/report-writing/typist-mediref-p
 import { approvedWorkflow } from "@/lib/report-writing/resolved-workflow";
 import { ManualWorkflowCompletionButton } from "@/components/report-writing/ManualWorkflowCompletionButton";
 import { startTypistListRefresh } from "@/lib/report-writing/typist-list-refresh";
-import { hasClinicalApproval, partitionApprovedForVerification } from "@/lib/report-writing/typist-approved-partition";
+import { canOfferManualWorkflowCompletion, partitionApprovedForVerification, workflowStatusUnavailable } from "@/lib/report-writing/typist-approved-partition";
 
 import { DEFAULT_PDF_BODY_FONT_SIZE, extractPdfBodyFontSize, pdfBodyFontSize, stripPdfFontSize } from "@/lib/report-writing/pdf-font-size";
 
@@ -72,7 +72,7 @@ type QueueItem = {
   raw_json?: Record<string, unknown> | null;
 };
 
-type ListTab = "queue" | "drafts" | "awaiting" | "completed" | "verification";
+type ListTab = "queue" | "drafts" | "awaiting" | "completed" | "verification" | "uncertain";
 
 type QueueStatusTab = "active" | "queued" | "started" | "completed";
 
@@ -1437,6 +1437,7 @@ export default function TypistPage() {
     }
 
     if (listTab === "verification") return approvedPartition.verificationItems;
+    if (listTab === "uncertain") return approvedPartition.uncertaintyItems;
 
     return [];
   }, [drafts, listTab, approvedPartition]);
@@ -1472,6 +1473,7 @@ export default function TypistPage() {
 
   const countCompleted = approvedPartition.approved.length;
   const countVerification = approvedPartition.verificationItems.length;
+  const countUncertain = approvedPartition.uncertaintyItems.length;
 
   const selectedDraftHasPraktikaPatient = Boolean(
     selectedPraktikaPatientId || selectedDraft?.praktika_patient_id,
@@ -2992,7 +2994,7 @@ export default function TypistPage() {
   }, [selectedProviderId, activeWorkflowIds, workflowReconciliationEpoch]);
 
   useEffect(() => {
-    if (!selectedProviderId || !['drafts','awaiting','completed','verification'].includes(listTab)) return;
+    if (!selectedProviderId || !['drafts','awaiting','completed','verification','uncertain'].includes(listTab)) return;
     return startTypistListRefresh(signal => loadDrafts(selectedProviderId, undefined, { signal, quiet: true }));
   }, [selectedProviderId, listTab]);
 
@@ -3006,16 +3008,16 @@ export default function TypistPage() {
     const isCurrent = () => draftListMountedRef.current && !options.signal?.aborted &&
       sequence === draftListRequestSequenceRef.current && isCurrentProviderDataRequest(providerId, activeRequestToken);
     try {
-      const response = await fetch(`/api/report-writing/get-drafts?providerId=${encodeURIComponent(providerId)}`, { cache: 'no-store', signal: options.signal });
+      const response = await fetch(`/api/report-writing/get-drafts?providerId=${encodeURIComponent(providerId)}${options.quiet ? "&background=1" : ""}`, { cache: 'no-store', signal: options.signal });
       const data = await response.json();
       if (!isCurrent()) return;
       if (!response.ok || !data.success || !Array.isArray(data.drafts)) throw new Error();
       const items: DraftListItem[] = data.drafts;
       setDrafts(items);
       const workspace=draftWorkspaceRef.current;
-      if (['completed','verification'].includes(workspace.listTab) && workspace.selectedDraftId && selectionToken===queueSelectionTokenRef.current) {
+      if (['completed','verification','uncertain'].includes(workspace.listTab) && workspace.selectedDraftId && selectionToken===queueSelectionTokenRef.current) {
         const partition=partitionApprovedForVerification(items);
-        const active=workspace.listTab==='verification'?partition.verificationItems:partition.approved;
+        const active=workspace.listTab==='verification'?partition.verificationItems:workspace.listTab==='uncertain'?partition.uncertaintyItems:partition.approved;
         const selected=items.find(item=>item.id===workspace.selectedDraftId);
         // A failed/stale enrichment never proves authoritative list removal.
         if ((!selected || (!selected.workflowStatusStale && selected.workflow_resolved && !selected.workflow_resolved.lookupUnavailable)) && !active.some(item=>item.id===workspace.selectedDraftId)) clearForm();
@@ -5041,6 +5043,7 @@ export default function TypistPage() {
                 ["awaiting", `Awaiting Approval (${countAwaiting})`],
                 ["completed", `Approved (${countCompleted})`],
                 ["verification", `Requires Verification (${countVerification})`],
+                ["uncertain", `Status unavailable (${countUncertain})`],
               ].map(([key, label]) => (
                 <button
                   key={key}
@@ -5216,6 +5219,7 @@ export default function TypistPage() {
             </div>
           ) : (
             <div className="space-y-2 p-3">
+              {listTab === "uncertain" && <p role="status" className="px-1 text-xs text-amber-800">These letters could not be checked. They may already be complete. No completion, delivery failure or retry is implied. Refresh to check again.</p>}
               {listTab === "verification" ? (
                 <p className="px-1 text-xs text-slate-600">These records require workflow evidence verification. This does not confirm delivery, completion or the need to retry.</p>
               ) : null}
@@ -5278,14 +5282,15 @@ export default function TypistPage() {
                         <div className="text-xs text-amber-700">{typistCardPresentation(draft).reconciliationWarning}</div>
                       )}
 
-                      {typistMedirefPresentation(draft).showCardLabel && typistCardPresentation(draft).kind !== "historical_mediref" ? (
+                      {!workflowStatusUnavailable(draft) && typistMedirefPresentation(draft).showCardLabel && typistCardPresentation(draft).kind !== "historical_mediref" ? (
                         <div className={`mt-1 text-xs font-semibold ${typistMedirefPresentation(draft).completed ? "text-emerald-600" : "text-amber-700"}`}>
                           {typistMedirefPresentation(draft).label}
                         </div>
                       ) : null}
                     </button>
                   </div>
-                  {hasClinicalApproval(draft) && approvedWorkflow(draft).status!=='completed' && <ManualWorkflowCompletionButton draftId={draft.id} revision={String(draft.updated_at)} onResolved={()=>reconcileWorkflowAction(draft.id)} />}
+                  {!workflowStatusUnavailable(draft) && <>
+                  {canOfferManualWorkflowCompletion(draft) && <ManualWorkflowCompletionButton draftId={draft.id} revision={String(draft.updated_at)} onResolved={()=>reconcileWorkflowAction(draft.id)} />}
                   {approvedWorkflow(draft).status==='needs_attention' && <ResolveWorkflowButton
                     draftId={draft.id} revision={JSON.stringify([draft.updated_at,draft.workflow_resolved])}
                     onResolved={()=>reconcileWorkflowAction(draft.id)} />}
@@ -5309,6 +5314,7 @@ export default function TypistPage() {
                     draftId={draft.id}
                     onQueued={() => reconcileWorkflowAction(draft.id)}
                   />
+                  </>}
                 </div>
               ))}
             </div>

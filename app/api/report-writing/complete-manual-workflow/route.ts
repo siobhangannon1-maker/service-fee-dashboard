@@ -27,7 +27,7 @@ async function handle(req:Request,confirm:boolean){
    console.warn('[manual-workflow-check]',{outcome:timedOut?'timeout':'unavailable'});
    return NextResponse.json({success:false,code:timedOut?'manual_workflow_check_timeout':'manual_workflow_check_unavailable',error:'The workflow could not be checked.'},{status:503});
   }
-  const reason=data.reasonCode==='already_resolved'?'This workflow has already been resolved. Refresh the list.':
+  const reason=data.reasonCode==='workflow_not_started'?'No workflow has started for this letter. Use the normal workflow action.':data.reasonCode==='already_resolved'?'This workflow has already been resolved. Refresh the list.':
    'External work is active or its execution state is uncertain. Finish or stop it safely before marking the workflow complete.';
   return NextResponse.json({success:true,eligible:data.eligible===true,reason:data.eligible===true?'':reason,
    preview:sealResolutionPreview({draftId,actorId:user.id,fingerprint:data.fingerprint,letterFingerprint:data.letterFingerprint,expiresAt:Date.now()+300000},secret)},

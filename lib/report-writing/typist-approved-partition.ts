@@ -26,11 +26,28 @@ export function requiresWorkflowVerification(draft: DraftListItem): boolean {
   return kind === 'historical_mediref' || kind === 'historical_review';
 }
 
+// Missing evidence is a separate state, never proof of unfinished or completed work.
+export function workflowStatusUnavailable(draft: DraftListItem): boolean {
+  return Boolean(draft.workflowStatusStale || !draft.workflow_resolved || draft.workflow_resolved.lookupUnavailable);
+}
+
+// A known not-started letter is for the normal workflow, not an override.
+export function canOfferManualWorkflowCompletion(draft: DraftListItem): boolean {
+  return hasClinicalApproval(draft) && !workflowStatusUnavailable(draft) &&
+    ['needs_attention', 'completing'].includes(draft.workflow_resolved!.status);
+}
+
 export function partitionApprovedForVerification<T extends DraftListItem>(drafts: readonly T[]) {
-  const approved: T[] = [], verificationItems: T[] = [];
+  const approved: T[] = [], verificationItems: T[] = [], uncertaintyItems: T[] = [];
   for (const draft of drafts) {
+    // Keep existing non-operational/attention exclusions, but do not trust a stale
+    // completed projection either. No old result is carried forward as authority.
+    if (hasClinicalApproval(draft) && workflowStatusUnavailable(draft) &&
+      shouldAppearInApproved({...draft, workflow_resolved: undefined})) {
+      uncertaintyItems.push(draft); continue;
+    }
     if (!shouldAppearInApproved(draft)) continue;
     (requiresWorkflowVerification(draft) ? verificationItems : approved).push(draft);
   }
-  return { approved, verificationItems };
+  return { approved, verificationItems, uncertaintyItems };
 }
