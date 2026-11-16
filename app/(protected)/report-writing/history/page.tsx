@@ -382,11 +382,16 @@ function ActorBadge({
   )
 }
 
+// A History load reads every letter with workflow enrichment (heavy). Returning to the
+// tab refreshes at most this often; the Refresh button and staff actions always reload.
+const HISTORY_FOCUS_REFRESH_GAP_MS = 3 * 60_000
+
 export default function ReportWritingHistoryPage() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [drafts, setDrafts] = useState<Draft[]>([])
   const [loading, setLoading] = useState(false)
   const historyRequestInFlight = useRef(false)
+  const lastHistoryLoadAt = useRef(0)
   const [historyRefreshError, setHistoryRefreshError] = useState("")
   const [loadingPdfId, setLoadingPdfId] = useState<string | null>(null)
 
@@ -562,22 +567,23 @@ export default function ReportWritingHistoryPage() {
       setHistoryRefreshError("Unable to refresh History. Displayed workflow statuses may be out of date.")
     } finally {
       historyRequestInFlight.current = false
+      lastHistoryLoadAt.current = Date.now()
       if (!silent) setLoading(false)
     }
   }
 
+  // No timed polling: one open History tab must not reload the whole list continuously.
   useEffect(() => {
     void loadProvidersAndDrafts()
-    const refreshVisibleHistory = () => {
-      if (!document.hidden) void loadProvidersAndDrafts(true)
+    const refreshOnReturn = () => {
+      if (document.hidden || Date.now() - lastHistoryLoadAt.current < HISTORY_FOCUS_REFRESH_GAP_MS) return
+      void loadProvidersAndDrafts(true)
     }
-    const timer = window.setInterval(refreshVisibleHistory, 10000)
-    window.addEventListener("focus", refreshVisibleHistory)
-    document.addEventListener("visibilitychange", refreshVisibleHistory)
+    window.addEventListener("focus", refreshOnReturn)
+    document.addEventListener("visibilitychange", refreshOnReturn)
     return () => {
-      window.clearInterval(timer)
-      window.removeEventListener("focus", refreshVisibleHistory)
-      document.removeEventListener("visibilitychange", refreshVisibleHistory)
+      window.removeEventListener("focus", refreshOnReturn)
+      document.removeEventListener("visibilitychange", refreshOnReturn)
     }
   }, [])
 
