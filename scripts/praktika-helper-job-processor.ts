@@ -5,6 +5,7 @@ import { PraktikaReadFailure, type PraktikaReadFailureCategory, allowedPraktikaR
 import { isConfirmedPraktikaUpload } from "../lib/report-writing/praktika-upload-result";
 import { PraktikaHelperUnavailable } from "../lib/praktika/helper-lease";
 import { PraktikaOwnershipLost, type PraktikaJobOwnership } from "../lib/praktika/helper-lease";
+import { nextPraktikaRequestId, praktikaIconFailure, praktikaIconFailureMessage, praktikaSessionId, redactPraktikaSessionId, summarizePraktikaErrorBody, withPraktikaRequestId, type PraktikaIconFailure } from "../lib/praktika/icon-write";
 import { type BrowserContext } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 
@@ -225,7 +226,7 @@ async function completeJob(jobId: string, response: unknown) {
   if (error) throw new Error(error.message);
 }
 
-async function failJob(job: any, message: string, forcePermanent = false, readFailure?: { jobType: string; attempt: number; failureCategory: PraktikaReadFailureCategory; httpStatus?: number }, uploadFailure?: UploadDiagnostic & { failureCategory: UploadFailureCategory }) {
+async function failJob(job: any, message: string, forcePermanent = false, readFailure?: { jobType: string; attempt: number; failureCategory: PraktikaReadFailureCategory; httpStatus?: number }, uploadFailure?: UploadDiagnostic & { failureCategory: UploadFailureCategory }, iconFailure?: PraktikaIconFailure) {
   const attempts = Number(job.attempts || 0);
   const transientReadFailure = Boolean(
     readFailure && ["http_307", "transport_failure"].includes(readFailure.failureCategory),
@@ -240,6 +241,7 @@ async function failJob(job: any, message: string, forcePermanent = false, readFa
       error_message: message,
       ...(readFailure ? { response: { readFailure } } : {}),
       ...(uploadFailure ? { response: { ...(job.response && typeof job.response === "object" && !Array.isArray(job.response) ? job.response : {}), uploadFailure } } : {}),
+      ...(iconFailure ? { response: { iconFailure } } : {}),
       failed_at: permanent ? nowIso() : null,
       available_at: permanent
         ? nowIso()
@@ -287,6 +289,10 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
     "X-Requested-With": "XMLHttpRequest",
   };
 
+  if (upload) upload.stage = "pre_dispatch";
+  // Runs before the body is read: icon writes set their session-based request_id here.
+  await beforeRequest?.();
+
   let data: any;
 
   if (contentType === "form") {
@@ -308,8 +314,6 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
     data = request.body;
   }
 
-  if (upload) upload.stage = "pre_dispatch";
-  await beforeRequest?.();
   const requestUrl = `${PRAKTIKA_BASE_URL}${request.path}`;
   const requestOptions = {
       headers,
@@ -330,7 +334,10 @@ async function runJsonOrFormRequest(context: BrowserContext, request: any, befor
   if (upload) upload.stage = "response_validation";
 
   if (!response.ok()) {
-    throw new Error(`Praktika helper request failed ${response.status()}: ${text}`);
+    throw Object.assign(new Error(`Praktika helper request failed ${response.status()}: ${text}`), {
+      praktikaHttpStatus: response.status(),
+      praktikaBodySummary: summarizePraktikaErrorBody(text),
+    });
   }
 
   return parsePraktikaResponse(text, response.status());
@@ -1395,6 +1402,10 @@ export async function processOnePraktikaHelperJob(
   let readHttpStatus: number | undefined;
   const readOnly = allowedPraktikaRead(job.job_type, job.request);
   const retrieval = readOnly || verifiedReadOperation(job.job_type, job.request) || job.job_type === "hydrate_report_letter_queue_item";
+  const iconWrite = job.job_type === "update_praktika_letter_icons";
+  // A copy, so the session-based request_id never reaches the stored job.request.
+  const sendRequest = iconWrite ? { ...job.request } : job.request;
+  let iconSessionId: string | null = null;
   try {
     await ownership.assertOwned();
     if (ownership.isShuttingDown?.()) throw new PraktikaOwnershipLost();
@@ -1438,6 +1449,14 @@ export async function processOnePraktikaHelperJob(
         }
       }
 
+      if (iconWrite) {
+        // Praktika answers HTTP 500 unless request_id is "<PHPSESSID>_<counter>", as its
+        // scheduler page sends. Read the cookie after authentication, which may renew it.
+        iconSessionId = praktikaSessionId(await context.cookies(PRAKTIKA_BASE_URL));
+        if (!iconSessionId) throw new PraktikaHelperUnavailable();
+        sendRequest.body = withPraktikaRequestId(job.request?.body, nextPraktikaRequestId(iconSessionId));
+      }
+
       externalStarted = true;
     };
     await ownership.assertOwned();
@@ -1469,7 +1488,8 @@ export async function processOnePraktikaHelperJob(
       await beforeRequest();
       response = await hydrateReportLetterQueueItem(context, job);
     } else {
-      response = await runPraktikaRequest(context, job.request, beforeRequest, upload);
+      response = await runPraktikaRequest(context, sendRequest, beforeRequest, upload);
+      if (iconWrite) response = redactPraktikaSessionId(response, iconSessionId);
     }
 
     await ownership.assertOwned();
@@ -1536,8 +1556,12 @@ export async function processOnePraktikaHelperJob(
     if (externalStarted && !retrieval) {
       // The server may have saved the PDF even if its response/DB acknowledgement
       // was lost. Never automatically replay this external write.
-      await failJob(job, reportUploadStarted ? "Report upload outcome is unconfirmed. Reconcile before retrying."
-        : "Praktika write outcome is unconfirmed. Reconcile before retrying.", true, undefined, uploadFailure);
+      // Fixed categories and status only: never the error text, which can hold the request.
+      const iconFailure = iconWrite ? praktikaIconFailure(error) : undefined;
+      if (iconFailure) console.log("[Praktika icon] failure", { jobId: job.id, ...iconFailure });
+      await failJob(job, iconFailure ? praktikaIconFailureMessage(iconFailure)
+        : reportUploadStarted ? "Report upload outcome is unconfirmed. Reconcile before retrying."
+        : "Praktika write outcome is unconfirmed. Reconcile before retrying.", true, undefined, uploadFailure, iconFailure);
       return { outcome: "failed", jobId: job.id };
     }
     if (readOnly) {

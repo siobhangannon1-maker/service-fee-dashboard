@@ -11,6 +11,7 @@ import { PraktikaReadFailure, allowedPraktikaRead, validatePraktikaRead, PERIO_R
 import { hasLivePraktikaHelper, PraktikaOwnershipLost } from './helper-lease';
 import { praktikaUploadResponseDiagnostic, PraktikaAuthenticationUnverified } from './authentication-probe';
 import { isConfirmedPraktikaUpload } from '../report-writing/praktika-upload-result';
+import { nextPraktikaRequestId, praktikaIconFailure, praktikaIconFailureMessage, praktikaSessionId, redactPraktikaSessionId, summarizePraktikaErrorBody, withPraktikaRequestId } from './icon-write';
 type Row = Record<string, any>;
 const path = 'scripts/praktika-helper-job-processor.ts';
 const source = readFileSync(path, 'utf8');
@@ -61,14 +62,17 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
   let owned = true, operations = 0, connectedWrites = 0, httpStatus = 200;
   let responseUrl = "https://praktika.praktika.net.au/php/forms/db_getFormData.php", responseText = '{"patient_perioexamids":[12]}';
   const globals = { praktikaUploadResponseDiagnostic, PraktikaHelperUnavailable, perioStructureDiagnostic, PraktikaReadFailure, supabase, PERIO_READ_FIELDS, PRAKTIKA_RETRIEVAL_JOB_TYPES, verifiedReadOperation, praktikaJobEligibility, allowedPraktikaRead, validatePraktikaRead, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
-    isConfirmedPraktikaUpload, Date, AbortSignal, URLSearchParams, Buffer, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
+    isConfirmedPraktikaUpload, nextPraktikaRequestId, praktikaIconFailure, praktikaIconFailureMessage, praktikaSessionId, redactPraktikaSessionId, summarizePraktikaErrorBody, withPraktikaRequestId, Date, AbortSignal, URLSearchParams, Buffer, WORKER_ID: 'worker', PRAKTIKA_BASE_URL: 'https://praktika.praktika.net.au', nowIso: () => new Date().toISOString(),
     console: { log(...args: unknown[]) { logs.push(args); }, error() {} },
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>, upload?: unknown) => { prepareRequest(_r as Row); if(realTransport) return (_r as Row).contentType === "multipart_storage" ? api.runMultipartStorageRequest(_c, _r, before, upload) : api.runJsonOrFormRequest(_c, _r, before, upload); await before(); operations++; return { patient_communication: { iFileId: 12 } }; },
     markSessionConnectedForJob: async () => { connectedWrites++; },
   };
   const api = runInNewContext(code + '\n({claimNextJob,processOnePraktikaHelperJob,runJsonOrFormRequest,runMultipartStorageRequest})', globals);
   const ownership = { isBrowserReady: async () => browserReady, assertOwned: async () => { calls.push('ownership:check'); if(nextOwnershipError){ const error=nextOwnershipError;nextOwnershipError=undefined;throw error; } if (!owned || session.helper_instance_id !== 'generation' || !hasLivePraktikaHelper(session)) throw new PraktikaOwnershipLost(); }, ensureAuthenticated: async () => assert.fail('claim must not change GST renewal cadence'), updateSession: async () => {} };
-  const context = { request: { post: async (_url: string, options: Row) => {
+  const sent: unknown[] = [];
+  let cookieJar = [{ name: 'PHPSESSID', value: 'sess0001secret' }, { name: 'UAT', value: 'uat-secret' }];
+  const context = { cookies: async () => cookieJar, request: { post: async (_url: string, options: Row) => {
+    sent.push(structuredClone(options.data));
     operations++; assert.equal(options.maxRedirects, 0); assert.equal(options.timeout, 120_000);
     if (transportFails) throw transportError;
     return { headers: () => responseHeaders, ok: () => httpStatus >= 200 && httpStatus < 300, status: () => httpStatus, url: () => responseUrl, text: async () => { if (readFails) throw new Error("private response body"); return responseText; } };
@@ -89,7 +93,7 @@ function fixture(read = false, actor = 'actor', realTransport = false) {
     onDiscovery: (fn: () => void) => { afterDiscovery = fn; },
     idleCycle: async () => { await helper.getSession(); return helper.drainAvailableHelperJobs(context, actor, {}); },
     ownership, job, session, logs, setHeaders: (headers: Record<string,string>) => { responseHeaders=headers; }, prepareRequest: (fn: (request: Row) => void) => {prepareRequest=fn;}, setResponse: (text: string, url = responseUrl) => {responseText = text; responseUrl = url;}, failRead: () => { readFails = true; }, setTransportError: (error: Error) => { transportFails = true; transportError = error; }, failPersistence: () => { persistenceFails = true; }, failTransport: () => { transportFails = true; }, run: () => api.processOnePraktikaHelperJob(context, actor, ownership), operations: () => operations,
-    failNextOwnership: (error: Error) => {nextOwnershipError=error;}, connectedWrites: () => connectedWrites, loseOwnership: () => { owned = false; }, onClaim: (fn: () => void) => { afterClaim = fn; }, setHttp: (v: number) => { httpStatus = v; } };
+    failNextOwnership: (error: Error) => {nextOwnershipError=error;}, sent: () => sent, setCookies: (c: Array<{name:string;value:string}>) => { cookieJar = c; }, connectedWrites: () => connectedWrites, loseOwnership: () => { owned = false; }, onClaim: (fn: () => void) => { afterClaim = fn; }, setHttp: (v: number) => { httpStatus = v; } };
 }
 test('waiting write stays pending with attempts unchanged, then resumes once after browser startup', async () => {
   const f = fixture(); f.session.status = "refreshing";
@@ -460,3 +464,61 @@ test('cooldown read inventory cannot authorize a malformed retrieval request', a
   Object.assign(f.ownership, { canClaimWrites: async () => false });
   assert.equal((await f.run()).outcome, 'none'); assert.equal(f.job.attempts, 0); assert.equal(f.operations(), 0);
 });
+
+const iconBody = () => [{ request_id: 'letter_icon_1_placeholder', practice_id: 1181, appointment_id: 456, appointment_icon1id: 6597, appointment_icon2id: 0, appointment_icon3id: 0, appointment_icon4id: 0 }];
+const iconResponse = '{"appointment_icon1id":6597,"appointment_icon2id":0,"appointment_icon3id":0,"appointment_icon4id":0}';
+function iconFixture() {
+  const f = fixture(false, scopedUser, true);
+  f.job.job_type = 'update_praktika_letter_icons';
+  f.job.request = { method: 'POST', path: '/php/forms/db_commitFormData.php', contentType: 'json', referer: 'https://praktika.praktika.net.au/v2/scheduler', body: iconBody() };
+  f.setResponse(iconResponse);
+  return f;
+}
+const neverStored = (f: ReturnType<typeof fixture>) => {
+  for (const secret of ['sess0001secret', 'sess0002secret', 'uat-secret', 'Jane Citizen']) {
+    assert.ok(!JSON.stringify(f.job).includes(secret), `job row must not contain ${secret}`);
+    assert.ok(!JSON.stringify(f.logs).includes(secret), `logs must not contain ${secret}`);
+  }
+};
+test('icon write sends <PHPSESSID>_<counter> request_id without storing it', () => noAuth(async () => {
+  const f = iconFixture();
+  assert.equal((await f.run()).outcome, 'completed');
+  const [first] = f.sent() as Array<Array<Record<string, unknown>>>;
+  assert.match(String(first[0].request_id), /^sess0001secret_\d+$/);
+  assert.equal(first[0].appointment_icon1id, 6597);
+  assert.equal(f.job.request.body[0].request_id, 'letter_icon_1_placeholder');
+  assert.equal(f.job.response.appointment_icon1id, 6597);
+  const n = Number(String(first[0].request_id).split('_').pop());
+  f.job.status = 'pending'; f.job.available_at = '2026-01-01';
+  assert.equal((await f.run()).outcome, 'completed');
+  assert.equal((f.sent()[1] as Array<Record<string, unknown>>)[0].request_id, `sess0001secret_${n + 1}`);
+  neverStored(f);
+}));
+test('icon write restarts the counter at 1 when the session changes', () => noAuth(async () => {
+  const f = iconFixture(); f.setCookies([{ name: 'PHPSESSID', value: 'sess0002secret' }]);
+  await f.run();
+  assert.equal((f.sent()[0] as Array<Record<string, unknown>>)[0].request_id, 'sess0002secret_1');
+  neverStored(f);
+}));
+test('icon write without a PHPSESSID cookie waits and sends nothing', () => noAuth(async () => {
+  const f = iconFixture(); f.setCookies([]);
+  assert.equal((await f.run()).outcome, 'none');
+  assert.equal(f.operations(), 0); assert.equal(f.job.status, 'pending'); assert.equal(f.job.attempts, 0);
+}));
+test('icon HTTP 500 records status and safe summary, never the body', () => noAuth(async () => {
+  const f = iconFixture(); f.setHttp(500);
+  f.setResponse('{"error":"DBException: insert failed for request sess0001secret_1 patient Jane Citizen"}');
+  assert.equal((await f.run()).outcome, 'failed');
+  assert.equal(f.job.status, 'failed'); assert.equal(f.operations(), 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.job.response)), { iconFailure: { failureCategory: 'http_error', httpStatus: 500, bodyType: 'json', errorCategory: 'internal_exception', exceptionName: 'DBException' } });
+  assert.equal(f.job.error_message, 'Praktika icon update failed: HTTP 500, internal_exception (DBException). Outcome unconfirmed; reconcile before retrying.');
+  neverStored(f);
+  assert.equal((await f.run()).outcome, 'none'); assert.equal(f.operations(), 1);
+}));
+test('icon success response echoing the session ID is redacted before saving', () => noAuth(async () => {
+  const f = iconFixture();
+  f.setResponse('{"request_id":"sess0001secret_1","appointment_icon1id":6597,"appointment_icon2id":0,"appointment_icon3id":0,"appointment_icon4id":0}');
+  assert.equal((await f.run()).outcome, 'completed');
+  assert.equal(f.job.response.request_id, '[redacted]_1');
+  neverStored(f);
+}));
