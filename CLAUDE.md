@@ -45,6 +45,7 @@ Pushing to `main` deploys the web app on Vercel. Render auto-deploy was off at l
 ## MCP servers (see .mcp.json)
 
 - **supabase**: read-only and limited to the project above. Use it for schema, indexes, functions, RLS and `EXPLAIN ANALYZE`. Use counts and aggregates, and avoid selecting names, DOBs, contact details or letter text.
+  - Never run supabase db push or supabase migration repair against production. Migrations are applied by Siobhan in the SQL editor and recorded under the same version as their file.
 - **vercel**: read deployments, build logs and runtime logs only. Never deploy, promote, roll back, or change env vars, domains or project settings.
 - **render**: read service status, logs and metrics only. Never deploy, restart, suspend, scale, or change env vars or start commands.
 - Any write action through an MCP server needs my explicit instruction in the current conversation.
