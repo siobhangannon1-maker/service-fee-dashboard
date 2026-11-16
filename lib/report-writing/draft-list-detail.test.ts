@@ -5,7 +5,7 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { draftListColumns, draftListSelect, mergeDraftWorkflow, toDraftDetail, toDraftListItem } from './draft-contract';
 import { createDraftDetailLoader } from './draft-detail-loader';
-import { readDraftList, readDocumentAvailability, finalTextFilter } from './draft-list-reader';
+import { readDraftList, readDocumentAvailability, finalTextFilter, readDraftPage, parseDraftPageQuery, cleanSearch, dobSearchValue, workflowIssueCandidates } from './draft-list-reader';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 const detail = toDraftDetail({ id:'00000000-0000-4000-8000-000000000001',provider_id:'provider',updated_at:'2026-01-01',
@@ -58,7 +58,8 @@ test('loader never exposes raw server errors',async()=>{
 function database(pages: Array<Record<string,unknown>[]>, errorAt=-1) {
  const calls: Array<Record<string,unknown>>=[];
  const db={from(table:string){const call:Record<string,unknown>={table};calls.push(call);const index=calls.length-1;
- const q:Record<string,unknown>={};for(const name of ['select','is','eq','or','order','range','abortSignal','returns'])q[name]=(...args:unknown[])=>{call[name]=args;return q;};
+ const q:Record<string,unknown>={};for(const name of ['select','is','eq','or','order','range','abortSignal','returns','in','gte','lt'])q[name]=(...args:unknown[])=>{
+   call[name]=args; if(name==='or')call.orAll=[...((call.orAll as unknown[])||[]),args[0]]; return q;};
  q.then=(resolve:(value:unknown)=>void)=>Promise.resolve({data:pages[index]||[],error:index===errorAt?{message:'PRIVATE'}:null}).then(resolve);return q;}};
  return {db:db as unknown as SupabaseClient,calls};
 }
@@ -168,4 +169,56 @@ test('Queue refresh installs hydrated card data independently of letter detail',
  const f=queueFixture();let pending=f.load('a');f.reply([{id:'queue-1'}]);await pending;
  pending=f.load('a');f.reply([{id:'queue-1',referrer_name:'Synthetic referral',raw_json:{cached_clinical_notes:'Synthetic notes'}}]);await pending;
  assert.equal((f.queue()[0] as {referrer_name:string}).referrer_name,'Synthetic referral');assert.equal(f.hydrations(),2);
+});
+
+test('History page query: only with limit, bounded, and unsafe values dropped',()=>{
+ assert.equal(parseDraftPageQuery(new URLSearchParams('providerId=all')),null);
+ const p=parseDraftPageQuery(new URLSearchParams('limit=999&providerId=bad&reportType=all&from=2026-1-1&to=2026-11-16&cursor=x|y&q=Smith, (Jo)*'))!;
+ assert.equal(p.limit,200);assert.equal(p.providerId,null);assert.equal(p.reportType,null);assert.equal(p.from,null);assert.equal(p.to,'2026-11-16');
+ assert.equal(p.cursor,null);assert.equal(p.q,'Smith Jo');
+ assert.equal(cleanSearch('a,b(c)*d%e\\f"g\'h:i'),'a b c d e f g h i');
+});
+test('History page reads one page newest first with server-side filters and a stable cursor',async()=>{
+ const rows=Array.from({length:3},(_,i)=>({id:`00000000-0000-0000-0000-00000000000${i}`,created_at:`2026-11-0${9-i}T00:00:00.000Z`}));
+ const f=database([rows]);
+ const page=await readDraftPage(f.db,{providerId:'11111111-1111-1111-1111-111111111111',limit:2,
+   cursor:{createdAt:'2026-11-10T00:00:00.000Z',id:'22222222-2222-2222-2222-222222222222'},q:'Smith',reportType:'consultation_report',from:'2026-11-01',to:'2026-11-09'});
+ assert.deepEqual(page.rows.map(r=>r.id),[rows[0].id,rows[1].id]);
+ assert.equal(page.nextCursor,`2026-11-08T00:00:00.000Z|${rows[1].id}`);
+ const call=f.calls[0];
+ assert.deepEqual(call.range,[0,2]);assert.deepEqual(call.select,[draftListSelect]);
+ assert.deepEqual(call.gte,['created_at','2026-11-01T00:00:00.000Z']);assert.deepEqual(call.lt,['created_at','2026-11-10T00:00:00.000Z']);
+ const ors=call.orAll as string[];
+ assert.ok(ors[0].includes('patient_name.ilike.*Smith*')&&ors[0].includes('referrer_name.ilike.*Smith*'));
+ assert.equal(ors[1],'created_at.lt.2026-11-10T00:00:00.000Z,and(created_at.eq.2026-11-10T00:00:00.000Z,id.gt.22222222-2222-2222-2222-222222222222)');
+ const last=await readDraftPage(database([rows.slice(0,1)]).db,{providerId:null,limit:2,cursor:null,q:'',reportType:null,from:null,to:null});
+ assert.equal(last.nextCursor,null);
+});
+test('page availability checks only that page of letters',async()=>{
+ const f=database([[{id:'a',updated_at:'r'}],[]]);
+ await readDocumentAvailability(f.db,null,['a','b']);
+ for(const call of f.calls)assert.deepEqual(call.in,['id',['a','b']]);
+});
+
+test('date of birth search accepts YYYY-MM-DD, DD/MM/YYYY and D/M/YYYY and rejects impossible dates',()=>{
+ assert.equal(dobSearchValue('1990-06-09'),'1990-06-09');
+ assert.equal(dobSearchValue('09/06/1990'),'1990-06-09');
+ assert.equal(dobSearchValue('9/6/1990'),'1990-06-09');
+ assert.equal(dobSearchValue('31/02/1990'),null);
+ assert.equal(dobSearchValue('6/1990'),null);
+ assert.equal(dobSearchValue('Smith'),null);
+ assert.equal(cleanSearch('9/6/1990'),'9/6/1990');
+});
+test('History page searches dates of birth in the stored format and Issues across all letters on the server',async()=>{
+ const f=database([[]]);
+ await readDraftPage(f.db,{providerId:null,limit:100,cursor:null,q:'9/6/1990',reportType:null,from:null,to:null,issues:true});
+ const ors=f.calls[0].orAll as string[];
+ assert.ok(ors[0].includes('patient_dob.eq.1990-06-09'));
+ assert.ok(ors[0].includes('patient_name.ilike.*9/6/1990*'));
+ assert.equal(ors[1],workflowIssueCandidates);
+ assert.equal(parseDraftPageQuery(new URLSearchParams('limit=100&status=issues'))!.issues,true);
+ assert.equal(parseDraftPageQuery(new URLSearchParams('limit=100&status=approved'))!.issues,false);
+ for(const fragment of ['workflow_praktika_upload_status.eq.error','workflow_icon_update_status.eq.error','workflow_periodontal_chart_status.eq.error',
+   'workflow_mediref_status.in.(error,failed)','workflow_error.not.is.null','praktika_letter_icon_updated_at.is.null','periodontal_chart_attached_at.is.null'])
+   assert.ok(workflowIssueCandidates.includes(fragment),fragment);
 });

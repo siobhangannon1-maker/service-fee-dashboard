@@ -382,9 +382,12 @@ function ActorBadge({
   )
 }
 
-// A History load reads every letter with workflow enrichment (heavy). Returning to the
-// tab refreshes at most this often; the Refresh button and staff actions always reload.
+// A History load enriches each letter's workflow (heavy). Returning to the tab
+// refreshes at most this often; the Refresh button and staff actions always reload.
 const HISTORY_FOCUS_REFRESH_GAP_MS = 3 * 60_000
+// History loads one page of the most recent letters; "Load more" fetches the next.
+const HISTORY_PAGE_SIZE = 100
+type HistoryCounts = { activeQueueItems: number | null; awaiting: number | null }
 
 export default function ReportWritingHistoryPage() {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -401,6 +404,21 @@ export default function ReportWritingHistoryPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
   const [fromDate, setFromDate] = useState("")
   const [toDate, setToDate] = useState("")
+  const [serverSearch, setServerSearch] = useState("")
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [serverCounts, setServerCounts] = useState<HistoryCounts | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // Filters applied on the server. Read through a ref so a load always uses the latest.
+  const serverFilters = { providerId, q: serverSearch, reportType, from: fromDate, to: toDate, issues: statusFilter === "issues" }
+  const serverFiltersKey = JSON.stringify(serverFilters)
+  const serverFiltersRef = useRef({ value: serverFilters, key: serverFiltersKey })
+  serverFiltersRef.current = { value: serverFilters, key: serverFiltersKey }
+  const reloadPending = useRef(false)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setServerSearch(patientSearch.trim()), 400)
+    return () => window.clearTimeout(timer)
+  }, [patientSearch])
 
   const reportTypeOptions = useMemo(() => {
     const keys = Array.from(new Set(drafts.map((draft) => draft.report_type)))
@@ -518,20 +536,71 @@ export default function ReportWritingHistoryPage() {
         !isUploadedToPraktika(draft)
     ).length
 
+    // Draft and awaiting counts cover every letter (from the server). Approved and
+    // issue counts depend on workflow status, so they cover the loaded letters only.
     return {
-      activeQueueItems,
-      awaiting: drafts.filter(
+      activeQueueItems: serverCounts?.activeQueueItems ?? activeQueueItems,
+      awaiting: serverCounts?.awaiting ?? drafts.filter(
         (draft) => draft.status === "awaiting_provider_approval"
       ).length,
       approved: drafts.filter((draft) => draft.status === "approved" && !manuallyCompleted(draft)).length,
       issues: drafts.filter((draft) => hasWorkflowIssue(draft)).length,
     }
-  }, [drafts])
+  }, [drafts, serverCounts])
+
+  function historyPageUrl(filters: typeof serverFilters, cursor: string | null) {
+    const params = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE), providerId: filters.providerId })
+    if (filters.q) params.set("q", filters.q)
+    if (filters.reportType !== "all") params.set("reportType", filters.reportType)
+    if (filters.from) params.set("from", filters.from)
+    if (filters.to) params.set("to", filters.to)
+    // Issues are searched across all letters on the server; the page applies the exact rule.
+    if (filters.issues) params.set("status", "issues")
+    if (cursor) params.set("cursor", cursor)
+    return `/api/report-writing/get-drafts?${params}`
+  }
+
+  async function loadMore() {
+    if (!nextCursor || historyRequestInFlight.current) return
+    historyRequestInFlight.current = true
+    setLoadingMore(true)
+    const { value, key } = serverFiltersRef.current
+    try {
+      const response = await fetch(historyPageUrl(value, nextCursor), { cache: "no-store" })
+      const data = await response.json()
+      if (!response.ok || !data.success) throw new Error("History unavailable")
+      if (serverFiltersRef.current.key !== key) return
+      const providerNameById = new Map(providers.map((provider) => [provider.id, provider.name]))
+      setDrafts((current) => {
+        const seen = new Set(current.map((draft) => draft.id))
+        const added = (data.drafts || []).filter((draft: Draft) => !seen.has(draft.id)).map((draft: Draft) => ({
+          ...draft, provider_name: draft.provider_name || providerNameById.get(String(draft.provider_id || "")) || null,
+        }))
+        return [...current, ...added]
+      })
+      setNextCursor(typeof data.nextCursor === "string" ? data.nextCursor : null)
+      setHistoryRefreshError("")
+    } catch {
+      setHistoryRefreshError("Unable to load more letters. Try again shortly.")
+    } finally {
+      historyRequestInFlight.current = false
+      setLoadingMore(false)
+      if (reloadPending.current) {
+        reloadPending.current = false
+        void loadProvidersAndDrafts()
+      }
+    }
+  }
 
   async function loadProvidersAndDrafts(silent = false) {
-    if (historyRequestInFlight.current) return
+    if (historyRequestInFlight.current) {
+      // A filter change or explicit refresh during a load runs once it finishes.
+      if (!silent) reloadPending.current = true
+      return
+    }
     historyRequestInFlight.current = true
     if (!silent) setLoading(true)
+    const { value, key } = serverFiltersRef.current
 
     try {
       const providerResponse = await fetch("/api/report-writing/get-providers", { cache: "no-store" })
@@ -546,10 +615,15 @@ export default function ReportWritingHistoryPage() {
         loadedProviders.map((provider) => [provider.id, provider.name])
       )
 
-      const draftsResponse = await fetch("/api/report-writing/get-drafts", { cache: "no-store" })
+      const draftsResponse = await fetch(historyPageUrl(value, null), { cache: "no-store" })
       const draftsData = await draftsResponse.json()
 
       if (!draftsResponse.ok || !draftsData.success) throw new Error("History unavailable")
+      // Filters changed while loading: discard this page and load the new one.
+      if (serverFiltersRef.current.key !== key) {
+        reloadPending.current = true
+        return
+      }
 
       const loadedDrafts: Draft[] = (draftsData.drafts || []).map(
         (draft: Draft) => ({
@@ -562,6 +636,8 @@ export default function ReportWritingHistoryPage() {
       )
 
       setDrafts(loadedDrafts)
+      setNextCursor(typeof draftsData.nextCursor === "string" ? draftsData.nextCursor : null)
+      setServerCounts(draftsData.counts && typeof draftsData.counts === "object" ? draftsData.counts : null)
       setHistoryRefreshError("")
     } catch {
       setHistoryRefreshError("Unable to refresh History. Displayed workflow statuses may be out of date.")
@@ -569,8 +645,19 @@ export default function ReportWritingHistoryPage() {
       historyRequestInFlight.current = false
       lastHistoryLoadAt.current = Date.now()
       if (!silent) setLoading(false)
+      if (reloadPending.current) {
+        reloadPending.current = false
+        void loadProvidersAndDrafts()
+      }
     }
   }
+
+  // Changing a server-side filter or the search starts again from page 1.
+  const firstFilterRun = useRef(true)
+  useEffect(() => {
+    if (firstFilterRun.current) { firstFilterRun.current = false; return }
+    void loadProvidersAndDrafts()
+  }, [serverFiltersKey])
 
   // No timed polling: one open History tab must not reload the whole list continuously.
   useEffect(() => {
@@ -705,6 +792,9 @@ export default function ReportWritingHistoryPage() {
             <div className="mt-1 text-2xl font-bold text-green-700">
               {summary.approved}
             </div>
+            <div className="mt-1 text-xs font-semibold text-slate-600">
+              Loaded letters only
+            </div>
           </button>
 
           <button
@@ -717,6 +807,9 @@ export default function ReportWritingHistoryPage() {
             </div>
             <div className="mt-1 text-2xl font-bold text-amber-700">
               {summary.issues}
+            </div>
+            <div className="mt-1 text-xs font-semibold text-slate-600">
+              Loaded letters only. Click to search all letters for issues.
             </div>
           </button>
         </div>
@@ -836,7 +929,8 @@ export default function ReportWritingHistoryPage() {
           <div className="border-b p-4">
             <h2 className="text-lg font-bold">Letters</h2>
             <p className="text-sm text-slate-500">
-              Showing {filteredDrafts.length} of {drafts.length} letters.
+              Showing {filteredDrafts.length} of {drafts.length} loaded letters, most recent first.
+              {statusFilter === "issues" ? " Searching all letters for workflow issues." : ""}
             </p>
           </div>
 
@@ -1048,6 +1142,18 @@ export default function ReportWritingHistoryPage() {
               )
             })}
           </div>
+          {nextCursor && !loading ? (
+            <div className="border-t p-4 text-center">
+              <button
+                type="button"
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+                className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {loadingMore ? "Loading..." : "Load more"}
+              </button>
+            </div>
+          ) : null}
         </section>
       </div>
     </div>

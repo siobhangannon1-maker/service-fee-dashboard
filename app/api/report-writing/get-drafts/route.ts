@@ -1,5 +1,5 @@
 import { createDraftListInflight } from '@/lib/report-writing/draft-list-inflight';
-import { readDraftList, readDocumentAvailability } from '@/lib/report-writing/draft-list-reader';
+import { readDraftList, readDocumentAvailability, parseDraftPageQuery, readDraftPage, readDraftCounts } from '@/lib/report-writing/draft-list-reader';
 import { toDraftListItem } from '@/lib/report-writing/draft-contract';
 import { sensitiveApiAccess } from "@/lib/auth";
 import { projectWorkflowRecovery, staleWorkflowStatus } from "@/lib/report-writing/workflow-recovery"
@@ -22,6 +22,24 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const providerId = searchParams.get("providerId")
+
+    // History pages: only this page's letters are read, checked and enriched.
+    const page = parseDraftPageQuery(searchParams)
+    if (page) {
+      const [{ rows, nextCursor }, counts] = await Promise.all([
+        readDraftPage(supabase, page),
+        page.cursor ? Promise.resolve(null) : readDraftCounts(supabase),
+      ])
+      const availability = await readDocumentAvailability(supabase, page.providerId, rows.map((row) => row.id))
+      let recovered = rows
+      try { recovered = await projectWorkflowRecovery(supabase, rows) }
+      catch { recovered = rows.map(staleWorkflowStatus) }
+      const drafts = recovered.map((draft) => {
+        const state = availability.get(String(draft.id))
+        return toDraftListItem(draft, state && state.revision === draft.updated_at ? state.available : null)
+      })
+      return NextResponse.json({ success: true, drafts, nextCursor, counts }, { headers: { 'Cache-Control': 'private, no-store' } })
+    }
 
     const load = async () => {
       const [durableDrafts, availability] = await Promise.all([
