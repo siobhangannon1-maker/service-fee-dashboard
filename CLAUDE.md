@@ -62,3 +62,17 @@ Pushing to `main` deploys the web app on Vercel. Render auto-deploy was off at l
 ## Reference material
 
 `PROJECT_RULES_AND_CONTEXT.md` is a dated handover (15 Oct 2026). Read it for history and context. Its runbooks and production observations are not current instructions or standing permission.
+
+## Known issue: Praktika request_id (read before working on reception or other Praktika writes)
+
+Since 22 Oct 2026, Praktika's `db_commitFormData.php` returns HTTP 500 unless `request_id` is `<PHPSESSID>_<counter>`, the way Praktika's own page sends it.
+- Fixed for letter icon jobs only (commit 38dfe27, `lib/praktika/icon-write.ts`, deployed to the Render Praktika worker 16 Nov 2026).
+- Every other Praktika write still makes up its own request_id and will fail the same way: appointment confirmations, clinical notes, reception notes, and anything in the reception / AI receptionist module.
+- Before building or enabling any reception feature that writes to Praktika, apply the same fix to that write path (build the request_id in the worker at send time; never store or log the session ID).
+
+## Known issue: switching provider in the Typist can resume old waiting workflows
+
+Recorded 17 Nov 2026 and left as is by decision.
+- Each provider or queue change in the Typist POSTs `hydrate-letter-queue`, which inserts pending Praktika read jobs (`hydrate_report_letter_queue_item`) for the typist.
+- Pending jobs make the watcher start that typist's Praktika helper, and every helper cycle runs `scripts/praktika-workflow-continuations.ts`. It continues any `waiting` `complete_report_workflow` job for that user, with no age limit, which can create MediRef drafts and Praktika uploads.
+- There were no waiting workflows on 17 Nov 2026. Before re-arming, retrying or cleaning up old workflows, check for `waiting` parents first.

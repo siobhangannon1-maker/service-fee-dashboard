@@ -1,6 +1,6 @@
 // Exact owner-reviewed draft identities; no patient-name or future-record matching.
 // Source: private known-test-approved-review-results.json, operational Approved entries.
-// Policy: non-operational-drafts-v1. SHA-256 of newline-joined sorted IDs: adcf0ee930de1cf7f60bb2bcceca82b8c13aab2bbd3d274e8e9390838ee518aa
+// Policy: non-operational-drafts-v1. SHA-256 of newline-joined sorted IDs: db3298ecb202a18436cae7e0e4920bff36ddb1fc2d0cc8cae6559822dc93cdaa
 export const nonOperationalDraftIds = new Set<string>([
   "055483b3-401f-4192-aba2-cdcec19fd23b",
   "06b02f14-c6e0-42c8-b5e1-00117d5fd494",
@@ -11,14 +11,18 @@ export const nonOperationalDraftIds = new Set<string>([
   "1a683401-ebbc-49bb-b1d6-b7f1cf7ea2b8",
   "2304ba12-768c-467a-889c-16d6ba211574",
   "23e85880-8917-4024-8368-ab58f0757dca",
+  "25bed322-35f1-4a12-a5e5-5ef227f82d0a",
   "2d615206-6399-4da6-9938-26d7b830ffb0",
   "2ff84655-b99e-4391-95ec-436eea0868c1",
+  "37ad6153-651f-4b52-acf8-72a3b1f5fcd0",
   "383f6366-a6ff-44f7-b3f1-7c54598e7998",
   "3c9ff8bb-849e-4625-b610-96339b76411d",
   "46aa2d8c-edc4-4134-961f-03f392f67940",
   "47a12864-01db-4535-b676-4c5a623c620e",
+  "514ec165-1897-4acd-b49a-3cc845572a16",
   "528994d1-e1da-4fa4-b2e8-125d7eefe843",
   "5349fd21-d246-4bb0-996a-49d47537e972",
+  "53b4b765-96c4-4eac-85f6-b750e6a7e3ed",
   "599a7ec1-ae21-41da-9e90-3e6b01b16256",
   "59f65afa-e623-4d79-8a39-5b35d88773c4",
   "5add5507-0ced-4f53-b5ac-489b46e81df4",
@@ -26,6 +30,7 @@ export const nonOperationalDraftIds = new Set<string>([
   "663e0a45-f747-4200-b352-61829d280d6b",
   "6f4637da-3de3-4a2a-bb3b-efac4d9ffafe",
   "6f6051d6-8d76-45e8-91e8-cd254bae2820",
+  "7b0b57f3-0eb2-4f92-b702-c17ebee3cbb0",
   "7f2477c4-7baf-4309-988c-b45682d8fc04",
   "914d6171-1b9d-47f9-b604-757a759e2214",
   "92859fba-b8b3-402c-b9d6-c6cbc74f709a",
@@ -47,6 +52,8 @@ export const nonOperationalDraftIds = new Set<string>([
   "d34b967a-1f15-42a8-bd54-14f91d9cb022",
   "d5bee7b1-2e9e-4e5b-938d-a4e64b0758a9",
   "d8c32a4c-8839-43f9-b1d1-26dc206a1c3b",
+  "e06c5aa6-f0e9-449b-9888-a3b485b7f6aa",
+  "e6f4574c-e31a-48b1-a4e8-68f768043ad2",
   "f420071f-2bfb-43fc-8969-4d4d827823f2",
   "f520a112-93c7-4fd3-8717-793b6a0c5fdf",
   "fa56c274-d2d3-4f13-91d5-90783841c0cc",

@@ -36,8 +36,8 @@ test('no event, wrong draft, malformed proof or multiple dispositions fail close
  e.reconciliations=[];assert.equal(projectHistoricalAttention(d,e,now),undefined);
  const f=fixture();f.e.reconciliations!.push({...f.e.reconciliations![0],id:'duplicate'});assert.equal(projectHistoricalAttention(f.d,f.e,now),undefined);
 });
-test('all 49 versioned identities are unique and bound to the reviewed set',()=>{
- assert.equal(nonOperationalDraftIds.size,49);
+test('all 56 versioned identities are unique and bound to the reviewed set',()=>{
+ assert.equal(nonOperationalDraftIds.size,56);
  const source=readFileSync(new URL('./non-operational-drafts.ts',import.meta.url),'utf8');
  const hash=source.match(/sorted IDs: ([a-f0-9]{64})/)![1];
  assert.equal(createHash('sha256').update([...nonOperationalDraftIds].sort().join('\n')).digest('hex'),hash);

@@ -42,9 +42,35 @@ test('partition is exhaustive, disjoint, ordered and immutable within existing A
   const input=[a,b,c,d,e];const before=JSON.stringify(input);input.forEach(Object.freeze);
   const out=partitionApprovedForVerification(Object.freeze(input));
   assert.deepEqual(out.approved,[b,d]);assert.deepEqual(out.verificationItems,[a,c]);
-  const ids=[...out.approved,...out.verificationItems].map(x=>x.id);
+  const ids=[...out.approved,...out.verificationItems,...out.uncertaintyItems].map(x=>x.id);
   assert.equal(new Set(ids).size,ids.length);assert.equal(ids.length,input.filter(shouldAppearInApproved).length);
   assert.equal(JSON.stringify(input),before);
+});
+test('every approved letter lands in exactly one tab unless intentionally excluded',()=>{
+  let n=0;
+  for(const status of ['approved','uploaded_to_praktika'])
+  for(const approvedAt of ['2026-10-01T00:00:00Z',null])
+  for(const resolved of ['completed','needs_attention','not_started','completing','missing'] as const)
+  for(const lookupUnavailable of [false,true])
+  for(const stale of [false,true])
+  for(const context of ['present','absent','unknown'] as const){
+    const d=fixture(`d${n++}`);d.status=status;d.provider_approved_at=approvedAt;d.workflow_continuation_context=context;
+    if(resolved==='missing')delete d.workflow_resolved;else{d.workflow_resolved!.status=resolved;d.workflow_resolved!.lookupUnavailable=lookupUnavailable;}
+    if(stale)d.workflowStatusStale=true;
+    const out=partitionApprovedForVerification([d]);
+    const placed=out.approved.length+out.verificationItems.length+out.uncertaintyItems.length;
+    const freshCompleted=resolved==='completed'&&!lookupUnavailable&&!stale;
+    assert.equal(placed,freshCompleted?0:1,JSON.stringify({status,approvedAt,resolved,lookupUnavailable,stale,context}));
+  }
+  for(const excluded of [{workflow_attention:{type:'historical_non_actionable',message:'x'}},{id:'2304ba12-768c-467a-889c-16d6ba211574'}]){
+    const d={...fixture(),...excluded} as ReturnType<typeof fixture>;d.workflowStatusStale=true;
+    const out=partitionApprovedForVerification([d]);
+    assert.equal(out.approved.length+out.verificationItems.length+out.uncertaintyItems.length,0);
+  }
+});
+test('a stale completed letter without an approval date is not dropped from every tab',()=>{
+  const d=fixture();d.provider_approved_at=null;d.workflow_resolved!.status='completed';d.workflowStatusStale=true;
+  assert.deepEqual(partitionApprovedForVerification([d]),{approved:[],verificationItems:[d],uncertaintyItems:[]});
 });
 test('Typist uses one partition for counts/lists; draft-opening and recovery controls remain shared',()=>{
   const ui=readFileSync('app/(protected)/report-writing/typist/TypistPage.tsx','utf8');

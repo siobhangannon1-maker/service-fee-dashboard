@@ -46,8 +46,10 @@ export function partitionApprovedForVerification<T extends DraftListItem>(drafts
       shouldAppearInApproved({...draft, workflow_resolved: undefined})) {
       uncertaintyItems.push(draft); continue;
     }
-    if (!shouldAppearInApproved(draft)) continue;
-    (requiresWorkflowVerification(draft) ? verificationItems : approved).push(draft);
+    // An unavailable lookup's "completed" is not evidence: it must not drop the letter.
+    const membership = workflowStatusUnavailable(draft) ? { ...draft, workflow_resolved: undefined } : draft;
+    if (!shouldAppearInApproved(membership)) continue;
+    (requiresWorkflowVerification(membership) ? verificationItems : approved).push(draft);
   }
   return { approved, verificationItems, uncertaintyItems };
 }
