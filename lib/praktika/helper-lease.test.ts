@@ -149,7 +149,7 @@ test("ownership loss during a job never requeues an ambiguous external operation
     let checks = 0; let requests = 0; let failed = 0; let completed = 0;
     const ownership = { assertOwned: async () => { if (++checks === lostAt) throw new PraktikaOwnershipLost(); }, updateSession: async () => {}, ensureAuthenticated: async () => {} };
     const { processOnePraktikaHelperJob } = await functionsFrom("scripts/praktika-helper-job-processor.ts", ["processOnePraktikaHelperJob"], {
-      verifiedReadOperation: () => false, allowedPraktikaRead: () => false, jobEligible: async () => true,
+      logIconDiagnostic: () => undefined, verifiedReadOperation: () => false, allowedPraktikaRead: () => false, jobEligible: async () => true,
       console: quiet, PraktikaHelperUnavailable, PraktikaOwnershipLost,
       claimNextJob: async () => ({ id: "fixture", job_type: "fixture", request: {} }),
       runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => { await before(); requests++; return {}; },
@@ -252,7 +252,7 @@ for (const job_type of ['patient_match_search', 'upload_report_to_praktika']) te
   })};
   const {processOnePraktikaHelperJob} = await functionsFrom('scripts/praktika-helper-job-processor.ts', ['processOnePraktikaHelperJob'], {
     console: quiet, PraktikaHelperUnavailable, PraktikaOwnershipLost, PraktikaAuthenticationUnverified,
-    allowedPraktikaRead: () => false, verifiedReadOperation: () => job_type === 'patient_match_search', jobEligible: async () => true,
+    logIconDiagnostic: () => undefined, allowedPraktikaRead: () => false, verifiedReadOperation: () => job_type === 'patient_match_search', jobEligible: async () => true,
     claimNextJob: async () => ({id: 'fixture', job_type, request: {}}),
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => {await before(); dispatched++; return {};},
     isConfirmedPraktikaUpload: () => true, completeJob: async () => {completed++;}, markSessionConnectedForJob: async () => {},

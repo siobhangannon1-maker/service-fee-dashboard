@@ -39,59 +39,35 @@ export function redactPraktikaSessionId<T>(value: T, sessionId: string | null): 
   return JSON.parse(text.split(sessionId).join("[redacted]"));
 }
 
-export type PraktikaErrorBodySummary = {
-  bodyType: "empty" | "html" | "json" | "text";
-  errorCategory: "none" | "authentication" | "validation" | "internal_exception" | "other";
-  exceptionName?: string;
+// Copies only the diagnostic's fixed categories, status and timing onto the failed job.
+// Omits requestInvoked/boundary: workflow evidence treats those keys as execution markers.
+export type PraktikaIconFailure = {
+  failureCategory: string;
+  stage?: string;
+  httpStatus?: number;
+  responseCategory?: string;
+  httpErrorCategory?: string;
+  requestDurationMs?: number;
 };
 
-// Only fixed categories and an exception class name leave this function: never the
-// body text itself, which can contain the request (session ID) or patient details.
-export function summarizePraktikaErrorBody(text: string): PraktikaErrorBodySummary {
-  const body = String(text ?? "").trim();
-  let bodyType: PraktikaErrorBodySummary["bodyType"] = "text";
-  if (!body) bodyType = "empty";
-  else if (body.startsWith("<")) bodyType = "html";
-  else {
-    try {
-      JSON.parse(body);
-      bodyType = "json";
-    } catch {
-      bodyType = "text";
-    }
-  }
-
-  const errorCategory: PraktikaErrorBodySummary["errorCategory"] = !body ? "none"
-    : /DBUnauthorised|session (has )?expired|not logged in|unauthori[sz]ed/i.test(body) ? "authentication"
-    : /ValidationException|invalid (appointment|practice|icon|request)/i.test(body) ? "validation"
-    : /Exception|Fatal error|Stack trace|Internal Server Error/i.test(body) ? "internal_exception"
-    : "other";
-
-  const exceptionName = body.match(/\b([A-Z][A-Za-z0-9_]{1,60}(?:Exception|Error))\b/)?.[1];
-  return { bodyType, errorCategory, ...(exceptionName ? { exceptionName } : {}) };
-}
-
-export type PraktikaIconFailure = {
-  failureCategory: "http_error" | "request_timeout" | "transport_failure" | "response_validation_failure" | "unknown_failure";
-  httpStatus?: number;
-} & Partial<PraktikaErrorBodySummary>;
-
-export function praktikaIconFailure(error: any): PraktikaIconFailure {
-  if (typeof error?.praktikaHttpStatus === "number") {
-    return { failureCategory: "http_error", httpStatus: error.praktikaHttpStatus, ...(error.praktikaBodySummary || {}) };
-  }
-  const message = String(error?.message || "");
-  if (error?.name === "TimeoutError" || /Timeout \d+ms exceeded|timed out/i.test(message)) return { failureCategory: "request_timeout" };
-  if (["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN"].includes(error?.code)) {
-    return { failureCategory: "transport_failure" };
-  }
-  if (/logged out|non-JSON|empty response/i.test(message)) return { failureCategory: "response_validation_failure" };
-  return { failureCategory: "unknown_failure" };
+export function praktikaIconFailure(diagnostic: Record<string, unknown>): PraktikaIconFailure {
+  const text = (v: unknown) => (typeof v === "string" ? v : undefined);
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const failure: PraktikaIconFailure = { failureCategory: text(diagnostic.failureCategory) ?? "unknown" };
+  const stage = text(diagnostic.stage), httpStatus = num(diagnostic.httpStatus);
+  const responseCategory = text(diagnostic.responseCategory), httpErrorCategory = text(diagnostic.httpErrorCategory);
+  const requestDurationMs = num(diagnostic.requestDurationMs);
+  if (stage) failure.stage = stage;
+  if (httpStatus !== undefined) failure.httpStatus = httpStatus;
+  if (responseCategory) failure.responseCategory = responseCategory;
+  if (httpErrorCategory) failure.httpErrorCategory = httpErrorCategory;
+  if (requestDurationMs !== undefined) failure.requestDurationMs = requestDurationMs;
+  return failure;
 }
 
 export function praktikaIconFailureMessage(failure: PraktikaIconFailure): string {
   const detail = failure.httpStatus !== undefined
-    ? `HTTP ${failure.httpStatus}${failure.errorCategory ? `, ${failure.errorCategory}` : ""}${failure.exceptionName ? ` (${failure.exceptionName})` : ""}`
+    ? [`HTTP ${failure.httpStatus}`, failure.httpErrorCategory, failure.responseCategory && `${failure.responseCategory} reply`].filter(Boolean).join(", ")
     : failure.failureCategory;
   return `Praktika icon update failed: ${detail}. Outcome unconfirmed; reconcile before retrying.`;
 }

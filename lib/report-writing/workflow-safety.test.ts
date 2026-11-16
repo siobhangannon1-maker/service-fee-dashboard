@@ -155,7 +155,7 @@ test("upload result contract rejects empty, error and non-positive IDs", () => {
 test("worker never replays a report upload after an ambiguous external write", async () => {
   const failures: boolean[] = []; let operations = 0;
   const process = runInNewContext(extract("scripts/praktika-helper-job-processor.ts", "processOnePraktikaHelperJob") + "\nprocessOnePraktikaHelperJob", {
-    verifiedReadOperation: () => false, allowedPraktikaRead: () => false, jobEligible: async () => true,
+    logIconDiagnostic: () => undefined, verifiedReadOperation: () => false, allowedPraktikaRead: () => false, jobEligible: async () => true,
     PraktikaHelperUnavailable, PraktikaOwnershipLost, PraktikaAuthenticationUnverified, isConfirmedPraktikaUpload,
     console: { log() {}, error() {} }, claimNextJob: async () => ({ id: "synthetic", job_type: "upload_report_to_praktika", request: {} }),
     runPraktikaRequest: async (_c: unknown, _r: unknown, before: () => Promise<void>) => { await before(); operations++; throw new Error("response lost"); },
