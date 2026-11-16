@@ -9,7 +9,7 @@ test("History refreshes background MediRef failure, shows Retry, and retains Pra
   try {
     const page = await browser.newPage();
     await page.clock.install();
-    let failed = false; let unavailable = false; let reads = 0;
+    let failed = false; let unavailable = false; let reads = 0; let retryChecks = 0;
     const methods: string[] = [];
     await page.route("**/*", async (route) => {
       const path = new URL(route.request().url()).pathname;
@@ -28,7 +28,7 @@ test("History refreshes background MediRef failure, shows Retry, and retains Pra
           uploaded_to_praktika_at: "2026-09-01T00:00:00Z", praktika_letter_icon_updated_at: "2026-09-01T00:00:00Z",
         }] } });
       }
-      if (path.endsWith("/retry-mediref")) return route.fulfill({ json: { eligible: true, warning: "Fixture confirmation" } });
+      if (path.endsWith("/retry-mediref")) { retryChecks++; return route.fulfill({ json: { eligible: true, warning: "Fixture confirmation" } }); }
       return route.abort();
     });
     await page.goto("http://history-status.test/");
@@ -40,6 +40,14 @@ test("History refreshes background MediRef failure, shows Retry, and retains Pra
     await page.getByText("MediRef: Failed", { exact: true }).waitFor();
     await page.getByText("MediRef send failed", { exact: false }).waitFor();
     await page.getByRole("button", { name: "Retry MediRef", exact: true }).waitFor();
+    // Rendering the button must not contact the server; only a click checks eligibility.
+    assert.equal(retryChecks, 0);
+    let confirmation = "";
+    page.once("dialog", (dialog) => { confirmation = dialog.message(); void dialog.dismiss(); });
+    await page.getByRole("button", { name: "Retry MediRef", exact: true }).click();
+    await page.getByRole("button", { name: "Retry MediRef", exact: true }).waitFor();
+    assert.equal(retryChecks, 1);
+    assert.equal(confirmation, "Fixture confirmation");
     assert.ok(reads >= 2);
     assert.equal(await page.getByText(/Uploaded:/).count(), 1);
     assert.equal(await page.getByText(/Icon updated:/).count(), 1);
