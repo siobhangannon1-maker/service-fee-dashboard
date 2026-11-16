@@ -15,7 +15,7 @@ def sql(q,ok=True):
  return r.stdout.strip()
 def literal(v):return "'"+json.dumps(v).replace("'","''")+"'::jsonb"
 def insert(table,row):sql(f'insert into {table} select * from jsonb_populate_record(null::{table},{literal(row)});')
-MIGRATION=ROOT/'supabase/migrations/20260916013823_historical_workflow_reconciliation.sql'
+MIGRATION=ROOT/'supabase/migrations/20260916025123_historical_workflow_reconciliation.sql'
 SCHEMA="""
 create role anon;create role authenticated;create role service_role bypassrls;
 create schema extensions;create extension "uuid-ossp" schema extensions;

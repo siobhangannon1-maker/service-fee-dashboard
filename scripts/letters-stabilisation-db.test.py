@@ -5,7 +5,7 @@ ROOT=pathlib.Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('existing_resolution',ROOT/'scripts/workflow-resolution-db.test.py')
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 b=f.b;sql=f.sql;rpc=f.rpc
-MIGRATION=ROOT/'supabase/migrations/20261111021821_letters_icon_manual_completion.sql'
+MIGRATION=ROOT/'supabase/migrations/20261111063449_letters_icon_manual_completion.sql'
 PERFORMANCE=next((ROOT/'supabase/migrations').glob('*_manual_icon_eligibility_performance.sql'))
 class ManualIconTests(unittest.TestCase):
  @classmethod

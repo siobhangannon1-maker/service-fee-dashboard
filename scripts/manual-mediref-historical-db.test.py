@@ -8,7 +8,7 @@ class Tests(b.Tests):
  def setUpClass(cls):
   b.Tests.setUpClass()
   sql('create schema auth;create table auth.users(id uuid primary key);')
-  sql((b.ROOT/'supabase/migrations/20260916050207_manual_historical_mediref_verification.sql').read_text())
+  sql((b.ROOT/'supabase/migrations/20260916055341_manual_historical_mediref_verification.sql').read_text())
  def setUp(self):
   b.Tests.setUp(self)
   sql(f"insert into auth.users values('{self.actor}');update mediref_helper_jobs set status='failed',result=null,payload=payload||'{{\"attachments\":[{{\"fileName\":\"letter.pdf\"}}]}}' where id='{self.m}';update report_drafts set workflow_status='failed',workflow_mediref_status='failed' where id='{self.d}';")
@@ -134,7 +134,7 @@ class Tests(b.Tests):
   query="select id from report_writing_audit_events where entity_id='"+self.d+"' and action in ('system_historical_reconciliation','system_historical_reconciliation_invalidated','system_historical_retention_released','manual_historical_mediref_verification','manual_historical_mediref_invalidated','manual_historical_mediref_retention_released')"
   plan=sql('begin;set local enable_seqscan=off;explain '+query+';rollback;');self.assertIn('historical_verification_runtime_idx',plan)
  def test_manual_no_external_or_queue_calls(self):
-  src=(b.ROOT/'supabase/migrations/20260916050207_manual_historical_mediref_verification.sql').read_text().lower()
+  src=(b.ROOT/'supabase/migrations/20260916055341_manual_historical_mediref_verification.sql').read_text().lower()
   for forbidden in ['insert into public.mediref_helper_jobs','insert into public.praktika_helper_jobs','update public.mediref_helper_jobs','update public.praktika_helper_jobs','update public.report_drafts','net.http','http_post','reserve_praktika','release_historical_retention(']:self.assertNotIn(forbidden,src)
 
 class SystemWithManualInstalled(b.Tests):

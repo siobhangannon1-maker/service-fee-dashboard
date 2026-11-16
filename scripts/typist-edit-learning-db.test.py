@@ -14,7 +14,7 @@ import unittest
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / 'supabase/migrations/20261003000000_typist_edit_learning_queue.sql'
+MIGRATION = ROOT / 'supabase/migrations/20261003100806_typist_edit_learning_queue.sql'
 PROVIDER = '00000000-0000-4000-8000-000000000001'
 DRAFT = '00000000-0000-4000-8000-000000000002'
 SOURCE = 'typist_existing_draft_approval'

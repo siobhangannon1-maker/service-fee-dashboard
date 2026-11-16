@@ -14,7 +14,7 @@ class Tests(unittest.TestCase):
  def setUpClass(cls):
   b.Tests.setUpClass()
   sql('create schema auth;create table auth.users(id uuid primary key);')
-  sql((ROOT/'supabase/migrations/20260916050207_manual_historical_mediref_verification.sql').read_text())
+  sql((ROOT/'supabase/migrations/20260916055341_manual_historical_mediref_verification.sql').read_text())
   cls.historical=sql("select jsonb_agg(pg_get_functiondef(oid) order by proname) from pg_proc where proname in ('inspect_manual_historical_mediref','verify_historical_mediref_completion');")
   sql(next((ROOT/'supabase/migrations').glob('*_manual_mediref_no_job_recovery.sql')).read_text())
  def setUp(self):
