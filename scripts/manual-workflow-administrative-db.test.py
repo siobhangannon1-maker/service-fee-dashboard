@@ -1,5 +1,5 @@
 """Disposable PostgreSQL; synthetic fixtures only; no application credentials/TCP."""
-import sys,pathlib,importlib.util,json,uuid,unittest,concurrent.futures,subprocess,threading
+import sys,pathlib,importlib.util,json,uuid,unittest,concurrent.futures,subprocess,threading,datetime
 sys.dont_write_bytecode=True
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('icon_fixture',ROOT/'scripts/letters-stabilisation-db.test.py')
@@ -7,12 +7,13 @@ old=importlib.util.module_from_spec(spec);spec.loader.exec_module(old)
 f=old.f;b=old.b;sql=old.sql;rpc=old.rpc
 MIGRATION=next((ROOT/'supabase/migrations').glob('*_manual_workflow_administrative_completion.sql'))
 STARTED=next((ROOT/'supabase/migrations').glob('*_manual_workflow_started_guard.sql'))
+UNSETTLED=next((ROOT/'supabase/migrations').glob('*_manual_workflow_unsettled_mediref.sql'))
 class AdministrativeCompletionTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   old.ManualIconTests.setUpClass()
   before=sql("select jsonb_build_array((select count(*) from report_drafts),(select count(*) from praktika_helper_jobs),(select count(*) from report_writing_audit_events));")
-  sql(MIGRATION.read_text());sql(MIGRATION.read_text());sql(STARTED.read_text());sql(STARTED.read_text())
+  sql(MIGRATION.read_text());sql(MIGRATION.read_text());sql(STARTED.read_text());sql(STARTED.read_text());sql(UNSETTLED.read_text());sql(UNSETTLED.read_text())
   assert before==sql("select jsonb_build_array((select count(*) from report_drafts),(select count(*) from praktika_helper_jobs),(select count(*) from report_writing_audit_events));")
  def setUp(self):f.Tests.setUp(self)
  def snapshot(self):return rpc(f"select inspect_manual_workflow_completion('{self.d}','{self.actor}');")
@@ -87,6 +88,33 @@ class AdministrativeCompletionTests(unittest.TestCase):
   sql(f"update praktika_helper_jobs set locked_at='2026-10-01T11:59:00Z',locked_by='synthetic-retained-owner',response='{{\"externalExecution\":\"uncertain\"}}' where id='{self.parent}';")
   self.s=self.snapshot();self.assertTrue(self.s['eligible']);before=self.records();self.assertTrue(self.confirm()['ok'])
   self.assertEqual(json.loads(before)['praktika'],json.loads(self.records())['praktika'])
+ def request_record(self,minutes_old,branch='mediref'):
+  permit=str(uuid.uuid4());created=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=minutes_old)).isoformat()
+  b.insert('report_writing_audit_events',dict(id=permit,entity_type='report_draft',entity_id=self.d,action='workflow_resolution_execution',created_at=created,details=dict(contract='workflow-resolution-v1',version=1,draftId=self.d,branch=branch,permitId=permit,source='request_operation')))
+  return permit
+ def test_cancelled_job_counts_as_finished(self):
+  b.insert('mediref_helper_jobs',dict(id=str(uuid.uuid4()),job_type='send_mediref_letter',status='cancelled',payload=dict(draftId=self.d),result={}))
+  self.s=self.snapshot();self.assertTrue(self.s['eligible']);self.assertTrue(self.confirm()['ok'])
+ def test_cancelled_job_with_newer_lock_stays_blocked(self):
+  b.insert('mediref_helper_jobs',dict(id=str(uuid.uuid4()),job_type='send_mediref_letter',status='cancelled',payload=dict(draftId=self.d),result={},updated_at='2026-10-01T11:00:00Z',locked_at='2026-10-01T12:00:00Z',locked_by='synthetic-owner'))
+  self.assertEqual(self.snapshot()['reasonCode'],'active_job');self.assertFalse(self.confirm()['ok'])
+ def test_old_mediref_request_without_job_is_completable_and_noted(self):
+  permit=self.request_record(45)
+  self.s=self.snapshot();self.assertTrue(self.s['eligible']);self.assertEqual(self.s['unsettledMedirefPermits'],[permit]);self.assertTrue(self.confirm()['ok'])
+  details=json.loads(sql(f"select details from report_writing_audit_events where entity_id='{self.d}' and action='workflow_resolution_completed';"))
+  self.assertTrue(details['unsettledMedirefStep']);self.assertEqual(details['unsettledMedirefPermitIds'],[permit])
+  self.assertEqual(sql(f"select manual_workflow_completion_closed('{self.d}');"),'t')
+ def test_recent_mediref_request_without_job_still_blocks(self):
+  self.request_record(5);self.assertEqual(self.snapshot()['reasonCode'],'active_operation');self.assertFalse(self.confirm()['ok'])
+ def test_mediref_request_record_blocks_when_a_mediref_job_exists(self):
+  self.request_record(45);b.insert('mediref_helper_jobs',dict(id=str(uuid.uuid4()),job_type='send_mediref_letter',status='failed',payload=dict(draftId=self.d),result={}))
+  self.assertEqual(self.snapshot()['reasonCode'],'active_operation');self.assertFalse(self.confirm()['ok'])
+ def test_old_icon_request_without_job_still_blocks(self):
+  self.request_record(45,'icon');self.assertEqual(self.snapshot()['reasonCode'],'active_operation');self.assertFalse(self.confirm()['ok'])
+ def test_completion_without_unsettled_step_has_no_note(self):
+  self.s=self.snapshot();self.assertEqual(self.s['unsettledMedirefPermits'],[]);self.assertTrue(self.confirm()['ok'])
+  details=json.loads(sql(f"select details from report_writing_audit_events where entity_id='{self.d}' and action='workflow_resolution_completed';"))
+  self.assertNotIn('unsettledMedirefStep',details)
  def test_stale_preview_and_changed_approval_reject(self):
   sql(f"update report_drafts set provider_approved_at=now() where id='{self.d}';");self.assertFalse(self.confirm()['ok'])
  def test_replay_and_audit_deletion_are_fenced(self):
@@ -115,7 +143,7 @@ class AdministrativeCompletionTests(unittest.TestCase):
   result=rpc(f"select confirm_manual_workflow_completion('{legacy.d}','{legacy.actor}','{preview['fingerprint']}','{preview['letterFingerprint']}',true);");self.assertTrue(result['reconciled'])
   self.assertEqual(sql(f"select count(*) from report_writing_audit_events where entity_id='{legacy.d}' and action='workflow_resolution_completed';"),'1')
  def test_migration_reapplication_keeps_completion_and_fences(self):
-  self.assertTrue(self.confirm()['ok']);before=self.records();sql(STARTED.read_text());self.assertEqual(before,self.records());self.assertTrue(self.confirm()['reconciled'])
+  self.assertTrue(self.confirm()['ok']);before=self.records();sql(STARTED.read_text());sql(UNSETTLED.read_text());self.assertEqual(before,self.records());self.assertTrue(self.confirm()['reconciled'])
 class ExistingResolutionTests(f.Tests):
  @classmethod
  def setUpClass(cls):pass
